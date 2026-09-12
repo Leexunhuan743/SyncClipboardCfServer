@@ -1,0 +1,14 @@
+node_modules/
+.wrangler/
+dist/
+dev.vars
+*.log
+.DS_Store
+.dev.vars
+
+# 防误提交：wrangler r2 object put 语法错误会在项目根创建这些路径
+/history/
+/file/
+
+# 审计工作区（含本地绝对路径与调查报告），仅本地保留
+.audits/

@@ -1,0 +1,4 @@
+# 本地开发凭据（wrangler dev 读取；此文件已被 .gitignore 排除）
+# 复制为 .dev.vars 后填入你自己的值
+USERNAME=your-username
+PASSWORD=your-strong-password

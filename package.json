@@ -1,0 +1,28 @@
+{
+  "name": "syncclipboard-cf-server",
+  "version": "1.7.0",
+  "private": true,
+  "license": "MIT",
+  "description": "SyncClipboard 官方服务器的 Cloudflare Workers 复刻版（TypeScript），协议兼容官方客户端",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --no-file-parallelism",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "@microsoft/signalr": "^8.0.7",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "undici": "^8.10.2",
+    "vitest": "^2.1.0",
+    "wrangler": "^3.80.0"
+  }
+}

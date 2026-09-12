@@ -1,0 +1,101 @@
+# 自动部署 SyncClipboard CfServer 到 Cloudflare Workers
+# 触发：push 到 master，或 GitHub Actions 页面手动触发（workflow_dispatch）
+#
+# 前置一次性配置（GitHub 仓库 Settings → Secrets and variables → Actions）：
+#   Secrets:
+#     CLOUDFLARE_API_TOKEN  — Cloudflare API Token，权限：
+#                             Workers Scripts:Edit、D1:Edit、R2:Edit、Account Settings:Read
+#     CLOUDFLARE_ACCOUNT_ID — Cloudflare 账户 ID（dashboard 右侧栏）
+#     USERNAME / PASSWORD   — 可选。Basic Auth 凭据，用于 CI 自动同步到 Worker
+#   Variables:
+#     SYNC_AUTH_CREDENTIALS — 可选，设为 "true" 时由 CI 把上述凭据写入 Worker secrets
+#     DEPLOY_URL            — 可选，部署后地址，用于冒烟检查（未设置则跳过）
+#
+# 凭据管理两种用法（任选）：
+#   A) 只用手动设置一次：`npx wrangler secret put USERNAME / PASSWORD`，
+#      不配 SYNC_AUTH_CREDENTIALS —— CI 不触碰凭据。
+#   B) 交给 CI：配好 USERNAME/PASSWORD secrets 并把 SYNC_AUTH_CREDENTIALS 设为 true，
+#      每次部署同步一次，轮换密码只需改 GitHub Secrets 一处。
+
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Quality gate (typecheck + unit tests)
+        run: |
+          npm run typecheck
+          npx vitest run test/fixes.test.ts test/hash.test.ts
+        # 注：protocol/signalr/fix-regressions 为 HTTP 黑盒套件，需本地 dev server；
+        # CI 不启动 dev server，故质量门只跑无外部依赖的单元/数据层套件。
+
+      - name: Apply D1 schema (idempotent)
+        run: npx wrangler d1 execute syncclipboard --remote --file=./schema.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Sync Basic Auth credentials
+        # 可选步骤：在仓库变量 SYNC_AUTH_CREDENTIALS=true 且已配置 USERNAME/PASSWORD secrets 时执行。
+        # （secrets 上下文不能直接用于 if，故用 vars 开关 + 步骤级 env。）
+        #
+        # 安全说明：
+        # - 凭据只注入**本步骤**的 env（不设 job 级 env），否则 `npm ci` 的 postinstall
+        #   脚本也能读到它们，形成供应链暴露面。
+        # - GitHub 会自动在日志中掩码 secrets 值。
+        # - 放在 Deploy 之后：wrangler 在非交互环境虽能自动创建不存在的 Worker，
+        #   先部署可避免"只创建空 Worker"的中间状态。
+        if: ${{ vars.SYNC_AUTH_CREDENTIALS == 'true' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          AUTH_USERNAME: ${{ secrets.USERNAME }}
+          AUTH_PASSWORD: ${{ secrets.PASSWORD }}
+        run: |
+          if [ -z "$AUTH_USERNAME" ] || [ -z "$AUTH_PASSWORD" ]; then
+            echo "SYNC_AUTH_CREDENTIALS=true 但 USERNAME/PASSWORD secrets 未配置"; exit 1
+          fi
+          # 用 printf 而非 echo：wrangler 会对输入做 trimEnd()（node_modules/wrangler/.../cli.js
+          # 中的 trimTrailingWhitespace），故 echo 的换行不会真的进入密文；这里用 printf
+          # 只是显式表达意图，不依赖上游的 trim 行为。
+          printf '%s' "$AUTH_USERNAME" | npx wrangler secret put USERNAME
+          printf '%s' "$AUTH_PASSWORD" | npx wrangler secret put PASSWORD
+          echo "credentials synced to Worker"
+
+      - name: Smoke check
+        # 仓库变量 DEPLOY_URL 未设置时自动跳过（避免把个人部署地址写进仓库）
+        if: ${{ vars.DEPLOY_URL != '' }}
+        run: |
+          sleep 5
+          code=$(curl -s -o /dev/null -w "%{http_code}" "${{ vars.DEPLOY_URL }}/api/version" || true)
+          if [ "$code" != "401" ]; then
+            echo "unexpected status $code (401 expected: auth required)"; exit 1
+          fi
+          echo "smoke ok: unauthenticated /api/version -> 401"

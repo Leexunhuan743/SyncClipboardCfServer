@@ -1,0 +1,43 @@
+name = "syncclipboard-cf-server"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ============ 绑定（部署前需创建资源并填入真实 ID）============
+
+# D1：历史记录表 HistoryRecords + 元信息表 Meta（含当前剪贴板 Profile）
+# 创建：wrangler d1 create syncclipboard
+[[d1_databases]]
+binding = "DB"
+database_name = "syncclipboard"
+database_id = "7c1bd510-9a9d-479d-8888-9f7a415f8be9"
+
+# R2：file/ 暂存区 + history/{Type}_{Hash}/ 持久数据文件
+# 创建：wrangler r2 bucket create syncclipboard
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "syncclipboard"
+
+# Durable Object：SignalR 兼容 Hub（持有 WebSocket 连接并广播）
+[durable_objects]
+bindings = [{ name = "HUB", class_name = "SyncClipboardHub" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SyncClipboardHub"]
+
+# 公开变量
+[vars]
+# /api/version 返回值。官方客户端要求服务端版本 >= 3.1.1（Env.RequestServerVersion）
+VERSION = "3.2.1"
+# 历史保留策略（对齐上游 appsettings AppSettings.MaxSavedHistoryCount / HistoryRetentionMinutes）
+MAX_SAVED_HISTORY_COUNT = "1000"
+HISTORY_RETENTION_MINUTES = "10080"
+
+# 保留/清理定时任务（对齐上游 HistoryCleaner：保留期+条数上限 10 分钟、已删硬删+孤儿目录 12 小时）
+# CF 侧统一为每小时一次批量执行（见 src/cleanup.ts）
+[triggers]
+crons = ["17 * * * *"]
+
+# ============ Secrets（wrangler secret put，不要写进仓库）============
+# USERNAME / PASSWORD —— 与官方服务器相同的 HTTP Basic Auth 凭据
