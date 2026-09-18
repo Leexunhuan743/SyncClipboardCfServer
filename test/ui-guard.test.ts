@@ -236,10 +236,10 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     expect(seen, '/ui/api/* 不该去问静态资源').toEqual(['/ui/__missing__']);
   });
 
-  // V1（`public/ui_old/`，2026-09-17 起作为备用界面重新纳入维护，见该目录 README）与 V2
-  // 共用同一个界面开关。
+  // V1（`public/ui_old/`，2026-09-18 起是**默认界面**，见该目录 README）与 V2 共用同一个界面开关。
   // 这条守卫拦的是"关掉界面却留下一个仍可访问的旧界面"——那正是这个开关要消除的东西。
-  it('V1 存档同样受界面开关约束：关闭态 404，开启态转静态资源', async () => {
+  // 2026-09-18 补：未命中也要回落到那张设计过的 404 页（V1 成了默认界面，打错路径不该拿到纯文本 404）。
+  it('V1（默认界面）同样受界面开关约束：关闭态 404，开启态转静态资源，未命中回落 404 页', async () => {
     const off = makeEnv('false', 200);
     for (const path of ['/ui_old', '/ui_old/', '/ui_old/index.html', '/ui_old/js/main.js']) {
       const res = await worker.fetch(new Request(`https://sync.example.com${path}`), off.env, CTX);
@@ -254,6 +254,13 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('asset-body');
     expect(on.seen).toEqual(['/ui_old/index.html']);
+
+    // 未命中：先问静态资源，404 之后回落到那张页（与 /ui/* 同一条行为）
+    const miss = makeEnv('true', 404);
+    const missing = await worker.fetch(new Request('https://sync.example.com/ui_old/__missing__'), miss.env, CTX);
+    expect(miss.seen, '未命中也先问过静态资源').toEqual(['/ui_old/__missing__']);
+    expect(missing.status).toBe(404);
+    expect(await missing.text(), '应回落到设计过的 404 页而不是平台默认的纯文本').toContain('这个地址没有页面');
   });
 });
 
@@ -438,5 +445,47 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
     }
     // 标了 aria-invalid 就得有视觉态：颜色不是主通道，但"什么都没变"会让标记等于不存在
     expect(cssText, 'CSS 没有消费 aria-invalid（字段标了错却看不出）').toContain('[aria-invalid="true"]');
+  });
+
+  // 默认界面 = V1（`public/ui_old/`），2026-09-18 用户定的定位；V2（`public/ui/app/`）是开发测试版。
+  // 这条定位由**三个入口**共同表达，任何一处漏改都会让人落回另一版：
+  //   ① `GET /` 的浏览器分支（`src/routes/webdav.ts`）直接 302；
+  //   ② `/ui/` 的目录索引壳（`public/ui/index.html`）meta refresh + canonical（给 /ui/ 的书签）；
+  //   ③ 两版界面里的提示条（V1 指 V2，V2 的标记是"开发测试版"）。
+  // 前两处必须指向同一个地址 —— 只翻一处的话，站点根与 /ui/ 会落到两个不同的界面。
+  it('默认界面的入口链一致：GET / 与 /ui/ 的目录索引都指向 V1', () => {
+    const webdav = readFileSync('src/routes/webdav.ts', 'utf8');
+    const rootRedirect = /c\.redirect\('([^']+)', 302\)/.exec(webdav)?.[1] ?? null;
+    const stub = readFileSync('public/ui/index.html', 'utf8');
+    const metaRefresh = /http-equiv="refresh" content="0; url=([^"]+)"/.exec(stub)?.[1] ?? null;
+    const canonical = /<link rel="canonical" href="([^"]+)"/.exec(stub)?.[1] ?? null;
+
+    // 空集合会让断言永远为真：先把三处都抽到了钉住
+    expect(rootRedirect, '没抽到 GET / 的重定向目标（守卫可能失效）').not.toBeNull();
+    expect(metaRefresh, '没抽到 /ui/ 目录索引的 refresh 目标').not.toBeNull();
+    expect(canonical, '没抽到 canonical').not.toBeNull();
+    expect(
+      [metaRefresh, canonical],
+      '站点根与 /ui/ 目录索引必须落到同一个界面（默认界面 = V1）',
+    ).toEqual([rootRedirect, rootRedirect]);
+    expect(rootRedirect).toBe('/ui_old/');
+  });
+
+  // UI_ENABLED=false 必须是**真的关掉**：`/ui_old/*` 若不进 run_worker_first，边缘命中静态资源就
+  // 直接返回，请求根本到不了 Worker，`src/index.ts` 里那段 isArchivePath 的 404 判定永远不执行 ——
+  // 开关静默失效（V1 从 2026-09-18 起是默认界面，这条就成了承重问题）。
+  // 这条守卫是 `docs/ui.md` 里"若哪天有人删掉 run_worker_first，关闭态会静默失效 —— 测试即红"那句话
+  // 的兑现：此前**没有任何测试**在读这个配置。
+  it('两个界面挂载点都在 run_worker_first 里（否则 UI_ENABLED 静默失效）', () => {
+    const toml = readFileSync('wrangler.toml', 'utf8');
+    const raw = /run_worker_first\s*=\s*\[([^\]]*)\]/.exec(toml)?.[1] ?? null;
+    expect(raw, '没抽到 run_worker_first（守卫可能失效）').not.toBeNull();
+    const patterns = (raw ?? '')
+      .split(',')
+      .map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
+      .filter((entry) => entry !== '');
+    for (const pattern of ['/ui', '/ui/*', '/ui_old', '/ui_old/*']) {
+      expect(patterns, `run_worker_first 缺少 ${pattern}：那一面的界面开关不会生效`).toContain(pattern);
+    }
   });
 });

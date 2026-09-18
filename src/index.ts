@@ -11,6 +11,7 @@ import { checkAuthRateLimit, noteAuthFailure, noteAuthSuccess } from './rateLimi
 import { createWebdavRoutes } from './routes/webdav';
 import { createHistoryRoutes } from './routes/history';
 import { createUiRoutes } from './ui/routes';
+import { notFoundPage } from './ui/notFound';
 import { forwardToHub, negotiateResponse, HUB_PATH } from './hub';
 import { SyncClipboardHub } from './durable/SyncClipboardHub';
 import { runCleanup } from './cleanup';
@@ -213,10 +214,12 @@ export default {
     //     的兜底 404 会先于 `app.get('/ui')` 命中，见 docs/ui.md 的记录）。
     const isUiPath = url.pathname === '/ui' || url.pathname.startsWith('/ui/');
     const isUiApi = url.pathname.startsWith('/ui/api/');
-    // V1（`public/ui_old/`，备用界面，2026-09-17 起重新纳入维护，见该目录 README）。
-    // 它与 V2 共用同一个界面开关：
-    // 关掉界面时**两个**挂载点都必须 404 —— 否则"关掉界面"会留下一个仍可访问的旧界面，
-    // 那正是这个开关要消除的东西。
+    // V1（`public/ui_old/`）2026-09-18 起是**默认界面**（V2 降为开发测试版）。
+    // 它与 V2 共用同一个界面开关：关掉界面时**两个**挂载点都必须 404 —— 否则"关掉界面"
+    // 会留下一个仍可访问的界面，那正是这个开关要消除的东西。
+    // ⚠️ 这条分支只在请求**到达 Worker** 时才跑：`wrangler.toml` 的 run_worker_first 必须同时
+    // 覆盖 `/ui_old` 与 `/ui_old/*`，否则边缘命中静态资源就直接返回、开关静默失效
+    // （2026-09-18 补上，此前只有 `/ui` 与 `/ui/*`）。守卫见 test/ui-guard.test.ts。
     const isArchivePath = url.pathname === '/ui_old' || url.pathname.startsWith('/ui_old/');
     if (isUiPath && !isUiApi) {
       if (!isUiEnabled(env)) return uiDisabledResponse(false);
@@ -228,13 +231,18 @@ export default {
     } else if (isUiApi && !isUiEnabled(env)) {
       return uiDisabledResponse(true);
     } else if (isArchivePath) {
-      // 存档面**不由 Hono 参与**：它只有静态资源、没有服务端路由，故 404 就该是 404
-      // （不像 /ui/* 那样回落到 Hono 出 404 页 —— 那页属于 V2 的命名空间）。
-      // 这里**必须**显式再判一次开关：`/ui_old/*` 不在 run_worker_first 里，正常情况下
-      // 由边缘直接托管、根本走不到 Worker；走得到 Worker 的只有"资源未命中"的请求，
-      // 而那一条也必须在界面关掉时 404。
+      // V1 这一面没有自己的服务端路由（接口走与 V2 共用的 `/ui/api/*`），故它只需静态资源；
+      // 但**未命中时也回落到那张设计过的 404 页**（2026-09-18 改口）：V1 现在是默认界面，
+      // 打错一个路径拿到平台默认的纯文本 404 太糙，而 `/ui/*` 那一面早就有这张页了。
+      // 那页的样式来自 `/ui/css/*`（V2 的设计系统）——它是**站点的** 404，不属于任何一版界面，
+      // 为它在两套设计系统里各写一份才是浪费。
+      // 这里**必须**显式再判一次开关：run_worker_first 覆盖之后，页面与资源请求都会先进 Worker，
+      // 关掉界面时它们必须 404（2026-09-18 之前这段话写的是"不在 run_worker_first 里"，
+      // 而那正是开关失效的原因）。
       if (!isUiEnabled(env)) return uiDisabledResponse(false);
-      return env.ASSETS.fetch(request);
+      const archiveAsset = await env.ASSETS.fetch(request);
+      if (archiveAsset.status !== 404) return archiveAsset;
+      return notFoundPage(env);
     }
 
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）

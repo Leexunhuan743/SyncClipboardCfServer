@@ -79,17 +79,18 @@ enabled = true
 # 代价：界面请求多经过一层 Worker；协议面与根路径不受影响（只有这两个模式进 Worker）。
 # binding = "ASSETS" 是上面 run_worker_first 的前提：没有它，Worker 里拿不到静态资源绑定。
 #
-# ui_old（2026-09-15 新增）：`public/ui_old/` 是 V1 界面（2026-09-17 起以**备用界面**的身份
-# 重新纳入维护，见该目录 README）。
-# 刻意**不**把它加进 run_worker_first —— 它的页面只有一个静态资源面、没有服务端路由
-# （接口走的是与 V2 共用的 `/ui/api/*`），由边缘直接托管最省一层往返。
-# 界面开关对它仍然生效：`src/index.ts` 在分派前判定 isArchivePath 并据此 404
-# （未被边缘命中的 /ui_old 请求本来就会回落给 Worker）。
+# ui_old（2026-09-15 新增；2026-09-18 起它是**默认界面**，V2 降为开发测试版）。
+# 2026-09-18 **补进 run_worker_first**：此前它刻意不在名单里，理由是"只有一个静态资源面、
+# 由边缘直接托管最省一层往返"，并声称"界面开关对它仍然生效（未命中的请求会回落给 Worker）"——
+# 那句话对**已存在的资源**是错的：边缘命中资源就直接返回，请求根本到不了 Worker，
+# 于是 UI_ENABLED=false 时 `/ui_old/` 照样把整个界面服务出去（开关只在"资源未命中"这一路有效）。
+# 过去 V1 是备用界面、影响有限；现在它是默认入口，这条必须成立。
+# 代价：默认界面的资源请求多经过一层 Worker（与 /ui/* 一样）。
 [assets]
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "none"
-run_worker_first = ["/ui", "/ui/*"]
+run_worker_first = ["/ui", "/ui/*", "/ui_old", "/ui_old/*"]
 
 # ============ Secrets（wrangler secret put，不要写进仓库）============
 # USERNAME / PASSWORD —— 与官方服务器相同的 HTTP Basic Auth 凭据

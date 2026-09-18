@@ -426,6 +426,188 @@ input[type="search"]::-webkit-search-decoration {
 }
 
 /* ============ 徽标 / 类型 ============ */
+
+/* 页脚：**本项目地址就是入口**，悬停/聚焦时向上拉出「致谢」面板（2026-09-18 用户定的形态）。
+ *
+ * 入口本身是链接（点它开本项目的仓库），所以展开不需要 `<details>`、也不需要脚本 ——
+ * 两个状态都由 CSS 给：`:hover`（仅细指针，`@media` 门控）与 `:focus-within`（键盘用户 Tab 到
+ * 入口或面板里的链接时展开）。面板在收起态是 `opacity: 0 + pointer-events: none` 而**不是**
+ * `display: none`：链接要留在 Tab 顺序里（能被键盘读到），展开只是"让它可见"。
+ * 触屏没有 hover 也没有 Tab → 那边直接把面板改成常驻（见文件末尾的 `pointer: coarse` 分支）。
+ *
+ * 面板锚在**页脚内容盒**的右上（不是入口元素，理由见下面那两行注释），宽度上限按容器算、
+ * 地址允许任意断行 —— 最长那条（本项目，55 个字符）比链接文字宽得多，不这么做会伸出视口，
+ * 被 `html { overflow-x: clip }` 直接裁掉（两版之前都这么错过，截图里看得见）。 */
+/* 入口**靠右**：宽屏本来由 `.toolbar__spacer` 推，但窄屏把 spacer 隐藏了、而这一组又常常
+ * 换行到第二行（隐私说明那句话占满第一行）—— 那时它会落到行首。`margin-left: auto` 在两种
+ * 情形下都成立，与分页那组（`.pagination__prev`）用的是同一条判据（2026-09-18 用户截图）。
+ * 删掉 spacer 也行，但它在宽屏下与 auto margin 同时存在不冲突（auto margin 先分走剩余空间）。
+ *
+ * 这一层同时是**面板的包含块**（`position: relative`）：面板的 `right: 0` 因此贴着入口的
+ * 右缘 —— 而入口被上面那条 auto margin 钉在内容盒右缘，所以面板右缘也就是内容盒右缘。
+ * 竖向上 `bottom: calc(100% + 8px)` 贴着**入口**（而不是页脚整块），这样它与入口之间没有空档
+ * （2026-09-18 用户指出：锚整块时中间空出一条带子）。横向不出视口由面板自己的
+ * `max-width: calc(100vw - 两侧内边距)` 保证；两者合起来才成立，缺一条就会溢到视口外。 */
+.footer-links {
+  position: relative;
+  margin-left: auto;
+}
+
+.footer-links__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+
+/* 展开方向是**向上**，所以收起时箭头朝上；展开后翻过来指向下方 */
+.footer-links__chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  transition: rotate var(--dur-fast) var(--ease-out-circ);
+}
+
+.footer-links:hover .footer-links__chevron,
+.footer-links:focus-within .footer-links__chevron {
+  rotate: 180deg;
+}
+
+.footer-links__panel {
+  position: absolute;
+  /* 贴着**入口**的右缘（入口被 margin-left:auto 钉在页脚内容盒右缘，两者是同一条线） */
+  right: 0;
+  /* 贴着触发器上方 8px；那 8px 由 `::after` 桥住（见下），否则指针从触发器往上移进面板时会
+   * 经过一条"谁都不属于"的缝隙 —— 悬停态闪断，面板追不上指针。 */
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 宽度取"最长一行"（`max-content`）而不是让 flex 收缩：55 个字符的地址在收缩态会被折成
+   * 两行、读起来像乱码；30rem 的上限让它在 1440 下正好一行放下，窄屏再由 `90vw` 夹回来、
+   * 由 `.footer-links__url` 的 `overflow-wrap` 断行。 */
+  width: max-content;
+  min-width: 15rem;
+  /* 上限 = **视口**减去页脚两侧内边距，与 30rem 取小。这一条必须按视口算（不能按包含块）：
+   * 包含块现在是那个入口（只有 ~220px 宽），按它算会把 55 字符的地址折成四行。
+   * 由于入口恒在内容盒右缘，`right: 0` + 这个上限恰好让左缘落在内容盒左缘内侧。 */
+  max-width: min(calc(100vw - 2 * var(--sp-5)), 30rem);
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  /* 收起态：不可见、不接指针，但**留在 Tab 顺序里**（`:focus-within` 一进来就把它显出来） */
+  opacity: 0;
+  translate: 0 6px;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-fast) var(--ease-out-expo),
+    translate var(--dur-fast) var(--ease-out-expo);
+}
+
+.footer-links__panel::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 10px;
+}
+
+.footer-links__item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+
+.footer-links__title {
+  padding: 0 var(--sp-2) var(--sp-1);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--sp-1);
+  color: var(--ink-faint);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .footer-links__trigger:hover {
+    color: var(--accent-hover);
+  }
+
+  .footer-links__item:hover {
+    background: var(--surface-2);
+  }
+
+  /* 悬停即展开（用户要的"鼠标放上去向上拉出致谢"）。
+   * 指针从入口往上移进面板时会经过 `::after` 那 10px 桥，故这段路径上 hover 不断。 */
+  .footer-links:hover .footer-links__panel {
+    opacity: 1;
+    translate: 0 0;
+    pointer-events: auto;
+  }
+}
+
+/* 键盘：`:focus-within` 不是 hover 的子集 —— Tab 到入口或面板里的链接时同样展开 */
+.footer-links:focus-within .footer-links__panel {
+  opacity: 1;
+  translate: 0 0;
+  pointer-events: auto;
+}
+
+.footer-links__name {
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.footer-links__url {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--ink-faint);
+  /* 55 个字符的地址在窄屏上必须能在任意位置断开，否则面板会被撑出视口 */
+  overflow-wrap: anywhere;
+}
+
+/* 触屏：没有 hover、也没有 Tab，收起态就是"永远看不到致谢" —— 故改成**常驻**：
+ * 面板从浮层变回文档流里的一小段（每个链接 44px 命中区，手指落在哪一行都算数）。 */
+@media (pointer: coarse) {
+  .footer-links__panel {
+    position: static;
+    width: auto;
+    max-width: none;
+    margin-top: var(--sp-2);
+    opacity: 1;
+    translate: 0 0;
+    pointer-events: auto;
+    box-shadow: none;
+  }
+
+  .footer-links__panel::after {
+    display: none;
+  }
+
+  .footer-links__item {
+    min-height: var(--hit-min);
+  }
+}
+
+/* 窄屏：页脚的内容内边距收到 16px（见 layout.css 的 ≤720px 块），那个视口口径的上限也要跟着走 */
+@media (max-width: 720px) {
+  .footer-links__panel {
+    max-width: min(calc(100vw - 2 * var(--sp-4)), 30rem);
+  }
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -992,6 +1174,18 @@ th[aria-sort="descending"] .th-sort__arrow {
   white-space: nowrap;
 }
 
+/* 「第 X / Y 页」：与范围文本同样是数字，但它**不参与换行的弹性**（见 pagination.js 的说明） */
+.pagination__page {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 控制组靠右：桌面本来由 `.toolbar__spacer` 推，但窄屏把 spacer 隐藏了、而且这一组常常
+ * 换行到第二行 —— `margin-left: auto` 在两种情形下都成立（换行后它仍然把这一组贴到行尾）。 */
+.pagination__prev {
+  margin-left: auto;
+}
+
 .pagination__jump {
   min-width: 74px;
   min-height: var(--control-h);
@@ -1401,7 +1595,7 @@ th[aria-sort="descending"] .th-sort__arrow {
 
   /* 工具栏换行：搜索与类型各占一整行（类型那行自身横向滚动），其余组**共用**剩余行。
    *
-   * 这里必须逐组指定，不能给所有组写 `width: 100%`：那会让「仅收藏 / 回收站 / 时间范围」
+   * 这里必须逐组指定，不能给所有组写 `width: 100%`：那会让「收藏 / 回收站 / 时间范围」
    * 与「每页条数 / 刷新」各占一行 —— 实测窄屏工具栏因此长到 176px（4 行，20% 的视口）。
    * 反过来，也不能全部写成 auto：类型组的宽度会退化成内容的 max-content（≈390px，
    * 比分段控件自身能滚动的那一层更宽），整页横向溢出 26px（实测）。

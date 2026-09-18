@@ -21,14 +21,17 @@
 > 后续改动请先改本文件再改代码 —— 尤其是 §3 的线框、§5 的类名词汇表与 §6 的 API 契约：
 > 它们与 `test/ui-contract.test.ts` 的双向守卫直接对应，改一处不改另一处会红。
 >
-> 与 V1 的关系（用户 2026-09-15 决策）：**V1 整体保留在 `/ui_old/`**，V2 落在 `/ui/app/`。
+> 与 V1 的关系（用户 2026-09-15 决策，2026-09-18 定位调整）：**V1 整体保留在 `/ui_old/`**，
+> V2 落在 `/ui/app/`。**2026-09-18 起 V1 是默认界面**（站点根与 `/ui/` 都指向 `/ui_old/`），
+> V2 降为**开发测试版** —— 本文件因此读作"V2 的设计与实现记录"，不再是默认入口的说明。
 > V1 的源码原样冻结（只加弃用横幅与路径改写），作为设计与实现的可对照基线；
 > `test/ui-contract.test.ts` 等契约守卫改为覆盖 V2，V1 不再受守卫约束（它是冻结的存档，
 > 见 `public/ui_old/README.md`）。
 >
-> **2026-09-17 更新**：V1 不再冻结 —— 它以**备用界面**的身份重新纳入维护（修掉接口前缀故障、
+> **2026-09-17 更新**：V1 不再冻结 —— 它重新纳入维护（修掉接口前缀故障、
 > 重做密度与移动端、加了运行时可重复验证与回归守卫），逐条见 `docs/progress.md` §53。
-> 本文件对 V1 的描述保留为历史决策记录；**默认界面仍然是 V2**，两者的挂载点与守卫分工不变，
+> 本文件对 V1 的描述保留为历史决策记录。**2026-09-18 更新：V1 成为默认界面，V2 降为开发测试版**
+> （站点根与 `/ui/` 都指向 `/ui_old/`，守卫见 `test/ui-guard.test.ts`），两者的挂载点与守卫分工不变，
 > 变化只有一条：V1 现在也受 `test/ui-guard.test.ts` 里那一节 V1 断言的约束。
 >
 > **验证工具**（手动运行，不属于 `npm test`）：`test/manual/shoot.mjs` 出截图（给人看），
@@ -300,8 +303,8 @@ public/
 ├── _headers                   静态资源的 CSP/安全头 + 缓存策略（边缘直出，不经过 Worker）
 ├── robots.txt                 站点根（爬虫只读根路径）
 │                              ↑ 根路径**不放** index.html —— 它要留给 PROPFIND，见 wrangler.toml 的注释
-├── ui/                        V2（当前线上）
-│   ├── index.html             `/ui/` 的目录索引：只做一件事 —— 跳到 `/ui/app/`
+├── ui/                        V2（**开发测试版**；2026-09-18 起默认界面换成 V1 `ui_old/`）
+│   ├── index.html             `/ui/` 的目录索引：只做一件事 —— 跳到默认界面 `/ui_old/`
 │   ├── manifest.webmanifest   PWA manifest（`start_url` = `/ui/app/`）
 │   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
 │   ├── app/                   两页（`/ui/app/` 才是应用本体）
@@ -317,6 +320,8 @@ public/
 │   └── js/
 │       ├── boot.js            装配点：唯一知道「谁是谁」的地方，也是唯一碰网络的地方
 │       ├── theme-init.js      **经典脚本**（不是 module）：首帧前定主题与密度，避免白闪
+│       ├── redirect-hash.js   **经典脚本**：`/ui/` 跳转页的 fragment 中继（把 `/ui/#Type-hash`
+│       │                      的 hash 带到默认界面 `/ui_old/`；声明式 refresh 不继承 fragment）
 │       ├── login.js           登录页逻辑
 │       ├── next-target.js     `?next=` 的同源判定（纯函数，安全边界）
 │       ├── api.js             /ui/api 封装 + 归一化 + 401 统一跳登录
@@ -381,6 +386,41 @@ flowchart TD
 1. **actions 返回结果，组件呈现结果**（`true` 才算做成）。
 2. **每次往返过 `latest.js` 守卫**：列表、统计、概览各持一个 gate；`isCurrent` 通过才写回。
 3. **同一视图内按行对账**：行内容签名不变则不重建 DOM（保缩略图、动画、焦点）。
+
+### 8.1 写操作之后该打哪个端点（2026-09-18：V2 可以从 V1 学一条，**尚未实施**）
+
+2026-09-18 核对两版调用点时带出来的结论（用户要求记在这里）：
+
+- **V1**：首屏打一次 `GET /ui/api/overview`（合成快照）；此后每次**切视图 / 写操作**只补打**轻的**
+  `GET /ui/api/statistics`（`public/ui_old/js/main.js:158`、`:361`；首屏**不再**单独调它，
+  见同一文件 1186 行那句注释）。
+- **V2**：写操作后走 `refresh({ silent: true })` **加** `refreshOverview()`
+  （`public/ui/js/boot.js:701-702`、`:730-731`、`:748-749`、`:989-990`、`:1020-1021`、`:1048-1049`；
+  切视图同理 `:470`）——也就是**每次都整只重打 overview**。
+
+代价不只是"多一次请求"，两条端点的实际成本差在服务端（`src/ui/routes.ts`）：
+
+| 端点 | 一次调用做了什么 |
+|---|---|
+| `GET /ui/api/statistics`（`:530-551`） | `storage.totalHistorySize()`（**R2 逐页列举**，`src/storage.ts:199-210`）+ `db.statistics()`（1 条聚合，`src/db.ts:363`）+ `countByTypeViews()`（两个口径） |
+| `GET /ui/api/overview`（`:583-602`） | 上面那整套 **＋** `readChangeMarker()` **＋** `deploymentInfo()`（`:72-81`）—— 而 `deploymentInfo` **自己又算了一遍** `totalHistorySize()` + `db.statistics()` + `countByTypeViews()` + 两次 Meta 读 |
+
+所以现状是：**点一次「收藏」**，V2 付的是 overview 的全套（R2 列举 **2 遍**、statistics **2 遍**、
+按类型计数 **2 遍**，再加 marker 与 Meta 读），而 V1 只付 `statistics` 那一套。
+
+两件可以做的，互相独立：
+
+1. **V2 侧**：写操作后只补打 `statistics`（列表照旧 `refresh()`）。安全性有三条依据：写操作是
+   **本机发起的**；`marker` / "最近同步" 不需要由它刷新 —— 在线 60s 看门狗与离线 10s 轮询
+   （`boot.js:625` 那条 `api.poll`）会带回来；部署信息（保留策略、版本、地址）不因一次收藏而变。
+2. **两版共享的后端**：`overview` 内部把 `statistics` / `totalHistorySize` / `countByTypeViews`
+   算了**两遍**（一遍给它自己的 `stats`/`byType`，一遍在 `deploymentInfo` 里）。让 `deploymentInfo`
+   接一份**已算好的快照**（或让 overview 复用它返回的 `stats`/`views`/`bytes`）就能各减一半 ——
+   这条对 **V1 的首屏同样有效**，所以它是更划算的那一件。
+
+**状态**：本轮只做核对与记录，**没有改代码**。要动手建议先做第 2 件（纯后端、两版共享、
+无行为变化），再决定第 1 件。反向的那张表（"V2 有什么值得 V1 借鉴"）在
+`docs/frontend-checklist.md` §26，它此前只写了单向。
 
 ---
 

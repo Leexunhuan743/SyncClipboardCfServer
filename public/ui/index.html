@@ -9,20 +9,32 @@
     <meta name="robots" content="noindex, nofollow" />
     <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml" />
     <!-- 静态资源层会以 307 把 `/ui` 补成 `/ui/`，于是**这个文件**是 `/ui/` 的响应。
-         它唯一的职责是把人送到应用本体（`/ui/app/`）。
+         它唯一的职责是把人送到**默认界面**的应用本体（`/ui_old/`，即 V1）。
 
-         为什么需要这一层：页面在 `app/` 子目录下，而 `/ui/` 这个**目录**需要一个索引文件，
-         否则请求会回落到 Worker 的 404 页 —— 用户点开 `/ui/` 看到「这个地址没有页面」，
-         而应用其实就在隔壁。
+         2026-09-18 定位调整：V1（`public/ui_old/`）成为默认界面，V2（`public/ui/app/`）降为
+         开发测试版。这一页因此改指 `/ui_old/` —— 站点根（`GET /` 的浏览器分支）也直接 302 到
+         `/ui_old/`，两处**必须指向同一个地方**，守卫见 `test/ui-guard.test.ts`。
 
-         为什么用 `<meta http-equiv="refresh">` 而不是 `<script>location.replace()`：
-         这一页由静态资源层出，受 `public/_headers` 的 CSP 约束（`script-src 'self'`），
-         内联脚本会被直接拒掉；而 meta refresh 在任何 CSP 下都成立。
+         为什么保留这一层跳转而不是让 `/ui/` 直接服务 V1：V2 的资源挂在 `/ui/js|css/*` 下
+         （它自己的页面里写的是绝对路径），把 V1 搬到 `/ui/` 就得同时改 V1 的全部资源前缀 ——
+         2026-09-15 的改名事故已经付过一次学费（见 `public/ui_old/js/api.js` 的注释）。
+         物理目录名保持历史原样，变的只是**入口**。
+
+         两种跳转手段各管一半，理由是**竞态**：
+         · 有脚本时（正常情况）用外链脚本跳，因为只有它能**带上 fragment** —— 声明式 refresh
+           不会继承原 URL 的 hash，`/ui/#Text-<hash>` 这类深链接会静默退化成列表页；
+         · 脚本不可用时（JS 关闭 / 加载失败）由 `<noscript>` 里的 meta refresh 兜底，
+           它在任何 CSP 下都成立（内联脚本会被 `script-src 'self'` 拒掉，故脚本必须是外链）。
+         两者**不能同时生效**：refresh 的延迟为 0 时会和脚本抢跑，谁先到看网络 —— 放进
+         `<noscript>` 之后就没有这个问题（有脚本时那段根本不参与）。
+         目标地址必须与 `src/routes/webdav.ts` 的根跳转一致，守卫见
+         `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
          `<link rel="canonical">` 给出语义上的正主。 -->
-    <meta http-equiv="refresh" content="0; url=/ui/app/" />
-    <link rel="canonical" href="/ui/app/" />
+    <link rel="canonical" href="/ui_old/" />
+    <script src="/ui/js/redirect-hash.js"></script>
+    <noscript><meta http-equiv="refresh" content="0; url=/ui_old/" /></noscript>
   </head>
   <body>
-    <p><a href="/ui/app/">进入剪贴板历史</a></p>
+    <p><a href="/ui_old/">进入剪贴板历史</a></p>
   </body>
 </html>

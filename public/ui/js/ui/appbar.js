@@ -90,7 +90,10 @@ export function createAppbar({ onToggleTheme, onLogout, onOpenDrawer, onFocusSea
         if (node.getAttribute(attr) !== value) node.setAttribute(attr, value);
       };
 
-      setText(meta, version ? `v${version}` : '');
+      // 「开发测试版」是**常驻**标记（2026-09-18 定位调整：默认界面变成 V1 `public/ui_old/`，
+      // 这一版降为仓库维护者做实验的地方）。放在顶栏版本号这一行是因为它必须一眼可见 ——
+      // 两份界面长得像，只有这行字能立刻回答"我现在看的是哪一版"。
+      setText(meta, version ? `v${version} · 开发测试版` : '开发测试版');
       setText(who, username ?? '');
 
       // 主题图标表示"点它会切到哪一边"：显示月亮的含义是"当前是浅色，点了变深色"。

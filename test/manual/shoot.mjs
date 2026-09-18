@@ -199,7 +199,9 @@ try {
 
   const wants = (name) => !ONLY || ONLY.split(',').includes(name);
 
-  // V2 的应用本体在 `/ui/app/`（`/ui/` 是只做跳转的目录索引）。
+  // 这是 **V2** 的出图脚本：应用本体在 `/ui/app/`。
+  // （`/ui/` 是只做跳转的目录索引，2026-09-18 起它指向**默认界面 V1** `/ui_old/` ——
+  //   V1 自己的出图在 probe-ui-old.mjs 的 `--shots`。）
   const APP = `${BASE}/ui/app/`;
 
   await goto(APP);

@@ -12,6 +12,11 @@
 > （`wrangler dev`，1009 活跃 / 938 在回收站）上真正跑过的观察，其余为直读代码的结论。
 > 平台事实（免费档额度等）单独标注外链来源，不与仓库内证据混同。
 >
+> ⚠️ **那些路径今天可能指不到文件**：本文件是 `509bdef` 那一刻的快照，而 V2 在 2026-09-16
+> 重构过目录（`public/ui/js/components/*` → `public/ui/js/ui/*`，`signalr.js` → `push.js`）。
+> §1–§3 里引用的 V2 路径**按快照保留原样**（改了就篡改历史），要看现状请用 §8 的落地位置表
+> 或 `docs/ui-v2-design.md` 的文件树。
+>
 > **结论先说**：**协议层没有缺口**（上游 17 条路由已 100 % 覆盖，见 `docs/progress.md` §11）；
 > 缺口分三类——① 已建好的后端能力界面没用上（§1）；② 该有却没有的端点（§2）；
 > ③ 后端自身的效率与规范欠账（§3）。§4 是明确不做的，§5 是建议顺序，§6 是验证边界，§7 是复核记录。
@@ -185,15 +190,15 @@ Web 字体、`/dav` 前缀别名（ADR D15）、JSON-LD（无现实实体）、`
 
 | 条目 | 状态 | 落地位置 / 理由 |
 |---|---|---|
-| §1.1 清理状态 | ✅ | 部署信息对话框的「清理任务」小节（`public/ui/js/components/info.js`） |
-| §1.2 `pinned` 写入口 | ✅ | 行内置顶开关（`components/list.js`），复用既有 `PATCH` |
+| §1.1 清理状态 | ✅ | 概览抽屉的「保留策略 / 清理」小节（V2：`public/ui/js/ui/drawer.js`；V1：`public/ui_old/js/components/info.js`） |
+| §1.2 `pinned` 写入口 | ✅ | 行内置顶开关 —— V2 在行菜单（`public/ui/js/menus.js`），V1 在行内固定槽位（`public/ui_old/js/components/list.js`），两版复用同一条 `PATCH` |
 | §1.3 批量操作 | ✅ | `POST /ui/api/history/batch-update`（原 `batch-delete` 泛化）+ 选择条按视图给动作 |
 | §1.4 排序 6 字段 | ◑ | 表头 5 个可点（类型/大小/创建/修改/访问）；`id` 无可见列，仍只在 URL 里可用 |
 | §1.5 `pageSize` 上限 | ✅ | 下拉补 500 |
 | §1.6 `PATCH` 回执 | ✅ | 采纳 `version`/`lastModified`/`lastAccessed` 等元数据 |
 | §1.7 清空全部 | ✅ | `POST /ui/api/history/clear`（`trash`/`all`）；**不补广播**，见 §3.5 与 §8 末行 |
 | §1.8 `/api/time` | ✅ | `/ui/api/poll` 带 `serverTime` → 部署信息显示与本机的时钟差（>5 分钟告警） |
-| §2.1 真推送 | ✅ | `POST /ui/api/hub-ticket` + `public/ui/js/signalr.js`；轮询保留为 60 秒看门狗，后台断连 |
+| §2.1 真推送 | ✅ | `POST /ui/api/hub-ticket` + 推送通道（V2 `public/ui/js/push.js`、V1 `public/ui_old/js/signalr.js`）；轮询保留为 60 秒看门狗，后台断连 |
 | §2.2 会话可撤销 | ⏸ | 推迟：需在守卫热路径加 D1 读 + 新增 ADR；现有「改口令即全部失效」通道可用 |
 | §2.3 Range | ✅ | 只给 `/ui/api/history/:type/:hash/data` 加（协议侧有意忽略 Range，F29b 未动） |
 | §2.4 完整性自检 | ✅ | `GET /ui/api/integrity`（目录差集，不逐条 HEAD）+ 部署信息里的「数据完整性」小节 |

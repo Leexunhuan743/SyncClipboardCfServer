@@ -5,7 +5,7 @@
     <!-- viewport-fit=cover：刘海屏/圆角屏上让 env(safe-area-inset-*) 拿到真实内边距，
          overlay-v2.css 用它把悬浮的批量条与提示条推出 Home Indicator。 -->
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>登录 · 剪贴板历史</title>
+    <title>登录 · 剪贴板历史（开发测试版）</title>
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex, nofollow" />
     <meta
@@ -42,7 +42,9 @@
           </span>
           <div class="auth__titles">
             <h1 class="auth__title">剪贴板历史</h1>
-            <p class="auth__sub">登录以查看这台服务器上的同步记录</p>
+            <!-- 「开发测试版」是常驻标记（2026-09-18 起默认界面是 V1 `public/ui_old/`）：
+                 两份界面长得像，登录页必须自己说清是哪一版，否则"为什么这里和刚才不一样"无解。 -->
+            <p class="auth__sub">开发测试版 · 登录以查看这台服务器上的同步记录</p>
           </div>
         </div>
 

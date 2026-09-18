@@ -1,7 +1,7 @@
 // V1（`/ui_old/`）界面的运行时探针（手动运行，不属于 npm test 套件）
 //
 // 为什么 V1 也需要它：2026-09-17 起 `public/ui_old/` 从「冻结存档」重新变成**在维护的**
-// 界面（备用界面，见该目录 README）。维护状态的界面需要它自己的一份「读真实 DOM 值」的
+// 界面（2026-09-18 起是**默认界面**，见该目录 README）。维护状态的界面需要它自己的一份「读真实 DOM 值」的
 // 工具——截图只能证明"看起来对"，证明不了"计算值对"。V2 有 `probe.mjs`，本文件是它的 V1
 // 对位物：同一套 CDP 起浏览器/登录/注入 Cookie 的做法，探针内容按 V1 的 DOM 重写。
 //
@@ -465,6 +465,76 @@ try {
   })()`);
   console.log('SETTLED ', settled);
 
+  // ===== 顶栏那枚「部署信息」胶囊：四个字**不许断开**（2026-09-18 用户截图）=====
+  // 用户看到的形态是「部署信 / 息」两行、字还溢出了 30px 高的胶囊。根因是**没有 nowrap**：
+  // 胶囊是 flex 项，顶栏一挤就按比例被压，而中文没有词边界，于是"能压到只剩一个字的宽度"。
+  // 这里量四件事，任何一条不达标都能一眼定位：
+  //   ① `labelLines` —— 数**文字的行盒**：`entry.getClientRects()` 不行（它在 flex 里被块化，
+  //      只有一个盒子，288px 实测那会儿它报 1、而高度是 81px 的 4 行），用 Range 取文本的矩形；
+  //      ② 胶囊自身的宽高（字溢出去时 label 盒比胶囊高）；
+  //   ③ `innerOverflow` —— 顶栏内容超出容器的量，超出的部分会被 `html { overflow-x: clip }` 裁掉，
+  //      屏幕上"看不见"但东西真的没了；④ 最右那个控件还在不在视口里。
+  const header = await read(`(() => {
+    const entry = document.querySelector('.status__entry');
+    const pill = document.querySelector('.status');
+    const inner = document.querySelector('.app-header__inner');
+    const actions = document.querySelector('.app-header__actions');
+    const last = actions?.lastElementChild;
+    const e = entry?.getBoundingClientRect();
+    const p = pill?.getBoundingClientRect();
+    let labelLines = null;
+    if (entry) {
+      const range = document.createRange();
+      range.selectNodeContents(entry);
+      labelLines = range.getClientRects().length;
+    }
+    return JSON.stringify({
+      label: entry?.textContent?.trim() ?? null,
+      whiteSpace: entry ? getComputedStyle(entry).whiteSpace : null,
+      labelLines,
+      labelBox: e ? [Math.round(e.width), Math.round(e.height)] : null,
+      pillBox: p ? [Math.round(p.width), Math.round(p.height)] : null,
+      labelOverflowsPill: e && p ? Math.round(e.height - p.height) > 0 : null,
+      innerOverflow: inner ? Math.round(inner.scrollWidth - inner.clientWidth) : null,
+      lastControlRight: last ? Math.round(last.getBoundingClientRect().right) : null,
+      viewport: window.innerWidth,
+    });
+  })()`);
+  console.log('HEADER  ', header);
+
+  // ===== 工具栏：「每页条数 + 刷新」这一组（2026-09-18 用户要求）=====
+  // 用户要的是"50 条/页 绑定刷新，放在下面一行右边"。三件事都要量，缺一条就不算做到：
+  // ① 每页条数**在窄屏还看得见**（上一版是 `display: none`，那条已被反转）；
+  // ② 两件在**同一组/同一行**（它们本来就是 `.toolbar__group--pager` 的两个孩子）；
+  // ③ 整组贴**行尾**（`margin-left: auto`）：`gapToRight` 应为 0；放不下时它会整体落到下一行，
+  //    那时 `sameRowAsFilters` 为 false 但 `gapToRight` 仍应为 0。
+  const pagerBar = await read(`(() => {
+    const toolbar = document.querySelector('.toolbar');
+    const pager = toolbar?.querySelector('.toolbar__group--pager') ?? null;
+    const size = toolbar?.querySelector('select[aria-label="每页条数"]') ?? null;
+    const refresh = toolbar?.querySelector('button[aria-label="刷新"]') ?? null;
+    const filters = toolbar?.querySelector('select[aria-label="时间范围"]')?.closest('.toolbar__group') ?? null;
+    const rect = (n) => {
+      const r = n?.getBoundingClientRect();
+      return r ? { top: Math.round(r.top), right: Math.round(r.right), w: Math.round(r.width) } : null;
+    };
+    const box = toolbar?.getBoundingClientRect();
+    const same = (a, b) => Boolean(a && b) && a.top < b.bottom && b.top < a.bottom;
+    const rb = pager?.getBoundingClientRect();
+    return JSON.stringify({
+      sizeSelectVisible: size ? getComputedStyle(size).display !== 'none' : null,
+      sizeBox: rect(size),
+      refreshBox: rect(refresh),
+      pagerBox: rect(pager),
+      filtersBox: rect(filters),
+      sameRowAsFilters: same(rb, filters?.getBoundingClientRect()),
+      gapToRight: rb && box ? Math.round(box.right - rb.right) : null,
+      toolbarOverflow: toolbar ? Math.round(toolbar.scrollWidth - toolbar.clientWidth) : null,
+      viewport: window.innerWidth,
+    });
+  })()`);
+  console.log('PAGERBAR', pagerBar);
+
   // ===== 行内操作这一排的命中区（2026-09-18）=====
   // 判据来自 V2 踩过的坑：44px 命中区之间只要重叠或贴太近，「下载」与「删除」就会互相误触。
   // 这里量五件事：媒体查询是否真的匹配（不匹配则这次证据无效，一眼能看出）、这一排的 rest 不透明度、
@@ -510,6 +580,44 @@ try {
     return JSON.stringify(out);
   })()`);
   console.log('DISABLED', disabledIcon);
+
+  // ===== 分页在窄屏的行结构（2026-09-18 用户截图：390px 下折成四行、按钮各占一行）=====
+  // 判据是"控件之间的**行关系**"而不是"看着行不行"：范围文本允许独占一行（它长），
+  // 但「上一页 / 第 X/Y 页 / 下一页」必须**同一行**。根因曾是两者共用 `pagination__range`
+  // 这个类，窄屏那条 `width: 100%` 把页码标签也撑成整行。
+  const pager = await read(`(() => {
+    const nav = document.querySelector('.pagination');
+    if (!nav) return JSON.stringify({ skipped: 'no .pagination' });
+    const rectOf = (node) => (node ? node.getBoundingClientRect() : null);
+    const buttons = [...nav.querySelectorAll('button')];
+    const range = rectOf(nav.querySelector('.pagination__range'));
+    const label = rectOf(nav.querySelector('.pagination__page'));
+    const prev = rectOf(buttons.find((b) => (b.textContent ?? '').includes('上一页')));
+    const next = rectOf(buttons.find((b) => (b.textContent ?? '').includes('下一页')));
+    // 判据是竖直投影是否重叠，**不是"top 相等"**：分页容器是 align-items center，
+    // 36px 的按钮与 18px 的文字天然差 9px —— 第一版拿 top 比，写出了假阴性。
+    // （提醒：这一段在模板串里，注释里不要再出现反引号，否则会把外层串提前闭合。）
+    const sameLine = (a, b) => (a && b ? a.bottom > b.top + 1 && b.bottom > a.top + 1 : null);
+    const tops = [range, prev, label, next].filter(Boolean).map((r) => Math.round(r.top));
+    return JSON.stringify({
+      // rows（去重后的 top 个数）**不能**当作行数：同一行上居中对齐的控件 top 各不相同
+      // （36px 按钮 vs 18px 文字差 9px）。只报"谁和谁同行"这两条关系。
+      rangeAloneOnFirstLine: range && prev ? !sameLine(range, prev) : null,
+      prevLabelSameLine: sameLine(prev, label),
+      labelNextSameLine: sameLine(label, next),
+      rangeOwnLine: range && prev ? Math.round(range.top) < Math.round(prev.top) : null,
+      // 控制组要**靠右**：最后一个**可见**子元素（窄屏是 next，桌面还有跳页输入框跟在它后面）
+      // 的右缘与容器右缘的差值应≈0。窄屏换行到第二行时同样成立 —— 那正是 margin-left:auto 的作用。
+      groupRightGap: (() => {
+        const visible = [...nav.children].filter((n) => getComputedStyle(n).display !== 'none');
+        const last = visible[visible.length - 1];
+        return last ? Math.round(nav.getBoundingClientRect().right - last.getBoundingClientRect().right) : null;
+      })(),
+      widths: [range, prev, label, next].map((r) => (r ? Math.round(r.width) : null)),
+      overflowRight: next ? Math.round(next.right - window.innerWidth) : null,
+    });
+  })()`);
+  console.log('PAGER   ', pager);
 
   // ===== 首屏截图必须在**任何交互之前**拍 =====
   // 下面三段（SELECTION / KEYNAV / IME）会真的去点复选框、按方向键、往搜索框里打字，
@@ -1191,6 +1299,73 @@ try {
     await wait(400);
     await runAudit('selection');
     await shot('06-selection');
+
+    // 页脚：入口是**本项目的地址**，悬停时向上拉出「致谢」面板，里面是**另外两个**项目。
+    // 只能靠真实鼠标移动来验（CDP `Input.dispatchMouseEvent`）——手工加个类或改样式是"我让它展开的"，
+    // 验不到 `:hover` 这条真正的路径。先把入口滚进视野（页脚在文档最底部，rect 可能在视口之外），
+    // 再派发 mouseMoved，然后**读回来**：面板可见、在入口**上方**、不越出视口、恰好两个链接。
+    await send('Page.navigate', { url: `${BASE}/ui_old/` });
+    await wait(2500);
+    const footerBox = JSON.parse(
+      (await read(`(() => {
+        const trigger = document.querySelector('.footer-links__trigger');
+        if (!trigger) return JSON.stringify({ skipped: 'no .footer-links__trigger' });
+        trigger.scrollIntoView({ block: 'center' });
+        const r = trigger.getBoundingClientRect();
+        return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+      })()`)) ?? '{}',
+    );
+    if (footerBox.skipped) {
+      console.log('FOOTER  ', JSON.stringify(footerBox));
+    } else {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: footerBox.x, y: footerBox.y });
+      await wait(500);
+      const footerState = await read(`(() => {
+        const box = document.querySelector('.footer-links');
+        const panel = box?.querySelector('.footer-links__panel');
+        const items = [...(panel?.querySelectorAll('.footer-links__item') ?? [])];
+        const r = panel?.getBoundingClientRect();
+        const triggerRect = box?.querySelector('.footer-links__trigger')?.getBoundingClientRect();
+        const inner = document.querySelector('.app-footer__inner')?.getBoundingClientRect();
+        const note = document.querySelector('.app-footer__inner > span')?.getBoundingClientRect();
+        const cs = panel ? getComputedStyle(panel) : null;
+        const overlaps = (a, b) =>
+          Boolean(a && b) && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+        return JSON.stringify({
+          hovered: box?.matches(':hover') ?? null,
+          triggerHref: box?.querySelector('.footer-links__trigger')?.getAttribute('href') ?? null,
+          // 文案改成项目名之后，**"它会开到哪"只剩 title 这一条通道**（2026-09-18 用户要求补上）：
+          // 可访问名仍是可见文字（SyncClipboard CfServer），title 只作描述与悬停提示。
+          triggerTitle: box?.querySelector('.footer-links__trigger')?.getAttribute('title') ?? null,
+          panelVisible: cs ? cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0.9 : null,
+          // 面板必须在触发器的**上方**（用户要的"向上拉"）：面板下边缘 ≤ 触发器上边缘
+          aboveTrigger: r && triggerRect ? Math.round(r.bottom) <= Math.round(triggerRect.top) : null,
+          insideViewport: r ? r.left >= 0 && r.right <= window.innerWidth : null,
+          // 面板要**贴着入口**（2026-09-18 用户指出：锚页脚整块时中间空出一条带子）
+          gapAboveEntry: r && triggerRect ? Math.round(triggerRect.top - r.bottom) : null,
+          // 右缘贴内容盒右缘、左缘不越出内容盒（两者合起来才是"不出视口"）
+          panelInsideFooterBox: r && inner ? r.left >= Math.round(inner.left) - 1 && r.right <= Math.round(inner.right) + 1 : null,
+          // 隐私说明那行不能被面板压住
+          panelOverlapsNote: overlaps(r, note),
+          itemCount: items.length,
+          links: items.map((a) => a.getAttribute('href')),
+        });
+      })()`);
+      console.log('FOOTER  ', footerState);
+      await shot('07-footer-links');
+    }
+
+    // 分页区单独一张：窄屏下它曾经折成四行、两个按钮各占一整行（用户 2026-09-18 的截图）。
+    // 判据看 `PAGER` 行。**必须先把指针移开**：上一步的悬停还开着致谢面板，它会正好盖住分页区
+    // （第一版就是这么拍出一张"看不出问题"的废图）。
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 8, y: 8 });
+    await wait(400);
+    await read(`(() => {
+      document.querySelector('.pagination')?.scrollIntoView({ block: 'center' });
+      return 'scrolled';
+    })()`);
+    await wait(400);
+    await shot('08-pager');
   }
 
   console.log('CONSOLE ERRORS', consoleErrors.length ? consoleErrors : 'none');

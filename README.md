@@ -38,7 +38,7 @@ SyncClipboard 客户端支持三类服务端，能力并不相同：
 - **数据完整性校验**：Text / File / Image / Group 四类哈希算法逐字节对齐上游 C# 实现，
   服务端校验上传数据（不符即拒绝），避免坏数据在设备间扩散
 - **保留与清理**：Cron Trigger 定时执行保留期裁剪、条数上限、已删除记录硬删与孤儿对象清理
-- **Web 历史界面**（`/ui/`）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
+- **Web 历史界面**（默认界面 `/ui_old/`；`/ui/` 与站点根都跳到它）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
   支持时间范围（今天 / 近 7 天 / 近 30 天 / 自定义）、回收站（含恢复）、文本复制、图片预览、
   文件下载、收藏置顶、批量删除与部署信息。
   界面与官方 API 读写同一套数据，写操作走与官方 `PATCH` 相同的实现（含广播与数据清理）。
@@ -83,7 +83,7 @@ flowchart LR
 | **D1**（SQLite） | 历史记录与当前 Profile 元数据 |
 | **R2** | 剪贴板数据文件（`file/` 暂存区 + `history/` 持久区） |
 | **Durable Objects** | SignalR 兼容 Hub：持有 WebSocket 连接、心跳、全员广播 |
-| **静态资源**（`public/ui/**`） | Web 界面本体，由 Cloudflare 直接托管（不经过 Worker）；`/ui/` 下的请求命中资源即返回，其余（含全部协议路径）回落给 Worker |
+| **静态资源**（`public/ui_old/**` = 默认界面 V1、`public/ui/**` = 开发测试版 V2） | 两个界面面都由 Cloudflare 托管，但请求**先进 Worker**（`run_worker_first` 覆盖 `/ui*` 与 `/ui_old*`）——入口据此判断界面开关（`UI_ENABLED`），开着转回 `env.ASSETS.fetch()`，关着一律 404 |
 
 协议面与界面面**严格分离**：`/api/history/*`、`/SyncClipboard.json`、`/file/*` 是客户端依赖的契约，
 界面只读同一套数据（另开 `/ui/api/*` 表达页大小、排序、选择集等界面需要），写操作与官方 `PATCH`
@@ -95,7 +95,7 @@ flowchart LR
 
 | 类别 | 端点 |
 |---|---|
-| 基础 | `GET /`（浏览器导航会 302 到 Web 界面 `/ui/`）、`GET /api/version`、`GET /api/time` |
+| 基础 | `GET /`（浏览器导航会 302 到**默认界面** `/ui_old/`）、`GET /api/version`、`GET /api/time` |
 | WebDAV | `GET`/`PUT /SyncClipboard.json`、`GET`/`HEAD`/`PUT`/`DELETE /file/*`、`PROPFIND`、`MKCOL` |
 | 历史 | `GET /api/history/{profileId}`、`GET /api/history/{profileId}/data`、`POST /api/history`、`POST /api/history/query`、`PATCH /api/history/{type}/{hash}`、`GET /api/history/statistics`、`DELETE /api/history/clear` |
 | 实时 | `/SyncClipboardHub`（negotiate + WebSocket） |
@@ -248,7 +248,7 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 
 | 开关 | `true` / 其它 | `false` |
 |---|---|---|
-| `UI_ENABLED` | 提供 Web 界面：`/ui/` 页面与 `/ui/api/*` 可用，根路径对浏览器跳转到 `/ui/` | **整个界面关闭**：`/ui`、`/ui/*`（含静态资源与 `/ui/api/*`）一律 **404**，根路径返回 `Server is running.`。协议面（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）**完全不受影响** |
+| `UI_ENABLED` | 提供 Web 界面：两个挂载点（`/ui_old/` = 默认界面 V1、`/ui/` + `/ui/app/` = 开发测试版 V2）与 `/ui/api/*` 都可用，根路径对浏览器跳转到 `/ui_old/` | **整个界面关闭**：`/ui`、`/ui/*`、`/ui_old`、`/ui_old/*`（含静态资源与 `/ui/api/*`）一律 **404**，根路径返回 `Server is running.`。协议面（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）**完全不受影响** |
 | `ENFORCE_STRONG_CREDENTIALS` | 命中弱口令（文档化默认值 / 过短）时**所有通道 fail-closed**（500） | 只警告：响应头带 `x-credential-warning: weak` 并打一条 `[security]` 日志，服务照常 |
 
 > `MAX_SAVED_HISTORY_COUNT` / `HISTORY_RETENTION_MINUTES` 直接换数字即可；上限分别是 1000000 条与
@@ -322,7 +322,7 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 
 ## Web 界面
 
-部署完成后，浏览器打开 Worker 地址（根路径会自动跳到 `/ui/`），用与客户端相同的
+部署完成后，浏览器打开 Worker 地址（根路径会自动跳到**默认界面** `/ui_old/`），用与客户端相同的
 `USERNAME` / `PASSWORD` 登录，即可：
 
 - 按类型 / 收藏筛选，**按时间范围筛选**（今天 / 近 7 天 / 近 30 天 / 自定义起止日期），全文搜索，
@@ -335,7 +335,8 @@ Settings → Secrets and variables → Actions → Variables → New repository 
   写操作走与官方 `PATCH` 相同的实现，客户端会同步收到变更广播
 - **实时更新**：页面可见时与 Hub 建立 WebSocket（用短期票据换连接，票据 10 分钟内可复用），别的设备一同步这边立刻可见；
   连接不可用时自动回落到轮询（10 秒），轮询始终保留为兜底
-- **记录级深链接**：`/ui/#Text-<hash>` 打开即预览该条，链接可直接分享/收藏
+- **记录级深链接**：`/ui_old/#Text-<hash>`（默认界面）打开即预览该条，链接可直接分享/收藏；
+  `/ui/#Text-<hash>` 这种入口写法也行 —— 那个跳转页会把 fragment 一起带过去
 - **维护面板**（部署信息对话框内）：清理任务的运行状态与失败信息、数据完整性自检
   （找出「记录说有数据、存储里却没有对象」的条目）、保留策略在线调整（0 = 关闭该阶段）、清空全部历史；
   「清空回收站」在**回收站视图**的选择条上（那里才看得到要清的东西）

@@ -67,10 +67,9 @@
   <body>
     <a class="skip" href="#main">跳到主内容</a>
 
-    <!-- 界面提示条：说明这里是备用界面，并给出默认界面的入口。
-         2026-09-17 起本界面**重新纳入维护**（此前是冻结存档），文案也随之改掉：
-         "已停止维护" 在现在是不实陈述，而提示条本身仍然有用 —— 它告诉从旧链接进来的人
-         默认界面在哪。可关闭，选择存在 localStorage（见 js/main.js 的 initNoticeBar）。
+    <!-- 界面提示条：2026-09-18 起本界面**就是默认界面**，这条提示的作用也随之翻转 ——
+         它现在指出**开发测试版（V2）**的入口 `/ui/app/`，那是仓库维护者做实验的地方。
+         可关闭，选择存在 localStorage（见 js/main.js 的 initNoticeBar）。
          放在跳转链接之后、页面骨架之前：读屏顺序里它仍然是被读到的第一条内容。 -->
     <div class="notice-bar" role="note" id="notice-bar">
       <svg class="notice-bar__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -78,7 +77,7 @@
         <path d="M12 8.2h.01M12 11.2v4.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
       </svg>
       <span class="notice-bar__text">
-        备用界面（V1）。默认界面在 <a href="/ui/">/ui/</a>。
+        默认界面（V1）。开发测试版在 <a href="/ui/app/">/ui/app/</a>。
       </span>
       <button class="notice-bar__close" type="button" id="notice-bar-close" aria-label="关闭提示">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -119,9 +118,34 @@
         <div class="app-footer__inner">
           <span>剪贴板数据只保存在你自己的 Cloudflare 账户（D1 记录 + R2 文件），不经过任何第三方。</span>
           <span class="toolbar__spacer"></span>
-          <a href="https://github.com/Jeric-X/SyncClipboard" rel="noreferrer noopener" target="_blank"
-            >SyncClipboard 客户端</a
-          >
+          <!-- **本项目地址就是那个入口**（2026-09-18 用户定形）；悬停或键盘聚焦时向上拉出**致谢**面板，
+               里面是**另外两个**项目。入口本身就是链接（点它开仓库），因此完全不需要 `<details>` 或
+               脚本：展开由 CSS 的 `:hover` / `:focus-within` 驱动，触屏没有 hover，那边把面板改成
+               常驻（见 components.css 的 `pointer: coarse` 分支）。
+               `rel="noreferrer noopener"` 三个链接都要有：`target="_blank"` 的新页能通过
+               `window.opener` 反向操作本页，而本页持有会话 Cookie。 -->
+          <div class="footer-links">
+            <a class="footer-links__trigger" href="https://github.com/Leexunhuan743/SyncClipboardCfServer" rel="noreferrer noopener" target="_blank"
+              title="本项目的 GitHub 仓库：https://github.com/Leexunhuan743/SyncClipboardCfServer">
+              SyncClipboard CfServer
+              <svg class="footer-links__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 19V5" />
+                <path d="M6.5 10.5 12 5l5.5 5.5" />
+              </svg>
+            </a>
+            <nav class="footer-links__panel" aria-label="致谢">
+              <span class="footer-links__title">致谢</span>
+              <a class="footer-links__item" href="https://github.com/Jeric-X/SyncClipboard" rel="noreferrer noopener" target="_blank">
+                <span class="footer-links__name">SyncClipboard</span>
+                <span class="footer-links__url">https://github.com/Jeric-X/SyncClipboard</span>
+              </a>
+              <a class="footer-links__item" href="https://github.com/ting1e/clipserver" rel="noreferrer noopener" target="_blank">
+                <span class="footer-links__name">clipserver</span>
+                <span class="footer-links__url">https://github.com/ting1e/clipserver</span>
+              </a>
+            </nav>
+          </div>
         </div>
       </footer>
     </div>

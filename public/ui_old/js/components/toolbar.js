@@ -64,7 +64,11 @@ export function createToolbar({
       'aria-pressed': 'false',
       onclick: () => onToggleStarred(),
     },
-    [svg(iconPaths('star'), { size: 14 }), el('span', { text: '仅收藏' })],
+    // 文案 `收藏`（2026-09-18 用户要求：此前是"仅收藏"）。这一条同时把两版对齐 ——
+    // V2 的那枚 chip 一直写的就是 `收藏`（`public/ui/js/ui/filters.js`），而同一个词在行内
+    // 开关上是"把这一条加进收藏"、在这里是"只看已收藏的"，两者的区别由**位置与形状**承担
+    // （筛选区里的一枚 chip vs 行尾的图标按钮），不必靠"仅"字来区分。
+    [svg(iconPaths('star'), { size: 14 }), el('span', { text: '收藏' })],
   );
 
   // 回收站是**范围**切换（替换整个列表内容），用与类型筛选同一套分段控件表达。
@@ -236,7 +240,9 @@ export function createToolbar({
     el('div', { class: 'toolbar__group toolbar__group--types' }, [segmented]),
     el('div', { class: 'toolbar__group' }, [starredButton, recycleButton, rangeSelect]),
     el('span', { class: 'toolbar__spacer' }),
-    el('div', { class: 'toolbar__group' }, [
+    // 「每页条数 + 刷新」绑定成一组：两件都是"这份列表怎么取"的控制，且整组贴行尾
+    // （`margin-left: auto`，见 layout.css）。窄屏 spacer 被隐藏，靠它换行之后才不会留在行首。
+    el('div', { class: 'toolbar__group toolbar__group--pager' }, [
       pageSizeSelect,
       refreshButton,
     ]),

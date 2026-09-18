@@ -1,7 +1,10 @@
 # V2 前端系统性审计（2026-09-16）
 
 > 对象：`public/ui/**`（零构建原生 ES 模块的 Web 界面，挂载 `/ui/app/`）。
-> `public/ui_old/**` 是冻结的 V1 存档，**不在审计范围内**。
+> `public/ui_old/**` **不在本审计范围内** —— 这里要更新一句：它 2026-09-17 起不再冻结，
+> 2026-09-18 起更是**默认界面**（ADR D17，`docs/design.md`），它自己的审计与守卫在
+> `public/ui_old/README.md`、`docs/frontend-checklist.md` 与 `test/ui-guard.test.ts`。
+> 本文件仍然只审 V2（当时的审计对象），结论按 2026-09-16 的口径保留。
 > 设计与实现的正史是 [`docs/ui-v2-design.md`](ui-v2-design.md)；本文件是一次**审计**，
 > 记录"发现了什么、按什么顺序修、修完怎么验证"。审计条目编号 `A-nn` 供其它文档引用。
 

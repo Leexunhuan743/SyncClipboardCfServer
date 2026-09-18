@@ -2,11 +2,13 @@
 
 > **关于本文件里的提交 SHA**：本文件按轮次记录历史，文中的十六进制串分三类：**提交 SHA**、**Cloudflare 部署版本号**
 > （形如 `c512124f`、`7049992d`）、**GitHub Actions run id**（全数字）。只有第一类与 git 有关。
-> 历史经过一次压缩与一次按主题重排 ⇒ 部分提交 SHA **不在 `master` 的历史里**。判断方法用
+> 历史经过**三次**压缩／按主题重排（§28：91 → 13；§50：89 → 33；§77：70 → 46）⇒ 部分提交 SHA
+> **不在 `master` 的历史里**。判断方法用
 > `git merge-base --is-ancestor <sha> master`（非零即不在；**不要**用 `git cat-file -t`：只要备份分支还在，
-> 那些对象在本地仍可解析，会给出相反答案）。重排前的完整历史只保留在**本机**分支 `backup-original-91`（远端备份分支已按用户要求删除；`backup-pre-squash` 是首次压缩后的中间快照，**不含**更早历史，同样只在本机）。
+> 那些对象在本地仍可解析，会给出相反答案）。重排前的完整历史只保留在**本机**分支 `backup-original-91`（远端备份分支已按用户要求删除；`backup-pre-squash` 是首次压缩后的中间快照，**不含**更早历史，同样只在本机）。**§50 与 §77 两次压缩的备份（`backup/pre-squash-2026-09-15`、`backup/pre-squash-2026-09-18`）同样只在本机** —— 云端副本已按用户要求删除，见 §78。
 > 第十七轮推送前的末态（`1e402dd`，即 §28 之后的四条细碎更正合并前的那一版）只保留在**本机**分支 `backup/pre-round17`（见 §30）。
 > 快照（2026-09-13，非实时；口径：裸的 7–40 位十六进制 token，**去重**计数）：本文件共 40 个 —— 提交 SHA 19 个（其中 **4 个在 `master` 历史内**：`f0e9109` `3d3c8ec` `39579d5` `4de8b3f`）、Cloudflare 部署版本号等**非仓库对象** 17 个、run id 4 个（其中一个是备份分支名里的日期 `20260913`）。
+> **2026-09-18 复查**（§77 那次压缩之后）：全仓文档（含 README）里可解析、且曾是 `master` 祖先的提交 SHA 共 48 个，其中落在 §77 改写区间（旧 35–70）的只有 **1 个** —— `b59e022`，已改指新历史里的同内容提交 `27826ed`。其余引用要么在保留段（旧 1–34）、要么本来就是非仓库对象。
 > 分类用 `git cat-file -t`（**只判「是不是本仓库对象」**）；**历史归属仍只认 `git merge-base --is-ancestor`**。这个数字随每次引用新 SHA 而变，刻意不做等值断言——引用时以当前历史为准。
 
 
@@ -2883,7 +2885,8 @@ groupZipDecompressionCap(zipBytes) = clamp(96 MiB − zipBytes.length, 1 MiB, 64
 
 ### 50.3 执行（D11 流程图逐条落实）
 
-① 备份分支 `backup/pre-squash-2026-09-15`（= 旧 HEAD `b43d9ca`）**已推送**到 origin，旧 SHA 永久可解析。
+① 备份分支 `backup/pre-squash-2026-09-15`（= 旧 HEAD `b43d9ca`）**已推送**到 origin，旧 SHA 永久可解析
+（**2026-09-18 更动**：该云端副本已按用户要求删除，分支只留本机 —— 见 §78）。
 ② 从第 13 条 `9230bb8` 开临时分支，逐组 `git read-tree -u --reset <该组旧 tip>` 后直接 `git commit -F <msg>`
 （未用 `git add -A`，避免把未跟踪文件卷进历史）。
 ③ 逐组断言：`git diff --name-only <新提交> <该组旧 tip>` 为空**且** `rev-parse <commit>^{tree}` 相等——20 组全部通过。
@@ -3358,7 +3361,7 @@ A-33 的 `env()` 内边距（需真机）、A-35/A-36/A-37（服务端与会话�
 
 ### 52.15 截图走查抓到的两个真缺陷（A-39/A-40）+ 首次部署到云端（同日）
 
-**部署**：提交 `b59e022`（114 文件，+14243/−487）→ 推送 `origin/master`；
+**部署**：提交 `27826ed`（114 文件，+14243/−487；§77 压缩前叫 `b59e022`）→ 推送 `origin/master`；
 `wrangler deploy` 上传 80 个静态资源（279.55 KiB / gzip 74.80 KiB），版本 `ad6dccd4`，
 线上入口 `https://syncc.141425.xyz`（另有 workers.dev 域名）。云端 D1 已有表（147 条），**无需迁移**。
 
@@ -4358,7 +4361,7 @@ V2 一侧用同一条判据（`board` 重排时本来就 `captureFocus`/`restore
 
 `preview.js` 对图片直接拉原图（列表缩略图刻意给 >512 KiB 的图降级），它值得一条"这条 32 MB，
 仍要加载？"的护栏。**这一轮不做**，两个理由：① 两版口径要一致，而 V2 的 `openMediaPreview`
-同样没有护栏 —— 要加就得两版一起加，不该只让备用界面多一步；② 本机 23 张图片全是 18 B 的夹具，
+同样没有护栏 —— 要加就得两版一起加，不该只让其中一版多一步；② 本机 23 张图片全是 18 B 的夹具，
 写了也没有可复算的证据。记进 `frontend-checklist` §27 的 P2，等库里真有 >8 MiB 的图时一起做。
 
 ## 64. 行内操作（预览/复制/下载/删除）那一栏：三个真缺陷 + 一处缺失的动作（2026-09-18）
@@ -4722,6 +4725,531 @@ SETTLED {"runningCount":0,"names":[],"pushTone":"live","resultsBusy":false}
 2026-09-17 起重新纳入维护，这句话已经不成立。改成实情：本文件**只扫 V2**（`PAGES` 的构造里
 只有 `public/ui/app/` 两个页面），V1 的契约守卫在 `test/ui-guard.test.ts`（接口前缀 / 两页一致 /
 死引用 / 文案共用 / 令牌不空转 / 按下反馈 / 表单错误挂字段），并写明这条分工是刻意的。
+
+## 70. 定位翻转：V1 成为默认界面，V2 降为开发测试版（2026-09-18，用户决策）
+
+用户原话："现在明显 ui_old 更加完善是吧，你还是将这个设为默认的 ui 页面 v2 仅仅只是一个小的
+开发测试版本"。这是产品级定位，落成 ADR **D17**（`docs/design.md`）。
+
+### 70.1 入口只有三处，都要翻
+
+| 入口 | 修前 | 修后 |
+|---|---|---|
+| 站点根 `GET /`（浏览器导航） | `src/routes/webdav.ts` 302 → `/ui/app/`（V2） | 302 → **`/ui_old/`**（V1，少一跳） |
+| `/ui/` 的目录索引 | `public/ui/index.html` 的 meta refresh + canonical → `/ui/app/` | → **`/ui_old/`**（给 `/ui/` 的老书签） |
+| 两版界面里的提示条 | V1 写"备用界面。默认界面在 /ui/" | V1 写"**默认界面（V1）**。开发测试版在 /ui/app/"；V2 顶栏版本号与登录页副标题常驻"**开发测试版**" |
+
+前两处必须指向同一个地址，否则站点根与 `/ui/` 会落到两个不同的界面 —— 新增守卫
+「默认界面的入口链一致」（断言两处的目标逐字相同，且等于 `/ui_old/`）。
+
+**为什么默认界面的 URL 仍是 `/ui_old/`**：V1 的资源前缀写死在 `/ui_old/*`，V2 的写在 `/ui/*`
+（且两边的 HTML 全用绝对路径）。把 V1 搬到 `/ui/` 就得同时改写它的全部资源前缀 ——
+2026-09-15 的改名事故已经付过一次学费（`public/ui_old/js/api.js` 的注释记着）。故物理目录名不动，
+**变的只是入口**；新定位写进 `public/ui_old/README.md` 与 `docs/ui.md` §2。
+
+### 70.2 顺带逮到一个真缺陷：`UI_ENABLED` 在生产里管不住 V1
+
+`wrangler.toml` 的 `run_worker_first` 原先只有 `["/ui", "/ui/*"]`，V1 那两行注释写着
+"刻意**不**把它加进去 —— 由边缘直接托管最省一层往返"+"界面开关对它仍然生效：未被边缘命中的
+`/ui_old` 请求本来就会回落给 Worker"。
+
+**后半句对已存在的静态资源是错的**：边缘命中资源就直接返回，请求根本到不了 Worker，
+`src/index.ts` 里 `isArchivePath` 那段 404 判定永远不执行 —— `UI_ENABLED=false` 时 `/ui_old/`
+照样把整个界面服务出去（开关只在"资源未命中"那一路有效）。V1 做备用界面时这事影响有限；
+它现在是**默认入口**，这条就成了承重问题。修法与后续：
+
+1. `run_worker_first` 补上 `/ui_old` 与 `/ui_old/*`（代价：默认界面的资源多过一层 Worker）；
+2. `src/index.ts` 与 `wrangler.toml` 的注释改成实情（并把"为什么当年没加"记下来）；
+3. **新增守卫**：`ui-guard` 断言 `run_worker_first` 同时覆盖四个模式 —— `docs/ui.md` §2.1 早
+   就写着"若哪天有人删掉 run_worker_first，关闭态会静默失效 —— 测试即红"，而此前
+   **没有任何测试在读这份配置**（那句话当时是许愿，现在才成立）。
+
+### 70.3 两版的标记
+
+V1（默认界面）的提示条改为指向开发测试版；V2 侧加了三处常驻标记：`<title>` 与 `og:title` 的
+"（开发测试版）"后缀、登录页副标题、顶栏版本号那一行（`appbar.js`）。
+理由很实际：两份界面长得像，同时开着两个标签时必须有东西能立刻回答"我在看哪一版"。
+`docs/ui.md` 里那条"`<title>` 有意偏离 40–60 字符"的说明同步更新（V2 现在 29 字符，V1 仍 22）。
+
+### 70.4 覆盖
+
+- 新增两条守卫（`ui-guard`）：入口链一致（`GET /` 与 `/ui/` 目录索引指向同一地址，且是
+  `/ui_old/`）、`run_worker_first` 覆盖四个模式。两条都不是空转：改前跑同一条扫描，
+  入口链会拿到 `/ui/app/` 与 `/ui_old/` 的不一致，`run_worker_first` 会缺两个模式。
+- 文案/注释同步：`public/ui_old/README.md`、`docs/ui.md`（§2 状态、§2.1 开关表、资源清单）、
+  `docs/ui-v2-design.md`、`docs/frontend-checklist.md`、`docs/design.md`（D16 补注 + 新 D17）、
+  `public/_headers`、`test/docs.test.ts`、CI 冒烟的标签与注释。
+- CI 冒烟的**断言内容**没变（两版页面 + 入口 JS 各 200），只改了描述与"V1 现在经 Worker 转发"
+  这一句 —— 它同时守着刚补的那条 `run_worker_first`。
+
+## 71. 逐行核对：定位翻转之后的"还有哪些地方没跟上"（2026-09-18）
+
+用户要求"通读全文每一行代码，确定都合适，都改了"。做法是把全仓所有指向两个挂载点与
+"谁是默认"的字符串捞出来逐条判（`rg` 三组：`/ui/app`、`/ui_old`、`备用|默认界面|开发测试版`），
+再逐个打开判"这句现在还是不是真的"。查出 **5 处漏改**、**2 处行为缺口**，另有一批"查过、确实没问题"。
+
+### 71.1 漏改的 5 处（都会让人看到不实的说法）
+
+| 位置 | 修前 | 问题 |
+|---|---|---|
+| `src/ui/notFound.ts` | 唯一那张 404 页写"剪贴板历史在 `/ui/app/`"、按钮也指向它 | V2 已不是默认界面 —— 打错路径的人被引到开发测试版 |
+| `README.md` 6 行 | "Web 界面（`/ui/`）"、"静态资源（`public/ui/**`）由 Cloudflare 直接托管（**不经过 Worker**）"、"`GET /` 302 到 `/ui/`"、`UI_ENABLED` 行只列 `/ui*`、部署段"根路径跳到 `/ui/`"、深链接写 `/ui/#Text-<hash>` | 逐条与 2026-09-18 的实现相反：默认入口是 `/ui_old/`，两个界面面都经 Worker，关界面还要管住 `/ui_old*` |
+| `test/ui-guard.test.ts` | 注释与用例名仍写"V1 存档 / 备用界面" | 同一个文件里另一处已经写着"默认界面"，自相矛盾 |
+| `test/manual/probe-ui-old.mjs`、`test/manual/shoot.mjs` | 前者说 V1 是备用界面，后者说"`/ui/` 是只做跳转的目录索引"（没说跳到哪） | 给下一个人错误的定位 |
+| `docs/progress.md` §65.6 | "不该只让备用界面多一步" | 同一批文字里的历史措辞，读起来仍像当前状态 |
+
+### 71.2 两处行为缺口（都是"翻转之后才显出来"的）
+
+**① `/ui_old/*` 打错路径拿到的是平台默认的纯文本 404。** 原先那一段代码写着"V1 那一面只有静态
+资源、404 就该是 404，那页属于 V2 的命名空间"——V1 做备用界面时无所谓，它现在是默认入口，
+一个错别字就撞上裸 404。改成与 `/ui/*` 同一条行为：先问静态资源，未命中回落那张设计过的 404 页。
+那页的样式取自 `/ui/css/*`（V2 的设计系统）——它是**站点的** 404，不属于任何一版，为它写两份才浪费。
+测试同步补一条：`/ui_old/__missing__` 必须拿到那张页（而不是纯文本）。
+
+**② `/ui/#Text-<hash>` 这类深链接会静默退化成列表页。** `/ui/` 那个跳转页的主力手段是
+`<meta http-equiv="refresh">`，而**声明式 refresh 不继承原 URL 的 fragment**（它把 content 里的
+url 当完整目标解析），于是 README 里"记录级深链接可直接分享"这条在 `/ui/` 这个入口上一直是假的
+（换 V2 之前同样假，只是没人从 `/ui/` 试过）。修法：
+
+- 新增 `public/ui/js/redirect-hash.js`（**外链经典脚本** —— CSP 是 `script-src 'self'`，内联会被拒），
+  有脚本时由它 `location.replace('/ui_old/' + location.hash)`，把 fragment 带过去；
+- 原先那条 meta refresh 挪进 `<noscript>`。**两者不能并列**：refresh 的延迟为 0 时会和外链脚本
+  抢跑（谁先到看网络），放进 noscript 之后有脚本时它根本不参与，无脚本时照旧兜底 —— 没有竞态。
+- README 的深链接一条改成默认界面的正规写法 `/ui_old/#Text-<hash>`，并注明 `/ui/#…` 也成立。
+
+### 71.3 查过、确实没问题的（记下来，免得下一轮再翻一遍）
+
+- 两个 `manifest.webmanifest`：`start_url`/`scope`/图标都各自指向自己的挂载点，V1 是 `/ui_old/` ✓；
+- `public/robots.txt`：在站点根、`Disallow: /`，与 UI 挂载点无关 ✓；
+- 两个 favicon 集（svg + 32px PNG）：**逐字节相同**，跳转页引用哪一份都一样 ✓；
+- 各自 UI 的手动脚本默认 URL（`probe.mjs` → `/ui/app/`、`probe-ui-old.mjs` → `/ui_old/`）✓；
+- `test/next-target.test.ts` 的"内置默认值 `/ui/app/`"：那是 V2 自己那份 `next-target.js` 的默认，
+  V1 有独立的一份（默认 `/ui_old/`）✓ 两版没有互相污染；
+- `docs/ui-v2-design.md`、`docs/ui-v2-audit.md`、`progress.md` §52/§53：**历史记录**，
+  按仓库惯例不改写（只在 V2 设计文档顶部加了一行"2026-09-18 起它的定位是开发测试版"）；
+- `test/manual/states.mjs` 等 V2 专用 harness 里的 `/ui/app/` 路径 ✓（它们本来就打 V2）。
+
+### 71.4 顺带的账
+
+新增一个文件（`redirect-hash.js`）→ `docs/ui.md` 的资源总数 86 → **87**、V2 那一行的 47 → **48**
+（`test/docs.test.ts` 会替我们核对这个数字）；新文件按仓库的 lint 口径写成 `const`/IIFE
+（`no-var` 在第一次跑 lint 时就把我拦下来了）。
+
+## 72. 页脚的相关链接：入口是本项目地址，悬停向上拉出「致谢」（2026-09-18，用户三次定形）
+
+用户的三句话把形态定死了：
+
+1. "显示相关链接，鼠标放上去显示三个 URL" → 我做了**三个并排链接 + 各自 hover 显示地址**；
+2. "三个聚合，鼠标放上面悬浮向上拉，显示 3 个链接" → 改成**一个入口 + 向上拉出的面板**
+   （`<details>`，悬停由脚本补）；
+3. "[Leexunhuan743/SyncClipboardCfServer] **取代相关链接**，放在上面之后悬浮出来一个**致谢**，
+   显示**另外两个**" → 定案：
+
+| 位置 | 内容 |
+|---|---|
+| 入口（页脚右侧，常驻） | `Leexunhuan743/SyncClipboardCfServer` —— **本项目的地址**，本身就是链接（点它开仓库）。**2026-09-18 后又改成项目名 `SyncClipboard CfServer`**（§79） |
+| 悬停 / 键盘聚焦时向上拉出的卡片 | 标题「致谢」+ 两条：`SyncClipboard 客户端`（上游）与 `clipserver（另一个实现）`，各带完整 URL |
+
+### 72.1 因为入口是链接，脚本可以整段删掉
+
+第 2 版用 `<details>`/`<summary>` 是为了"点按、键盘、读屏"三件事白拿，代价是悬停要 JS 补
+（`initFooterLinks`）。第 3 版把入口换成**链接**之后，展开只剩两个 CSS 状态：
+
+- `@media (hover: hover) and (pointer: fine)` 里的 `.footer-links:hover` → 悬停展开；
+- `.footer-links:focus-within` → 键盘 Tab 到入口或面板里的链接时展开（`:focus-visible` 不是 hover 的子集）；
+- 面板收起态是 `opacity: 0 + pointer-events: none` 而**不是** `display: none`：链接留在 Tab 顺序里，
+  键盘一进去就显形 —— 这是"只靠 hover 才存在的内容"最容易踩的坑；
+- **触屏**：既没有 hover 也没有 Tab，收起态等于"永远看不到致谢"，故 `pointer: coarse` 下把面板改成
+  **文档流内常驻**（去掉定位与阴影、每个链接 44px 命中区）。
+
+于是 `public/ui_old/js/main.js` 里的 `initFooterLinks` 与其调用一起删掉（它回到"只管提示条"那一档）。
+
+### 72.2 两个量出来的细节
+
+- **面板要 `width: max-content` + `max-width: min(90vw, 30rem)`**：第一版让它按 flex 收缩，
+  55 个字符的地址被折成两行、读起来像乱码；改成按最长一行取宽之后，1440 下两条 URL 都是一行，
+  窄屏再被 `90vw` 夹回来并允许 `overflow-wrap: anywhere` 断行。
+- **8px 的空隙要用 `::after` 桥住**：面板在入口上方 8px，指针从入口往上移时会经过一条
+  "谁都不属于"的缝隙 —— 悬停态会闪断、面板追不上指针。桥是一块 10px 高的透明伪元素
+  （`pointer-events` 默认 → 算面板的命中区）。
+
+### 72.3 覆盖与顺带
+
+- 探针新增 `07-footer-links` 一张图 + 一行 `FOOTER`：**真实鼠标移动**（CDP
+  `Input.dispatchMouseEvent`）之后读回 `panelVisible / aboveTrigger / insideViewport / itemCount / links`。
+  实测：`{"hovered":true,"triggerHref":"…/SyncClipboardCfServer","panelVisible":true,"aboveTrigger":true,
+  "insideViewport":true,"itemCount":2,"links":["…/Jeric-X/SyncClipboard","…/ting1e/clipserver"]}`。
+- V2 页脚里那条 `旧版界面` 改成 **`默认界面`**（定位翻转后"旧版"已经不实，属 §71 那类漏改）。
+- V2 的页脚**没有**同步这个致谢面板：按用户定位它只是开发测试版，要同步得再写一份 V2 自己的样式与
+  标记 —— 记在这里，等真有需要再说。
+
+## 73. 窄屏两处：分页折成四行 + 致谢面板跑到画面外（2026-09-18，用户截图报的）
+
+用户发了两张窄屏截图，报了两件事；两件都复现、都修了。
+
+### 73.1 分页在 390px 折成四行（根因是一个类名被两处共用）
+
+现象："范围文本 / 上一页 / 第 3/21 页 / 下一页"各占一行，两个按钮看着像整行按钮。根因不是
+按钮的样式，而是 **`js/components/pagination.js` 里两个元素共用了 `pagination__range`**：
+范围文本与「第 X / Y 页」都带这个类，而 `@media (max-width: 480px)` 给它加了 `width: 100%`
+（本意是让长的范围文本独占一行）—— 于是页码标签也独占一行，把"下一页"挤到了第三行。
+
+修法：页码标签换成自己的类 `pagination__page`（`tabular-nums` 与 `nowrap` 两条视觉契约照抄，
+它们与"要不要整行"无关），窄屏那条 `width: 100%` 从此只命中范围文本。
+
+### 73.2 用户追加："上一页 第 X/Y 页 下一页 需要靠右"
+
+窄屏把 `.toolbar__spacer` 隐藏了（§59 的规则），于是控制组跟着范围文本一起贴在左边。加一条：
+
+```css
+.pagination__prev { margin-left: auto; }
+```
+
+`margin-left: auto` 比"恢复 spacer"更合适：**这一组换行到第二行时它照样把它贴到行尾**，
+而 spacer 在换行场景只会把第一行的剩余空间吃掉。桌面本来就靠 spacer 推（两者同时生效时
+auto margin 先分走空间，spacer 退化成 0 宽，观感不变）。
+
+### 73.3 致谢面板"某些情况到画面外面"（这是我上一版引入的）
+
+上一版把面板锚在**入口元素**上（`right: 0`）。页脚是 flex-wrap：一旦换行，入口会跑到行首，
+`right: 0` 就让面板的右缘贴着行首、整张卡片被推到视口**左侧之外**。修法是把包含块换成
+`.app-footer__inner`（`position: relative`），面板 `right: var(--sp-5)`、宽度上限改成
+**相对容器**的 `min(calc(100% - 2 * var(--sp-5)), 30rem)` —— 上一版用的是 `90vw`（按视口算），
+而容器比视口窄，所以还是会溢出。窄屏那档（padding 收到 16px）另给一条。
+
+### 73.4 探针：新增 `PAGER` 一行，以及写它时踩的三个坑
+
+`PAGER` 读回四个控件的关系：`rangeAloneOnFirstLine / prevLabelSameLine / labelNextSameLine /
+groupRightGap / overflowRight`。写这条判据时连踩三次，都记在这里：
+
+1. **拿 `top` 比"同一行"是错的**：分页容器是 `align-items: center`，36px 按钮与 18px 文字
+   的 top 天然差 9px —— 第一版因此报出假阴性。判据改成"竖直投影是否重叠"。
+2. **`rows`（去重后的 top 个数）同样不能当行数**，理由同上；只报"谁和谁同行"这两条关系。
+3. **`groupRightGap` 不能量 `next`**：桌面在它后面还有跳页输入框（74+8=82px），量 `next`
+   会报 82 的假数字。改成量**最后一个可见子元素**。
+
+顺带一个"图比数值更会骗人"的例子：`08-pager` 第一版拍出来被**还开着的致谢面板**盖住，
+数值全对、图里什么也看不见 —— 现在先派发一次把指针移开的 mouseMoved 再拍。
+
+### 73.5 实测
+
+```
+390×844  PAGER {"rangeAloneOnFirstLine":true,"prevLabelSameLine":true,"labelNextSameLine":true,
+                "groupRightGap":0,"overflowRight":-31,"widths":[343,87,70,87]}
+900×700  PAGER {"rangeAloneOnFirstLine":false,"prevLabelSameLine":true,"labelNextSameLine":true,
+                "groupRightGap":0,"overflowRight":-121,"widths":[141,87,70,87]}
+```
+
+`overflowRight` 为负 = 最后一个控件仍在视口内；`groupRightGap: 0` = 控制组贴齐右缘。
+截图：`.shots-narrow5/08-pager.png`（390）与 `.shots-pager900b/08-pager.png`（900）。
+
+## 74. 致谢卡片：去掉「客户端」三个字，并把面板锚回入口（撤掉 §73.3 的锚整块做法）
+
+用户两句话，一句是文案、一句是我上一节修法带出来的新毛病：
+
+1. "SyncClipboard 客户端 去掉客户端三个字" —— 致谢卡片里那条名字改回 `SyncClipboard`；
+2. "这样的时候中间空了一行 所以没法上移保证这两个还在" —— 面板与入口之间那条空带。
+
+### 74.1 文案：卡片里只留项目名
+
+`public/ui_old/index.html` 里 `.footer-links__name` 由 `SyncClipboard 客户端` 改成 `SyncClipboard`。
+理由与 §72.3 删掉「（另一个实现）」括注同一条：卡片只有一行的宽度可用，名字后面挂解释会把它
+挤成两行；"上游是什么"由 README 与 `design.md` D15 负责。URL 那条 `.footer-links__url` 照旧带完整地址，
+所以少掉三个字不会损失信息。
+
+### 74.2 空带的根因：不是面板的定位，是页脚那一行被折成两行了
+
+§73.3 为了"面板不跑到视口外"，把包含块从入口换成了 `.app-footer__inner`。它确实修好了溢出，
+但立刻带出新毛病，而且是**用户先看出来的**：面板贴着页脚内容盒的上缘，而入口在下面一行 ——
+中间那条"说明一行 + 空着的一行"就是空带。
+
+根因在**页脚自己**：`.app-footer__inner` 是 `flex-wrap: wrap`，说明那格用默认的 `flex: 0 1 auto`，
+它的假想宽度 = 那一整句话（约 410px），加上入口那组（约 224px）超过容器宽 → flex 把入口挤到第二行。
+于是"面板上移到贴住入口"与"两项都还在"没法同时成立：面板锚入口就往上跑、锚页脚就留空带。
+
+修法是**先把入口钉在第一行**，再让面板锚回入口：
+
+```css
+/* layout.css */
+.app-footer__inner {
+  align-items: flex-start;          /* 上一版是 center：说明换行时入口会跟着往下沉 */
+}
+.app-footer__inner > span:first-child {
+  flex: 1 1 0;                      /* 假想宽度归零 → 与入口同处一行，自己内部换行 */
+  min-width: 0;                     /* 不设它 flex 项不会缩到内容宽度以下 */
+}
+
+/* components.css */
+.footer-links { position: relative; margin-left: auto; }
+.footer-links__panel {
+  right: 0;                                              /* = 入口右缘 = 内容盒右缘（入口被 auto margin 钉住） */
+  bottom: calc(100% + 8px);                              /* 贴入口，不是贴页脚整块 */
+  max-width: min(calc(100vw - 2 * var(--sp-5)), 30rem);  /* 上限按**视口**算，见下 */
+}
+```
+
+`max-width` 这一条必须按视口算：包含块现在是**入口**（约 220px 宽），若按包含块算
+`calc(100% - …)`，55 个字符的地址会被折成四行。按视口算 + `right: 0`（入口恒在内容盒右缘）
+合起来才保证左缘落在内容盒左缘内侧 —— 这两条是**一对**，缺一条就会退回 §73.3 那个溢出。
+
+这一节与 §73.3 冲突，以本节为准：§73.3 的"包含块换成 `.app-footer__inner`"已被撤销。
+
+### 74.3 判据
+
+探针 `FOOTER` 一行加了三个量，把"贴着入口 / 不越出页脚内容盒 / 不压隐私说明"都变成数字：
+
+- `gapAboveEntry`（入口上缘 − 面板下缘）—— 收缩态应为 0，展开态应为 8；
+- `panelInsideFooterBox`（左缘 ≥ 内容盒左缘、右缘 ≤ 内容盒右缘，各留 1px 舍入）；
+- `panelOverlapsNote`（面板矩形与隐私说明那一格是否相交）—— 必须为 `false`。
+
+实测（700×700，真实鼠标移入）：
+
+```
+FOOTER {"hovered":true,"panelVisible":true,"aboveTrigger":true,"insideViewport":true,
+        "gapAboveEntry":8,"panelInsideFooterBox":true,"panelOverlapsNote":false,"itemCount":2,
+        "links":["…/Jeric-X/SyncClipboard","…/ting1e/clipserver"]}
+```
+
+`gapAboveEntry: 8` = 那 8px 是设计值（不是空带）；面板真高由内容决定，锚在入口上意味着
+入口上移/下移多少，面板跟着走多少。
+
+## 75. 顶栏「部署信息」那四个字断开（2026-09-18，用户截图）
+
+用户的截图里，那枚胶囊里写着「部署信 / 息」两行，字还溢出了胶囊。之前定的形态是
+`[状态图标 部署信息]` 一整枚可点（§69 之前那几轮），文字就是按钮的名字。
+
+### 75.1 根因：缺 `nowrap`，而中文的 `min-content` 只有一个字宽
+
+`.btn` 有 `white-space: nowrap`，同族的 `.status`（那枚胶囊）**没有**。顶栏是 flex：
+`.app-header__inner` 放不下时按比例压 `.app-header__actions` 里的每一项，而中文没有词边界，
+一个 span 的 `min-content` 就是"一个字 + 一个字的换行"—— 于是它能被压到只剩一个字的宽度。
+
+288px 实测（探针 `HEADER`，加 `nowrap` 之前）：
+
+```
+{"whiteSpace":"normal","labelLines":1,"labelBox":[23,81],"pillBox":[63,30],
+ "labelOverflowsPill":true,"innerOverflow":0,"viewport":288}
+```
+
+`labelBox` 23×81 = 四个字排成四行、每行 20px 高；胶囊高 30px，所以字溢到胶囊外面。
+（顺带一个坑：`entry.getClientRects().length` 在这里**报 1** —— flex 子项被块化，只有一个盒子。
+数行数要用 Range 取文本矩形，探针里已经改掉。）
+
+### 75.2 修法：先定"名字不断"，再让顶栏能放下它
+
+```css
+.status__entry { white-space: nowrap; }
+```
+
+这一条同时把胶囊的 `min-width: auto`（= min-content）钉成整条名字 —— flex 再也压不动它。
+代价是**顶栏必须在更窄时依然放得下**：放不下就会溢出，而 `html { overflow-x: clip }` 会把
+最右边的登出键裁掉（用户看不见断字，但少了一个控件）。所以要跟着补让位，顺序沿用已有的判据
+（"要不要办事"优先）：
+
+| 档 | 动作 | 省下 |
+|---|---|---|
+| ≤720px（原有） | 用户名、统计条排障面让位 | —— |
+| ≤560px（原有） | 品牌文字、`复制最近一条`的文字收成图标（**「部署信息」四个字留着**） | —— |
+| ≤380px（新增） | **只收间距**，一个控件都不隐藏：内边距 16→12、主间距 16→8、动作组 8→6、动作按钮横向内边距 12→8、胶囊内部 6/8→4/6 | ~36px |
+| ≤280px（新增） | 纯装饰的品牌图标让位（`<h1>` 仍在无障碍树里） | ~34px |
+
+加 `nowrap` 前后同一宽度（288px）的对比：
+
+```
+前 {"whiteSpace":"normal","labelBox":[23,81],"pillBox":[63,30],"labelOverflowsPill":true,"innerOverflow":0}
+后 {"whiteSpace":"nowrap","labelLines":1,"labelBox":[52,20],"pillBox":[86,30],"labelOverflowsPill":false,"innerOverflow":0}
+```
+
+`innerOverflow: 0` + 最右控件右缘 261 < 288 = 顶栏没有溢出、也没有靠裁剪凑数。
+截图 `.shots-hdr288/01-list.png`（288×640，顶栏四项 + 五枚控件都在）。
+
+### 75.3 覆盖与未同步
+
+- 探针新增 `HEADER` 一行（`whiteSpace / labelLines / labelBox / pillBox / labelOverflowsPill /
+  innerOverflow / lastControlRight`），跑在首屏几何那一批里，任何一档让位被删都能立刻看出来。
+- V2 顶栏**没有**同步这两条：它是开发测试版（§72.3 同一条理由），要同步得再写一份 V2 的规则。
+- 用户当轮要求"禁止测试"，故本次只跑了上面那两次测量（修复前/后各一次，用的是同一个宽度），
+  没有跑 `npm test`、lint 与其它探针。
+
+## 76. 窄屏工具栏两处：「50 条/页 + 刷新」绑成一组贴行尾、「仅收藏」改成「收藏」（2026-09-18，用户两句）
+
+### 76.1 「每页条数」不再在窄屏消失（反转上一版的取舍）
+
+用户的问句是"为什么这个宽度 50 条/页 会消失？"——规则在 `layout.css` 的 ≤560px 块里：
+
+```css
+.toolbar .select[aria-label="每页条数"] { display: none; }
+```
+
+它来自 2026-09-18 早些时候那次密度重做（§? 见本文件 3402 行那条记录）：窄屏原本**每组一行**，
+工具栏实测胀到 176px（4 行、20% 的视口）；收敛的方式是让"搜索 / 类型"整行独占、其余组共用剩余行，
+再把最低频的一件让出去 —— 就是每页条数，理由写在注释里："底部分页条仍写着「第 1–50 条，共 N 条」，
+页大小也还能改 URL"。
+
+**反转的理由**：那半句是**后门，不是入口** —— ≤560px 时界面上根本没有改页大小的地方
+（用户这次就是手改 URL 才发现它还在）。而它省下的那一行其实并不真省：刷新本来就已经单独占了一行。
+
+现在的形态：`[每页条数] [刷新]` 是同一组（`.toolbar__group--pager`，它们在 DOM 里本来就是一组），
+整组 `margin-left: auto` 贴**行尾**：放得下就与筛选那一行并排，放不下就**整组**落到下面一行、
+仍然贴在右边（用户原话："50条/页 绑定刷新 合适的宽度放在下面一行右边"）。
+
+判据是探针新增的 `PAGERBAR` 一行，四个量各管一件事：
+
+| 量 | 期望 | 管什么 |
+|---|---|---|
+| `sizeSelectVisible` | `true` | 上一版那条 `display: none` 真的被删掉了 |
+| `pagerBox` | 每页条数与刷新**同一组** | 两件绑在一起（它们在 DOM 里同组，这里防的是以后被拆开） |
+| `sameRowAsFilters` | 放不下时 `false` | 换行时是"整组下去"，不是把刷新单独甩下去 |
+| `gapToRight` | `0` | 整组贴行尾（用户要的"右边"） |
+| `toolbarOverflow` | `≤ 0` | 没有靠裁剪凑数 |
+
+实测 319px（用户截图那个宽度）：
+
+```
+PAGERBAR {"sizeSelectVisible":true,"sizeBox":{"top":359,"right":250,"w":105},
+          "refreshBox":{"top":362,"right":288,"w":30},
+          "pagerBox":{"top":359,"right":288,"w":143},
+          "filtersBox":{"top":315,"right":283,"w":267},
+          "sameRowAsFilters":false,"gapToRight":0,"toolbarOverflow":0,"viewport":319}
+```
+
+`filtersBox.top=315` 而 `pagerBox.top=359` = 那一组确实在**下面一行**；`right=288` 与工具栏右缘
+（319 − 12 − 16 − 滚动条）对齐 = 贴右边。截图：`.shots-final319/01-list.png`。
+
+让位顺序因此变成：≤720 用户名与排障面让位 → ≤560 顶栏按钮文字让位（**每页条数不再参与**）
+→ 工具栏靠"整组贴行尾"消化换行。文档三处跟着改：`frontend-checklist.md` 的断点行、那条"牺牲了什么"
+的例子、以及第 7 节"低频让步"的例子（那条原则还在，例子换成了现在真实的做法）。
+
+### 76.2 「仅收藏」→「收藏」
+
+用户要求。这一条同时把**两版对齐**：V2 那枚 chip 一直写的就是 `收藏`
+（`public/ui/js/ui/filters.js`），V1 从今天起一致。
+
+同一个词会出现在两处：筛选 chip = "只看已收藏的"，行内开关 = "把这一条加进收藏"。两者的区别由
+**位置与形状**承担（筛选条里的一枚 chip vs 行尾的图标按钮），不再靠"仅"字区分 —— 这与 V2 的现状一致
+（V2 同样两处都有 `收藏`）。行内开关与批量按钮的文案没动：仍是 `收藏 / 取消收藏`
+（`row-content.js` 的 `labels` 是那一族唯一的来源）。
+
+顺带把三处引用旧文案的地方改对（以代码为准）：`main.js` 的对账注释、`components.css` 的窄屏分组注释、
+`frontend-checklist.md` 第 11 条里那句「与"仅收藏"…」。
+
+## 77. 第三次提交整理：70 → 46（2026-09-18，用户"合理的整理压缩一下全部的commit"）
+
+按 D11 的流程做（备份分支 → 树快照回放 → 逐组/末态断言 → 真门禁 → `--force-with-lease`）。
+**分辨率看主题，不是条数**（§50 的结论）：这一轮该压的只有 §50 那次压缩之后累积的部分。
+
+| 段 | 处理 | 理由 |
+|---|---|---|
+| 旧 1–34 | **原样保留** | 它们是 §28（91→13）与 §50（89→33）的成果，已经是一条一个主题；文档里引用的 SHA 也几乎都在这一段 |
+| 旧 35–70（36 条） | 按主题压成 **12 条** | 这一段是"同一件事的反复微调"：三处页脚致谢的反复定形、顶栏文案的两次返工、窄屏四条连着改 |
+
+### 77.1 分组映射（旧 tip → 新 SHA）
+
+| 旧范围 | 旧 tip | 新 SHA | 主题 |
+|---|---|---|---|
+| 35–37 | `b0244c0` | `27826ed` | feat(ui-v2): V2 界面重做落地与生产完善（1.25.2） |
+| 38 | `8c58eb5` | `17ae32b` | feat(ui-v1): 备用界面重新纳入维护并做生产级完善 |
+| 39 | `dfa0175` | `72544d0` | fix(ui-api): `/ui/api/activity` 按天分桶的毫秒→秒单位错误 |
+| 40–42 | `1a20bf2` | `53bf6bc` | test+ci: V1 探针与守卫补强、套件口径收口、冒烟断言改用真实入口 |
+| 43–44 | `8a3bea0` | `32e0d0f` | fix(ui-old): 专读与设计评审后的完善 |
+| 45–46 | `eff37e7` | `eac3f39` | feat(ui-old): V1 六项能力补齐与体验收尾 |
+| 47–48 | `c2dd9f0` | `2ad1a03` | feat(ui-old): 断点重排、重试与文案统一；顶栏两枚合一 |
+| 49–52 | `40b600a` | `1713414` | fix(ui-old): 顶栏与列表的四处交互收口 |
+| 53–56 | `1163610` | `9117653` | fix(ui-old): 行内操作收口与文本下载 |
+| 57–60 | `9366e49` | `9a428e7` | style(ui-old): 「清除筛选」定形、按下反馈补齐、状态矩阵 error 格 |
+| 61–63 | `65ee12a` | `f114242` | feat(ui): 定位翻转——V1 成为默认界面（ADR D17） |
+| 64–70 | `1899ae5` | `b0e9141` | feat(ui-old): 页脚「致谢」面板与窄屏细节收口 |
+
+### 77.2 硬约束的执行情况（D11 的四条）
+
+1. **备份分支先建**：`backup/pre-squash-2026-09-18` = `1899ae5`（建完照 D11 推过一次云端，
+   随后按用户要求删掉、只留本机 —— 见 §78）—— 旧 35–70 的 SHA 在**本机**仍可解析
+   （判据仍是 `git merge-base --is-ancestor`，不要用 `cat-file -t`）。
+2. **树快照回放**：从 `582c9bc`（旧 34）开 `squash/2026-09-18`，逐组 `git read-tree -u --reset <旧 tip>`
+   + `git commit`（**没有**用 `git add -A`，避免把未跟踪的临时文件卷进历史）。
+3. **逐组 + 末态断言**：每组 `git diff --name-only <新提交> <旧 tip>` 都为空（12 组全过）；
+   末态 `git diff 1899ae5 HEAD` 为空 —— 新历史与旧历史**树逐字节一致**。
+4. **真门禁**：`npm run check`（tsc + eslint）exit 0；`npm test` **22 套件 / 393 例全过**、exit 0。
+   两条都显式读退出码，不走管道。
+
+推送：`git push --force-with-lease origin squash/2026-09-18:master` → `1899ae5...b0e9141 (forced update)`；
+临时分支已删，备份分支保留（**只在本机**：`backup-original-91`、`backup-pre-squash`、
+`backup/pre-round17`、`backup/pre-squash-2026-09-15`、`backup/pre-squash-2026-09-18`，见 §78）。
+
+### 77.3 影响面：文档里的 SHA
+
+全仓文档（含 README）里**可解析、且曾是 `master` 祖先**的提交 SHA 共 48 个，落在改写区间
+（旧 35–70）的只有 1 个：`b59e022`（§52.15 的部署记录）→ 已改指新历史里的同内容提交 `27826ed`。
+其余引用要么在保留段（旧 1–34），要么本来就是 Cloudflare 版本号 / Actions run id 这类非仓库对象。
+另外：本机还留着一个 `stash@{0}`（2026-09-18 被撤销的"工具栏收窄"那一版，基线是旧 `84f2f4f`）——
+它不受这次改写影响，仍可 `git stash pop`；真要恢复时以本机分支 `backup/pre-squash-2026-09-18`
+为参照读旧线。
+
+## 78. 备份分支只留本机，不推云端（2026-09-18，用户要求）
+
+用户："backup 的 branch 不要上传云端 本地保留就好了 删除云端的两个备份 branch"。
+
+执行：
+
+```
+git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-18
+  - [deleted]  backup/pre-squash-2026-09-15
+  - [deleted]  backup/pre-squash-2026-09-18
+```
+
+删完 `git ls-remote --heads origin` 只剩 `master`；本机五个备份分支一个没动
+（`backup-original-91`、`backup-pre-squash`、`backup/pre-round17`、`backup/pre-squash-2026-09-15`、
+`backup/pre-squash-2026-09-18`）。这条也回到 §28 之后的老做法 —— 那几个本机分支的远端副本
+早在 §30 就按同样理由删过（`git branch -vv` 里显示 `[origin/...: gone]`）。
+
+**D11 的执行流程因此改一句**：备份分支**只在本机保留**，不再 `git push -u origin`。
+代价要写清楚：旧 SHA 从此**只有本机可解析** —— 别人 clone 下来的仓库里，被改写区间的旧 SHA
+查不到（本机 `git cat-file -t` 仍会答"是仓库对象"，那只是因为备份分支还钉着它们）。
+`docs/design.md` 的 D11 单元格与执行流程已按这一条改过。
+
+## 79. 页脚入口的文案改回项目名（2026-09-18，用户要求）
+
+用户："最下面的 [Leexunhuan743/SyncClipboardCfServer] 改成 [SyncClipboard CfServer]"。
+
+改动只有一处可见文字：`public/ui_old/index.html` 里 `.footer-links__trigger` 的文本
+`Leexunhuan743/SyncClipboardCfServer` → **`SyncClipboard CfServer`**。**`href` 不变**
+（仍指向 <https://github.com/Leexunhuan743/SyncClipboardCfServer>），悬停/聚焦拉出的「致谢」面板
+也不动（里面仍是上游 `SyncClipboard` 与 `clipserver` 两条）。
+
+为什么这次改法合理：入口原来写的是**用户名/仓库名**，可它在页脚里的角色是**本产品的署名** ——
+同一张面板里另外两条都是项目名，三条并列时只有它是个地址，读起来不成一族。
+`SyncClipboard CfServer` 也正是 README 的标题与仓库的正式名（`README.md` 第一行、
+`package.json` 的 `name` 是 `syncclipboard-cf-server`）。
+
+判据：探针 `FOOTER` 的 `triggerHref` 必须仍是 `https://github.com/Leexunhuan743/SyncClipboardCfServer`
+—— **文案可以改，链接不能跟着改**（这条是这次唯一需要防的错）。
+
+**同日跟进（用户："它一个 `title` … 做了"）**：那个小取舍已补上 —— `.footer-links__trigger` 现在带
+`title="本项目的 GitHub 仓库：https://github.com/Leexunhuan743/SyncClipboardCfServer"`。
+两条边界写清楚：① **可访问名仍是可见文字**（有文本内容的链接，`title` 不参与命名，只作**描述**与
+悬停提示）——所以"一个控件一个名字"没有破坏；② 判据加进探针 `FOOTER` 的 `triggerTitle`：
+**文案可以改，`href` 与 `title` 必须指向同一个仓库**。实测 1440×900：
+`{"triggerHref":"https://github.com/Leexunhuan743/SyncClipboardCfServer","triggerTitle":"本项目的 GitHub 仓库：https://github.com/Leexunhuan743/SyncClipboardCfServer",...}`。
+
+## 80. 规则：推送后不等 CI（2026-09-18，用户要求）
+
+用户原话："写入规则 禁止你去等等 CI（`gh run watch`"。
+
+**新规则（已写进 `docs/design.md` 的 ADR D18）**：`git push` 成功即结束这一轮。
+**禁止** `gh run watch` / `gh run watch --exit-status`，以及任何"轮询到跑完为止"的等待；
+要确认它有没有起跑，最多允许**一次**非阻塞快照 `gh run list --limit 1`。
+
+理由两条，都不是"少看两眼"这么随意：
+
+1. **判据本来就在本地**：D10 的协议级套件 + `npm run check`，而 D11 早已规定"推送前跑全量套件
+   且用真门禁"。CI 是**兜底**，不是这一轮的交付依据 —— 拿 CI 绿给结论背书，等于把本地做过的事再做一遍。
+2. **`deploy` 作业是真的在部署 Cloudflare**（不是纯校验），一趟 2–3 分钟。阻塞等待的代价是
+   **用户被晾在对话里**：`gh run watch` 一挂，这一轮就不结束，用户只能看着进度条。
+
+跑失败不会丢：GitHub 自己会通知，下一次改动也会撞见同一处红。
+
+**对报告口径的连带影响**：不再把"CI 绿"当成交付物的一部分。要做也只是在最后一句话里附一次快照的
+结果（例："已推送；`gh run list` 一眼显示 in_progress"），并且**不能**为了写这句话去等它完成。
 
 
 

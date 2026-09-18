@@ -5,11 +5,18 @@ import { iconPaths } from '../icons.js';
 
 export function createPagination({ onPage }) {
   const range = el('span', { class: 'pagination__range' });
-  const pageLabel = el('span', { class: 'pagination__range' });
+  // 「第 X / Y 页」**不能**复用 `pagination__range`：窄屏那条 `@media (max-width:480px)` 会给
+  // `.pagination__range` 加 `width: 100%`（让长范围文本独占一行），两个元素共用同一个类时
+  // 页码标签也独占一行 —— 分页于是在 390px 上折成"范围 / 上一页 / 页码 / 下一页"四行
+  // （2026-09-18 用户截图）。两者需要的排版契约不同：范围可以整行，页码必须和按钮同一行。
+  const pageLabel = el('span', { class: 'pagination__page' });
 
   const prev = el(
     'button',
-    { class: 'btn', type: 'button', disabled: true, onclick: () => onPage(currentPage - 1) },
+    // `pagination__prev` 只为一件事存在：`margin-left: auto`（见 components.css）—— 它把
+    // 「上一页 / 第 X/Y 页 / 下一页」这一组推到行尾。桌面靠 spacer 推；窄屏 spacer 被隐藏、
+    // 且这一组经常换行到第二行，那时只有 auto margin 还能把它们贴到右边（2026-09-18 用户要求）。
+    { class: 'btn pagination__prev', type: 'button', disabled: true, onclick: () => onPage(currentPage - 1) },
     [svg(iconPaths('chevronLeft'), { size: 16 }), el('span', { class: 'btn__label', text: '上一页' })],
   );
 

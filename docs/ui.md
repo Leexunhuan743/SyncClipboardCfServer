@@ -45,9 +45,12 @@
 
 ```
 浏览器
-  │  GET /ui/**            → Cloudflare 静态资源（public/ui/**）
-  │      ↑ 但先经过 Worker：`[assets] run_worker_first = ["/ui", "/ui/*"]` + `binding = "ASSETS"`
-  │        —— 入口据此判断界面开关（UI_ENABLED），开着才转回 `env.ASSETS.fetch()`，关着直接 404
+  │  GET /                 → Worker：302 → `/ui_old/`（默认界面；Accept: text/html 才跳）
+  │  GET /ui/**            → Cloudflare 静态资源（public/ui/**，V2 = 开发测试版）
+  │  GET /ui_old/**        → Cloudflare 静态资源（public/ui_old/**，V1 = 默认界面）
+  │      ↑ 两个面都先经过 Worker：`run_worker_first = ["/ui", "/ui/*", "/ui_old", "/ui_old/*"]`
+  │        + `binding = "ASSETS"` —— 入口据此判断界面开关（UI_ENABLED），开着才转回
+  │        `env.ASSETS.fetch()`，关着直接 404
   │  GET/PATCH /ui/api/**  → Worker：src/ui/routes.ts（会话 Cookie 或 Basic 鉴权）
   │  GET /ui/api/**/data   → Worker → R2（图片预览 / 文件下载）
   ▼
@@ -58,21 +61,25 @@ Worker
 
 ### 2.1 界面开关（`UI_ENABLED`，默认开）
 
-`public/ui/*` 原本由 Cloudflare 直接托管、**不经过 Worker** —— 那样的话"关掉界面"就无从实现。
-2026-09-15 起 `[assets]` 增加了两条：`binding = "ASSETS"` 与 `run_worker_first = ["/ui", "/ui/*"]`，
+两个界面面原本都由 Cloudflare 直接托管、**不经过 Worker** —— 那样的话"关掉界面"就无从实现。
+2026-09-15 起 `[assets]` 增加了 `binding = "ASSETS"` 与 `run_worker_first = ["/ui", "/ui/*"]`；
+**2026-09-18 补上 `/ui_old` 与 `/ui_old/*`**（V1 成为默认界面后，这一面的开关必须真的生效：
+不在名单里时，边缘命中静态资源就直接返回，请求到不了 Worker，那段 404 判定永远不执行）。
 于是界面请求先到 `src/index.ts`，由它按 GitHub 仓库变量 `UI_ENABLED`（判定见 `src/uiEnabled.ts`）分流：
 
 | | 界面开着（默认） | `UI_ENABLED=false` |
 | --- | --- | --- |
-| `/ui`、`/ui/`、`/ui/js/*` 等 | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
+| `/ui`、`/ui/`、`/ui/js/*`（V2）与 `/ui_old/`、`/ui_old/js/*`（V1） | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
 | `/ui/不存在的路径` | 资源 404 后**回落 Hono**，拿到 `notFoundPage`（与平台自身回落一致） | 404 纯文本（不产生界面痕迹） |
 | `/ui/api/*` | 照旧交给 Hono，守卫与业务不变 | **404 JSON** `{"error":"not_found"}` |
-| 根路径 `/`（`Accept: text/html`） | 302 → `/ui/` | **200 `Server is running.`**（不再把人引到不存在的界面） |
+| 根路径 `/`（`Accept: text/html`） | 302 → **`/ui_old/`**（默认界面，少一跳） | **200 `Server is running.`**（不再把人引到不存在的界面） |
 | 协议面 | 不受影响 | **不受影响**（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub 全照常） |
 
-两条不变式由 `test/ui-guard.test.ts` 的「UI 部署开关」用例守着：关闭态**一次都不访问**静态资源且全 404；
-开启态资源未命中必须回落出 404 页（若哪天有人删掉 `run_worker_first`，关闭态会静默失效 —— 测试即红）。
-线上每次部署后由 CI 冒烟按开关断言 `/ui/`（200 或 404）与 `/ui/js/main.js` 200。
+三条不变式由 `test/ui-guard.test.ts` 的「UI 部署开关」用例守着：关闭态**一次都不访问**静态资源且全 404；
+开启态资源未命中必须回落出 404 页；**两个挂载点都在 `run_worker_first` 里**（2026-09-18 补的第三条 ——
+此前文档写着"删掉它会测试即红"，而实际上没有任何测试在读这份配置）。
+线上每次部署后由 CI 冒烟按开关断言两版的页面与入口 JS：
+`/ui/`（V2 的跳转索引）、`/ui/app/`、`/ui/js/boot.js`、`/ui_old/`、`/ui_old/js/main.js`。
 ```
 
 三条不变式：
@@ -110,14 +117,17 @@ Worker
 
 ### 3.2 前端（`public/ui/`，真文件 + 原生 ES 模块，无构建步骤）
 
-> **⚠️ 本节描述的是 V1。** 2026-09-15 起界面已由 V2 接管（`/ui/app/`），V1 迁到
-> `public/ui_old/`（挂载点 `/ui_old/`，见该目录的 `README.md`）。
-> V2 的设计与实现见 [`docs/ui-v2-design.md`](ui-v2-design.md)；
-> 本文件从 §3.2 到 §11 的内容描述的是 V1 的实现，**默认界面是 V2**。
+> **本节描述的是 V1，而 V1 从 2026-09-18 起就是默认界面。**
+> 站点根 `GET /` 的浏览器分支（`src/routes/webdav.ts`）与 `/ui/` 的目录索引
+> （`public/ui/index.html`，meta refresh + canonical）**都**指向 `/ui_old/`；两者必须一致，
+> 守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
+> V2（`public/ui/`，本体 `/ui/app/`）降为**开发测试版**：它进去后顶栏版本号与登录页副标题
+> 都标着"开发测试版"，设计与实现见 [`docs/ui-v2-design.md`](ui-v2-design.md)。
+> 本文件从 §3.2 到 §11 的内容描述的是 V1 的实现。
 >
-> **2026-09-17 状态更新**：`public/ui_old/` 不再冻结 —— 它以**备用界面**的身份重新纳入维护
-> （接口前缀故障修复、密度与移动端重做、运行时可重复验证，逐条见 `docs/progress.md` §53）。
-> 因此本节描述的实现是"在维护、可验证"的，只是不承担默认入口。
+> 沿革：2026-09-15 界面曾由 V2 接管、V1 降为备用；2026-09-17 `public/ui_old/` 重新纳入维护
+> （接口前缀故障修复、密度与移动端重做、运行时可重复验证，见 `docs/progress.md` §53）；
+> 2026-09-18 用户定的新定位 —— **V1 是产品界面，V2 只是开发测试版**（见 §70）。
 >
 > 挂载点分工：**页面与静态资源在 `/ui_old/...`，服务端接口在 `/ui/api/...`**（与 V2 共用同一套），
 > 接口前缀只写在 `public/ui_old/js/api.js` 的 `API_BASE` 一处。
@@ -126,15 +136,16 @@ Worker
 > `../../ui/js/messages.js` 引它（此前两版各写一份，语义句必然漂移）。代价是 V1 的模块图多两个
 > 文件（messages.js 与它依赖的 V2 `format.js`，均已加进 V1 页面的 `modulepreload`）；
 > 守卫见 `test/ui-guard.test.ts` 的「V1 的文案来自两版共用的那一份」。
-> 保留这份实现的三个理由：① 与 V2 互为对照基线；② V2 在某个环境不可用时可改 `src/index.ts`
-> 的默认跳转切回；③ 它与协议端点（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）零关系。
+> 保留 V2 的三个理由：① 它是零构建前端的**对照基线**（新的模块划分、状态矩阵与探针都先在
+> 那边试）；② 开发期的实验场（改坏了不影响默认入口）；③ 它与协议端点
+> （`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）零关系，两版可以各自演进。
 
-`public/` 下共 86 个资源，分三部分：
+`public/` 下共 87 个资源，分三部分：
 
 | 部分 | 文件数 | 说明 |
 |---|---|---|
-| **V2**（`public/ui/`，当前线上） | 47 | 3 个 HTML（`app/index.html`、`app/login.html`、只做跳转的 `index.html`）+ 5 张样式表 + 35 个 JS 模块（19 顶层 + 16 组件）+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest` |
-| **V1**（`public/ui_old/`，备用界面，维护中） | 37 | 旧实现；2026-09-17 修复接口前缀、重做密度与移动端，见该目录 `README.md` |
+| **V2**（`public/ui/`，**开发测试版**） | 48 | 3 个 HTML（`app/index.html`、`app/login.html`、`/ui/` 的跳转索引 `index.html`）+ 5 张样式表 + 36 个 JS（34 个模块 + 跳转页那个经典脚本 `redirect-hash.js`）+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest` |
+| **V1**（`public/ui_old/`，**默认界面**） | 37 | 默认入口；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转，见该目录 `README.md` |
 | 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP/安全头 + 缓存策略——这批文件不经过 Worker，只能在那里声明） |
 
 下表是 **V1** 的文件清单（供对照）：
@@ -264,6 +275,39 @@ Worker
     CSS 用 `.input[aria-invalid="true"]` 换描边色（颜色只是加速识别，错误**文案**才是主通道）。
     服务端的 500/429 不是"字段填错了"，只挂描述、不标 `aria-invalid`（标了会撒谎）。
     守卫与覆盖缺口见 `progress.md` §69.1。
+20. **页脚的相关链接**（2026-09-18 用户三次定形）：常驻入口是**项目名**
+    `SyncClipboard CfServer`（本身就是链接，指向本项目仓库；早先写的是 `Leexunhuan743/SyncClipboardCfServer`，
+    用户要求改回项目名，见 `progress.md` §79）。它带 `title`（本项目的 GitHub 仓库地址）：
+    **可见文字是本产品的名字，`title` 才是"它会开到哪"**——有文本内容的链接里 `title` 不参与命名，
+    只作描述与悬停提示；悬停（细指针）或键盘聚焦
+    （`:focus-within`）时在它**上方**拉出一张「致谢」卡片，列上游 `SyncClipboard`
+    与 `clipserver` 及各自完整 URL（2026-09-18 用户要求删掉 `clipserver` 后面的「（另一个实现）」括注、
+    并去掉上游那条的「客户端」三个字：致谢卡片里只要名字就够了，解释留给 README 与 `design.md` D15）。收起态是 `opacity: 0 + pointer-events: none`
+    （不是 `display: none`）——链接留在 Tab 顺序里；触屏没有 hover，那一档把卡片改成**常驻**。
+    动效是 160ms 的淡入 + 6px 上浮（状态过渡，写在组件里而非 motion.css）。见 `progress.md` §72。
+21. **分页在窄屏的行结构**（2026-09-18 用户截图报的）：范围文本允许独占一行，但
+    「上一页 / 第 X / Y 页 / 下一页」必须**同一行且靠右** —— 靠 `.pagination__prev` 的
+    `margin-left: auto`（窄屏 spacer 被隐藏、这一组常常换行到第二行，只有 auto margin 两种情形都成立）。
+    两条反面教训：范围文本与页码标签**不能共用 `pagination__range`**（窄屏那条 `width: 100%`
+    会把页码也撑成整行，分页于是折成四行）；页脚那个浮层的包含块是**入口**（`.footer-links`，
+    `right: 0`）而**不是** `.app-footer__inner` —— 锚整块时面板贴的是页脚，与入口之间会空出一条带子。
+    但锚入口要同时满足另外两条才不会退回"面板跑到视口外"：页脚 `align-items: flex-start` + 说明那格
+    `flex: 1 1 0; min-width: 0`（否则入口被挤到第二行、行首），以及面板宽度上限按**视口**算
+     `min(calc(100vw - 2 * var(--sp-5)), 30rem)`（按包含块算会把 55 字符的地址折成四行）。
+    判据：探针的 `PAGER` 与 `FOOTER` 两行 + `progress.md` §73、§74。
+22. **顶栏那枚「部署信息」胶囊的名字不许断行**（2026-09-18 用户截图）：`.status__entry` 加
+    `white-space: nowrap`。中文没有词边界，没有这条时顶栏一挤就把那四个字压成「部署信 / 息」，
+    字还溢出 30px 高的胶囊（288px 实测：label 盒 23×81、胶囊 63×30）。加上它之后胶囊的
+    `min-width: auto`（= min-content）等于整条名字，不会再被压到名字以下；代价是顶栏必须在
+    **更窄**时也放得下，故跟着补两档让位：≤380px 只收间距（一个控件都不隐藏），
+    ≤280px 才让纯装饰的品牌图标走（顺序沿用 ≤560px 那条"要不要办事"的判据）。
+    判据：探针的 `HEADER` 一行 + `progress.md` §75。
+23. **窄屏工具栏的两条**（2026-09-18 用户两句）：「每页条数 + 刷新」是**一组**（同一个
+    `.toolbar__group--pager`），整组 `margin-left: auto` 贴**行尾** —— 放得下就与「收藏 / 回收站 /
+    时间范围」并排，放不下就整组落到下面一行、仍在右边（判据 `sameRowAsFilters` 与 `gapToRight: 0`）。
+    「每页条数」**不再**在 ≤560px 隐藏：上一版把它让出去换了一整行，代价是窄屏**没有改页大小的地方**
+    （只能手改 URL，那不是入口）。筛选 chip 的文案是 `收藏`，不是"仅收藏"（与 V2 对齐）。
+    判据：探针的 `PAGERBAR` 一行 + `progress.md` §76。
 
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
@@ -479,7 +523,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 项 | 状态 |
 |---|---|
 | `lang` / `charset` / `viewport` / `color-scheme` | ✅ |
-| `<title>` 40–60 字符 | ⚠️ 偏离：用 22 字符的「剪贴板历史 · SyncClipboard」。这是 noindex 的私有应用，标题长度换不来搜索曝光，短标题在书签与标签页里更好认 |
+| `<title>` 40–60 字符 | ⚠️ 偏离：用 29 字符的「剪贴板历史 · SyncClipboard（开发测试版）」。这是 noindex 的私有应用，标题长度换不来搜索曝光。**2026-09-18 加了"（开发测试版）"后缀**：默认界面换成了 V1，两份界面长得像，标签页标题必须能一眼分清（V1 那边保持 22 字符的短标题） |
 | `meta description` | ✅ |
 | `og:type/title/description`、`twitter:card` | ✅（链接被贴进 Slack / 微信时至少有一行像样的预览） |
 | `og:image`（绝对 URL，1200×630） | ❌ **有意不做**：og:image 必须是绝对 URL，而部署域名由使用者决定、构建时未知。写死一个错的绝对 URL 会让预览比现在更糟（空白图）。要做就得让 Worker 注入 origin，那等于为了预览把 HTML 从静态资源挪回 Worker——不值 |

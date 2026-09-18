@@ -31,11 +31,13 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // 这里的 Accept 判断只是让任何按文本协议探活的脚本行为完全不变。
   // 界面被关闭时（GitHub 变量 UI_ENABLED=false）不再把人引到不存在的 /ui/，直接返回探活响应。
   //
-  // 跳转目标是 **`/ui/app/`**（V2 的应用本体），不是 `/ui/`：后者是静态资源的目录索引，
-  // 而它唯一做的事就是再跳一次到 `/ui/app/`。少一跳，浏览器历史里也少一条记录。
+  // 跳转目标是 **`/ui_old/`**（2026-09-18 起它是**默认界面**，即 V1 的应用本体），
+  // 不是 `/ui/`：后者是静态资源的目录索引，而它唯一做的事就是再跳一次到同一个地方。
+  // 少一跳，浏览器历史里也少一条记录。
+  // （V2 —— `public/ui/` —— 现在是**开发测试版**，本体仍在 `/ui/app/`，只是不再是默认入口。）
   app.get('/', (c) => {
     const accept = c.req.header('accept') ?? '';
-    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui/app/', 302);
+    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui_old/', 302);
     return c.text('Server is running.');
   });
 
