@@ -177,7 +177,7 @@
 
 - 未使用导出：**0**（第一轮删掉 3 个之后没有新增）
 - 未使用的 `api.*` 封装：**0**（`statistics`/`clients`/`batchMeta` 已删）
-- 未使用令牌：只剩上面两个**有理由**的组
+- 未使用令牌：只剩上面两个**有理由**的组（例外：`--fs-display` 全 `public/**` 无消费者，见 `docs/AUDIT-missing-states.md` §5.3）
 - `test/manual/` 仍然只有 `probe.mjs` / `shoot.mjs` / `states.mjs` 三个脚本（临时诊断脚本一律用完即删）
 
 ## 6. 第四轮：**线上截图走查**抓到的两个真缺陷（用户要求"截图看看"）

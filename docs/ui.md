@@ -143,14 +143,14 @@ Worker
 |---|---|---|
 | **V2**（`public/ui/`，**开发测试版**） | 49 | 3 个 HTML（`app/index.html`、`app/login.html`、`/ui/` 的跳转索引 `index.html`）+ 5 张样式表 + 37 个 JS（35 个模块 + 2 个经典脚本 `theme-init.js` / `redirect-hash.js`）+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest` |
 | **V1**（`public/ui_old/`，**默认界面**） | 38 | 默认入口；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`） |
-| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的短 TTL + `stale-while-revalidate`、图标/manifest 的长缓存——这批文件不经过 Worker，只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
+| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate`（每次回源验证）、图标/manifest 的长缓存——这批文件不经过 Worker，只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
 
 下表是 **V1** 的文件清单（供对照）：
 
 | 文件 | 职责 |
 |---|---|
 | `index.html` / `login.html` | 页面外壳与挂载点；主题在首帧前由阻塞式的 `/ui_old/js/theme-init.js` 定好（深色用户不会看到白闪）；预加载列表与 import 闭包对齐，完全自包含于 `/ui_old/` |
-| `css/tokens.css` | 设计令牌：颜色（浅/深）、字号阶梯（13/14/16/18 + 数字档，12px 档已合并进 13px，见 `progress.md` §57.5）、间距（4/8/12/16/24/32/48/64）、圆角、阴影、时长与缓动 |
+| `css/tokens.css` | 设计令牌：颜色（浅/深）、字号阶梯（13/14/16/18；12px 档已合并进 13px，`--fs-stat` 数字档已在 2026-09-18 删掉，见 `progress.md` §57.5）、间距（4/8/12/16/24/32/48/64）、圆角、阴影、时长与缓动 |
 | `css/base.css` | 重置、排版、`:focus-visible`、跳转链接、微标签 |
 | `css/layout.css` | 骨架：顶栏、统计条、工具栏、结果区、页脚 |
 | `css/components.css` | 组件：按钮、字段、分段控件、徽标、数据表、星标、复选框、对话框、提示、空状态、分页 |
@@ -405,7 +405,7 @@ Worker
 |---|---|
 | `/dav` 前缀别名 | 本项目的 WebDAV 端点在站点根，`PROPFIND` 的 `href` 是从根计算的绝对路径。要让 `/dav` 前缀可用，必须改写协议输出（href 前缀）——为一个迁移便利去碰协议保真不值得。迁移方式：客户端服务器地址填 `https://<host>/`（界面「部署信息」里直接给出并可复制） |
 | 服务端会话表 / 内存会话 | Workers 没有可靠的进程内状态；签名 Cookie 语义等价且零存储（见 ADR D13） |
-| Web 字体 | 目标是国内网络：外部字体 CDN 大概率加载失败，会出现「先无字后有字」的闪烁，比系统栈更糟。层级由字号阶梯（12/13/14/18/30px）与 `tabular-nums` 承担 |
+| Web 字体 | 目标是国内网络：外部字体 CDN 大概率加载失败，会出现「先无字后有字」的闪烁，比系统栈更糟。层级由字号阶梯（13/14/16/18px）与 `tabular-nums` 承担 |
 | 列表缩略图预检 | 缩略图用 `loading="lazy"`，对象缺失时由 `<img>` 的 `error` 降级为占位——不为每一行预先发一次探测请求 |
 
 > 反向清单（后端**已具备但界面未接**的能力、以及可新增的端点与改造）见 `docs/backend-gaps.md`；
@@ -546,18 +546,18 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 
 | 状态 | 实现 |
 |---|---|
-| loading | 骨架屏占位（保留布局，不跳） |
+| loading | 骨架屏占位（保留布局，不跳）。**2026-09-18 之前这一行只是一句声明**：`list.js` 根本没有加载档，而 `boot()` 的顺序是 `render()`（items 还空）→ `refresh()`，于是首屏那次请求落地之前的整段时间里，界面画的一直是空状态 —— 库里有记录时它是一句假话（详见 `progress.md` §85）。现在由 `store.loading` 驱动：行数按当前页大小、行高与真实行同高（47px），折线以上不发生位移 |
 | pending | 按钮原地换标签 + `data-loading` 保持宽度（不抖），登录按钮同样 |
 | success | 留在页面上：按钮标签变「已复制 N 个字符」，行原地更新 |
 | error | 就地呈现并说明原因（`复制图片失败：<原因>`），登录错误带 `role="alert"` 且焦点回到出错的字段 |
-| empty | 设计过的空状态：说明 + 出口按钮（清除筛选 / 如何配置客户端） |
+| empty | 设计过的空状态：说明 + 出口按钮（清除筛选 / 如何配置客户端）。**只在数据已经落地且确实为空时才出现**——加载中画它等于替服务器断言"一条都没有" |
 | **首次加载失败** | **本轮补上**：此前会把骨架屏永远留在页面上（正是清单点名的「无限骨架」）→ 现在给出「加载失败 + 原因 + 重试」；已有内容时则保留旧数据只给一条提示（比清空更正确） |
 | **失去联系**（轮询/统计失败） | **本轮补上**：这两条链路是**静默**的（10s 一次，没有 UI 事件），失败此前没有任何迹象，页面会一直显示旧数据让人以为「服务器上没有新内容」。现在显示一条 `role="status"` 的横幅，成功的那次请求把它收掉 |
 | 回收站为空 / 收回筛选 | 空状态按语境换文案与出口：回收站给「返回历史记录」，筛选态给「清除筛选条件」（含时间范围与回收站两个新维度） |
 
 ### 9.4 深色模式
 
-- ✅ 令牌层整体重映射（组件层一行未改，符合「level-2 token remap only」）+ 首帧前定主题（实测 5 次重载 `data-theme` 均在首帧前就位、CLS 全 0）。该脚本**本轮从内联外置**为 `/ui/js/theme-init.js`：外链才能让 CSP 保持 `script-src 'self'`（内联要么开 `'unsafe-inline'`、要么维护 hash）。它必须是**经典脚本**——`type="module"` 默认 defer，会晚于首帧。
+- ✅ 令牌层整体重映射（组件层一行未改，符合「level-2 token remap only」）+ 首帧前定主题（实测 5 次重载 `data-theme` 均在首帧前就位、CLS 全 0）。该脚本**本轮从内联外置**为 `/ui_old/js/theme-init.js`：外链才能让 CSP 保持 `script-src 'self'`（内联要么开 `'unsafe-inline'`、要么维护 hash）。它必须是**经典脚本**——`type="module"` 默认 defer，会晚于首帧。
 - ✅ **`color-scheme` 跟随生效主题**（本轮修）：在 `tokens.css` 的 `:root` 与 `:root[data-theme="dark"]` 各声明一次。此前只有 `base.css` 里一句 `color-scheme: light dark`（跟随**系统**），于是浅色系统 + 应用内切深色时，原生 `<select>` 下拉、滚动条、数字输入的 spinner 仍是浅色。实测：改前两种 `data-theme` 下计算值都是 `light dark`，改后分别为 `light` / `dark`。
 - ⚠️ 偏离：没有改用 `light-dark()`。它能省掉一半令牌，但令牌的**派生项**（类型色、阴影）仍需成对书写；更关键的是不支持该函数的浏览器会丢掉整条声明、调色板直接失效，而当前写法在任何浏览器都成立。
 
@@ -622,10 +622,10 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
   row / columnheader / cell` 已在 `list.js` 显式补齐。
 - **触屏平板（>720px + `pointer: coarse`）不是窄屏**：卡片重排只在 ≤720px 生效，所以平板仍是表格；
   而桌面操作列（116/88px）是按 30px 图标按钮摊的，触屏上按钮 44px、图片/文件行有 **4 个**按钮
-  （4×44 + 3×4 间距 = 188px 内容宽，再加单元格 24px 内边距 = **212px**）塞不进去。
+  （4×44 + 3×10 间距 = 206px 内容宽，再加单元格 24px 内边距 = **230px**）塞不进去。
   本轮修法**不是**把重排条件加上 `coarse`（那会让 1024px 的 iPad 也变卡片、每屏只放几行），
-  而是**在 coarse 下把操作列按内容放宽到 212px**，超出部分从内容列（弹性列）取。
-  实测（**4 按钮的 Image 行**，用 Text 行的 3 按钮行验会得出假结论）：810px 下操作列 88 → **212px**、
+  而是**在 coarse 下把操作列按内容放宽到 230px**，超出部分从内容列（弹性列）取。
+  实测（**4 按钮的 Image 行**，用 Text 行的 3 按钮行验会得出假结论）：810px 下操作列 88 → **230px**、
   越界按钮 **0**（188px 时是 1 个按钮越出 12px）；721 / 810 / 1024 三档内容列 83 / 172 / 326px、文档溢出 0。
 - **触屏命中区补齐**：`.th-sort`（窄屏卡片模式下它就是排序条，命中区只有 42×19）与 `.search__clear`
   （写死 24×24）此前漏在 `pointer: coarse` 白名单外，是全页唯一两处低于 44px 的可点控件。
@@ -646,13 +646,13 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 窄屏行布局（触屏模拟） | 内容列 84px → **239px@375 / 278px@414**、行高 170px → **106px**、操作按钮 **44×44**（独占整行、换行确定）、元信息「类型 · 时间」可见、表头排序保留、溢出 0 |
 | 桌面（1440） | 行 55px、七列齐全、`.cell-content__meta` 隐藏——窄屏改动对桌面零影响 |
 | 触屏命中区（`pointer: coarse`） | `.btn`/`.select` 44px、`.icon-btn` 44×44（含 `flex: none`）、星标 44×44、分段控件 40px、**`.th-sort` 42×44 / `.search__clear` 44×44**（本轮补） |
-| **A 批修复轮**（2026-09-13，详见 `docs/progress.md` §33） | 竞态：同一实验（首个列表请求延迟 2.5s + 120ms 内改两次筛选）下 3.5s 时列表**仍是 Text/50 行**（改前被迟到的图片响应改成 46 行、头部计数同样被改写）；焦点：删除确认后落在**邻居行的删除按钮**（改前 `document.activeElement === BODY`）；`color-scheme` 随生效主题（`light`/`dark`，改前恒 `light dark`）；深色销毁性确认按钮对比 **5.50:1**（改前白字 2.77:1）；列表页「部署信息」的说明文字 12px + 弱化色（改前 14px 无样式）；810px + 触屏操作列 88→**212px**（按 4 按钮的 Image 行算）、越界按钮 **0**（188px 时越出 12px）；18 个 JS 资源**全在 22–24ms 内开始**（改前三层瀑布 20/39/50–60ms） |
+| **A 批修复轮**（2026-09-13，详见 `docs/progress.md` §33） | 竞态：同一实验（首个列表请求延迟 2.5s + 120ms 内改两次筛选）下 3.5s 时列表**仍是 Text/50 行**（改前被迟到的图片响应改成 46 行、头部计数同样被改写）；焦点：删除确认后落在**邻居行的删除按钮**（改前 `document.activeElement === BODY`）；`color-scheme` 随生效主题（`light`/`dark`，改前恒 `light dark`）；深色销毁性确认按钮对比 **5.50:1**（改前白字 2.77:1）；列表页「部署信息」的说明文字 12px + 弱化色（改前 14px 无样式）；810px + 触屏操作列 88→**212px**（A 批当轮值；间距后来由 4 提到 10，`--col-actions-coarse` 现为 **230px**）、越界按钮 **0**（188px 时越出 12px）；18 个 JS 资源**全在 22–24ms 内开始**（改前三层瀑布 20/39/50–60ms） |
 | 跨文件契约守卫（`ui-contract`，9 例） | ① 每页 `modulepreload` == 该页 import 闭包；② BEM 类名**按页**双向核对（用到的必须在**该页加载的样式表**里有定义、定义了的必须有人用）；③ CSS 消费的 `data-*`/`aria-*` 必须有生产者（JS 或 HTML）；④ 用 Node 原生 ESM 解析器逐个解析模块（只容忍顶层碰 DOM 的运行时错误）。**四次变异实验**（删一行预载 / 加一条死类 / 加一条没人写的属性选择器 / 把 TS 语法写回 `.js`）均按预期变红 |
 | 无障碍底线（baseline-ui 逐条） | 动效关闭下内容完整；无「仅靠 hover」的控件；Tab 全站有焦点环、无死环（站数随数据变化，定义见 §9.8 第 3 条）；`<dialog>` 释放焦点；网格轨道 `minmax(0, 1fr)`；`overflow-x: clip` 兜底；图片容器预留高度 |
 | **交互打磨轮**（headless Chromium + 本地实例，逐项断言） | 登录流带 `?next=` 回到原 URL；排序指示器随 `th[aria-sort]` 出现（此前是死状态）；星标就地更新（行 DOM 节点不变）且播一次弹出；复制成功后按钮本身变「已复制」；刷新/删除按钮请求中转圈（同步采样 `data-loading`/`aria-busy`，请求结束后清除）；删除对话框初始焦点在「取消」、请求中不关闭、成功后行就地消失并提示「已删除」且**静默刷新确实发出**（页面请求序列 PATCH → /ui/api/statistics → GET /ui/api/history）；`Shift+点击` 范围选择 4 行；行点击开预览（焦点落主操作）、Esc 与点背景均可关闭；选中文字时点行不触发预览；部署信息复制按钮就地成功态；翻页与跳页（跳页后输入清空并失焦）；连点 6 次刷新提示封顶 4 条且页面不冻结；对话框实例唯一（`.dialog--narrow` = 1，排除重复模块图）；`prefers-reduced-motion` 下动画归零、删除照常收行（无 `data-leaving` 僵尸行） |
 | 当轮门禁（A 批，历史的数字不改写） | `npx tsc --noEmit` 干净；`npm test` 全部套件通过（当轮为 19 个测试文件；用例数见命令输出，含当轮新增的 `clipboard`） |
 | **系统性完善轮**（2026-09-13，详见 `docs/progress.md` §34） | 时间范围：预设 `range=today` 请求携带本地日界 `after`、自定义区间带 `after/before`（`?range=custom&after=1788969600000` → API `after=1788969600000`）；回收站：`?deleted=1` → API `deleted=true`、行内只剩「恢复」（带数据文件的图片记录全部 `disabled` 且 tooltip 说明原因）、恢复一条后计数 −1 且行就地消失并提示「已恢复」；**类型计数与视图同源**：回收站工具栏 `全部 1064 / 文本 667`（已删口径），同一屏的存储明细仍是 `文本 742`（活跃口径）；切回活跃视图 `1009 / 742`；快速切换 6 次两个方向都正确；星标一条后统计条「已收藏」251 → **252 就地更新**（不再等列表刷新）；选择列在回收站隐藏（`display: none`）；失联横幅全程 `hidden`；工具栏在 1440 / 375 两档无横向溢出（自定义日期行独占一行，桌面 36 → 84px）；新元素对比度 —— 统计条回收站入口 **5.47（浅）/ 6.62（深）**、失联横幅 **5.66 / 5.44**（均 ≥ 4.5:1）；登录页在外置主题脚本 + CSP 下三条路径全通过（空提交本地校验、错口令 401 文案、成功登录回列表），零异常 |
-| **本轮静态投递**（`_headers`） | 实测响应头：`content-security-policy`（`default-src 'none'` + 逐项白名单）、`x-content-type-options: nosniff`、`referrer-policy: same-origin`、`cache-control: public, max-age=300, stale-while-revalidate=86400`（js/css）；页面在**零 CSP 违规**下加载（CDP `Log.entryAdded` + `Runtime.exceptionThrown` 全量采集，0 条） |
+| **本轮静态投递**（`_headers`） | 实测响应头：`content-security-policy`（`default-src 'none'` + 逐项白名单）、`x-content-type-options: nosniff`、`referrer-policy: same-origin`、`cache-control: public, no-cache, must-revalidate`（js/css）；页面在**零 CSP 违规**下加载（CDP `Log.entryAdded` + `Runtime.exceptionThrown` 全量采集，0 条） |
 | **前端 lint**（`npm run lint`，eslint 只覆盖 `public/ui/js`——该目录不在 `tsc` 的 include 里） | 首次运行抓到 `buildActions(item, actions, ref)` 的 `ref` 从未使用（既有代码）；复核轮加上 `no-shadow` 后又抓到一处**真缺陷的成因**（见 §10 末的复核记录）：`refreshStats` 的局部 `const stats = await api.statistics(...)` 遮蔽了模块级组件实例，`stats.update(...)` 每次都抛 TypeError 被 catch 吞掉 |
 | **主世界错误采集**（CDP `Runtime.exceptionThrown` + `Log.entryAdded`） | 遍历改筛选 / 翻页 / 换排序（三条视图过渡路径）后 **0 异常**。采集方式说明：`page.on('console')` 在本 harness 抓不到任何条目（合成 `console.log` 亦无输出），隔离世界的 `window.onerror` 也看不到主世界——**只有 CDP 这条路可信**；本轮据此发现并修掉一个真实缺陷（见下） |
 

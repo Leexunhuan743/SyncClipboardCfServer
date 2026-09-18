@@ -409,7 +409,7 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 | 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
 | 清理可观测 | 清理按预算分阶段执行、游标续跑、失败写入 `cleanup:lastError`（`/ui/api/info` 可读） | `src/cleanup.ts` |
 | 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` / `src/requestLimits.ts` |
-| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的短 TTL + `stale-while-revalidate`（无指纹 ⇒ 部署后有 **≤5 分钟**的新旧混用窗口，之后自动收敛；强制刷新可立即取新版）。Worker 自出的 `/ui/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
+| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的 `no-cache, must-revalidate`（无指纹 ⇒ **每次都会回源验证**，不存在"新旧混用窗口"；只有图标/manifest 走长缓存 + `stale-while-revalidate`）。Worker 自出的 `/ui/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
 
 > **部署前必做**：`USERNAME` / `PASSWORD` 必须是**高熵随机值**。默认/占位口令 + 公开的 `*.workers.dev` 等于把全部剪贴板历史与附件
 > 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
@@ -493,6 +493,8 @@ schema.sql              D1 建表语句
 | [docs/frontend-checklist.md](docs/frontend-checklist.md) | 前端质量检查清单：关注点、判据与落地指导原则 |
 | [docs/AUDIT-redundancies.md](docs/AUDIT-redundancies.md) | 代码审计报告（冗余 / 重复实现 / 死代码 / 兼容红线）：结论分级、可删项清单，以及唯一的已实施记录 §14（含对自身判定的三处勘误） |
 | [docs/AUDIT-commit-9b4cdca.md](docs/AUDIT-commit-9b4cdca.md) | 单次提交审核报告（`9b4cdca`）：逐行读 diff + 交叉核对服务端实现 + 跑本地质量门后的结论与整改项 |
+| [docs/AUDIT-missing-states.md](docs/AUDIT-missing-states.md) | 前端审计报告（**缺失状态 / 不可达展示**）：与"找冗余"相反方向的判据，覆盖两版共约 18,000 行；含文档担保类失准与复核中剔除的结论 |
+| [docs/AUDIT-v1-v2-divergence.md](docs/AUDIT-v1-v2-divergence.md) | 前端审计报告（第二轮：**两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约**）：含"V1 修过、V2 仍有"的定向核对表，以及安全面"无可举证注入缺陷"的逐项结论 |
 
 ## 许可证
 

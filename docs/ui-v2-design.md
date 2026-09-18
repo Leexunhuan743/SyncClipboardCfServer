@@ -196,7 +196,7 @@ V2 的三处升级：
 
 | 令牌 | 值 | 用途 |
 |---|---|---|
-| `--fs-display` | `clamp(1.5rem, 1.32rem + 0.5vw, 1.875rem)` | 概览带主数字（24 → 30px。**上限从 2.25rem 收到 1.875rem** 是 2026-09-15 第二轮实测调整：36px 会把整页视觉重心抢到概览带上，见 `tokens-v2.css` 的说明与 §13.3） |
+| `--fs-display` | `clamp(1.5rem, 1.32rem + 0.5vw, 1.875rem)` | **⚠️ 当前无消费者**（`.overview__value` 实际挂的是 `--fs-title`，17px）—— 设计意图是概览带主数字（24 → 30px。**上限从 2.25rem 收到 1.875rem** 是 2026-09-15 第二轮实测调整：36px 会把整页视觉重心抢到概览带上，见 `tokens-v2.css` 的说明与 §13.3） |
 | `--fs-h1` | `1.0625rem` | 页面标题 |
 | `--fs-body` | `0.875rem` | 正文、行预览 |
 | `--fs-meta` | `0.75rem` | 行第二行元数据 |
@@ -242,9 +242,9 @@ V2 的三处升级：
 | 组件 | class 根 | 状态（`data-*`） | 说明 |
 |---|---|---|---|
 | 顶栏 | `.appbar` | — | 品牌、搜索入口、同步状态、主题、部署信息、登出 |
-| 同步状态点 | `.sync` | `data-state="live\|poll\|offline"` | 点 + 文案，来自推送通道状态与 `/ui/api/poll` |
+| 同步状态点 | `.sync` | `data-state="live\|poll\|connecting"` | 点 + 文案，来自推送通道状态与 `/ui/api/poll`（`offline` 没有生产者，2026-09-18 已删） |
 | 概览带 | `.overview` | `data-open` | 主数字、同步、趋势、体积、类型分布 |
-| 趋势图 | `.spark` | — | 内联 SVG，纯装饰（`aria-hidden`），数据来自 `/ui/api/activity` |
+| 趋势图 | `.overview__spark` | — | 内联 SVG，纯装饰（`aria-hidden`），数据来自 `/ui/api/activity` |
 | 主搜索 | `.omnibox` | `data-busy` | 44px 高，`⌘K`/`/` 聚焦，自带清空 |
 | 筛选条 | `.filters` | — | 类型 chips、收藏、回收站、时间、抽屉入口 |
 | 类型 chips | `.chips` / `.chip` | `aria-pressed` | 取代 V1 的 `.segmented` |
@@ -252,11 +252,11 @@ V2 的三处升级：
 | 时间分组头 | `.daymark` | — | sticky 小标题（今天/昨天/本周/更早 或具体日期） |
 | 行 | `.item` | `data-selected`, `data-flashing`, `data-leaving` | 内容两行 + 操作列 |
 | 类型条 | `.item__kind` | `data-type="Text\|Image\|File\|Group"` | 4px 左色条 |
-| 预览 | `.preview-cell` | — | 文本截断 / 缩略图 / 文件图标 |
+| 预览 | `.entry`（行内）/ `.item`（外层） | — | 文本截断 / 缩略图 / 文件图标 |
 | 行操作 | `.rowops` | — | 主操作 + ☆ + 📌 + `⋯` |
-| 溢出菜单 | `.menu` | `data-open` | 预览、重命名？、删除（`<dialog>` 或 popover） |
-| 批量条 | `.batchbar` | `data-count` | 底部悬浮，选中 ≥1 条出现 |
-| 抽屉 | `.drawer` | `data-open` | 时间范围/页大小/排序/紧凑模式/清理状态 |
+| 溢出菜单 | `.menu` | 原生 `hidden` | 预览、重命名？、删除（`data-open` 只有 `removeAttribute`、无 setter 也无消费者） |
+| 批量条 | `.batchbar` | — | 底部悬浮，选中 ≥1 条出现；条数在 `.batchbar__count` 文本里（无 `data-count`） |
+| 抽屉 | `.drawer` | 原生 `[open]` | 时间范围/页大小/排序/紧凑模式/清理状态 |
 | 按钮 | `.btn` | `data-loading`, `data-state="ok"` | 沿用 V1 的就地状态机 |
 | 图标按钮 | `.icon-btn` | 同上 | |
 | 徽标 | `.tag` | `data-tone` | 收藏/置顶/数据缺失等状态 |
@@ -360,7 +360,7 @@ public/
 │           ├── ghost.js       骨架屏
 │           └── toast.js       提示条 + **原地状态**（`setPending` / `flashOk`）
 ├── ui_old/                    V1（冻结存档，加弃用横幅；见该目录 README.md）
-└── ……（`ui_old/` 内是 V1 的全部文件，含它自己的 6 张样式表与 23 个 JS 模块）
+└── ……（`ui_old/` 内是 V1 的全部文件，含它自己的 7 张样式表与 24 个 JS 模块）
 ```
 
 **分层纪律**（可被测试校验）：`ui/*` 组件**不得** import `api.js`——
