@@ -1,0 +1,219 @@
+/* 动效层：集中所有“会动的东西”，并给出 reduced-motion 的等价降级。
+ *
+ * 准入规则只有一条：**每个动效都必须对应一个真实的内容事件**，关掉它以后信息不丢。
+ * 当前清单（与 docs/ui.md §8 的表一一对应，改这里就同步改那张表）：
+ *   1. 行入场      —— 只在新视图（首次加载/翻页/改筛选）时错峰出现，不用于轮询刷新（否则整页像幻灯片）
+ *   2. 行高亮闪一次 —— 内容变化时：轮询发现新记录、或某行被对账判定为「被别的设备改了」
+ *   3. 行离场淡出   —— 删除成功后就地收掉那一行（只淡出不做位移，表格行位移会让整列错位）
+ *   4. 成功对勾弹入 —— 原地成功态（复制/下载/删除等动作做成）
+ *   5. 星标弹出     —— 收藏状态改变
+ *   6. 浮层进出     —— 对话框与提示条，用原生 <dialog> + @starting-style
+ *   7. 视图过渡     —— 翻页/改筛选后的结果区替换（被中止是正常路径，见 js/dom.js）
+ * 不做：滚动淡入（B2）、统一上浮（B1）、页面级入场动画（B4）、装饰性循环动效。
+ *
+ * 关键约束：**关掉动效后页面必须完全可用**（B8）。所以默认状态一律是“可见”，
+ * 动画只负责从不可见过渡到可见，且每处都有 prefers-reduced-motion 分支；
+ * 任何“只靠动画事件收尾”的动作都必须另有兜底（如行离场的定时器），否则关闭动效后会留下僵尸节点。 */
+
+/* ============ 行入场 ============ */
+@media (prefers-reduced-motion: no-preference) {
+  .row[data-enter="true"] {
+    animation: row-in var(--dur-standard) var(--ease-out-expo) backwards;
+    animation-delay: calc(var(--row-index, 0) * 40ms); /* tight-grid：数据表用 40ms 档 */
+  }
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ============ 新记录高亮：只闪一次，落在最终态 ============ */
+@media (prefers-reduced-motion: no-preference) {
+  .row[data-flash="true"] {
+    animation: row-flash 1600ms var(--ease-standard) 1;
+  }
+}
+
+@keyframes row-flash {
+  from {
+    background-color: var(--accent-soft);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* ============ 行离场（删除成功后就地收掉那一行）============
+ * 只淡出、不做位移：这是表格行，位移会让整列短暂错位。 */
+@media (prefers-reduced-motion: no-preference) {
+  .row[data-leaving="true"] {
+    animation: row-out var(--dur-fast) var(--ease-standard) forwards;
+  }
+}
+
+@keyframes row-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* ============ 星标：按下即弹，用 linear() 表达过冲（cubic-bezier 做不到）============ */
+@media (prefers-reduced-motion: no-preference) {
+  .star-btn[data-pop="true"] svg {
+    animation: star-pop var(--dur-standard) var(--ease-pop);
+  }
+}
+
+@keyframes star-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.32);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ============ 对话框：原生 showModal + @starting-style ============
+ * 整段包在 @supports 里：不支持 transition-behavior: allow-discrete 的浏览器
+ * 若被套用 `opacity: 0` 的默认值，对话框会**永远看不见**——这正是不该出现的那种失败。 */
+@supports (transition-behavior: allow-discrete) {
+  @media (prefers-reduced-motion: no-preference) {
+    .dialog {
+      opacity: 0;
+      translate: 0 8px;
+      transition:
+        opacity var(--dur-standard) var(--ease-out-expo),
+        translate var(--dur-standard) var(--ease-out-expo),
+        overlay var(--dur-standard) allow-discrete,
+        display var(--dur-standard) allow-discrete;
+    }
+
+    .dialog[open] {
+      opacity: 1;
+      translate: 0 0;
+    }
+
+    @starting-style {
+      .dialog[open] {
+        opacity: 0;
+        translate: 0 8px;
+      }
+    }
+
+    .dialog::backdrop {
+      opacity: 0;
+      transition:
+        opacity var(--dur-standard) var(--ease-standard),
+        overlay var(--dur-standard) allow-discrete,
+        display var(--dur-standard) allow-discrete;
+    }
+
+    .dialog[open]::backdrop {
+      opacity: 1;
+    }
+
+    @starting-style {
+      .dialog[open]::backdrop {
+        opacity: 0;
+      }
+    }
+  }
+}
+
+/* ============ 提示条 ============ */
+@media (prefers-reduced-motion: no-preference) {
+  .toast {
+    animation: toast-in var(--dur-standard) var(--ease-out-expo);
+  }
+
+  /* 离场：瞬时提示也该有收尾，硬切会读成「页面闪了一下」 */
+  .toast[data-leaving="true"] {
+    animation: toast-out var(--dur-fast) var(--ease-standard) forwards;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+
+/* ============ 原地成功态 ============
+ * 对勾落进按钮的那一刻弹一下，让「结果出现在你按的地方」这件事被看见。 */
+@media (prefers-reduced-motion: no-preference) {
+  .btn[data-state="ok"] svg,
+  .icon-btn[data-state="ok"] svg {
+    animation: ok-pop var(--dur-standard) var(--ease-pop);
+  }
+}
+
+@keyframes ok-pop {
+  0% {
+    scale: 0.6;
+    opacity: 0;
+  }
+  60% {
+    scale: 1.08;
+  }
+  100% {
+    scale: 1;
+    opacity: 1;
+  }
+}
+
+/* ============ 视图过渡 ============
+ * 跨文档（登录页 → 列表页）由 CSS 声明；同文档（翻页/改筛选后的结果区）由 JS 调
+ * document.startViewTransition 触发，故这里给结果区一个稳定的名字。 */
+@view-transition {
+  navigation: auto;
+}
+
+.results {
+  view-transition-name: results;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(results),
+  ::view-transition-new(results) {
+    animation-duration: var(--dur-medium);
+    animation-timing-function: var(--ease-out-expo);
+  }
+}
+
+/* ============ 降级：prefers-reduced-motion ============
+ * 不是“少动一点”，而是“不动且完整”。任何被动画控制的可见性都在这里恢复为终态。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .row[data-enter="true"],
+  .row[data-flash="true"] {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  .results {
+    view-transition-name: none;
+  }
+}

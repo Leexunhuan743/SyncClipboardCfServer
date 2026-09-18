@@ -716,7 +716,13 @@ async function makeHub(setAlarm: (t: number) => void) {
       setAlarm(t);
     },
   };
-  return new SyncClipboardHub({ storage } as never, {} as never) as unknown as HubInternals;
+  // 真实 DO 的 state 一定实现 blockConcurrencyWhile（本轮 F7 用它做启动期状态加载）；
+  // 桩缺它会让 DO 构造抛错 —— 属于桩与真实接口不一致，不是被测量行为。
+  const state = {
+    storage,
+    blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  };
+  return new SyncClipboardHub(state as never, {} as never) as unknown as HubInternals;
 }
 
 describe('F10 · 死连接清理（半开 TCP 不会产生 close/error 事件）', () => {
@@ -907,7 +913,7 @@ describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式
 
 describe('F21 · 附件响应加固（同源存储型 XSS 面）', () => {
   it('可渲染类型：强制下载 + CSP 沙箱；普通类型不加 disposition（保留内联预览）', async () => {
-    const { fileHeaders, contentTypeOf } = await import('../src/routes/webdav');
+    const { fileHeaders, contentTypeOf } = await import('../src/contentTypes');
 
     for (const name of ['evil.html', 'page.xhtml', 'vec.svg', 'doc.xml']) {
       const h = fileHeaders(name);
@@ -930,7 +936,7 @@ describe('F21 · 附件响应加固（同源存储型 XSS 面）', () => {
   });
 
   it('已知大小时带 content-length；未知时省略', async () => {
-    const { fileHeaders } = await import('../src/routes/webdav');
+    const { fileHeaders } = await import('../src/contentTypes');
     expect(fileHeaders('a.png', 1234).get('content-length')).toBe('1234');
     expect(fileHeaders('a.png').get('content-length')).toBeNull();
   });
@@ -938,7 +944,7 @@ describe('F21 · 附件响应加固（同源存储型 XSS 面）', () => {
 
 describe('F20 · 借鉴同类项目审计的加固（原型链 / 配置诊断 / 常量时间比较）', () => {
   it('contentTypeOf 不受原型链影响：x.constructor 回退 octet-stream，正常扩展仍生效', async () => {
-    const { contentTypeOf } = await import('../src/routes/webdav');
+    const { contentTypeOf } = await import('../src/contentTypes');
     // 修复前：CONTENT_TYPES['constructor'] 命中 Object.prototype.constructor（函数）→ 非法头
     for (const evil of ['x.constructor', 'a.tostring', 'b.valueof', 'c.__proto__', 'd.hasownproperty']) {
       expect(contentTypeOf(evil), evil).toBe('application/octet-stream');

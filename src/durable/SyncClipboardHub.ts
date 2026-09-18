@@ -10,8 +10,27 @@
 //          POST 上报客户端消息，DELETE 关闭连接
 // 三种传输共用同一套心跳（15s Ping）与静默清理（60s），因为客户端 ServerTimeout 对三者一致。
 import { parseClientMessage, handshakeResponse, invocationMessage, closeMessage, pingMessage } from './signalr';
-import { checkBasicAuth, unauthorized, isAuthConfigured, drainRequestBody } from '../auth';
+import {
+  basicAuthUsername,
+  checkBasicAuth,
+  unauthorized,
+  tooManyRequests,
+  isAuthConfigured,
+  drainRequestBody,
+} from '../auth';
 import { REGISTER_TOKEN_PATH } from '../hub';
+import {
+  AUTH_RATE_LIMIT_PATH,
+  AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES,
+  AUTH_RATE_LIMIT_STORAGE_KEY,
+  AUTH_RATE_LIMIT_WINDOW_MS,
+  applyAuthFailure,
+  authLimitKeys,
+  authLimitRetryAfterSeconds,
+  isAuthLimitBlocked,
+  pruneAuthLimits,
+} from '../rateLimit';
+import type { AuthLimitState } from '../rateLimit';
 import { Bindings } from '../env';
 
 const BROADCAST_PATH = '/broadcast';
@@ -27,6 +46,12 @@ const IDLE_TIMEOUT_MS = 60_000;
 const POLL_TIMEOUT_MS = 25_000;
 const TOKEN_PREFIX = 'tok:';
 
+// 长轮询单连接队列上限（F9 第四类封顶）：无上限时一次写可让 N 条连接各积压整条消息
+// （实测 30 连接 × 1.6MB = 48MB，单连接累积 4.5MB）。超限按「服务端关闭」语义结束该连接
+// （下一次轮询 204，客户端据此停止轮询），不发明新的状态码。
+export const MAX_QUEUED_MESSAGES = 64;
+export const MAX_QUEUED_BYTES = 1_000_000;
+
 // 长轮询响应头（禁用缓存，避免中间代理复用空响应）
 const POLL_HEADERS: Record<string, string> = {
   'content-type': 'text/plain; charset=utf-8',
@@ -39,6 +64,8 @@ const POLL_HEADERS: Record<string, string> = {
 interface LongPollClient {
   id: string;
   queue: string[];
+  /** queue 中消息的字节数（UTF-16 码元数，仅用于封顶判定） */
+  queuedBytes: number;
   pending: ((response: Response) => void) | null;
   pollSeq: number;
   lastSeen: number;
@@ -53,6 +80,20 @@ interface SseClient {
   closed: boolean;
 }
 
+// 限速端点的请求体解析（body 是内部调用方构造的，但仍按不可信输入做形状校验）
+function readAuthLimitOp(body: unknown): 'report' | 'snapshot' | 'clear' | null {
+  if (typeof body !== 'object' || body === null || !('op' in body)) return null;
+  const op = body.op;
+  return op === 'report' || op === 'snapshot' || op === 'clear' ? op : null;
+}
+
+function readAuthLimitKeys(body: unknown): string[] {
+  if (typeof body !== 'object' || body === null || !('keys' in body)) return [];
+  const raw = body.keys;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((key): key is string => typeof key === 'string' && key !== '').slice(0, 8);
+}
+
 export class SyncClipboardHub {
   // WebSocket 连接（含最后活跃时间，用于静默清理）
   private wsClients = new Map<WebSocket, number>();
@@ -60,14 +101,37 @@ export class SyncClipboardHub {
   private lpClients = new Map<string, LongPollClient>();
   private state: DurableObjectState;
   private env: Bindings;
+  // 认证失败计数的权威副本（F7；Worker 侧 src/rateLimit.ts 调用本 DO 的 AUTH_RATE_LIMIT_PATH）。
+  // DO 单线程，计数天然串行化，无需额外的锁或事务。
+  private authLimits = new Map<string, AuthLimitState>();
+  private authFailuresSincePersist = 0;
+  private burstWindowStart = 0;
+  private burstCount = 0;
 
   constructor(state: DurableObjectState, env: Bindings) {
     this.state = state;
     this.env = env;
+    // 低频落盘的计数在 DO 重启后恢复。丢失等价于计数归零（最坏多给阈值次失败），故为尽力而为。
+    state.blockConcurrencyWhile(async () => {
+      try {
+        const saved = await state.storage.get<Record<string, AuthLimitState>>(
+          AUTH_RATE_LIMIT_STORAGE_KEY,
+        );
+        if (saved) this.authLimits = new Map(Object.entries(saved));
+      } catch {
+        /* 读取失败按空表起算 */
+      }
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    // 认证失败限速端点：仅 Worker（src/rateLimit.ts）经 HUB binding 调用，
+    // 外部请求不会路由到这里（index.ts 只把 HUB_PATH / negotiate 转发给 DO）。
+    if (url.pathname === AUTH_RATE_LIMIT_PATH && request.method === 'POST') {
+      return this.handleAuthRateLimit(request);
+    }
 
     // 广播入口（Worker 写操作后调用；上游 _hubContext.Clients.All 等价）
     if (url.pathname === BROADCAST_PATH && request.method === 'POST') {
@@ -97,10 +161,11 @@ export class SyncClipboardHub {
         { status: 500 },
       );
     }
-    if (!(await this.isConnectionAuthorized(url, request))) {
+    const denied = await this.connectionAuthFailure(url, request);
+    if (denied !== null) {
       // 先排空请求体再返回：否则带 body 的 POST 会触发运行时错误并变成 503
       await drainRequestBody(request);
-      return unauthorized();
+      return denied;
     }
 
     // WebSocket 升级
@@ -236,7 +301,7 @@ export class SyncClipboardHub {
     const id = url.searchParams.get('id') ?? '';
     let lp = this.lpClients.get(id);
     if (!lp) {
-      lp = { id, queue: [], pending: null, pollSeq: 0, lastSeen: Date.now(), closed: false };
+      lp = { id, queue: [], queuedBytes: 0, pending: null, pollSeq: 0, lastSeen: Date.now(), closed: false };
       this.lpClients.set(id, lp);
       this.scheduleHeartbeat();
       return new Response(null, { status: 200, headers: POLL_HEADERS });
@@ -248,6 +313,7 @@ export class SyncClipboardHub {
     const queued = lp.queue.join('');
     if (queued !== '') {
       lp.queue = [];
+      lp.queuedBytes = 0;
       return new Response(queued, { status: 200, headers: POLL_HEADERS });
     }
     return this.waitForClientMessage(lp);
@@ -285,7 +351,7 @@ export class SyncClipboardHub {
     // 长轮询客户端可能先发 POST（异常时序）；此处按需补建连接，避免消息被丢弃
     let lp = this.lpClients.get(id);
     if (!lp && !this.sseClients.has(id)) {
-      lp = { id, queue: [], pending: null, pollSeq: 0, lastSeen: Date.now(), closed: false };
+      lp = { id, queue: [], queuedBytes: 0, pending: null, pollSeq: 0, lastSeen: Date.now(), closed: false };
       this.lpClients.set(id, lp);
     }
     if (lp) lp.lastSeen = Date.now();
@@ -354,8 +420,86 @@ export class SyncClipboardHub {
         this.settlePoll(lp, new Response(message, { status: 200, headers: POLL_HEADERS }));
       } else {
         lp.queue.push(message);
+        lp.queuedBytes += message.length;
+        // 排队意味着客户端已停止轮询；超过上限说明它不会再来取，按「服务端关闭」结束连接，
+        // 避免广播被无界地堆在内存里（F9：一次写 30 连接 × 1.6MB = 48MB）。
+        if (lp.queue.length > MAX_QUEUED_MESSAGES || lp.queuedBytes > MAX_QUEUED_BYTES) {
+          console.log(
+            `[hub] queue overflow, closing client id=${lp.id} messages=${lp.queue.length} bytes=${lp.queuedBytes}`,
+          );
+          // 与既有「服务端关闭」路径一致：保留 closed 标记（挂起中的轮询以 204 结束，
+          // 之后的轮询同样 204），由客户端主动 DELETE 或静默清理回收条目。
+          lp.closed = true;
+          lp.queue = [];
+          lp.queuedBytes = 0;
+          this.settlePoll(lp, new Response(null, { status: 204 }));
+          this.scheduleHeartbeat();
+        }
       }
     }
+  }
+
+  // ---------- 认证失败限速（F7）----------
+
+  // Worker 侧 src/rateLimit.ts 的内部端点。op：
+  //   report   —— 记一次失败（窗口内累加；达阈值即产生封锁），返回这些 key 的封锁状态
+  //   snapshot —— 只读：返回这些 key 当前的封锁状态（跨 isolate 传播权威封锁）
+  //   clear    —— 认证成功，清除这些 key 的失败计数
+  private async handleAuthRateLimit(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response('invalid JSON body', { status: 400 });
+    }
+    const op = readAuthLimitOp(body);
+    const keys = readAuthLimitKeys(body);
+    if (op === null || keys.length === 0) {
+      return new Response('op must be report|snapshot|clear and keys a non-empty string array', {
+        status: 400,
+      });
+    }
+    const now = Date.now();
+    if (op === 'report') {
+      for (const key of keys) {
+        this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now));
+        this.countBurst(now);
+      }
+      pruneAuthLimits(this.authLimits, now);
+      this.persistAuthLimits(now);
+    } else if (op === 'clear') {
+      for (const key of keys) {
+        this.authLimits.delete(key);
+      }
+    }
+    const blocks: Record<string, number> = {};
+    for (const key of keys) {
+      const state = this.authLimits.get(key);
+      if (state !== undefined && isAuthLimitBlocked(state, now)) blocks[key] = state.blockedUntil;
+    }
+    return Response.json({ blocks, burst: this.burstCount });
+  }
+
+  // 全局失败计数（仅在**告警**中使用；封锁只按 ip/user 维度，避免攻击者用垃圾请求锁死合法用户）
+  private countBurst(now: number): void {
+    if (now - this.burstWindowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
+      this.burstWindowStart = now;
+      this.burstCount = 0;
+    }
+    this.burstCount++;
+  }
+
+  // 低频落盘：每 N 次失败落一次（失败路径不做同步存储写，也不写 D1）
+  private persistAuthLimits(now: number): void {
+    const blocked = [...this.authLimits.values()].some((state) => isAuthLimitBlocked(state, now));
+    this.authFailuresSincePersist++;
+    if (!blocked && this.authFailuresSincePersist < AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES) return;
+    this.authFailuresSincePersist = 0;
+    const snapshot: Record<string, AuthLimitState> = {};
+    for (const [key, state] of this.authLimits) snapshot[key] = state;
+    void this.state.storage.put(AUTH_RATE_LIMIT_STORAGE_KEY, snapshot).catch(() => {
+      /* 落盘失败不影响限速判定（内存态仍然生效） */
+    });
   }
 
   // ---------- 心跳与清理 ----------
@@ -445,20 +589,37 @@ export class SyncClipboardHub {
     await this.state.storage.put(TOKEN_PREFIX + token, now + TOKEN_TTL_MS);
   }
 
-  // 连接鉴权：negotiate 签发的有效 token，或直接携带有效 Basic 凭据
-  private async isConnectionAuthorized(url: URL, request: Request): Promise<boolean> {
+  // 连接鉴权 + 失败限速（F7）。WS/SSE/长轮询的鉴权在 DO 内完成、不经过 Worker 的 authFailure，
+  // 因此这里用**同一套 key 约定与同一个状态机**直接在 DO 内判定（DO 自己就是权威存储，零额外往返）。
+  // 返回 Response 表示拒绝（401/429），null 表示通过。
+  private async connectionAuthFailure(url: URL, request: Request): Promise<Response | null> {
     const token = url.searchParams.get('id');
     if (token) {
       try {
         const expiry = await this.state.storage.get<number>(TOKEN_PREFIX + token);
-        if (typeof expiry === 'number' && expiry > Date.now()) {
-          return true;
-        }
+        if (typeof expiry === 'number' && expiry > Date.now()) return null;
       } catch {
         /* 读取失败按未授权处理 */
       }
     }
-    return checkBasicAuth(this.env, request);
+    const now = Date.now();
+    const keys = authLimitKeys(request, basicAuthUsername(request));
+    for (const key of keys) {
+      const state = this.authLimits.get(key);
+      if (state !== undefined && isAuthLimitBlocked(state, now)) {
+        return tooManyRequests(authLimitRetryAfterSeconds(state, now));
+      }
+    }
+    if (checkBasicAuth(this.env, request)) {
+      for (const key of keys) this.authLimits.delete(key); // 成功即清零
+      return null;
+    }
+    for (const key of keys) {
+      this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now));
+    }
+    pruneAuthLimits(this.authLimits, now);
+    this.persistAuthLimits(now);
+    return unauthorized();
   }
 
   // ---------- 广播 ----------

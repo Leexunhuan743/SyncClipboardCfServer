@@ -1,7 +1,7 @@
 // HTTP 协议黑盒测试（docs/protocol.md §4-§5）
 // 前置：本地 dev server 已运行（npm run dev），BASE 默认 http://127.0.0.1:8787
 import { describe, expect, it, beforeAll } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { assertWritableTarget } from './support/target-guard';
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787';
@@ -229,7 +229,11 @@ describe('历史 API', () => {
   });
 
   it('PATCH 不存在 → 404', async () => {
-    const res = await req('/api/history/Text/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', {
+    // 目标必须是**本文件不会产生、且外部也几乎不可能留下**的 hash：同文件 :140/:186 用的是
+    // 共享常量 'A'.repeat(64)（那两处期望 400，不会落库），但历史探针在本地库留下过同 hash 的
+    // 软删行 ⇒ 这条会在本机红、CI 绿。用每次运行唯一的 64 位小写 hex（服务端 hash 大小写不敏感）。
+    const absentHash = (randomUUID() + randomUUID()).replace(/-/g, '');
+    const res = await req(`/api/history/Text/${absentHash}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version: 1 }),

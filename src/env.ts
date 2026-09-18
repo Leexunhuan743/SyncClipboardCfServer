@@ -8,4 +8,7 @@ export interface Bindings {
   HISTORY_RETENTION_MINUTES: string;
   USERNAME: string;
   PASSWORD: string;
+  // 弱凭据硬失败开关（F1）。默认关：线上当前使用的就是文档化默认口令，硬失败会直接切断同步；
+  // 置为 'true' 时，命中弱值的凭据一律 500（fail-closed），用于轮换完成后的强制收紧。
+  ENFORCE_STRONG_CREDENTIALS?: string;
 }

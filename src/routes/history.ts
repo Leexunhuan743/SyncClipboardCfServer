@@ -6,7 +6,6 @@ import { R2Storage } from '../storage';
 import { addRecordDto, BadRequestError, NotFoundError, ProfileDataInvalidError, IncomingRecord } from '../profile';
 import {
   entityToDto,
-  entityToDtoWire,
   entityToUpdateDto,
   parseProfileType,
   parseProfileTypeFilter,
@@ -15,10 +14,13 @@ import {
   updateDtoToJson,
   historyDtoToJson,
   historyListToJson,
+  historySizeMB,
   InvalidQueryValueError,
+  normalizeSearchText,
 } from '../serialization';
 import { ProfileType, HistoryQueryDto, INT32_MIN, INT32_MAX, isValidProfileHash } from '../types';
 import { broadcast } from '../hub';
+import { applyHistoryUpdate } from '../historyOps';
 import { parseBoundary, parseMultipart, MultipartResult } from '../multipart';
 
 const UNPROCESSABLE_ENTITY = 422;
@@ -100,7 +102,8 @@ function parseQueryForm(form: MultipartResult): HistoryQueryDto {
     after: parseDateOrNull(formGet(form, 'After')),
     modifiedAfter: parseDateOrNull(formGet(form, 'ModifiedAfter')),
     types,
-    searchText: formGet(form, 'SearchText') || null,
+    // 超长会让 D1 的 LIKE 直接报错（未处理的 500）⇒ 在入口按字节校验并回 400。
+    searchText: normalizeSearchText(formGet(form, 'SearchText')),
     starred,
     sortByLastAccessed,
   };
@@ -178,10 +181,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   app.get('/api/history/statistics', async (c) => {
     const { db, storage } = handlers(c);
     const bytes = await storage.totalHistorySize();
-    let mb = bytes / (1024.0 * 1024.0);
-    mb = Math.round(mb * 100) / 100;
-    if (bytes > 0 && mb === 0) mb = 0.01;
-    const stats = await db.statistics(mb);
+    const stats = await db.statistics(historySizeMB(bytes));
     return c.json(stats, 200);
   });
 
@@ -217,11 +217,17 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     if (!obj) {
       return c.text('Not Found', 404);
     }
+    // 出口统一编码（与 contentTypes.ts:92 / ui/routes.ts:168 同款）：写路径不拦控制字符
+    // （既有坏数据也必须可下载），因此 dataName 可能含 CR/LF/NUL——原样拼进头值会让
+    // Response 构造抛 TypeError，使该条记录的 /data 恒 500（F5）。
+    //   filename=   ASCII 兜底串（控制字符与非 ASCII → `_`；去掉会破坏引号串的 `"` 与 `\`）
+    //   filename*=  RFC 5987，encodeURIComponent 把控制字符编码为 %XX（仍是合法头值）
+    const asciiName = fileName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '');
     return new Response(obj.body, {
       headers: {
         'content-type': 'application/octet-stream',
         'x-content-type-options': 'nosniff',
-        'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}; filename="${fileName.replace(/"/g, '')}"`,
+        'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
       },
     });
   });
@@ -295,7 +301,6 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
 
   // PATCH /api/history/{type}/{hash} —— 部分更新（版本/时间戳判定，409 冲突）
   app.patch('/api/history/:type/:hash', async (c) => {
-    const { db, storage } = handlers(c);
     const type = parseProfileType(c.req.param('type')!);
     if (type === undefined) {
       return c.text('Bad Request', 400);
@@ -312,19 +317,13 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
       return c.text('Bad Request', 400);
     }
 
-    const result = await db.updateHistory(type, hash, dto);
-    if (result.updated === null || result.entity === null) {
+    // 判定 + 广播 + 数据目录清理都在 applyHistoryUpdate 里（与 UI 的收藏/删除共用同一实现）
+    const result = await applyHistoryUpdate(c.env, type, hash, dto);
+    if (result.kind === 'notFound') {
       return c.text('Not Found', 404);
     }
-    if (result.updated === false) {
+    if (result.kind === 'conflict') {
       return c.json(JSON.parse(updateDtoToJson(entityToUpdateDto(result.entity))), 409);
-    }
-
-    // 与 PUT /SyncClipboard.json、POST /api/history 一致：广播在响应返回前 await 完成。
-    // 裸调用是 floating promise，Workers 不保证响应后继续执行，推送会非确定性丢失（F6）。
-    await broadcast(c.env, 'RemoteHistoryChanged', entityToDtoWire(result.entity));
-    if (result.entity.isDeleted) {
-      await storage.deleteHistoryWorkingDir(result.entity.type, result.entity.hash);
     }
     return c.body(null, 200);
   });

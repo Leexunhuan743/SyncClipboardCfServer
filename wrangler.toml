@@ -39,5 +39,15 @@ HISTORY_RETENTION_MINUTES = "10080"
 [triggers]
 crons = ["17 * * * *"]
 
+# ============ 静态资源（Web UI）============
+# public/ui/ 下的文件由 Cloudflare 直接托管、不经过 Worker：
+#   public/ui/index.html → /ui/      public/ui/js/*.js → /ui/js/*.js
+# 协议路径（/、/api/*、/SyncClipboard.json、/file/*、Hub）都落在 Worker 上，与 /ui/* 无重叠；
+# 没有对应资源的请求（含全部协议请求）继续回落给 Worker 处理。
+# 注意：这里**不能**放 public/index.html —— 根路径要留给 PROPFIND（客户端的探活与目录列举）。
+[assets]
+directory = "./public"
+not_found_handling = "none"
+
 # ============ Secrets（wrangler secret put，不要写进仓库）============
 # USERNAME / PASSWORD —— 与官方服务器相同的 HTTP Basic Auth 凭据

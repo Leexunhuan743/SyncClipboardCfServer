@@ -1,0 +1,90 @@
+/* 登录页自己的样式。列表页不加载这张表。
+ *
+ * 形制：不是“居中卡片 + 大标题 + 两个按钮”的落地页套路，而是一个窄的、
+ * 偏左的凭据面板——上方一行产品标识，下面是真实字段与错误位。 */
+
+.auth {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  padding: var(--sp-5);
+  background:
+    radial-gradient(120% 80% at 12% 0%, var(--accent-soft), transparent 60%),
+    var(--bg);
+}
+
+.auth__panel {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.auth__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.auth__mark {
+  width: 30px;
+  height: 30px;
+  color: var(--accent);
+}
+
+.auth__title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.auth__sub {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+}
+
+.auth__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+}
+
+.auth__error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.auth__error[hidden] {
+  display: none;
+}
+
+.auth__submit {
+  min-height: 40px;
+  width: 100%;
+}
+
+.auth__note {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+.auth__note code {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  padding: 1px 4px;
+  border-radius: 4px;
+}

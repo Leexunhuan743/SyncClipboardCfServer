@@ -24,16 +24,30 @@ export interface MultipartResult {
 
 const CRLF = '\r\n';
 
+// RFC 2046 规定分界串最长 70 字节。此前直接采用请求头里的任意长度分界串，
+// 而分界串查找代价与之成正比（审计实测 64KB 请求体：61 字节分界串 48ms、2048 字节 267ms）。
+export const MAX_BOUNDARY_LENGTH = 70;
+
 export function parseBoundary(contentType: string): string | null {
   const match = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
   if (!match) return null;
-  return match[1] ?? match[2] ?? null;
+  const boundary = match[1] ?? match[2] ?? null;
+  // 超长分界串按「无合法 boundary」处理：调用方据此返回 400，且不必读请求体、不进入解构
+  if (boundary === null || boundary.length > MAX_BOUNDARY_LENGTH) return null;
+  return boundary;
 }
 
 export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartResult {
+  if (boundary.length > MAX_BOUNDARY_LENGTH) {
+    throw new Error(`Invalid multipart: boundary exceeds ${MAX_BOUNDARY_LENGTH} bytes`);
+  }
   const enc = new TextDecoder();
-  const delim = `--${boundary}`;
-  const delimBytes = new TextEncoder().encode(delim);
+  const encoder = new TextEncoder();
+  // 本部分的终止串 = CRLF + "--" + 分界串；分界串本体取其尾部视图（零拷贝）
+  const partTerminator = encoder.encode(CRLF + `--${boundary}`);
+  const delimBytes = partTerminator.subarray(2);
+  // 分界串在循环里被反复查找，编码一次复用（旧实现在每轮循环里新建 TextEncoder 并重编码）
+  const headerTerminator = encoder.encode(CRLF + CRLF);
   const parts: MultipartPart[] = [];
 
   let pos = 0;
@@ -52,7 +66,7 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
 
   while (pos < bytes.length) {
     // 找本部分的 header 结束（\r\n\r\n）
-    const headerEnd = findSubarray(bytes, new TextEncoder().encode(CRLF + CRLF), pos);
+    const headerEnd = findSubarray(bytes, headerTerminator, pos);
     if (headerEnd < 0) {
       throw new Error('Invalid multipart: missing header terminator');
     }
@@ -60,7 +74,7 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
     pos = headerEnd + 4;
 
     // 找本部分 body 结束（\r\n--boundary）
-    const bodyEnd = findSubarray(bytes, new TextEncoder().encode(CRLF + delim), pos);
+    const bodyEnd = findSubarray(bytes, partTerminator, pos);
     if (bodyEnd < 0) {
       throw new Error('Invalid multipart: missing part terminator');
     }
@@ -138,13 +152,21 @@ function extractParam(paramsStr: string, key: string): string | null {
   return m[1] ?? m[2] ?? null;
 }
 
+// 子串查找：先用原生 Uint8Array.indexOf 定位首字节（memchr 级扫描，跳过不可能匹配的区间），
+// 再逐字节校验余部。旧实现在每个起始位置都从头比较整条分界串，代价随分界串长度线性增长，
+// 而分界串完全由请求方控制（F9）。
+// 注意：TypedArray.prototype.indexOf 只按数值搜索（按规范对非数值参数做 ToNumber → NaN → -1），
+// 因此不能把 needle 直接交给它——必须自己扫描首字节。
 function findSubarray(haystack: Uint8Array, needle: Uint8Array, start: number): number {
   if (needle.length === 0) return start;
-  outer: for (let i = start; i <= haystack.length - needle.length; i++) {
-    for (let j = 0; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) continue outer;
-    }
-    return i;
+  const first = needle[0]!;
+  const last = haystack.length - needle.length;
+  let i = haystack.indexOf(first, start);
+  while (i >= 0 && i <= last) {
+    let j = 1;
+    while (j < needle.length && haystack[i + j] === needle[j]) j++;
+    if (j === needle.length) return i;
+    i = haystack.indexOf(first, i + 1);
   }
   return -1;
 }

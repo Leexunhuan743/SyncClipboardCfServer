@@ -31,7 +31,10 @@ const MARK = `qf-${RUN}`;
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex').toUpperCase();
 
 const DAY = 24 * 60 * 60 * 1000;
-const NOW = Date.now();
+// 夹具锚点放在**远期**：协议查询固定 50 条/页，且按上游语义**不过滤软删行**，
+// 而本套件的 afterAll 只做软删 ⇒ 历次本地运行的夹具都会留在排序窗口里，把本轮最老的一条挤出第 1 页
+// （CI 用全新库所以不会遇到）。取远期锚点后，本轮夹具必然压过所有历史残留，断言无需放宽。
+const NOW = Date.now() + 3000 * 24 * 60 * 60 * 1000;
 
 // 排序用的两个字段取**未来**值：这两种排序都是 DESC，只有比库里既有记录都新，
 // 本次的 3 条才保证落在首页（页大小固定 50），否则断言会被挤到第 2 页。
@@ -206,9 +209,9 @@ afterAll(async () => {
       res = await req(`/api/history/Text/${hash}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        // lastModified 取 now：这三条的旧值是**过去**值，故 ShouldUpdate 允许本次覆盖
-        // （若旧值在未来，这里会被判为 409，记录删不掉 —— 见文件头对时间戳的说明）
-        body: JSON.stringify({ isDelete: true, version: 10_000, lastModified: new Date().toISOString() }),
+        // lastModified 必须 **≥ 记录现值**：ShouldUpdate 在时间差超阈值时要求新值不倒退（否则 409、删不掉）。
+        // 夹具锚点 NOW 是远期值，故这里取 NOW + 1s 而不是 new Date()（见文件头对时间戳的说明）。
+        body: JSON.stringify({ isDelete: true, version: 10_000, lastModified: new Date(NOW + 1000).toISOString() }),
       });
     } catch (err) {
       failed.push(`${suffix}: ${(err as Error).message}`);

@@ -38,6 +38,10 @@ SyncClipboard 客户端支持三类服务端，能力并不相同：
 - **数据完整性校验**：Text / File / Image / Group 四类哈希算法逐字节对齐上游 C# 实现，
   服务端校验上传数据（不符即拒绝），避免坏数据在设备间扩散
 - **保留与清理**：Cron Trigger 定时执行保留期裁剪、条数上限、已删除记录硬删与孤儿对象清理
+- **Web 历史界面**（`/ui/`）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
+  支持文本复制、图片预览、文件下载、收藏置顶、批量删除与部署信息。
+  界面与官方 API 读写同一套数据，写操作走与官方 `PATCH` 相同的实现（含广播与数据清理）。
+  详见 [`docs/ui.md`](docs/ui.md)
 - **健壮性**：并发写入用唯一索引 + 乐观并发控制；大文件上传零冗余拷贝；
   WebSocket 升级需鉴权；附件响应带 `nosniff` / CSP 防护
 
@@ -48,12 +52,15 @@ flowchart LR
     C1["官方客户端 A"] -->|HTTP Basic| W
     C2["官方客户端 B"] -->|HTTP Basic| W
     C3["WebDAV 客户端"] -->|HTTP Basic| W
+    B["浏览器"] -->|会话 Cookie 或 Basic| W
+    B -.静态资源.-> AS["Cloudflare 静态资源<br/>public/ui/**"]
 
     subgraph W["Cloudflare Worker（Hono）"]
         AUTH[鉴权中间件]
         DAV["WebDAV 端点<br/>SyncClipboard.json / file/*"]
         API["官方 API<br/>/api/time /api/version /api/history/*"]
         NEG["SignalR negotiate"]
+        UI["Web 界面 API<br/>/ui/api/*"]
     end
 
     W --> D1[("D1<br/>历史记录 + 当前 Profile")]
@@ -63,6 +70,7 @@ flowchart LR
     C2 <-->|WebSocket| DO
     DAV -.写后广播.-> DO
     API -.写后广播.-> DO
+    UI -.写后广播.-> DO
     DO -.RemoteProfileChanged / RemoteHistoryChanged.-> C1
     DO -.RemoteProfileChanged / RemoteHistoryChanged.-> C2
 ```
@@ -73,6 +81,11 @@ flowchart LR
 | **D1**（SQLite） | 历史记录与当前 Profile 元数据 |
 | **R2** | 剪贴板数据文件（`file/` 暂存区 + `history/` 持久区） |
 | **Durable Objects** | SignalR 兼容 Hub：持有 WebSocket 连接、心跳、全员广播 |
+| **静态资源**（`public/ui/**`） | Web 界面本体，由 Cloudflare 直接托管（不经过 Worker）；`/ui/` 下的请求命中资源即返回，其余（含全部协议路径）回落给 Worker |
+
+协议面与界面面**严格分离**：`/api/history/*`、`/SyncClipboard.json`、`/file/*` 是客户端依赖的契约，
+界面只读同一套数据（另开 `/ui/api/*` 表达页大小、排序、选择集等界面需要），写操作与官方 `PATCH`
+共用同一实现。详见 [`docs/ui.md`](docs/ui.md)。
 
 ## 兼容性
 
@@ -80,7 +93,7 @@ flowchart LR
 
 | 类别 | 端点 |
 |---|---|
-| 基础 | `GET /`、`GET /api/version`、`GET /api/time` |
+| 基础 | `GET /`（浏览器导航会 302 到 Web 界面 `/ui/`）、`GET /api/version`、`GET /api/time` |
 | WebDAV | `GET`/`PUT /SyncClipboard.json`、`GET`/`HEAD`/`PUT`/`DELETE /file/*`、`PROPFIND`、`MKCOL` |
 | 历史 | `GET /api/history/{profileId}`、`GET /api/history/{profileId}/data`、`POST /api/history`、`POST /api/history/query`、`PATCH /api/history/{type}/{hash}`、`GET /api/history/statistics`、`DELETE /api/history/clear` |
 | 实时 | `/SyncClipboardHub`（negotiate + WebSocket） |
@@ -104,7 +117,7 @@ cp .dev.vars.example .dev.vars     # 填入 USERNAME / PASSWORD
 npm run dev                        # → http://127.0.0.1:8787
 ```
 
-运行测试（8 个套件、143 个用例）：
+运行测试（18 个套件）：
 
 ```bash
 npm run typecheck                  # tsc --noEmit
@@ -119,8 +132,8 @@ npm test
 > `npm run dev` 以 `--test-scheduled` 启动，使 `cleanup` 套件能经 `GET /__scheduled`
 > 触发真实 Cron 处理器；若你自己用 `wrangler dev` 不带该参数启动，该套件会跳过并提示原因。
 
-**写库套件默认只允许指向本机**：六个 HTTP/SignalR 套件（`protocol`、`fix-regressions`、
-`transports`、`signalr`、`cleanup`、`query-filters`）会创建/删除历史记录与 R2 对象，
+**写库套件默认只允许指向本机**：七个套件（`protocol`、`fix-regressions`、`transports`、
+`signalr`、`cleanup`、`query-filters`、`ui`）会创建/删除历史记录与 R2 对象，
 因此 `BASE` 非 `127.0.0.1`/`localhost` 时会**直接拒绝运行**。确实要指向一次性实例时显式放行：
 
 ```bash
@@ -152,7 +165,7 @@ npx wrangler r2 bucket create syncclipboard
 # 2. 初始化线上 D1 schema（幂等，可重复执行）
 npx wrangler d1 execute syncclipboard --remote --file=./schema.sql
 
-# 3. 设置 Basic Auth 凭据（一次性，长期生效；请用强密码）
+# 3. 设置 Basic Auth 凭据（一次性，长期生效；必须使用高熵随机口令，见「安全基线」）
 npx wrangler secret put USERNAME
 npx wrangler secret put PASSWORD
 
@@ -167,11 +180,15 @@ npm run deploy
 
 仓库内置 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)：
 
-- **触发**：push 到 `master`，或 Actions 页面手动运行（`workflow_dispatch`）
+- **触发**：push 到 `master` **且改动涉及产品代码或构建输入**，或 Actions 页面手动运行
+  （`workflow_dispatch`）。白名单见 `deploy.yml` 的 `on.push.paths`：`src/**`、`public/**`、
+  `test/**`、`schema.sql`、`wrangler.toml`、`package*.json`、`tsconfig.json`、`vitest.config.ts`、
+  CI 自身。**纯文档改动不触发**——它既不改变部署产物，也不影响协议行为；反过来，将来新增
+  部署输入时要同步加进那个列表，否则该变更不会触发流水线。
 - **注意**：`deploy` job 需要下方两个 Secret，**未配置时该 job 会失败并列出缺少的名称**
-  （`quality` job 不需要凭据，其 129 个协议/单元用例仍会照常运行并通过）
+  （`quality` job 不需要凭据，其协议/界面/文档/单元用例仍会照常运行并通过）
 - **流程**：两个 job
-  1. **`quality`**：`typecheck` + **全部 6 个套件**（129 用例）。黑盒套件由 CI 自行用
+  1. **`quality`**：`typecheck` + **全部 18 个套件**。黑盒套件由 CI 自行用
      `wrangler dev`（miniflare）起一个本地实例来跑 —— **不接触线上资源，也不需要 Cloudflare 凭据**，
      D1 用 `--local` 初始化，凭据用 `--var` 临时注入。
   2. **`deploy`**（`needs: quality`，质量门失败则不部署）：
@@ -214,13 +231,56 @@ npm run deploy
 
 > 选 `SyncClipboard` 类型才能启用实时推送与历史同步；选 WebDAV 会退化为轮询模式。
 
+## Web 界面
+
+部署完成后，浏览器打开 Worker 地址（根路径会自动跳到 `/ui/`），用与客户端相同的
+`USERNAME` / `PASSWORD` 登录，即可：
+
+- 按类型 / 收藏筛选，全文搜索，按类型/大小/时间排序，翻页与每页条数切换
+- 预览文本全文、预览图片、下载文件；**数据文件已被清理的记录会明确显示「数据不可用」**，
+  而不是裂图或静默失败
+- 收藏 / 置顶 / 删除（单条与批量）——写操作走与官方 `PATCH` 相同的实现，
+  客户端会同步收到变更广播
+- 查看「部署信息」：客户端该填的服务器地址（可一键复制）、版本、传输方式、保留策略、存储占用
+
+界面细节（模块划分、接口契约、鉴权模型、设计系统、验证记录）见 [`docs/ui.md`](docs/ui.md)。
+
+> 界面与客户端**共用同一套凭据**。请务必改成强密码——默认口令 + 公开的 `*.workers.dev`
+> 地址意味着任何人都能读到你的全部剪贴板历史。
+
 ## 容量提示
 
 - **Workers 免费版每天 10 万请求**。官方客户端即使在事件驱动模式下，仍会每 10 秒调用一次
   `/api/version` 探活（`TestAliveHelper`），单客户端约 **8.6k 请求/天**；叠加历史同步与轮询，
   免费版大致可支撑 **5–10 个客户端**，更多需升级 Workers Paid。
-- **单请求体上限 100MB**（客户端默认文件大小上限 20MB）。
+- **Web 界面开着标签也会计费**：页面每 10 秒取一次变更信号（`/ui/api/poll`，一次 D1 读），
+  标签隐藏时降为 30 秒。即「一个界面标签开一天」≈ 8.6k 请求，与一个客户端的探活量级相当。
+- **单请求体上限**：平台 100MB，本实现另有 **32 MiB 应用层上限**（超限 413）——客户端默认文件上限 20MB，而 isolate 只有 128MB 内存，接近平台上限的体会在解析期 OOM（见 `src/requestLimits.ts` 注释）。
+- **Group（文件夹）解压上限**：解压总量 64 MiB / 条目 1000 / 单条目压缩比 100:1（见 `src/hash.ts`），超限被拒。
 - D1 / R2 的免费额度对个人剪贴板场景（文本与中小文件）通常绰绰有余。
+
+## 安全基线
+
+本服务端存放的是**剪贴板数据**（含口令、验证码、密钥类明文与文件附件），因此按"公网暴露 + 单一口令"的前提设计防护。当前已落地：
+
+| 防护 | 行为 | 相关常量 / 开关 |
+|---|---|---|
+| 认证失败限速 | 同一 IP 或同一用户名在 15 分钟内失败 10 次即封锁 15 分钟（429 + `Retry-After`）；正确凭据不计数并清零；**失败路径不写 D1**（快路径在 isolate 内存，权威计数在 DO，低频落盘） | `src/rateLimit.ts` 的 `AUTH_RATE_LIMIT_*` |
+| 写端点来源校验 | `/ui/api/*` 的 POST/PATCH/PUT/DELETE 拒绝外源 `Origin` 与 `Sec-Fetch-Site: cross-site`；无 `Origin` 的命令行客户端放行 | `src/index.ts` |
+| 传输强制 | 明文请求（非 loopback）301 到 https；https 响应带 HSTS（`max-age=31536000; includeSubDomains`） | `src/index.ts` / `src/requestLimits.ts` |
+| 请求体上限 | `PUT /SyncClipboard.json`、`POST /api/history`、`PATCH /api/history/*` 超过 **32 MiB** 直接 413 | `MAX_REQUEST_BODY_BYTES`（`src/requestLimits.ts`） |
+| 归档解压上限 | Group zip：解压总量 64 MiB / 条目 1000 / 单条目压缩比 100:1（含 8 MiB 绝对下限，避免误伤小文件） | `src/hash.ts` |
+| multipart | 分界串长度上限 70 字节（RFC 2046）；分界串查找为原生扫描（不再 O(体×串)） | `src/multipart.ts` |
+| 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
+| 清理可观测 | 清理按预算分阶段执行、游标续跑、失败写入 `cleanup:lastError`（`/ui/api/info` 可读） | `src/cleanup.ts` |
+| 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` / `src/requestLimits.ts` |
+
+> **部署前必做**：`USERNAME` / `PASSWORD` 必须是**高熵随机值**。默认/占位口令 + 公开的 `*.workers.dev` 等于把全部剪贴板历史与附件
+> 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
+> 客户端与 WebDAV/R2 工具的账号配置（否则表现为"同步无声坏掉"）。
+
+安全审计的完整账目在 `.audits/cfserver-audit-003/`（`report.md` 为报告）；修复计划见 [`docs/security-fix-plan.md`](security-fix-plan.md)，
+其中**同时属于上游 SyncClipboard 的问题**整理为 [`docs/upstream-issues.md`](upstream-issues.md)（7 条，附 `文件:行` 证据与复现）。
 
 ## 已知限制
 
@@ -230,6 +290,9 @@ npm run deploy
   ——官方客户端恒写显式目录条目且无重复，该路径不可达
 - `Content-Type` 映射表小于 .NET 的 `FileExtensionContentTypeProvider`（客户端按文件名落盘，不校验该头）
 - 无应用层解压上限（与上游一致，受平台内存约束）
+- Web 界面**不通过 SignalR 取实时更新**（那需要改动协议侧的连接鉴权），改用每 10 秒一次的
+  变更信号轮询；页面隐藏时降为 30 秒
+- Web 界面的图片缩略图依赖数据文件存在：对象已被清理的记录会显示占位与「数据不可用」
 - **大文件的内存占用高于上游**：上游 `PUT /SyncClipboard.json` 用 `File.Move`（不读数据），
   本实现因 R2 无 move/rename 必须把暂存对象**读入内存**再重传到 `history/`；`POST /api/history`
   则整体读入请求体后解析（上游是 `MultipartReader` 流式）。峰值内存 ≈ 文件大小。
@@ -251,10 +314,15 @@ src/
 ├── serialization.ts    DTO 序列化与枚举/时间解析
 ├── cleanup.ts          历史保留与清理（Cron 任务）
 ├── webdavXml.ts        WebDAV PROPFIND multistatus 生成
+├── historyOps.ts       历史记录的写路径（官方 PATCH 与 Web 界面共用）
+├── contentTypes.ts     附件 Content-Type 与响应头加固（WebDAV 与界面共用）
 ├── routes/             webdav.ts / history.ts
+├── ui/                 Web 界面的服务端面：session / guard / query / routes / notFound
 └── durable/            SyncClipboardHub.ts（Hub）+ signalr.ts（协议编解码）
-test/                   5 个 vitest 套件 + 1 个线上验证脚本
-docs/                   design.md / protocol.md / progress.md
+public/                 静态资源：robots.txt（站点根）+ ui/（原生 ES 模块，无构建步骤）
+                        文件清单以 docs/ui.md §3 为准（避免四处各列一份、加文件时漏更新）
+test/                   全部 18 个套件 + live-signalr.mjs（线上验证脚本）
+docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md
 schema.sql              D1 建表语句
 ```
 
@@ -265,6 +333,9 @@ schema.sql              D1 建表语句
 | [docs/design.md](docs/design.md) | 总体设计：架构、存储映射、核心数据流、决策记录、部署、风险 |
 | [docs/protocol.md](docs/protocol.md) | 协议契约：逐条端点的精确行为、DTO 定义、哈希算法、SignalR 细节、差异表 |
 | [docs/progress.md](docs/progress.md) | 开发与验证记录：里程碑、对照审核结果、版本历史 |
+| [docs/ui.md](docs/ui.md) | Web 历史界面：功能融合清单、模块划分、接口契约、鉴权模型、设计系统、验证记录 |
+| [docs/security-fix-plan.md](docs/security-fix-plan.md) | 安全审计修复计划（cfserver-audit-003 的 11 Findings）：优先级、逐条修复设计、实施状态 |
+| [docs/upstream-issues.md](docs/upstream-issues.md) | 上游 SyncClipboard 自身的安全问题（7 条，附 `文件:行` 证据与复现），用于回馈上游 |
 
 ## 许可证
 

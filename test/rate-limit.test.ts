@@ -1,0 +1,697 @@
+// F7 认证失败限速 / F8 明文跳转与 HSTS / F4 来源校验 / F9 请求体上限与长轮询队列封顶 / F11 scheduled 兜底
+//
+// 全部**进程内**驱动：直接调用 src/index.ts 的 Worker（fetch/scheduled）与 src/durable/SyncClipboardHub.ts
+// 的 DO 类，不依赖 8787 常驻实例。理由：这些断言的对象是中间件顺序、限速状态机与连接队列，
+// 进程内才能精确控制时间（窗口过期）、客户端 IP 维度与 DO 权威状态。
+//
+// DO 运行时只有 workerd 提供，故限速的 Worker 侧用一个**与 DO 同语义**的内存 stub
+// （复用 src/rateLimit.ts 的纯状态机 applyAuthFailure 与同一套 key 约定），
+// 并另有一组针对**真实 DO 类**（new SyncClipboardHub(...)）的端点/队列断言，避免 stub 自说自话。
+//
+// 限速缓存是 isolate 级（模块级 Map）且本文件所有用例共享同一份模块实例，因此**每个用例用一套
+// 独立的身份（用户名 + IP）**；否则上一个用例攒下的失败会把下一个用例的第一个请求打成 429。
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import type { Bindings } from '../src/env';
+import {
+  AUTH_RATE_LIMIT_BLOCK_MS,
+  AUTH_RATE_LIMIT_MAX_FAILURES,
+  AUTH_RATE_LIMIT_PATH,
+  applyAuthFailure,
+} from '../src/rateLimit';
+import type { AuthLimitState } from '../src/rateLimit';
+import {
+  MAX_QUEUED_BYTES,
+  MAX_QUEUED_MESSAGES,
+  SyncClipboardHub,
+} from '../src/durable/SyncClipboardHub';
+import worker from '../src/index';
+import { MAX_REQUEST_BODY_BYTES } from '../src/requestLimits';
+import { runCleanup } from '../src/cleanup';
+import type * as cleanupModule from '../src/cleanup';
+
+// F11 的兜底断言需要让清理真的失败一次；其余用例用手册里的成功返回。
+// 部分 mock：仅替换 runCleanup，保留 cleanup.ts 的其它导出（UI 侧读 Meta 键契约）。
+vi.mock('../src/cleanup', async (importOriginal) => {
+  const actual = await importOriginal<typeof cleanupModule>();
+  return {
+    ...actual,
+    runCleanup: vi.fn(async () => ({ expired: 0, trimmed: 0, hardDeleted: 0, orphans: 0, batches: 0 })),
+  };
+});
+
+// 默认身份（不跑限速的用例用：DO/广播/体量上限）
+const USER = 'syncuser';
+const PASS = 'correct-horse-battery-staple';
+const basic = (user: string, pass: string) => `Basic ${Buffer.from(`${user}:${pass}`, 'utf8').toString('base64')}`;
+
+const seq = { value: 10 };
+
+interface TestIdentity {
+  user: string;
+  pass: string;
+  ip: string;
+}
+
+// 每个用例一套独立身份：用户名维度与 IP 维度都必须唯一（见文件头的说明）
+function createIdentity(): TestIdentity {
+  const n = seq.value++;
+  return { user: `syncuser-${n}`, pass: `correct-horse-battery-${n}`, ip: `198.51.100.${n}` };
+}
+
+interface TestCtx {
+  waitUntil(promise: Promise<unknown>): void;
+  /** 等待所有 waitUntil 投递的任务落定（限速上报、DO 清理都是异步投递，不阻塞响应） */
+  flush(): Promise<void>;
+}
+
+function createCtx(): TestCtx {
+  const pending: Promise<unknown>[] = [];
+  return {
+    waitUntil(promise: Promise<unknown>): void {
+      pending.push(promise);
+    },
+    async flush(): Promise<void> {
+      while (pending.length > 0) {
+        await Promise.all(pending.splice(0));
+      }
+    },
+  };
+}
+
+interface AuthLimitResponseBody {
+  blocks: Record<string, number>;
+  burst: number;
+}
+
+// DO stub：与 src/durable/SyncClipboardHub.ts 的 AUTH_RATE_LIMIT_PATH 端点同语义（report/snapshot/clear）
+function createEnv(identity?: TestIdentity): { env: Bindings; limits: Map<string, AuthLimitState> } {
+  const limits = new Map<string, AuthLimitState>();
+  let burst = 0;
+  const hub = {
+    // 真实 DurableObjectStub 同时支持 fetch(request) 与 fetch(url, init) 两种调用形式
+    // （src/hub.ts 的 broadcast 与 src/rateLimit.ts 的 callHub 都用后者），stub 必须一并支持，
+    // 否则调用会静默落进 catch（限速退化成纯 isolate 内计数，测试假绿）。
+    async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+      const request = new Request(input as RequestInfo, init);
+      const body = (await request.json()) as { op: string; keys: string[] };
+      const now = Date.now();
+      if (body.op === 'report') {
+        for (const key of body.keys) {
+          limits.set(key, applyAuthFailure(limits.get(key), now));
+          burst++;
+        }
+      } else if (body.op === 'clear') {
+        for (const key of body.keys) limits.delete(key);
+      }
+      const blocks: Record<string, number> = {};
+      for (const key of body.keys) {
+        const state = limits.get(key);
+        if (state !== undefined && state.blockedUntil > now) blocks[key] = state.blockedUntil;
+      }
+      return Response.json({ blocks, burst });
+    },
+  };
+  const env = {
+    DB: {} as never,
+    R2: {} as never,
+    HUB: { idFromName: (name: string) => name, get: () => hub } as never,
+    VERSION: '3.2.1',
+    MAX_SAVED_HISTORY_COUNT: '1000',
+    HISTORY_RETENTION_MINUTES: '10080',
+    USERNAME: identity?.user ?? USER,
+    PASSWORD: identity?.pass ?? PASS,
+  } satisfies Bindings;
+  return { env, limits };
+}
+
+function versionRequest(ip: string, user: string, pass: string): Request {
+  return new Request('https://sync.example.com/api/version', {
+    headers: { 'cf-connecting-ip': ip, authorization: basic(user, pass) },
+  });
+}
+
+// 直接在 DO stub 上制造封锁（模拟其他 isolate 已经发生的失败流量）
+function seedBlocked(limits: Map<string, AuthLimitState>, key: string): void {
+  let state: AuthLimitState | undefined;
+  for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) state = applyAuthFailure(state, Date.now());
+  limits.set(key, state!);
+}
+
+async function fetchWorker(env: Bindings, ctx: TestCtx, request: Request): Promise<Response> {
+  return worker.fetch(request, env, ctx as unknown as ExecutionContext);
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe('F7 认证失败限速', () => {
+  it('第 11 次失败 → 429 + Retry-After，且封锁期内的正确凭据同样被拒', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const ctx = createCtx();
+
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) {
+      const res = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'wrong-password'));
+      expect(res.status, `第 ${i + 1} 次失败不应被限速`).toBe(401);
+    }
+
+    const blocked = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'wrong-password'));
+    expect(blocked.status).toBe(429);
+    const retryAfter = Number(blocked.headers.get('retry-after'));
+    expect(Number.isSafeInteger(retryAfter)).toBe(true);
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(Math.ceil(AUTH_RATE_LIMIT_BLOCK_MS / 1000));
+    // 拒答体与所有维度一致（不泄露「用户名是否存在」，也不泄露哪一维触发封锁）
+    expect(await blocked.text()).toBe('Too Many Requests');
+
+    // 预检排在凭据比较之前：封锁期内即使猜中口令也拿不到 200
+    const correctWhileBlocked = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, id.pass));
+    expect(correctWhileBlocked.status).toBe(429);
+  });
+
+  it('正确凭据不计入、会清零，正常同步永不限速', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const ctx = createCtx();
+
+    // 官方客户端那样的高频正确同步（30 次）：一律 200，且一次都不计数
+    for (let i = 0; i < 30; i++) {
+      const res = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, id.pass));
+      expect(res.status, `第 ${i + 1} 次正常同步`).toBe(200);
+    }
+
+    // 再攒 5 次失败（若上面 30 次成功被计入，这里会提前触发 429）
+    for (let i = 0; i < 5; i++) {
+      expect((await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'nope'))).status).toBe(401);
+    }
+
+    // 一次成功即清零（若不清零，接下来的第 5 次失败就会触发 429）
+    const ok = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, id.pass));
+    expect(ok.status).toBe(200);
+    await ctx.flush(); // 成功后的 DO clear 是异步投递
+
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) {
+      const res = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'nope'));
+      expect(res.status, `清零后的第 ${i + 1} 次失败`).toBe(401);
+    }
+    expect((await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'nope'))).status).toBe(429);
+  });
+
+  it('窗口过期后计数与封锁一并重置', async () => {
+    vi.useFakeTimers({ now: new Date('2026-09-13T00:00:00.000Z') });
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const ctx = createCtx();
+
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) {
+      expect((await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'nope'))).status).toBe(401);
+    }
+    expect((await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'nope'))).status).toBe(429);
+
+    // 越过 15 分钟窗口（也是封锁时长）
+    vi.setSystemTime(new Date('2026-09-13T00:20:00.000Z'));
+    const afterWindow = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'nope'));
+    expect(afterWindow.status, '窗口过期后应重新计数（401）而不是继续 429').toBe(401);
+    expect((await fetchWorker(env, ctx, versionRequest(id.ip, id.user, id.pass))).status).toBe(200);
+  });
+
+  it('DO 侧已封锁的 key 会传到本 isolate（跨 isolate 权威状态）', async () => {
+    // 固定时钟：快照拉取有最小间隔（5s），用真实时钟会受前序用例影响而不确定。
+    // 关键：日期必须**晚于真实当前时间** —— 限速缓存是模块级共享的，先前用真实时钟的用例
+    // 会把 cache.lastSnapshotAt 记成真实 epoch；若本用例的假时钟落在它之前，
+    // `now - lastSnapshotAt` 为负 ⇒ 快照间隔判定永远不满足 ⇒ 本用例会假红。
+    vi.useFakeTimers({ now: new Date('2030-01-01T03:00:00.000Z') });
+    const id = createIdentity();
+    const target = createIdentity();
+    const { env, limits } = createEnv(id);
+    const ctx = createCtx();
+
+    // 本 isolate 先见一次失败 → 进入「热」状态（此后才会按间隔拉 DO 快照）
+    expect((await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'nope'))).status).toBe(401);
+    await ctx.flush();
+
+    // 另一个 isolate 已把 target.ip 打到封锁（DO 权威状态）
+    seedBlocked(limits, `ip:${target.ip}`);
+
+    // 越过 5s 快照间隔：本 isolate 尚不知情，首个请求仍会被比较（同步预检无 I/O），但已异步拉取快照
+    vi.setSystemTime(new Date('2030-01-01T03:00:06.000Z'));
+    const first = await fetchWorker(env, ctx, versionRequest(target.ip, id.user, id.pass));
+    expect(first.status).toBe(200);
+    await ctx.flush();
+
+    // 快照合并后：该 key 的请求（哪怕凭据正确）在凭据比较之前就被拒
+    vi.setSystemTime(new Date('2030-01-01T03:00:07.000Z'));
+    const second = await fetchWorker(env, ctx, versionRequest(target.ip, id.user, id.pass));
+    expect(second.status).toBe(429);
+  });
+
+  it('登录端点（凭据在 body 里）同样限速，尾斜杠变体不能绕过', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const ctx = createCtx();
+    const login = (path: string) =>
+      fetchWorker(
+        env,
+        ctx,
+        new Request(`https://sync.example.com${path}`, {
+          method: 'POST',
+          body: JSON.stringify({ username: id.user, password: 'wrong-password' }),
+          headers: { 'cf-connecting-ip': id.ip, 'content-type': 'application/json' },
+        }),
+      );
+
+    // 前 9 次走标准路径、第 10 次走尾斜杠变体（Hono strict:false 下同一 handler）——两者共享计数
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES - 1; i++) {
+      expect((await login('/ui/api/login')).status, `第 ${i + 1} 次登录失败`).toBe(401);
+    }
+    expect((await login('/ui/api/login/')).status).toBe(401);
+
+    const blocked = await login('/ui/api/login');
+    expect(blocked.status).toBe(429);
+    expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThan(0);
+    // 正确的表单凭据在封锁期内同样被拒（预检在凭据比较之前）
+    const correctWhileBlocked = await fetchWorker(
+      env,
+      ctx,
+      new Request('https://sync.example.com/ui/api/login', {
+        method: 'POST',
+        body: JSON.stringify({ username: id.user, password: id.pass }),
+        headers: { 'cf-connecting-ip': id.ip, 'content-type': 'application/json' },
+      }),
+    );
+    expect(correctWhileBlocked.status).toBe(429);
+  });
+
+  it('未配置凭据仍走 500 fail-closed（不进入限速逻辑）', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const ctx = createCtx();
+    const unconfigured = { ...env, USERNAME: '', PASSWORD: '' } as Bindings;
+    const res = await fetchWorker(unconfigured, ctx, versionRequest(id.ip, '', ''));
+    expect(res.status).toBe(500);
+    expect(await res.text()).toContain('USERNAME and PASSWORD');
+  });
+
+  it('弱凭据只告警不阻断（F1）；ENFORCE_STRONG_CREDENTIALS=true 时 fail-closed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const strong = createIdentity();
+    const weakIdentity = createIdentity();
+    const { env } = createEnv(strong);
+    const ctx = createCtx();
+    const weak = { ...env, USERNAME: 'admin', PASSWORD: 'admin' } as Bindings;
+
+    const strongRes = await fetchWorker(env, ctx, versionRequest(strong.ip, strong.user, strong.pass));
+    expect(strongRes.status).toBe(200);
+    const weakRes = await fetchWorker(weak, ctx, versionRequest(weakIdentity.ip, 'admin', 'admin'));
+    expect(weakRes.status, '默认不阻断服务').toBe(200);
+    expect(weakRes.headers.get('x-credential-warning'), '弱凭据给出机器可读信号').toBe('weak');
+    expect(strongRes.headers.get('x-credential-warning')).toBeNull();
+    expect(warn.mock.calls.some((call) => String(call[0]).startsWith('[security] weak credentials'))).toBe(true);
+
+    const enforced = { ...weak, ENFORCE_STRONG_CREDENTIALS: 'true' } as Bindings;
+    const enforcedRes = await fetchWorker(enforced, ctx, versionRequest(weakIdentity.ip, 'admin', 'admin'));
+    expect(enforcedRes.status).toBe(500);
+    expect(await enforcedRes.text()).toContain('too weak');
+  });
+});
+
+describe('F4 /ui/api/* 状态变更端点的来源校验', () => {
+  const PATCH_PATH = '/ui/api/history/Text-0123456789ABCDEF0123456789ABCDEF';
+
+  function patch(extra: Record<string, string>, ip: string): Request {
+    return new Request(`https://sync.example.com${PATCH_PATH}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isDelete: true }),
+      headers: { 'cf-connecting-ip': ip, 'content-type': 'application/json', ...extra },
+    });
+  }
+
+  it('外源 Origin → 403', async () => {
+    const { env } = createEnv();
+    const res = await fetchWorker(env, createCtx(), patch({ origin: 'https://evil.example' }, createIdentity().ip));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'cross_origin_rejected' });
+  });
+
+  it('Sec-Fetch-Site: cross-site → 403', async () => {
+    const { env } = createEnv();
+    const res = await fetchWorker(
+      env,
+      createCtx(),
+      patch({ 'sec-fetch-site': 'cross-site' }, createIdentity().ip),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('带有效 Basic 凭据的跨站写同样 403（沉淀的凭据不能绕过来源校验）', async () => {
+    const identity = createIdentity();
+    const { env } = createEnv(identity);
+    const res = await fetchWorker(
+      env,
+      createCtx(),
+      patch(
+        { origin: 'https://evil.example', authorization: basic(identity.user, identity.pass) },
+        identity.ip,
+      ),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('无 Origin 的 CLI 客户端放行（未被 403 拦，落到鉴权 401）', async () => {
+    const { env } = createEnv();
+    const res = await fetchWorker(env, createCtx(), patch({}, createIdentity().ip));
+    expect(res.status).toBe(401);
+  });
+
+  it('同源 Origin（含显式默认端口）放行', async () => {
+    const { env } = createEnv();
+    const exact = await fetchWorker(
+      env,
+      createCtx(),
+      patch({ origin: 'https://sync.example.com' }, createIdentity().ip),
+    );
+    expect(exact.status).toBe(401);
+    const defaultPort = await fetchWorker(
+      env,
+      createCtx(),
+      patch({ origin: 'https://sync.example.com:443' }, createIdentity().ip),
+    );
+    expect(defaultPort.status).toBe(401);
+  });
+
+  it('GET 不做来源校验（跨站读不被本中间件拦）', async () => {
+    const { env } = createEnv();
+    const res = await fetchWorker(
+      env,
+      createCtx(),
+      new Request(`https://sync.example.com${PATCH_PATH}`, {
+        headers: { 'cf-connecting-ip': createIdentity().ip, origin: 'https://evil.example' },
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('G3 · batch-delete 只接受 application/json', () => {
+  function batch(contentType: string, body: string, identity: TestIdentity): Request {
+    return new Request('https://sync.example.com/ui/api/history/batch-delete', {
+      method: 'POST',
+      body,
+      headers: {
+        authorization: basic(identity.user, identity.pass),
+        'cf-connecting-ip': identity.ip,
+        'content-type': contentType,
+      },
+    });
+  }
+
+  it('跨站表单能发出的两种内容类型（text/plain、multipart/form-data）→ 415', async () => {
+    for (const type of ['text/plain', 'multipart/form-data; boundary=x']) {
+      const identity = createIdentity();
+      const { env } = createEnv(identity);
+      const res = await fetchWorker(env, createCtx(), batch(type, 'items=1', identity));
+      expect(res.status, `${type} 不应被当作 JSON 请求处理`).toBe(415);
+      expect(await res.json()).toEqual({ error: 'unsupported_media_type' });
+    }
+  });
+
+  it('阳性对照：application/json 通过内容类型检查（走到业务层 → 400 参数错，而不是 415）', async () => {
+    const identity = createIdentity();
+    const { env } = createEnv(identity);
+    const res = await fetchWorker(env, createCtx(), batch('application/json', '{}', identity));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'items_required' });
+  });
+});
+
+describe('F8 明文跳转与 HSTS', () => {
+  it('明文 + 非 loopback host → 301 到同路径 https', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const res = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('http://sync.example.com/api/version', {
+        headers: { 'cf-connecting-ip': id.ip, 'x-forwarded-proto': 'http', authorization: basic(id.user, id.pass) },
+      }),
+    );
+    expect(res.status).toBe(301);
+    expect(res.headers.get('location')).toBe('https://sync.example.com/api/version');
+  });
+
+  it('本地开发（loopback）既不跳转也不加 HSTS', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const res = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('http://127.0.0.1:8787/api/version', {
+        headers: { 'cf-connecting-ip': id.ip, 'x-forwarded-proto': 'http', authorization: basic(id.user, id.pass) },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('strict-transport-security')).toBeNull();
+    expect(await res.text()).toBe('3.2.1');
+  });
+
+  it('经边缘（cf-ray / x-forwarded-proto: https）的响应带 HSTS', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id);
+    const viaCfRay = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('https://sync.example.com/api/version', {
+        headers: { 'cf-connecting-ip': id.ip, 'cf-ray': '9c0ffee12345-SJC', authorization: basic(id.user, id.pass) },
+      }),
+    );
+    expect(viaCfRay.headers.get('strict-transport-security')).toBe('max-age=31536000; includeSubDomains');
+    const viaProto = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('https://sync.example.com/api/version', {
+        headers: {
+          'cf-connecting-ip': id.ip,
+          'x-forwarded-proto': 'https',
+          authorization: basic(id.user, id.pass),
+        },
+      }),
+    );
+    expect(viaProto.headers.get('strict-transport-security')).toBe('max-age=31536000; includeSubDomains');
+  });
+});
+
+describe('F9 请求体上限（413）', () => {
+  const oversize = String(MAX_REQUEST_BODY_BYTES + 1);
+
+  it('三条「整包读入内存」的端点都按 content-length 快速 413', async () => {
+    const { env } = createEnv();
+    const cases: Array<{ method: string; path: string }> = [
+      { method: 'PUT', path: '/SyncClipboard.json' },
+      { method: 'POST', path: '/api/history' },
+      { method: 'PATCH', path: '/api/history/Text-0123456789ABCDEF0123456789ABCDEF' },
+    ];
+    for (const item of cases) {
+      const res = await fetchWorker(
+        env,
+        createCtx(),
+        new Request(`https://sync.example.com${item.path}`, {
+          method: item.method,
+          body: 'x',
+          headers: { authorization: basic(USER, PASS), 'content-length': oversize },
+        }),
+      );
+      expect(res.status, `${item.method} ${item.path}`).toBe(413);
+    }
+  });
+
+  it('登录端点的超大体量同样 413（该路径的 body 会被中间件读取）', async () => {
+    const { env } = createEnv();
+    const res = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('https://sync.example.com/ui/api/login', {
+        method: 'POST',
+        body: 'x',
+        headers: { 'content-length': oversize },
+      }),
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it('恰好等于上限不拦（落到鉴权），列表外的端点不受影响', async () => {
+    const { env } = createEnv();
+    const atLimit = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('https://sync.example.com/api/history', {
+        method: 'POST',
+        body: 'x',
+        headers: { 'content-length': String(MAX_REQUEST_BODY_BYTES) },
+      }),
+    );
+    expect(atLimit.status).toBe(401); // 未带凭据 → 鉴权拒绝（说明体量预检没误伤）
+    const otherRoute = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('https://sync.example.com/SyncClipboard.json', {
+        method: 'POST',
+        body: 'x',
+        headers: { 'content-length': oversize },
+      }),
+    );
+    expect(otherRoute.status).toBe(401); // 同 path 但方法不在列表 → 不限体量
+  });
+});
+
+describe('F9 长轮询队列封顶（真实 DO 类）', () => {
+  function createDoState(): DurableObjectState {
+    const storage = new Map<string, unknown>();
+    return {
+      blockConcurrencyWhile: async (callback: () => Promise<unknown>) => callback(),
+      storage: {
+        get: async (key: string) => storage.get(key),
+        put: async (key: string, value: unknown) => {
+          storage.set(key, value);
+        },
+        delete: async (key: string) => storage.delete(key),
+        list: async () => new Map(),
+        setAlarm: async () => {},
+      },
+    } as unknown as DurableObjectState;
+  }
+
+  function hubClientRequest(id: string): Request {
+    return new Request(`https://hub/SyncClipboardHub?id=${id}`, {
+      headers: { authorization: basic(USER, PASS) },
+    });
+  }
+
+  async function broadcastTo(hub: SyncClipboardHub, payload: string): Promise<Response> {
+    return hub.fetch(
+      new Request('https://hub/broadcast', {
+        method: 'POST',
+        headers: { authorization: basic(USER, PASS) },
+        body: JSON.stringify({ target: 'RemoteHistoryChanged', payload }),
+      }),
+    );
+  }
+
+  it('排队消息数超过上限 → 关闭连接（204）并记录日志', async () => {
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+
+    // 首个 GET 只建立连接并立即返回（与 ASP.NET 一致），此时没有挂起的轮询 → 后续消息全部入队
+    expect((await hub.fetch(hubClientRequest('lp-many'))).status).toBe(200);
+    for (let i = 0; i <= MAX_QUEUED_MESSAGES; i++) {
+      expect((await broadcastTo(hub, `m${i}`)).status).toBe(200);
+    }
+    expect(logs.mock.calls.some((call) => String(call[0]).startsWith('[hub] queue overflow'))).toBe(true);
+    // 超限即「服务端关闭」：后续轮询 204（不发明新状态码）
+    expect((await hub.fetch(hubClientRequest('lp-many'))).status).toBe(204);
+  });
+
+  it('单条超大消息触发字节上限', async () => {
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+
+    expect((await hub.fetch(hubClientRequest('lp-big'))).status).toBe(200);
+    expect((await broadcastTo(hub, 'x'.repeat(MAX_QUEUED_BYTES + 1))).status).toBe(200);
+    expect(logs.mock.calls.some((call) => String(call[0]).startsWith('[hub] queue overflow'))).toBe(true);
+    expect((await hub.fetch(hubClientRequest('lp-big'))).status).toBe(204);
+  });
+
+  it('未超限的消息仍按原语义整批取回', async () => {
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+    expect((await hub.fetch(hubClientRequest('lp-ok'))).status).toBe(200);
+    await broadcastTo(hub, 'm1');
+    await broadcastTo(hub, 'm2');
+    const poll = await hub.fetch(hubClientRequest('lp-ok'));
+    expect(poll.status).toBe(200);
+    const body = await poll.text();
+    expect(body).toContain('m1');
+    expect(body).toContain('m2');
+  });
+
+  it('Hub 连接鉴权失败同样限速（WS/SSE/长轮询不走 Worker 中间件）', async () => {
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+    const bad = () =>
+      hub.fetch(
+        new Request('https://hub/SyncClipboardHub?id=lp-auth', {
+          headers: { authorization: basic('admin', 'wrong'), 'cf-connecting-ip': '203.0.113.99' },
+        }),
+      );
+
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) {
+      expect((await bad()).status, `第 ${i + 1} 次错误凭据`).toBe(401);
+    }
+    const blocked = await bad();
+    expect(blocked.status).toBe(429);
+    expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThan(0);
+    // 封锁只针对失败维度：携带正确凭据的正常客户端不受影响（不同 IP 键 + 正确凭据）
+    const legit = await hub.fetch(
+      new Request('https://hub/SyncClipboardHub?id=lp-legit', {
+        headers: { authorization: basic(USER, PASS), 'cf-connecting-ip': '203.0.113.100' },
+      }),
+    );
+    expect(legit.status).toBe(200);
+  });
+
+  it('AUTH_RATE_LIMIT_PATH 端点：report 累计到阈值才封锁、snapshot 只读、clear 清空', async () => {
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+    const call = (op: string, keys: string[]) =>
+      hub.fetch(
+        new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, { method: 'POST', body: JSON.stringify({ op, keys }) }),
+      );
+
+    const key = 'ip:203.0.113.7';
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES - 1; i++) {
+      const res = await call('report', [key]);
+      expect((await res.json<AuthLimitResponseBody>()).blocks).toEqual({});
+    }
+    const atThreshold = await (await call('report', [key])).json<AuthLimitResponseBody>();
+    expect(Object.keys(atThreshold.blocks)).toEqual([key]);
+
+    // snapshot 是只读的：不累计计数
+    const snapshot = await (await call('snapshot', ['ip:203.0.113.8'])).json<AuthLimitResponseBody>();
+    expect(snapshot.blocks).toEqual({});
+    const stillBlocked = await (await call('snapshot', [key])).json<AuthLimitResponseBody>();
+    expect(Object.keys(stillBlocked.blocks)).toEqual([key]);
+
+    const cleared = await (await call('clear', [key])).json<AuthLimitResponseBody>();
+    expect(cleared.blocks).toEqual({});
+  });
+});
+
+describe('F11 scheduled 兜底', () => {
+  it('清理抛错时 scheduled 不产生未捕获拒绝，并留下 [cleanup] fatal 日志', async () => {
+    vi.mocked(runCleanup).mockRejectedValueOnce(new Error('injected cleanup failure'));
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { env } = createEnv();
+    const ctx = createCtx();
+
+    await expect(
+      worker.scheduled({} as ScheduledController, env, ctx as unknown as ExecutionContext),
+    ).resolves.toBeUndefined();
+    await ctx.flush();
+
+    expect(errorLog.mock.calls.some((call) => call[0] === '[cleanup] fatal')).toBe(true);
+  });
+
+  it('清理正常时记录一行可观测的 [cleanup] 汇总', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { env } = createEnv();
+    const ctx = createCtx();
+
+    await worker.scheduled({} as ScheduledController, env, ctx as unknown as ExecutionContext);
+    await ctx.flush();
+
+    expect(log.mock.calls.some((call) => String(call[0]).startsWith('[cleanup] expired='))).toBe(true);
+  });
+});

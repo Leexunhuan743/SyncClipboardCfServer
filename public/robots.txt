@@ -1,0 +1,5 @@
+# 私有剪贴板服务器：不应被任何搜索引擎收录。
+# 放在站点根（而不是 /ui/ 下）——爬虫只读根路径的 robots.txt。
+# meta robots 的 noindex 也已在页面里设置，这里是显式的第二道。
+User-agent: *
+Disallow: /

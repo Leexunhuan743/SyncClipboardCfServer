@@ -21,11 +21,15 @@
 
 ### 非目标
 
-- 不实现 WebDAV 完整协议（PROPFIND 多状态响应、DAV 锁等）——官方服务器也只实现了协议所需子集。
+- 不实现 WebDAV 完整协议（DAV 锁等）——官方服务器也只实现了协议所需子集；官方客户端在
+  `PreciseDelete` 模式下会解析目录列表，故本项目实现了 RFC 4918 的 `PROPFIND` 多状态响应（207）。
 - 不实现 SignalR 的二进制协议（MessagePack）——官方客户端用默认 JSON 协议；传输宣告里保留
   上游同款的 `"Binary"` 声明以逐字对齐 negotiate 载荷。
 - 不做多租户——官方服务器单用户（`HARD_CODED_USER_ID = "default_user"`），Basic Auth 只是门禁。
 - 不兼容 v3.1.1 之前的老协议（官方自身也不兼容）。
+- 界面**不通过 SignalR Hub 取实时更新**（那要改协议侧的连接鉴权），改用 `/ui/api/poll` 的变更信号；
+  详见 `docs/ui.md` §6。
+- 不提供 `/dav` 前缀别名（ADR D15）。
 
 ## 2. 已敲定决策（ADR）
 
@@ -41,7 +45,13 @@
 | D8 | 存储时间用 epoch 毫秒 INTEGER（D1），DTO 边界转 ISO8601 | 排序/比较精确，协议输出为标准 ISO 字符串 | 已定 |
 | D9 | 严格复刻官方行为，不做行为超集 | 兼容性以官方实现为准（如 `GET /file/{name}` 仅按历史查找） | 已定 |
 | D10 | 测试 = 协议级集成测试（`wrangler dev` + 真实 HTTP + `@microsoft/signalr`）+ 真实客户端联调 | 与 .NET 客户端同协议的 JS SignalR 客户端可验证握手细节 | 已定 |
-| D11 | **提交历史保持正常粒度**：每个逻辑变更一次提交，禁止压缩为单一提交 | 提交历史对审阅者有价值（能看到演进与修复过程）；除仓库首次发布需清理历史外，不做 squash/force push | 已定（2026-09-12） |
+| D11 | **提交粒度与推送策略**（2026-09-13 修订）：**本地**可多次 minor commit（细碎、随手记）；**推送到云端 `master` 前**按主题压成合适的提交（每个逻辑变更一条），不把一堆小提交直接推 | 本地细碎便于迭代与回滚；云端历史要能看出演进，不该被几十条同类微调淹没。**修订原因**：原约定"禁止 squash/force push"在实践里产生 91 条提交、其中大量是同一件事的反复微调，云端历史反而更难读（已在用户要求下把 91 → 12）。**改写已推送历史时的硬约束**：① 先建备份分支；② 用树快照回放，保证新 HEAD 与旧 HEAD **树逐字节一致**（`git diff` 必须为空）；③ 推送前跑全量套件且**真门禁**（`set -o pipefail` 或 `if` 判定退出码，别让管道吞掉失败）；④ 用 `--force-with-lease` 推送，不用裸 `--force` | 已定（2026-09-12，2026-09-13 修订） |
+
+> **D11 执行流程（2026-09-13 实测通过）**：① 留底并**推送**备份分支：`git branch -f backup/pre-squash-<日期>` → `git push -u origin backup/pre-squash-<日期>`（旧 SHA 因此永远可解析，文档里的历史引用不会悬空）；② 从根提交开新分支，逐组 `git read-tree -u --reset <该组旧 tip>` 后**直接** `git commit -F <msg>`——**不要** `git add -A`（它会把未跟踪的临时文件卷进历史）；③ 逐组断言 `git diff --name-only <新提交> <该组旧 tip>` 为空（只验末态不够：中间的杂物会被下一组的 reset 悄悄抹掉）；④ 末态断言 `git diff <旧 HEAD> HEAD` 为空；⑤ 跑全量套件且用真门禁；⑥ `git push --force-with-lease origin <新分支>:master`，推送后删掉临时分支（备份分支保留）。
+| D12 | Web 界面用 **Workers 静态资源 + 独立 `/ui/api/*` 命名空间**承载 | 官方 `/api/history/*` 是**协议契约**，不能为界面需要（可变页大小、多列排序、选择集、缩略图）而改动；界面另开一层，但读写同一张表、复用同一套行映射与 DTO 序列化 | 已定（2026-09-13） |
+| D13 | 界面会话用**无状态签名 Cookie**（HMAC-SHA256，密钥由 `PASSWORD` 经 HKDF 派生） | Workers 没有可靠的进程内状态，服务端会话表会让每次页面请求多一次写库；签名 Cookie 零存储、可水平扩展，且改密码即让全部会话失效 | 已定（2026-09-13） |
+| D14 | `motion-web` 技能的取用**限于设计系统与打磨层**，不走它的页面蓝图路径 | 该技能自述范围是创意/营销页并明确排除 dashboard/admin UI，而本界面正落在排除侧。取用其令牌层、组件方言与状态矩阵、生产打磨与动效令牌；不生成 hero/分节文案/编造指标 | 已定（2026-09-13） |
+| D15 | **不实现 `/dav` 前缀别名**（另一个实现 `clipserver` 的端点前缀） | 本项目 WebDAV 端点在站点根，`PROPFIND` 的 `href` 从根计算。让前缀可用必须改写协议输出（href 前缀），为一个迁移便利碰协议保真不值得；迁移只需把客户端地址改成站点根（界面「部署信息」直接给出可复制地址） | 已定（2026-09-13） |
 
 ## 3. 架构总览
 
@@ -54,7 +64,10 @@ flowchart TB
             WEBDAV["WebDAV 兼容端点<br/>SyncClipboard.json / file/*"]
             API["官方 API<br/>/api/time /api/version /api/history/*"]
             NEG["negotiate 端点<br/>/SyncClipboardHub/negotiate"]
+            UIG["Web 界面鉴权<br/>src/ui/guard.ts<br/>（会话 Cookie 或 Basic）"]
+            UI["Web 界面 API<br/>/ui/api/*"]
         end
+        AS["静态资源<br/>public/**（Cloudflare 直接托管）"]
         DB[("D1<br/>HistoryRecords + Meta")]
         R2[("R2<br/>file/ 暂存 + history/ 持久")]
         DO["Durable Object<br/>SyncClipboardHub<br/>（WebSocket 连接 + 广播）"]
@@ -63,10 +76,16 @@ flowchart TB
     Client1["官方客户端 A<br/>（.NET SignalR + HTTP）"]
     Client2["官方客户端 B"]
     Client3["第三方客户端<br/>（WebDAV 兼容 API）"]
+    Browser["浏览器<br/>（Web 历史界面）"]
 
     Client1 -->|HTTP Basic| AUTH
     Client2 -->|HTTP Basic| AUTH
     Client3 -->|HTTP Basic| AUTH
+    Browser -->|会话 Cookie 或 Basic| UIG
+    Browser -.读取.-> AS
+    UIG --> UI
+    UI --> DB
+    UI --> R2
     AUTH --> WEBDAV
     AUTH --> API
     AUTH --> NEG
@@ -79,43 +98,69 @@ flowchart TB
     Client2 -->|WS /SyncClipboardHub?id=token| DO
     WEBDAV -.写后广播.-> DO
     API -.写后广播.-> DO
+    UI -.写后广播.-> DO
     DO -.RemoteProfileChanged / RemoteHistoryChanged.-> Client1
     DO -.RemoteProfileChanged / RemoteHistoryChanged.-> Client2
 ```
 
-## 4. 目录结构（规划）
+## 4. 目录结构
 
 ```
 SyncClipboardCfServer/
-├── package.json / tsconfig.json / wrangler.toml
-├── schema.sql                  # D1 建表语句（首次部署手动执行或 migration）
+├── package.json / tsconfig.json / vitest.config.ts / wrangler.toml
+├── schema.sql                  # D1 建表语句（部署时执行）
 ├── docs/
 │   ├── design.md               # 本文件
 │   ├── protocol.md             # 协议契约（精确到端点与字段）
+│   ├── ui.md                   # Web 历史界面：来源、边界、模块、API、设计系统
 │   └── progress.md             # 开发进度追踪
+├── public/                     # 静态资源（由 Cloudflare 直接托管，不走 Worker）
+│   ├── robots.txt              # 必须放站点根（爬虫只读根路径）
+│   └── ui/
+│       ├── index.html / login.html / manifest.webmanifest
+│       ├── favicon.svg / favicon-32.png / apple-touch-icon.png
+│       ├── css/                # tokens / base / layout / components / motion / auth
+│       └── js/                 # api / clipboard / dom / filters / format / icons / login / main / store
+│           └── components/     # confirm / header / info / list / pagination / preview / stats / toast / toolbar
 ├── src/
-│   ├── index.ts                # Worker 入口：Hono app、中间件装配、路由挂载
-│   ├── auth.ts                 # Basic Auth 校验
-│   ├── constants.ts            # HubPath、数据目录常量、错误消息
-│   ├── types.ts                # ProfileDto / HistoryRecordDto / UpdateDto / QueryDto / StatisticsDto
-│   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间格式转换
-│   ├── hash.ts                 # Text / File / Image / Group 哈希算法（协议级精确复刻）
+│   ├── index.ts                # Worker 入口：Hono 装配、中间件、Hub 转发、Cron
+│   ├── env.ts                  # 绑定类型（D1/R2/HUB/Vars/Secrets）
+│   ├── auth.ts                 # Basic Auth 校验、凭据校验、请求体排空
+│   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
+│   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间与体积口径转换
+│   ├── hash.ts                 # Text / File / Image / Group 哈希（协议级精确复刻）
+│   ├── multipart.ts            # 字节级 multipart 解析（兼容 .NET 的无引号 name=hash）
 │   ├── profile.ts              # Profile 服务端语义：校验、落盘移动、持久化命名
-│   ├── db.ts                   # D1 访问层：CRUD、查询过滤、ShouldUpdate 判定
+│   ├── historyOps.ts           # 历史记录的写路径（官方 PATCH 与 UI 共用：判定+广播+R2 清理）
+│   ├── db.ts                   # D1 访问层：CRUD、查询过滤、ShouldUpdate 判定、清理
 │   ├── storage.ts              # R2 访问层：暂存、持久化、历史查找下载
-│   ├── hub.ts                  # 广播触发封装（写操作后通知 DO）
+│   ├── contentTypes.ts         # 附件 Content-Type 与响应头加固（WebDAV 与 UI 共用）
+│   ├── webdavXml.ts            # PROPFIND 多状态响应（RFC 4918）
+│   ├── hub.ts                  # 广播触发封装 + negotiate 载荷
+│   ├── cleanup.ts              # 保留/清理任务（Cron 触发）
 │   ├── routes/
-│   │   ├── webdav.ts           # GET/PUT SyncClipboard.json、GET/PUT/DELETE file/*、PROPFIND/MKCOL
+│   │   ├── webdav.ts           # SyncClipboard.json、file/*、PROPFIND/MKCOL
 │   │   └── history.ts          # /api/history/* 全部端点
+│   ├── ui/                     # Web 界面的服务端面（协议面无反向依赖）；文件清单以 docs/ui.md §3 为准
+│   │   ├── session.ts          # 签名 Cookie 的签发/校验/清除
+│   │   ├── guard.ts            # 会话或 Basic 鉴权 + 失败路径排空请求体
+│   │   ├── query.ts            # 列表查询层：参数解析、白名单排序、截断、变更信号
+│   │   ├── routes.ts           # /ui/api/* 路由装配
+│   │   └── notFound.ts         # /ui/* 的 404 页
 │   └── durable/
-│       ├── SyncClipboardHub.ts # Durable Object：WebSocket 生命周期 + 广播 + 心跳
-│       └── signalr.ts          # SignalR JSON 协议消息编解码（握手/ping/invocation）
-├── test/
-│   ├── hash.test.ts            # 哈希算法对照 C# 参考值
-│   ├── protocol.test.ts        # HTTP 协议黑盒测试（wrangler dev 起本地服务）
-│   └── signalr.test.ts         # @microsoft/signalr 真实客户端连接/广播测试
-└── scripts/
-    └── e2e.md                  # 真实客户端联调操作手册
+│       ├── SyncClipboardHub.ts # Durable Object：WS/SSE/长轮询三传输 + 广播 + 心跳
+│       └── signalr.ts          # SignalR JSON 协议消息编解码
+└── test/
+    ├── hash.test.ts            # 哈希算法对照 C# 参考值
+    ├── protocol.test.ts        # HTTP 协议黑盒测试
+    ├── signalr.test.ts         # 真实 SignalR 客户端连接/广播
+    ├── transports.test.ts      # 三种传输的 negotiate 与握手
+    ├── query-filters.test.ts   # 查询过滤与排序
+    ├── cleanup.test.ts         # 保留/清理语义
+    ├── fixes.test.ts           # 历次缺陷的回归
+    ├── fix-regressions.test.ts # 修复回归
+    ├── ui.test.ts              # /ui/api/* 的接口与鉴权
+    └── support/target-guard.ts # 写库套件的目标守卫（非本机需显式放行）
 ```
 
 ## 5. 存储设计
@@ -328,11 +373,18 @@ npx wrangler d1 execute syncclipboard --remote --file=./schema.sql
 npx wrangler secret put USERNAME
 npx wrangler secret put PASSWORD
 
-# 5. 部署
+# 5. 部署（必须在**仓库根**执行：静态资源目录是相对路径 ./public）
 npm run deploy
 
 # 6.（可选）自定义域名：wrangler.toml 增加 routes 或 Cloudflare 控制台绑定
 ```
+
+部署会一并上传 `public/**`（`[assets]`）：`/ui/*` 由 Cloudflare 静态资源直接托管、不经过 Worker，
+其余路径（含全部协议端点）回落给 Worker。因此**部署必须在仓库根执行**，且 `public/` 不能缺失——
+少了它 wrangler 会直接报 `assets.directory does not exist`。
+
+部署完成后浏览器打开站点根即可进入 Web 界面（`GET /` 对浏览器导航 302 到 `/ui/`），
+用与客户端相同的 `USERNAME` / `PASSWORD` 登录。界面的能力与边界见 [`docs/ui.md`](ui.md)。
 
 本地开发：`npm run dev`（miniflare 模拟 D1/R2/DO；本地 D1 用 `wrangler d1 execute --local` 初始化 schema）。
 
@@ -345,15 +397,27 @@ npm run deploy
 | SignalR | `@microsoft/signalr`（与 .NET 客户端同协议）连本地 hub | negotiate、握手、ping、广播接收 |
 | E2E | 本机官方客户端（WinUI3/Avalonia）连接 `wrangler dev` / 部署 URL | 真实客户端全流程（含历史同步） |
 
-**套件清单**（`npm test` = 8 套件 / 143 用例）：`hash`、`fixes`（数据层，用 node:sqlite 建真实 SQLite）、
-`protocol`、`fix-regressions`、`cleanup`、`query-filters`、`signalr`、`transports`。除 `hash` 与
-`fixes` 外的六套是 HTTP/SignalR 黑盒，需服务器。
+**套件清单**（`npm test` = 18 套件）：`hash`、`fixes`（数据层，用 node:sqlite 建真实 SQLite）、
+`protocol`、`fix-regressions`、`cleanup`、`query-filters`、`signalr`、`transports`、`ui`（Web 界面的
+`/ui/api/*`：会话生命周期、双通道鉴权、列表过滤与排序白名单、写操作、数据端点语义）、`docs`（文档口径
+守卫：套件数与前端资源数必须与实际一致），以及安全加固轮新增的 `next-target`（登录跳转同源判定）、
+`dto-validation`（PATCH/PUT 整数校验与 `/data` 头编码）、`limits`（multipart 分界串与 zip 解压上限）、
+`cleanup-budget`（清理预算/游标/失败可观测）、`rate-limit`（认证失败限速与来源校验、头部与体量）、
+`ui-guard`（遍历 `/ui/api/*` 断言未带凭据一律 401）、`hardening`（审计残余 G2/G6：未配置凭据时会话 fail-closed、
+SearchText 按字节限长）、`clipboard`（前端剪贴板写入的判别结果：环境不支持 / 转码失败 / 权限拒绝三态分开）。
+
+其中**纯逻辑套件**（`hash`、`fixes`、`docs`、`next-target`、`limits`、`ui-guard` 等）进程内运行、不需要
+服务器；其余黑盒套件由运行者（或 CI 的 `quality` job）先起 `wrangler dev` 再跑。
 
 `query-filters` 专门覆盖 `/api/history/query` 的**过滤与排序语义**（SearchText / Starred / Types /
 SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历史 UI 与增量同步直接依赖它们，
 而此前只测了「非法值 → 400」。
 
-**写库套件必须自我收尾**：黑盒套件会向目标库写记录。`cleanup` 与 `query-filters` 均在 `afterAll`
+`clipboard` 覆盖 `public/ui/js/clipboard.js` 的**判别结果**（此前只在浏览器里手工验过）：位图扩展名判定
+（不含 svg）、PNG 直写 / 非 PNG 转码、以及 `unsupported` / `failed(+底层原因)` / 降级到 `execCommand`
+三条分支——headless 环境拒绝 `clipboard.write`，成功路径只能这样钉住。
+
+**写库套件必须自我收尾**：黑盒套件会向目标库写记录。`cleanup`、`query-filters` 与 `ui` 均在 `afterAll`
 删除自己创建的记录，**清理失败即判套件失败**（静默残留会让共享/线上实例积累垃圾）。
 两条与时间戳有关的约束：
 
@@ -365,7 +429,7 @@ SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历�
 > 其它早期黑盒套件（`protocol`、`fix-regressions`）也会写记录，但它们用的是「当前时间」时间戳，
 > 会被保留期（7 天）与条数裁剪自然回收，属有界残留。
 
-**目标守卫（防误指线上）**：六个写库套件在文件顶层调用
+**目标守卫（防误指线上）**：七个写库套件在文件顶层调用
 `assertWritableTarget(BASE)`（`test/support/target-guard.ts`）—— `BASE` 非本机
 （`127.0.0.1`/`localhost`/`::1`/`0.0.0.0`）且未设 `ALLOW_REMOTE_TARGET=1` 时**抛错终止**，
 连 `beforeAll` 都不会执行。这是对「误把黑盒套件指向线上」这一事故类别的硬防护：本仓库曾因此
@@ -377,7 +441,7 @@ SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历�
 （曾发生「孤儿判定键形式不一致 → 每小时清空 history/」的生产事故，而当时只有数据层单测）。
 
 **CI 执行策略**（`.github/workflows/deploy.yml` 的 `quality` job）：
-`typecheck` + **全部 6 个套件**。黑盒套件由 CI 自行起 `wrangler dev --local`（miniflare）——
+`typecheck` + **全部 18 个套件**。黑盒套件由 CI 自行起 `wrangler dev --local`（miniflare）——
 D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需要 Cloudflare 凭据、也不接触线上资源**；
 `deploy` job 通过 `needs: quality` 依赖它，质量门失败即不部署。
 
@@ -390,7 +454,7 @@ D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需
 | 风险 | 等级 | 缓解 |
 |---|---|---|
 | Workers 免费版单请求体上限 100MB，大文件同步受限 | 中 | 剪贴板默认 MaxFileByte=20MB；文档注明限制；付费计划可提升 |
-| SignalR 协议细节多（token 模式/握手/ping） | 中 | `@microsoft/signalr` 真实客户端测试；只宣告 WebSockets 缩小面 |
+| SignalR 协议细节多（token 模式/握手/ping） | 中 | `@microsoft/signalr` 真实客户端测试；按上游顺序宣告三种传输（D6），WS 被阻断时客户端可自动降级 |
 | D1 免费版写并发/读主库限制 | 低 | 单用户秒级频率，远低于限额 |
 | Group ZIP 校验在 JS 端性能（大压缩包） | 低 | fflate 流式处理；单文件解压逐条哈希 |
 | DO 单实例为广播单点 | 低 | 个人场景足够；DO 迁移由平台保障连接不掉 |
@@ -398,10 +462,11 @@ D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需
 ## 14. 里程碑
 
 - [x] M0 方案敲定 + 设计文档（本文件 + protocol.md + progress.md）
-- [ ] M1 脚手架与本地开发环境（依赖安装、schema、`wrangler dev` 跑通 hello）
-- [ ] M2 HTTP 层：Basic Auth + WebDAV 兼容端点（含哈希校验与历史查找）
-- [ ] M3 官方 API：/api/time、/api/version、/api/history/* 全套
-- [ ] M4 SignalR 兼容 Hub（DO：negotiate + WS + 握手 + 心跳 + 广播）
-- [ ] M5 协议级集成测试全绿（hash/protocol/signalr）
-- [ ] M6 真实客户端联调（Windows 官方客户端 → wrangler dev → 部署）
-- [ ] M7 部署上线 + 运维文档（README 完善）
+- [x] M1 脚手架与本地开发环境（依赖安装、schema、`wrangler dev` 跑通 hello）
+- [x] M2 HTTP 层：Basic Auth + WebDAV 兼容端点（含哈希校验与历史查找）
+- [x] M3 官方 API：/api/time、/api/version、/api/history/* 全套
+- [x] M4 SignalR 兼容 Hub（DO：三传输 + 握手 + 心跳 + 广播）
+- [x] M5 协议级集成测试全绿（当轮全部套件）
+- [x] M6 真实客户端联调（Windows 官方客户端 → wrangler dev → 部署）
+- [x] M7 部署上线 + 运维文档（README 完善）
+- [x] M8 Web 历史界面（静态资源 + `/ui/api/*` + 零构建前端；见 docs/ui.md）

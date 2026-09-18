@@ -103,8 +103,12 @@
 | PROPFIND | `/` | **207 multistatus**（列自身）；上游为 200 空体，客户端按 2xx 判定 |
 | PROPFIND | `/file` | **207 multistatus**（目录自身 + 暂存对象，`D:href` 逐段 URL 编码）——客户端 `PreciseDelete` 的 `GetFolderSubList` 会 `XmlDocument.LoadXml` 解析，空体会抛异常 |
 | MKCOL | `/file` | 200 空体（上游 `Ok()`） |
-| GET | `/` | 200 文本 `"Server is running."` |
+| GET | `/` | 200 文本 `"Server is running."`；**浏览器导航**（`Accept` 含 `text/html`）→ 302 `/ui/`（附带的 Web 界面入口）。客户端从不 GET 根路径（`Test()` 与 `GetFolderSubList()` 都是 PROPFIND），故该分支不影响协议行为 |
 
+> **非协议路径**：`/ui/*`（静态资源 + `/ui/api/*`）是本实现附带的 Web 界面，**不属于协议契约**——
+> 它用会话 Cookie 或 Basic 鉴权（401 不带 `WWW-Authenticate`）、响应形状可随版本调整。
+> 对照实现时可以完全忽略它，但不要把它当成客户端依赖的端点。
+>
 > **路由容错**：ASP.NET 路由忽略尾斜杠，官方客户端 `WebDavBase.AdjustDirectoryUrl` 会给目录 URL
 > **强制追加 `/`**（`DELETE file/`、`PROPFIND file/`）。本实现用 Hono `strict:false` 对齐，
 > 否则客户端的 `DeletePreviousFilesOnPush` 清理会静默失效、R2 暂存区无限累积。
@@ -126,6 +130,13 @@
 本实现把当前 profile 存在 D1 `Meta` 表（不存在 = 上游「文件不存在」），
 并用 `classifyStoredProfile` 复刻另外两个出口的判定，避免把损坏值原样发给客户端
 （客户端 `ReadFromJsonAsync` 会抛异常 → 剪贴板同步中断）。
+
+> **当前 profile 与历史记录相互独立**：`Meta.current_profile` 保存的是该 ProfileDto 的**副本**，
+> 且**只**由 `PUT /SyncClipboard.json` 的写路径（`saveCurrentProfileJson`）更新；
+> 任何删除路径（`PATCH isDelete`、`DELETE /api/history/clear`、清理任务、硬删）**都不触碰它**
+> （与上游一致：`ClearAllAsync` 也不动 `SyncClipboard.json`）。
+> 推论：**删掉历史记录并不能让当前 profile 停止对外提供该内容** —— 要让客户端不再把某内容当作
+> 活动剪贴板，必须再用一次 `PUT /SyncClipboard.json` 覆盖 `Meta`。
 
 ### 4.1 PUT /SyncClipboard.json 精确流程
 
@@ -421,6 +432,8 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | POST /api/history 400/422 | `UploadHistoryAsync` 抛 `RemoteHistoryDataRejectedException`，队列按远端失败重试 |
 | POST /api/history 409 | `RemoteHistoryConflictException`，表示已存在 |
 | GET /api/history/{profileId} 对 IsDeleted 记录仍返回 dto | 客户端 adapter 自行过滤 IsDeleted → null |
+| **服务端软删会传播成客户端的删除**：`SyncRemoteHistoryAsync` 对已存在记录执行 `ApplyChangesFromRemote`（复制 `IsDeleted`）后 `TriggleUpdateOrDeleteEvent` → `IsDeleted` 为真即触发 `HistoryRemoved`（`HistoryManager.cs:373-398`、`MapperExtensions.cs:33-39`） | 不要在服务端用「软删」表达「数据丢了、等客户端重传」——那会把客户端**仅存的那份本地副本**也标记删除 |
+| **孤儿判定不区分软删**：`DetectOrphanDataAsync` 的 `remoteIds` 直接由 `remoteRecords.Select(r => $"{r.Type}-{r.Hash}")` 构成，**不过滤 `IsDeleted`**（`HistorySyncer.cs:311`），因此软删记录仍算「服务器存在」 | 想让客户端把本地记录标成 `LocalOnly` 并带数据重传，服务端的行必须**真正消失**（D1 `DELETE`），软删无效 |
 | PUT /SyncClipboard.json 命中历史复用 | 客户端不重复上传数据文件（哈希已在库） |
 | GET /file/{name} 历史查找 | 客户端按 `DataName` 下载，须能命中刚上传的记录 |
 | GET /SyncClipboard.json 空档期返回空 TextProfile | 客户端 `Profile.Create` 得空文本，轮询不报错 |
@@ -429,7 +442,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 
 | 项 | 官方服务器 | 本实现 | 影响 |
 |---|---|---|---|
-| 请求体上限 | Kestrel 无限制（MaxRequestBodySize=int.MaxValue） | Workers 免费 100MB / 付费更高 | 超限大文件失败；客户端默认 20MB 上限，可接受 |
+| 请求体上限 | Kestrel 无限制（MaxRequestBodySize=int.MaxValue） | 平台 100MB（Free）/更高，**另有 32MiB 应用层上限**（超限 413，见 `src/requestLimits.ts` 注释：客户端默认 20MB；isolate 仅 128MB，接近 100MB 的体会在解析期 OOM） | **有意偏离**：单请求 >32MiB 失败；客户端默认 20MB 不受影响（下表同项为其历史口径） |
 | SignalR 传输 | WebSockets + SSE + LongPolling | 三种均实现，宣告顺序与格式表逐字对齐 | — |
 | 磁盘布局 | 本地文件系统 | R2 对象存储 | 对外不可见，语义等价 |
 | 并发 | 单进程信号量串行 | `(UserId,Type,Hash)` UNIQUE 索引 + 唯一冲突按 ShouldUpdate 合并 + `updateEntityIfVersion` 乐观锁 | 语义等价（多设备并发实测无重复行/丢更新） |
@@ -451,8 +464,9 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | hash 含分隔符的**平台差异** | Windows：`DirectorySeparatorChar='\'`、`Alt='/'` → 两者都拒；Linux：两者都是 `/` → 只拒 `/`，**允许 `\`** | 两平台一致地拒绝两者 | 严格超集；跨平台行为一致，官方客户端恒发 SHA256 hex（永不触发） |
 | `profileId` 里的类型枚举大小写 | **大小写敏感**：`Profile.ParseProfileId` 用 `Enum.TryParse<TEnum>(value, out r)`（.NET 源码该重载固定 `ignoreCase: false`），故 `text-HASH` → 400。但 `PATCH /{type}` 走模型绑定（`EnumTypeModelBinder` → `EnumConverter.ConvertFrom` → `Enum.Parse(t, s, ignoreCase: **true**)`），**大小写不敏感** —— 上游自身不一致 | 两处均大小写不敏感 | 宽松超集：官方客户端恒发 `Text`/`File`/`Image`/`Group` 规范名，两种实现等价；第三方客户端更不易踩坑 |
 | 第三方畸形 zip | 隐式目录/重复条目按解压落盘语义 | 隐式目录计入；重复条目首见保留（filter）；`a` 与 `a/` 同名冲突不报错 | 官方客户端恒写显式目录条目且无重复 → 不可达 |
-| 请求体上限 | 无限制 | 100MB（Free/Pro） | 客户端默认 20MB 上限 |
-| 应用层解压上限 | 无 | 无（同为全量解压，受平台内存约束） | 认证后可用性风险，双方均无解压炸弹防护 |
+| zip 条目名的**路径形态** | 越界形态按**平台相关**的方式处理：读取守卫（`GroupProfile.cs:619-624`：`Path.Combine` + `GetFullPath` + `StartsWith(extractPath)`）在 Windows 上会拒掉 rooted 形态（`Path.Combine` 遇 rooted 第二参数直接返回它 ⇒ 不在解压根下），在 Linux/macOS 上则把 `C:/evil.txt` 当**相对路径**落盘（生成名为 `C:` 的目录）；含 **NUL** 的名字没有专门处理，落盘时抛未处理异常（**500**，不是干净拒绝） | 入口**一律拒绝**，不依赖平台：盘符 + 分隔符形态与含 NUL 的名字都拒（POST→422 / PUT→400）；同时**不**拒「第二字符是冒号」的普通名字（`a:b.txt`、`1:30.txt`） | **有意偏离**：拒绝口径跨平台一致，且不让畸形输入变成 500。附注：`a:b.txt` 这类名字在 POSIX 上合法（上游同样落盘成功），在 Windows 上游会被同一个 rooted 守卫拒掉，而本实现一律接受——宽松超集，官方客户端不可达 |
+| 请求体上限 | 无限制 | 平台 100MB（Free/Pro）+ **32MiB 应用层上限**（同上表） | 客户端默认 20MB 上限；>32MiB 返回 413 |
+| 应用层解压上限 | 无 | **有**：Group zip 解压总量 64MiB / 条目 1000 / 单条目压缩比 100:1（比值守卫含 8MiB 绝对下限；见 `src/hash.ts`） | **有意偏离**：合法但超大的文件夹会被拒（POST→422、PUT→400）；上游无此防护（同为全量解压） |
 | PROPFIND 响应 | 200 空体 | 207 标准 multistatus | 客户端两处调用均按 2xx 判定（`DirectoryExist` 只看 404、`GetFolderSubList` 用 `EnsureSuccessStatusCode`），且 207 是 `PreciseDelete` 解析目录列表的前提 |
 | **附件响应头** | 仅 `Content-Type` | 一律 `X-Content-Type-Options: nosniff`；可渲染类型（html/htm/xhtml/svg/xml）额外 `CSP: default-src 'none'; sandbox` + `Content-Disposition: attachment` | **有意加固偏离**：附件与 API 同源、浏览器会自动附带已缓存的 Basic 凭据，直接打开可读取全部历史（存储型 XSS）。桌面客户端不读这些头，已 E2E 验证无回归；代价是浏览器不再内联预览 HTML/SVG 附件 |
 | `DELETE /file/{name}` | 无该路由（`PreciseDelete` 因而失效） | 已实现单文件删除 | **补全**：客户端 `PreciseDelete=true` 的 `GetFolderSubList` → `DELETE file/{name}` 才会真正生效 |

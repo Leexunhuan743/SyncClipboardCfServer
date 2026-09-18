@@ -21,13 +21,15 @@ const LP_TRANSFER_FORMATS = ['Text', 'Binary'];
 // 宣告顺序即客户端的尝试顺序（客户端按列表顺序取第一个可用的传输）。
 // 与上游一致：WebSockets 优先；WS 不可用（代理剥离 Upgrade、防火墙只放行普通 HTTP）时
 // 回退 ServerSentEvents，再回退 LongPolling —— 这是上游具备、此前本实现缺失的降级能力。
-const AVAILABLE_TRANSPORTS = [
+// 三传输及其可承载的格式。顺序 = 上游 `services.AddSignalR()` 的宣告顺序 = 客户端尝试顺序。
+// 对 UI 的 info 端点也用它：把「本服务端支持哪些传输」如实告诉部署者。
+export const AVAILABLE_TRANSPORTS = [
   { transport: 'WebSockets', transferFormats: WS_TRANSFER_FORMATS },
   { transport: 'ServerSentEvents', transferFormats: SSE_TRANSFER_FORMATS },
   { transport: 'LongPolling', transferFormats: LP_TRANSFER_FORMATS },
 ];
 
-function hubStub(env: Bindings): DurableObjectStub {
+export function hubStub(env: Bindings): DurableObjectStub {
   return env.HUB.get(env.HUB.idFromName(HUB_INSTANCE));
 }
 

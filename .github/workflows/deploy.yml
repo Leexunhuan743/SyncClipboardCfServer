@@ -1,5 +1,6 @@
 # 自动部署 SyncClipboard CfServer 到 Cloudflare Workers
-# 触发：push 到 master，或 GitHub Actions 页面手动触发（workflow_dispatch）
+# 触发：push 到 master **且改动涉及产品代码/构建输入**，或 GitHub Actions 页面手动触发。
+#       纯文档改动（README、docs/**、*.md、审计工件）不再空跑 CI —— 见下方 paths 白名单。
 #
 # 前置一次性配置（GitHub 仓库 Settings → Secrets and variables → Actions）：
 #   Secrets:
@@ -22,6 +23,27 @@ name: Deploy
 on:
   push:
     branches: [master]
+    # 白名单：只在这些路径变更时触发。文档与审计工件不在其中——它们既不改变部署产物，
+    # 也不影响协议行为，此前每次提交空跑一遍 quality + deploy 是纯浪费。
+    #
+    # 两条刻意保留的边界：
+    #   - public/** 是 Web 界面本体，随部署上线，属于产品代码（不是文档）；
+    #   - test/** 是本仓库的质量门产物，改坏了不该静默合入；而且「文档口径守卫」也住在
+    #     test/ 下（代价：纯文档改动触发的 CI 顺带校验的那次机会没有了，下一次代码改动仍会校验）。
+    #
+    # 这是**白名单**：将来新增部署输入（新的配置文件/目录）时必须同步加进列表，
+    # 否则那次变更不会触发流水线。手动触发（workflow_dispatch）不受此限。
+    paths:
+      - 'src/**'                 # 协议实现
+      - 'public/**'              # Web 界面（静态资源，随部署上线）
+      - 'test/**'                # 测试套件 + 文档口径守卫
+      - 'schema.sql'             # D1 表结构（部署时执行）
+      - 'wrangler.toml'          # 部署配置（绑定、[assets]、[triggers]、[vars]）
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vitest.config.ts'
+      - '.github/workflows/**'   # CI 自身
   workflow_dispatch:
 
 concurrency:
@@ -30,7 +52,7 @@ concurrency:
 
 jobs:
   quality:
-    # 真正的质量门：typecheck + **全部 6 个套件**（含 HTTP 黑盒）。
+    # 真正的质量门：typecheck + **全部 18 个套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
     # 黑盒套件需要服务器：这里用 wrangler dev（miniflare）起一个本地实例，
     # 不触碰任何线上资源、也不需要 Cloudflare 凭据。
     # 单独成 job 有两个好处：与部署进程隔离（dev server 不残留），且失败即不部署。

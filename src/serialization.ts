@@ -18,6 +18,18 @@ export function toIso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
+// 历史数据体积（字节 → 上游口径的 MB）。
+// 口径来自上游 `GetStatisticsAsync`：保留两位小数；**有数据但不足 0.01MB 时取 0.01**，
+// 让「非零体积」在界面上不会显示成 0。
+// 单独成函数是因为它出现在三处（官方 statistics、UI statistics、UI info），
+// 此前 UI info 用了整数四舍五入，同一个数在统计页显示 0.48、在 info 里显示 0。
+export function historySizeMB(bytes: number): number {
+  let mb = bytes / (1024.0 * 1024.0);
+  mb = Math.round(mb * 100) / 100;
+  if (bytes > 0 && mb === 0) mb = 0.01;
+  return mb;
+}
+
 // ISO8601 → epoch ms。兼容 C# 输出（+00:00 后缀、7 位小数）与 JS toISOString（Z）。
 export function fromIso(s: string): number {
   const ms = Date.parse(s);
@@ -217,7 +229,15 @@ export function parseProfileDto(json: string): ProfileDto {
     hasData: (get('hasData') as boolean) ?? false,
     dataName: (get('dataName') as string | null) ?? null,
   };
-  if (typeof size === 'number') dto.size = size;
+  // size 对齐上游 `ProfileDto.Size`（`long?`）的模型绑定：非空值必须是**整数**（且 JS 能精确
+  // 表示 ⇒ Number.isSafeInteger），否则绑定失败 → 400。此前只判 `typeof === 'number'`：
+  // `1.5` / `1e400`（Infinity）都会被当成合法体积写进记录（F6）。符号不限（上游 long 可为负）。
+  if (size !== undefined && size !== null) {
+    if (typeof size !== 'number' || !Number.isSafeInteger(size)) {
+      throw new Error(`size must be a long: ${String(size)}`);
+    }
+    dto.size = size;
+  }
   return dto;
 }
 
@@ -333,7 +353,21 @@ export function parseHistoryRecordUpdateDto(json: string): HistoryRecordUpdateDt
   if (typeof starred === 'boolean') dto.starred = starred;
   if (typeof pinned === 'boolean') dto.pinned = pinned;
   if (typeof isDelete === 'boolean') dto.isDelete = isDelete;
-  if (typeof version === 'number') dto.version = version;
+  // version 对齐上游 `HistoryRecordUpdateDto.Version`（`int?`）的模型绑定：非空值必须是
+  // 落在 int32 内的**有限整数**，否则绑定失败 → 400。此前只判 `typeof === 'number'`：
+  // `1.5` 被原样持久化（污染该记录的版本语义）、`1e400` 解析为 Infinity 后落库触发 500（F6）。
+  // 符号不限（上游 int? 不限制负数；负值由 shouldUpdate 自然判成 409/不更新）。
+  if (version !== undefined && version !== null) {
+    if (
+      typeof version !== 'number' ||
+      !Number.isInteger(version) ||
+      version < INT32_MIN ||
+      version > INT32_MAX
+    ) {
+      throw new Error(`version must be an int32: ${String(version)}`);
+    }
+    dto.version = version;
+  }
   // 日期字段在解析期就校验：上游是 DateTimeOffset? 模型绑定，非法串在反序列化阶段失败并返回 400；
   // 若放行到 fromIso 才抛错，路由无 catch-all → 500（F7）。
   if (typeof lastModified === 'string' && lastModified !== '') {
@@ -375,4 +409,20 @@ export function entityToUpdateDto(e: HistoryRecordEntity): HistoryRecordUpdateDt
     lastModified: toIso(e.lastModified),
     lastAccessed: toIso(e.lastAccessed),
   };
+}
+
+
+// ===== 搜索串上限（G6）=====
+// D1 的 LIKE 模式有字节上限，超长会让查询直接报错（表现为未处理的 500，非资源类缺陷）。
+// 实测：48 字节通过、49 字节失败（模式为 `%…%`）。以**字节**而非字符计，避免 CJK/emoji
+// 搜到一半才炸。两个边界（协议 /api/history/query 与 UI /ui/api/history）共用此判定。
+export const MAX_SEARCH_BYTES = 48;
+const SEARCH_ENCODER = new TextEncoder();
+
+export function normalizeSearchText(raw: string | null): string | null {
+  if (raw === null || raw === '') return null;
+  if (SEARCH_ENCODER.encode(raw).length > MAX_SEARCH_BYTES) {
+    throw new InvalidQueryValueError(`SearchText must be at most ${MAX_SEARCH_BYTES} bytes`);
+  }
+  return raw;
 }

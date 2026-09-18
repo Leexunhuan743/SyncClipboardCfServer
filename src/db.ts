@@ -12,7 +12,9 @@ import {
 import { toIso, entityToDto, entityToUpdateDto, fromIso } from './serialization';
 import { HistoryRecordUpdateDto } from './types';
 
-interface DbRow {
+// D1 行形状与映射对 UI 查询层开放：UI 需要按自己的排序/分页读同一张表，
+// 若另写一份映射，两处对 NULL / 布尔列的解释迟早分叉。
+export interface DbRow {
   ID: number;
   UserId: string;
   Type: number;
@@ -30,7 +32,7 @@ interface DbRow {
   IsDeleted: number;
 }
 
-function rowToEntity(r: DbRow): HistoryRecordEntity {
+export function rowToEntity(r: DbRow): HistoryRecordEntity {
   let filePaths: string[] = [];
   try {
     const parsed = JSON.parse(r.FilePaths);
@@ -430,7 +432,7 @@ export class HistoryDb {
     return new Set((res.results ?? []).map((r) => `${ProfileType[r.Type as ProfileType]}_${r.Hash}/`));
   }
 
-  // ===== Meta（当前剪贴板 Profile）=====
+  // ===== Meta（当前剪贴板 Profile / 清理进度）=====
 
   async getCurrentProfileJson(): Promise<string | null> {
     const res = await this.db
@@ -444,6 +446,36 @@ export class HistoryDb {
       .prepare(`INSERT INTO Meta (Key, Value) VALUES ('current_profile', ?1)
                 ON CONFLICT(Key) DO UPDATE SET Value = ?1`)
       .bind(json)
+      .run();
+  }
+
+  // 通用 KV 读写（清理任务用它落进度/失败，UI 只读展示同一批键）。
+  // 键名由调用方给定：db.ts 不掌握清理阶段的命名，避免两处各写一份字面量。
+
+  // 批量读：**缺键不出现在 Map 里**（调用方自行取默认值）；D1 报错按常态抛出。
+  async getMetaValues(keys: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (keys.length === 0) return out;
+    const placeholders = keys.map((_, i) => `?${i + 1}`).join(', ');
+    const res = await this.db
+      .prepare(`SELECT Key, Value FROM Meta WHERE Key IN (${placeholders})`)
+      .bind(...keys)
+      .all<{ Key: string; Value: string }>();
+    for (const row of res.results ?? []) out.set(row.Key, row.Value);
+    return out;
+  }
+
+  // 批量写：一条多行 UPSERT（1 次子请求）。键与值都走占位符绑定（SQL 里只出现 `?N`）。
+  async setMetaValues(values: Record<string, string>): Promise<void> {
+    const entries = Object.entries(values);
+    if (entries.length === 0) return;
+    const rows = entries.map((_, i) => `(?${i * 2 + 1}, ?${i * 2 + 2})`).join(', ');
+    await this.db
+      .prepare(
+        `INSERT INTO Meta (Key, Value) VALUES ${rows}
+         ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value`,
+      )
+      .bind(...entries.flat())
       .run();
   }
 }

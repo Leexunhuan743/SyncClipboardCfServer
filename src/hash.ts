@@ -1,5 +1,5 @@
 // 哈希算法（协议契约 docs/protocol.md §8）——与上游 C# 实现逐字节一致
-import { unzipSync } from 'fflate';
+import { Unzip, UnzipInflate } from 'fflate';
 
 const enc = new TextEncoder();
 
@@ -78,23 +78,78 @@ export async function groupHashFromEntries(entries: GroupEntrySpec[]): Promise<s
   return sha256Hex(joined);
 }
 
+// Group zip 解压上限（F9）：解压在哈希校验**之前**发生，不封顶时一个高压缩比 zip
+// 可以让 isolate 在拿到错误前先付出全部解压代价（审计实测 65.7KB → 64MB，≈1000:1）。
+// 三条上限都在解压过程中生效：边遍历边累计，超限立即抛错中止，不会先把超限内容物化出来。
+export const GROUP_ZIP_MAX_TOTAL_BYTES = 64 * 1024 * 1024; // 解压后内容总字节上限
+export const GROUP_ZIP_MAX_ENTRIES = 1000; // 条目数上限（含目录条目与重复条目）
+export const GROUP_ZIP_MAX_COMPRESSION_RATIO = 100; // 单条目 解压后/压缩 字节比上限
+export const GROUP_ZIP_MIN_RATIO_CHECK_BYTES = 8 * 1024 * 1024; // 比值守卫的体积下限（以下不判比值）
+
 // 从 zip 字节解析条目集合并计算哈希（服务端校验路径，等价"解压后遍历文件系统"）
 // - 目录条目：显式（name 以 '/' 结尾）+ 从文件路径推导的隐式父目录（C# 解压会创建目录并计入）
 // - 防穿越：条目名不得解析到解压根之外（上游 ExtractArchiveEntriesAsync 校验）
 // - 同名重复条目：上游解压是「首次写入优先」（FileMode.CreateNew + File.Exists 跳过），
 //   而 fflate 默认「后者覆盖」。这里显式跳过同名后续条目，与上游保持同一语义（F12）。
+// - 解压上限（F9）：改用流式 Unzip（旧实现 unzipSync 会按声明尺寸一次性分配并全量解压），
+//   每收到一块解压结果就累计并检查上限，超限抛出 InvalidGroupDataError。
 export function parseGroupZip(zipBytes: Uint8Array): { entries: GroupEntrySpec[]; topLevel: string[]; totalSize: number } {
+  // 流式解压不读中央目录，合法性（EOCD 存在）由本函数先判，保持「不是 zip → 抛错」的既有语义
+  if (!hasEndOfCentralDirectory(zipBytes)) {
+    throw new InvalidGroupDataError('Transfer data is not a zip archive');
+  }
+
+  const contents = new Map<string, Uint8Array>();
+  const names: string[] = [];
   const seenNames = new Set<string>();
-  const unzipped = unzipSync(zipBytes, {
-    filter: (file: { name: string }) => {
-      if (seenNames.has(file.name)) {
-        return false; // 同名重复条目：保留首个（上游首次写入优先）
+  let entryCount = 0;
+  let decompressedBytes = 0;
+
+  const unzip = new Unzip((file) => {
+    if (++entryCount > GROUP_ZIP_MAX_ENTRIES) {
+      throw new InvalidGroupDataError(`Transfer data contains more than ${GROUP_ZIP_MAX_ENTRIES} entries`);
+    }
+    if (seenNames.has(file.name)) {
+      // 同名重复条目：保留首个（上游首次写入优先）。不调用 start() 即不解压该条目。
+      return;
+    }
+    seenNames.add(file.name);
+    names.push(file.name);
+
+    const compressedSize = file.size ?? 0;
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    file.ondata = (err, chunk, final) => {
+      if (err) throw err;
+      if (chunk.length > 0) {
+        size += chunk.length;
+        decompressedBytes += chunk.length;
+        if (decompressedBytes > GROUP_ZIP_MAX_TOTAL_BYTES) {
+          throw new InvalidGroupDataError(`Transfer data expands beyond ${GROUP_ZIP_MAX_TOTAL_BYTES} bytes`);
+        }
+        // 压缩尺寸未知（流式写入的条目）时只能靠总量上限兜底。
+        // 体积下限：小文件的比值天然偏高（1KB 文本压到 10 字节 = 100:1 属正常），
+        // 只有「解压后 > 8MiB 且比值超限」才判为放大，避免误伤合法小条目。
+        if (
+          compressedSize > 0 &&
+          size > GROUP_ZIP_MIN_RATIO_CHECK_BYTES &&
+          size > compressedSize * GROUP_ZIP_MAX_COMPRESSION_RATIO
+        ) {
+          throw new InvalidGroupDataError(
+            `Transfer data entry exceeds the ${GROUP_ZIP_MAX_COMPRESSION_RATIO}:1 compression ratio: ${file.name}`,
+          );
+        }
+        chunks.push(chunk);
       }
-      seenNames.add(file.name);
-      return true;
-    },
+      if (final) {
+        contents.set(file.name, concatChunks(chunks));
+      }
+    };
+    file.start();
   });
-  const names = Object.keys(unzipped);
+  unzip.register(UnzipInflate);
+  unzip.push(zipBytes, true);
+
   if (names.length === 0) {
     return { entries: [], topLevel: [], totalSize: 0 };
   }
@@ -111,7 +166,12 @@ export function parseGroupZip(zipBytes: Uint8Array): { entries: GroupEntrySpec[]
     }
     // 文件条目：校验路径合法（无 .. 段、不以 / 开头、非绝对路径）
     assertSafeEntryName(rawName);
-    fileEntries.push({ name: rawName, isDir: false, content: unzipped[rawName] });
+    const content = contents.get(rawName);
+    if (!content) {
+      // 条目数据流未正常结束（截断/畸形 zip）——不接受半个条目
+      throw new InvalidGroupDataError(`Transfer data is invalid with entry: ${rawName}`);
+    }
+    fileEntries.push({ name: rawName, isDir: false, content });
     // 推导隐式父目录（逐级；C# 解压会创建目录并在哈希重算时计入）
     const segments = rawName.split('/');
     segments.pop(); // 去掉文件名
@@ -141,7 +201,23 @@ export function parseGroupZip(zipBytes: Uint8Array): { entries: GroupEntrySpec[]
 }
 
 function assertSafeEntryName(name: string): void {
-  if (name.startsWith('/') || name.includes('\\')) {
+  // 盘符与 NUL 必须在入口拒绝，且它们躲得过下面基于 '/' 分段的检查：
+  //   `C:/evil`（Windows 绝对路径）没有前导斜杠、也没有 `..` 段；
+  //   `a\0b` 带 NUL——落盘时会被截成 `a`，即「名字与哈希时看到的不一致」。
+  // 反斜杠已经覆盖了 `C:\evil` 这一形态。
+  //
+  // 只拒「盘符 + 分隔符」的绝对路径形态，**不能**写成裸的 `^[A-Za-z]:`：
+  // `a:b.txt`、`1:30.txt` 这类「第二字符是冒号」的名字在 Linux/macOS 上合法（上游同样按相对路径落盘），
+  // 拒掉它们是行为回归（跨平台的上传者会突然收到 422）。
+  //
+  // 与上游的差别是**有意偏离**（见 docs/protocol.md §10）：上游对越界形态的处置是平台相关的——
+  // Windows 上靠 rooted 守卫拒 `C:/evil`（`Path.Combine` 遇 rooted 返回它 ⇒ 不在解压根下），
+  // POSIX 上却把它当相对路径落盘（生成名为 `C:` 的目录）；含 NUL 的名字没有专门处理，
+  // 落盘时抛未处理异常（500）。本实现不依赖平台，入口一律拒。
+  if (name.startsWith('/') || name.includes('\\') || name.includes('\0')) {
+    throw new InvalidGroupDataError(`Transfer data is invalid with entry: ${name}`);
+  }
+  if (/^[A-Za-z]:[\\/]/.test(name)) {
     throw new InvalidGroupDataError(`Transfer data is invalid with entry: ${name}`);
   }
   const segments = name.split('/');
@@ -150,6 +226,33 @@ function assertSafeEntryName(name: string): void {
       throw new InvalidGroupDataError(`Transfer data is invalid with entry: ${name}`);
     }
   }
+}
+
+// 最小 zip 合法性判定（与 fflate unzipSync 同一判据）：EOCD 记录（PK\x05\x06）必须出现在
+// 末 65558 字节内。流式解压按局部头顺序读，缺失 EOCD 的输入本会被静默当成「空 zip」，
+// 因此这一步是「不是 zip → 抛错」语义的承担者。
+function hasEndOfCentralDirectory(bytes: Uint8Array): boolean {
+  const maxTail = 65558;
+  for (let i = bytes.length - 22; i >= 0 && bytes.length - i <= maxTail; i--) {
+    if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// 流式解压按块交付，合并成条目内容（旧 unzipSync 直接返回整块，故此前无此步骤）
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0]!;
+  let length = 0;
+  for (const c of chunks) length += c.length;
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out;
 }
 
 // 服务端 Group 数据校验失败（上游 InvalidDataException / InvalidOperationException → 422 或 400）。

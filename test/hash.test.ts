@@ -114,4 +114,36 @@ describe('parseGroupZip', () => {
     expect(() => parseGroupZip(zipSync({ 'a\\b.txt': strToU8('x') }))).toThrow(InvalidGroupDataError);
   });
 
+  // 审计残余 G5：盘符形态的「绝对路径」与含 NUL 的名字。
+  // 两者都躲得过上面那些基于 '/' 分段的检查：`C:/evil.txt` 没有前导斜杠也没有 `..` 段；
+  // `a\0b.txt` 落盘时会被截成 `a`（名字与哈希时看到的不再是同一个）。
+  it('拒绝盘符条目（Windows 绝对路径形态）', () => {
+    expect(() => parseGroupZip(zipSync({ 'C:/evil.txt': strToU8('x') }))).toThrow(InvalidGroupDataError);
+    expect(() => parseGroupZip(zipSync({ 'C:\\evil.txt': strToU8('x') }))).toThrow(InvalidGroupDataError);
+    // 目录条目走的是同一条校验，也要拒
+    expect(() => parseGroupZip(zipSync({ 'D:/dir/': new Uint8Array(0) }))).toThrow(InvalidGroupDataError);
+  });
+
+  it('拒绝含 NUL 的条目名', () => {
+    expect(() => parseGroupZip(zipSync({ 'a\0b.txt': strToU8('x') }))).toThrow(InvalidGroupDataError);
+  });
+
+  it('阳性对照：第二字符是冒号的普通名字仍被接受（盘符校验不能写成裸前缀）', () => {
+    // `a:b.txt` / `1:30.txt` 在 Linux/macOS 上合法、上游也能落盘；
+    // 裸的 `^[A-Za-z]:` 会把它们一起拒掉，那是行为回归。
+    for (const name of ['a:b.txt', '1:30.txt']) {
+      const { topLevel } = parseGroupZip(zipSync({ [name]: strToU8('x') }));
+      expect(topLevel, `${name} 应被接受`).toEqual([name]);
+    }
+  });
+
+  it('阳性对照：普通文件名（单字母前缀、含点）不受影响', () => {
+    const zip = zipSync({ 'a.txt': strToU8('x'), 'sub/c.txt': strToU8('y') });
+    const { topLevel, entries } = parseGroupZip(zip);
+    // 顶层条目只看「裁掉尾部斜杠后仍不含 '/'」的名字：`sub/c.txt` 不是顶层，
+    // 但它推导出的隐式目录 `sub/` 仍在条目集合里（参与哈希）。
+    expect(topLevel).toEqual(['a.txt']);
+    expect(entries.some((e) => e.name === 'sub/' && e.isDir)).toBe(true);
+  });
+
 });
