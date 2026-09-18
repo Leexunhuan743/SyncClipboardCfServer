@@ -27,13 +27,17 @@ export const API_BASE = '/ui/api';
 export const PAGE_BASE = '/ui_old';
 
 export class ApiError extends Error {
-  constructor(status, message, { retryAfterSeconds = null } = {}) {
+  constructor(status, message, { retryAfterSeconds = null, payload = null } = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     // 限速（429）时服务端会带 Retry-After（见 src/auth.ts 的 tooManyRequests）：
     // 把它带出来，文案才说得出「还要等多久」。其余错误为 null。
     this.retryAfterSeconds = retryAfterSeconds;
+    // 结构化错误体（数据端点的 `{error:"data_missing"}` 等）：调用方据此区分
+    // 「对象确实不在服务器上」（终态、不给重试）与「这次读取失败了」（可重试）。
+    // 丢掉它就只能看状态码猜 —— 而 404 同时表示"记录不存在"和"记录在、数据没了"。
+    this.payload = payload;
   }
 }
 
@@ -87,6 +91,7 @@ async function request(path, { method = 'GET', body, signal, timeout = REQUEST_T
       const raw = Number(response.headers.get('retry-after'));
       throw new ApiError(response.status, message, {
         retryAfterSeconds: Number.isFinite(raw) && raw > 0 ? Math.round(raw) : null,
+        payload,
       });
     }
     return payload;
@@ -94,6 +99,48 @@ async function request(path, { method = 'GET', body, signal, timeout = REQUEST_T
     clearTimeout(timer);
     // 一次性的监听器在正常路径上不会自己摘掉（只 abort 时才触发），故这里显式移除：
     // 轮询每 10 秒一次，不摘就是在 signal 上挂一辈子的闭包。
+    signal?.removeEventListener('abort', relayAbort);
+  }
+}
+
+/**
+ * 数据文件（图片预览 / 附件下载）的取回：与 `request()` **同一套**「调用方取消 + 超时」语义，
+ * 但返回 `Blob` —— 数据端点的响应体是二进制，`request()` 只按文本解析，复用不了。
+ *
+ * 为什么必须有它（2026-09-18）：图片复制与文件下载此前在 `main.js` 里**裸用 `fetch`**，
+ * 于是这条路径上两件事同时缺失 ——
+ *   ① 没有超时：连接半开（响应头到了、body 永远不来）时 fetch 永不 settle，调用方的
+ *      `setPending` 永远清不掉，那个按钮就一直转圈且（`data-loading` 的 `pointer-events: none`）点不动；
+ *   ② 没有 401 处理：会话过期时只报一句「读取图片失败（401）」，而不是像其它请求那样回登录页。
+ * 纪律（与 `request()` 同源）：计时器要留到**读完 body** 才清 —— 这里 body 就在同一个 try 里读完。
+ */
+async function requestBlob(path, { signal, timeout = REQUEST_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  let timer = 0;
+  if (timeout > 0) {
+    timer = setTimeout(
+      () => controller.abort(new Error(`请求超时（${Math.round(timeout / 1000)} 秒）`)),
+      timeout,
+    );
+  }
+  const relayAbort = () => controller.abort(signal.reason);
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener('abort', relayAbort, { once: true });
+  }
+
+  try {
+    const response = await fetch(path, { credentials: 'same-origin', signal: controller.signal });
+    if (!response.ok) {
+      // 数据端点的错误体是 JSON（`{error:"data_missing"}`）；解析失败不算错，交给 payload=null
+      const payload = await response.json().catch(() => null);
+      throw new ApiError(response.status, (payload && (payload.detail || payload.error)) || response.statusText || '请求失败', {
+        payload,
+      });
+    }
+    return await response.blob();
+  } finally {
+    clearTimeout(timer);
     signal?.removeEventListener('abort', relayAbort);
   }
 }
@@ -265,6 +312,11 @@ export const api = {
     `${itemPath(item)}/data${
       download ? '?download=1' : ''
     }`,
+
+  // 数据文件的**取回**（对比 `dataUrl`：那是交给 `<img>` / `<a>` 的地址，走的是浏览器的加载路径）。
+  // 复制图片与下载文件需要拿到字节，走它 —— 这条路必须有超时与 401 处理，理由见 `requestBlob`。
+  fetchData: (item, { download = false, signal } = {}) =>
+    requestBlob(api.dataUrl(item, { download }), { signal }),
 };
 
 // 单条记录的接口路径。逐段 encodeURIComponent 而不是拼原始串：协议只禁止 hash 里出现路径

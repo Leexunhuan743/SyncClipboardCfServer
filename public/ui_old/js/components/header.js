@@ -130,7 +130,8 @@ export function createHeader({ onToggleTheme, onLogout, onInfo, onCopyLatest }) 
     ]),
   ]);
 
-  // 图标随主题切换（月亮 ↔ 太阳），并且把选择写进 localStorage
+  // 图标随主题切换（月亮 ↔ 太阳）。**只换图标**：真正把选择写进 localStorage 的是
+  // `main.js` 的 `toggleTheme()`（这里此前写着"并且把选择写进 localStorage"，与事实相反）。
   function syncThemeIcon(theme) {
     themeButton.replaceChildren(svg(iconPaths(theme === 'dark' ? 'sun' : 'moon')));
   }

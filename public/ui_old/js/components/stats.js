@@ -1,4 +1,8 @@
-// 统计条：三个真实数字（不是编造的指标——全部来自 /ui/api/statistics）+ 一条明细行。
+// 统计条：三个真实数字（不是编造的指标）+ 一条明细行。
+// 数据**有两个来源**：首屏走 `main.js` 的 `refreshOverview()`（`/ui/api/overview` 的合成快照，
+// 一次往返带回 stats + byType + info + marker + serverTime），此后由 `refreshStats()`
+// 补 `/ui/api/statistics`（切视图、写操作之后）。这里此前写着"全部来自 /ui/api/statistics"，
+// 与首屏的实际路径相反。
 //
 // 形态（2026-09-17 重做）：三个「数字在上、标签在下」的格子 + 一条明细行（全库条数 · 活动趋势）。
 // 旧版是三张 100px 高的卡片（合计 111px），把「最近一次同步」这类真正要读的内容推到首屏之外；

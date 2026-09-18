@@ -271,8 +271,10 @@ export function createList(actions) {
         return;
       }
       const next = rows[targetIndex];
-      // 定位"同一个控件"：动作按钮按 data-action 找（不是每行都有同一组动作：
-      // 文本行是 预览/复制/删除，图片行还多一个"下载"，回收站行只有一个"恢复"），
+      // 定位"同一个控件"：动作按钮按 data-action 找。**四个槽位是固定的**
+      // （预览 / 复制 / 下载 / 删除，见 `buildActions`），回收站行则是"恢复"固定在槽 1
+      // 另加三个等宽占位 —— 所以同一动作在每行的位次一致，跨行找得到。
+      // （这里此前写的是"文本行是 预览/复制/删除，图片行还多一个下载"，那是固定槽位之前的行为。）
       // 找不到就退回该行的第一个控件。
       const selector = control.matches('[data-action]')
         ? `[data-action="${control.dataset.action}"]`

@@ -282,10 +282,11 @@ function render() {
 }
 
 // ===== 数据 =====
-// 三个独立的守卫：列表、统计、变更信号各自「最新请求胜出」——它们互相之间没有依赖，
+// 四个独立的守卫：列表、统计、概览快照、变更信号各自「最新请求胜出」——它们互相之间没有依赖，
 // 共用一个守卫会让统计请求把列表请求 abort 掉（那是两件不同的事）。
 const listGate = createLatestGate();
 const statsGate = createLatestGate();
+const overviewGate = createLatestGate();
 const pollGate = createLatestGate();
 
 async function refresh({ silent = false, flash = false, announce = false } = {}) {
@@ -386,13 +387,23 @@ async function refreshStats() {
 // 失败**不阻断首屏**：列表那一份是单独取的，统计条与排障条留空即可（下一次轮询会把
 // 后两样补齐）；也不打开失联横幅 —— 那件事由列表与轮询自己报，不该由一张锦上添花的快照
 // 把整页标成"可能不是最新"。
+//
+// 快照与 `refreshStats()` 写的是 store 里**同一个** `stats`，而它们是两条独立的取数路径
+// （首屏走快照、此后走 statistics）。故这里也有两条与 refreshStats 同源的纪律：
+//   ① 走 `overviewGate`：有更新的快照在飞时，这次的结果不许落地（latest-gate）；
+//   ② `view` 在**请求时定格**并原样盖章 —— 落地时再读 `filters.deleted` 的话，
+//      一份"活跃视图"的快照会被标成"回收站视图"，而 `countsForView` 会因此认为归属一致、
+//      把活跃记录的计数当回收站的计数画出来（同一类缺陷 refreshStats 在 `:371` 有显式守卫）。
 async function refreshOverview() {
+  const view = store.get().filters.deleted;
+  const ticket = overviewGate.begin();
   try {
-    const snapshot = await api.overview({ deleted: store.get().filters.deleted });
+    const snapshot = await api.overview({ deleted: view, signal: ticket.signal });
+    if (!overviewGate.isCurrent(ticket)) return;
     store.set({
       stats: {
         ...(snapshot.stats ?? {}),
-        view: store.get().filters.deleted,
+        view,
         byType: snapshot.byType ?? null,
         byTypeActive: snapshot.byTypeActive ?? null,
       },
@@ -413,6 +424,9 @@ async function refreshOverview() {
     stats.setHealth(healthSnapshot());
     toolbar.update({ filters: current.filters, byType: countsForView(current) });
   } catch (error) {
+    // 被更新的快照 abort 掉不是失败：静默退出（与 refreshStats / refresh 同一个判据）。
+    // 少了这一句，每次"用户在加载中途又触发一次刷新"都会在控制台留一行无谓告警。
+    if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
     console.warn(`[ui] overview 快照获取失败：${error.message}`);
   }
@@ -839,21 +853,26 @@ async function copyItem(item, knownText) {
 // 图片复制：clipserver 的行内复制按类型分发，图片走 ClipboardItem。
 // 失败路径与文本一致——降级到预览，而不是静默。
 async function copyImage(item) {
+  let blob;
   try {
-    const response = await fetch(api.dataUrl(item), { credentials: 'same-origin' });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      // `data_missing` 是终态（对象确实不在服务器上了）→ 不给重试；其余是瞬时故障 → 给
-      const retry = payload?.error === 'data_missing' ? {} : { action: { label: '重试', run: () => void copyImage(item) } };
-      toasts.error(
-        payload?.error === 'data_missing'
-          ? '数据不可用：服务器上已找不到这张图片'
-          : `读取图片失败（${response.status}）`,
-        retry,
-      );
-      return false;
-    }
-    const result = await writeImage(await response.blob());
+    // 走 `api.fetchData` 而**不是裸 `fetch`**（这条路此前两件事同时缺失）：没有超时 —— 连接半开时
+    // fetch 永不 settle，调用方的 `setPending` 永远清不掉，那个按钮就一直转圈、且
+    // `data-loading` 的 `pointer-events: none` 让人点不动它；也没有 401 处理 —— 会话过期时只报一句
+    // 「读取图片失败」而不回登录页。理由见 `api.js` 的 `requestBlob`。
+    blob = await api.fetchData(item);
+  } catch (error) {
+    if (handleAuthError(error)) return false;
+    // `data_missing` 是终态（对象确实不在服务器上了）→ 不给重试；其余是瞬时故障 → 给
+    const missing = error?.payload?.error === 'data_missing';
+    toasts.error(
+      missing ? '数据不可用：服务器上已找不到这张图片' : `读取图片失败：${error?.message ?? error}`,
+      missing ? {} : { action: { label: '重试', run: () => void copyImage(item) } },
+    );
+    return false;
+  }
+
+  try {
+    const result = await writeImage(blob);
     if (result.status === 'ok') {
       toasts.info('已复制图片');
       return true;
@@ -935,26 +954,24 @@ function saveBlob(blob, name) {
 }
 
 async function downloadItem(item) {
+  let blob;
   try {
-    const response = await fetch(api.dataUrl(item), { credentials: 'same-origin' });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      toasts.error(
-        payload?.error === 'data_missing'
-          ? '数据不可用：服务器上已找不到这个文件'
-          : `下载失败（${response.status}）`,
-        // 对象确实不在了就不给重试（终态）；其余按瞬时故障处理
-        payload?.error === 'data_missing'
-          ? {}
-          : { action: { label: '重试', run: () => void downloadItem(item) } },
-      );
-      return false;
-    }
-    // 名字走同一个安全化入口（服务端给的是 basename，但那是客户端上传时带来的，不可信）
-    saveBlob(
-      await response.blob(),
-      safeFileName(item.dataName ?? '', `${item.type}-${item.hash.slice(0, 8)}`),
+    // 同 `copyImage`：走 `api.fetchData`（超时 + 401 统一处理），而不是裸 `fetch`。
+    blob = await api.fetchData(item);
+  } catch (error) {
+    if (handleAuthError(error)) return false;
+    // 对象确实不在了就不给重试（终态）；其余按瞬时故障处理
+    const missing = error?.payload?.error === 'data_missing';
+    toasts.error(
+      missing ? '数据不可用：服务器上已找不到这个文件' : `下载失败：${error?.message ?? error}`,
+      missing ? {} : { action: { label: '重试', run: () => void downloadItem(item) } },
     );
+    return false;
+  }
+
+  try {
+    // 名字走同一个安全化入口（服务端给的是 basename，但那是客户端上传时带来的，不可信）
+    saveBlob(blob, safeFileName(item.dataName ?? '', `${item.type}-${item.hash.slice(0, 8)}`));
     return true;
   } catch (error) {
     toasts.error(`下载失败：${error.message}`);

@@ -7,6 +7,10 @@ import { api } from '../public/ui/js/api.js';
 import { createOmnibox } from '../public/ui/js/ui/omnibox.js';
 // @ts-expect-error Native browser modules are checked by ESLint.
 import { emptyStateKind, DEFAULT_FILTERS } from '../public/ui/js/filters.js';
+// V1（`public/ui_old/`，默认界面）的取数封装：`api.fetchData` 是图片复制与文件下载的**唯一**路径
+// （2026-09-18 之前那两处在 `main.js` 里裸用 `fetch` —— 既没有超时，也没有 401 统一处理）。
+// @ts-expect-error Native browser modules are checked by ESLint.
+import { api as v1api } from '../public/ui_old/js/api.js';
 
 describe('empty result explanations', () => {
   it('distinguishes an empty library from an empty trash', () => {
@@ -210,5 +214,46 @@ describe('UI network recovery and full text', () => {
       new Response('Too Many Requests', { status: 429, headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } }),
     ));
     await expect(api.session()).rejects.toMatchObject({ status: 429, retryAfterSeconds: null });
+  });
+});
+
+// `api.fetchData`（V1）是**数据文件**唯一的取回路径：图片复制与文件下载都走它。
+// 这两件事此前在这条路径上同时缺失，且都不会报错、只表现为"界面卡住/报错看不懂"：
+//   ① 没有超时 —— 连接半开（响应头到了、body 永远不来）时 fetch 永不 settle，调用方的
+//      `setPending` 永远清不掉，那个按钮就一直转圈（且 `data-loading` 的
+//      `pointer-events: none` 让人点不动它）；
+//   ② 没有 401 处理 —— 会话过期时不回登录页，只报一句「读取图片失败」。
+// 同时守 `payload` 的透传：界面用它区分"对象确实不在了"（终态、不给重试）
+// 与"这次读取失败了"（可重试）—— 只看状态码时 404 同时表示这两种情况。
+describe('V1 · 数据文件的取回（api.fetchData）：超时与结构化错误体都不能丢', () => {
+  const item = { type: 'Image', hash: 'AB12' };
+
+  it('连接半开时按 30 秒中止，而不是让调用方永远等', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason));
+    })));
+    const request = expect(v1api.fetchData(item)).rejects.toThrow('请求超时');
+    await vi.advanceTimersByTimeAsync(30_000);
+    await request;
+  });
+
+  it('非 2xx：错误体带进 error.payload，界面据此区分"数据没了"与"这次失败"', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      Response.json({ error: 'data_missing' }, { status: 404 }),
+    ));
+    await expect(v1api.fetchData(item)).rejects.toMatchObject({
+      status: 404,
+      payload: { error: 'data_missing' },
+    });
+  });
+
+  it('成功时返回 Blob，且地址仍由 api.dataUrl 一处构造（路径逐段编码）', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    vi.stubGlobal('fetch', fetch);
+    const blob = await v1api.fetchData({ type: 'Image', hash: 'A/B#C' });
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.size).toBe(3);
+    expect(fetch.mock.calls[0]?.[0]).toBe('/ui/api/history/Image/A%2FB%23C/data');
   });
 });
