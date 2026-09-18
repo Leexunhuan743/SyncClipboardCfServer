@@ -14,8 +14,9 @@ import { createUiRoutes } from './ui/routes';
 import { forwardToHub, negotiateResponse, HUB_PATH } from './hub';
 import { SyncClipboardHub } from './durable/SyncClipboardHub';
 import { runCleanup } from './cleanup';
-import { MAX_REQUEST_BODY_BYTES, isLoopbackHost } from './requestLimits';
+import { maxRequestBodyBytes, isLoopbackHost } from './requestLimits';
 import { normalizeProtocolPath } from './pathCase';
+import { isUiEnabled, uiDisabledResponse } from './uiEnabled';
 
 // F8：明文跳转/HSTS 只对「浏览器可访问的 host」生效；loopback 一律不跳转、不加 HSTS，
 // 否则本地开发（wrangler dev 走明文）会被强行升级到不存在的 https。判定与 F7 的限速豁免共用。
@@ -65,15 +66,19 @@ app.use('*', async (c, next) => {
 
 // F9：这几条端点把整包读进内存，先按 content-length 预检，超限直接 413（不解析、不缓冲）。
 // /ui/api/login 也在列：下方 F4/F7 中间件要读它的 body 取用户名，超大体量必须先拦。
+// `PUT /file/{name}`（暂存）**本身是流式的、不吃内存**，但它必须一起限：暂存进去的对象随后会被
+// 落库那步整包读回内存（见 src/profile.ts 的 PayloadTooLargeError），把上限统一在入口，
+// "任何单个传输对象都 ≤ 上限"才是可解释的不变式（真实护栏仍是落库时按对象实际大小的判定）。
 app.use('*', async (c, next) => {
   const path = c.req.path.length > 1 && c.req.path.endsWith('/') ? c.req.path.slice(0, -1) : c.req.path;
   const limited =
-    (c.req.method === 'PUT' && path === '/SyncClipboard.json') ||
+    (c.req.method === 'PUT' && (path === '/SyncClipboard.json' || path.startsWith('/file/'))) ||
     (c.req.method === 'POST' && (path === '/api/history' || path === '/ui/api/login')) ||
     (c.req.method === 'PATCH' && path.startsWith('/api/history/'));
   if (!limited) return next();
   const declared = Number(c.req.header('content-length') ?? '0');
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BODY_BYTES) {
+  // 上限可由仓库变量 MAX_REQUEST_BODY_BYTES 覆盖（越界/非法值回落默认，见 src/requestLimits.ts）
+  if (Number.isFinite(declared) && declared > maxRequestBodyBytes(c.env)) {
     // 仍然排空：否则本 isolate 的后续请求会以 503 结束（见 src/auth.ts 的同名说明）。
     // 这里是流式丢弃，不会把体读进内存。
     await drainRequestBody(c.req.raw);
@@ -198,6 +203,26 @@ export default {
       request = new Request(rewritten, request);
     }
     const url = new URL(request.url);
+
+    // Web 界面开关（GitHub 变量 UI_ENABLED，默认开；判定见 src/uiEnabled.ts）。
+    // 因为 `[assets] run_worker_first = ["/ui", "/ui/*"]`，界面请求会**先进 Worker**：
+    //   - 关着 → 一律 404（页面/资源纯文本、/ui/api/* 用同形 JSON），静态资源也不可达；
+    //   - 开着 → `/ui/api/*` 继续交给下面的 Hono 路由；其余（含裸 `/ui`）转回 `ASSETS.fetch()`，
+    //     行为与"静态资源直接托管"时完全一致 —— 裸 `/ui` 由静态资源回 **307 → `/ui/`**
+    //     （与加 run_worker_first 之前的生产行为一致；注意**不能**把它留给 Hono：`app.all('/ui/*')`
+    //     的兜底 404 会先于 `app.get('/ui')` 命中，见 docs/ui.md 的记录）。
+    const isUiPath = url.pathname === '/ui' || url.pathname.startsWith('/ui/');
+    const isUiApi = url.pathname.startsWith('/ui/api/');
+    if (isUiPath && !isUiApi) {
+      if (!isUiEnabled(env)) return uiDisabledResponse(false);
+      // 先把请求转给静态资源；**未命中资源（404）时回落到 Hono**，与"静态资源直接托管"时
+      // 平台自身的回落行为一致（`not_found_handling = "none"` ⇒ 平台也会把未命中的 UI 路径交给 Worker，
+      // 于是 `/ui/不存在的路径` 拿到的是 Hono 的 404 页，而不是一张空 404）。
+      const asset = await env.ASSETS.fetch(request);
+      if (asset.status !== 404) return asset;
+    } else if (isUiApi && !isUiEnabled(env)) {
+      return uiDisabledResponse(true);
+    }
 
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）
     if (url.pathname === `${HUB_PATH}/negotiate`) {

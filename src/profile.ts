@@ -1,7 +1,15 @@
 // 服务层：Profile 校验/持久化与历史记录编排（行为对照上游 HistoryService / SyncClipboardController）
 import { HistoryDb, shouldUpdate } from './db';
 import { R2Storage, tempKey } from './storage';
-import { sha256Hex, textProfileHash, fileProfileHash, groupHashFromEntries, parseGroupZip } from './hash';
+import { MAX_REQUEST_BODY_BYTES } from './requestLimits';
+import {
+  sha256Hex,
+  textProfileHash,
+  fileProfileHash,
+  groupHashFromEntries,
+  groupZipDecompressionCap,
+  parseGroupZip,
+} from './hash';
 import { ProfileType, HistoryRecordEntity, HistoryRecordDto, ProfileDto, HARD_CODED_USER_ID } from './types';
 import { profileDtoToJson, profileDtoToWire, entityToDto, entityToDtoWire } from './serialization';
 
@@ -18,6 +26,18 @@ export class NotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'NotFoundError';
+  }
+}
+
+// 传输数据超过 MAX_REQUEST_BODY_BYTES（**按暂存对象的实际大小**判定，不看 content-length）。
+// 为什么必须存在这条：`PUT /file/{name}` 是**流式**写 R2 的（不吃内存），把大对象暂存进去
+// 完全不花代价；而落库这一步要把它整包读回内存做哈希校验 —— 若只靠 F9 的 content-length 预检，
+// 客户端只要"先流式暂存 100MB、再用一个很小的 JSON 提交"就能绕过预检，让 isolate 在 arrayBuffer()
+// 处直接 OOM（后果是同一 isolate 上并发中的**其他**请求一起 503，比 413 严重得多）。
+export class PayloadTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PayloadTooLargeError';
   }
 }
 
@@ -139,7 +159,8 @@ export async function validateAndPersistData(
   }
 
   if (type === ProfileType.Group) {
-    const { entries, topLevel, totalSize } = parseGroupZip(content);
+    // 解压预算随请求体收缩：压缩体在解压期间一直存活，两者之和必须留在 isolate 预算内
+    const { entries, topLevel, totalSize } = parseGroupZip(content, groupZipDecompressionCap(content));
     if (topLevel.length === 0) {
       throw new ProfileDataInvalidError('Group transfer data contains no entries.');
     }
@@ -202,6 +223,9 @@ export async function putSyncProfile(
   storage: R2Storage,
   dto: ProfileDto,
   notify: NotifyHandlers,
+  // 传输数据上限（由调用方传 maxRequestBodyBytes(env)，见 src/requestLimits.ts）。默认取常量，
+  // 供直接调用本函数的测试用；路由侧一律显式传，保证与部署变量（MAX_REQUEST_BODY_BYTES）一致。
+  maxDataBytes: number = MAX_REQUEST_BODY_BYTES,
 ): Promise<HistoryRecordEntity> {
   const now = Date.now();
 
@@ -232,6 +256,14 @@ export async function putSyncProfile(
     const temp = await storage.getTemp(fileName);
     if (!temp) {
       throw new NotFoundError('Transfer data file not found');
+    }
+    // 按**对象实际大小**判定（不信 content-length）：这一条才是内存的真实护栏，
+    // 因为暂存是流式的、可以绕过 F9 的请求头预检（详见 PayloadTooLargeError 的注释）。
+    if (temp.size > maxDataBytes) {
+      await storage.deleteTemp(fileName);
+      throw new PayloadTooLargeError(
+        `Transfer data exceeds the ${maxDataBytes} byte limit (staged object is ${temp.size} bytes)`,
+      );
     }
     const content = new Uint8Array(await temp.arrayBuffer());
     try {
@@ -543,7 +575,8 @@ async function validateAndPersistWithName(
     if (!fileName.toLowerCase().endsWith('.zip')) {
       throw new ProfileDataInvalidError('File is not a zip archive');
     }
-    const { entries, topLevel, totalSize } = parseGroupZip(content);
+    // 解压预算随请求体收缩：压缩体在解压期间一直存活，两者之和必须留在 isolate 预算内
+    const { entries, topLevel, totalSize } = parseGroupZip(content, groupZipDecompressionCap(content));
     if (topLevel.length === 0) {
       throw new ProfileDataInvalidError('Group transfer data contains no entries.');
     }

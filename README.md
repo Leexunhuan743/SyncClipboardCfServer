@@ -212,13 +212,85 @@ npm run deploy
      D1 schema 幂等执行 → `wrangler deploy` → 凭据同步（可选）→ 冒烟检查
 - **需配置**（Settings → Secrets and variables → Actions）：
 
-  | 名称 | 类型 | 必填 | 说明 |
-  |---|---|---|---|
-  | `CLOUDFLARE_API_TOKEN` | Secret | ✅ | 权限：Workers Scripts:Edit、D1:Edit、R2:Edit、Account Settings:Read |
-  | `CLOUDFLARE_ACCOUNT_ID` | Secret | ✅ | Cloudflare 账户 ID |
-  | `USERNAME` / `PASSWORD` | Secret | 可选 | Basic Auth 凭据（见下方两种用法） |
-  | `SYNC_AUTH_CREDENTIALS` | Variable | 可选 | 设为 `true` 时由 CI 把凭据写入 Worker secrets |
-  | `DEPLOY_URL` | Variable | 可选 | 部署后的地址，用于冒烟检查；未设置则跳过 |
+  | 名称 | 类型 | 必填 | 默认 | 说明 |
+  |---|---|---|---|---|
+  | `CLOUDFLARE_API_TOKEN` | Secret | ✅ | — | 权限：Workers Scripts:Edit、D1:Edit、R2:Edit、Account Settings:Read |
+  | `CLOUDFLARE_ACCOUNT_ID` | Secret | ✅ | — | Cloudflare 账户 ID |
+  | `USERNAME` / `PASSWORD` | Secret | 可选 | — | Basic Auth 凭据（见下方两种用法）；配了它冒烟检查才会跑"带凭据"的三条断言 |
+  | `SYNC_AUTH_CREDENTIALS` | Variable | 可选 | `false` | 设为 `true` 时由 CI 把凭据写入 Worker secrets |
+  | `DEPLOY_URL` | Variable | 可选 | 部署输出的地址 | 自定义域名时用它做冒烟目标；不设则用 `wrangler-action` 输出的 `workers.dev` 地址（**已不再跳过**） |
+  | `UI_ENABLED` | Variable | 可选 | `true` | 是否提供 Web 历史界面（见下方「部署开关」） |
+  | `ENFORCE_STRONG_CREDENTIALS` | Variable | 可选 | `false` | 置 `true` 后弱口令 fail-closed（轮换完凭据之后开） |
+  | `MAX_SAVED_HISTORY_COUNT` | Variable | 可选 | `1000` | 历史条数上限（对齐上游 `AppSettings.MaxSavedHistoryCount`） |
+  | `HISTORY_RETENTION_MINUTES` | Variable | 可选 | `10080` | 保留期（分钟，默认 7 天；对齐上游 `HistoryRetentionMinutes`） |
+  | `MAX_REQUEST_BODY_BYTES` | Variable | 可选 | `50331648`（48 MiB） | 写端点接受的请求体上限；允许 **256 KiB–64 MiB**，见下方说明 |
+  | `AUTH_RATE_LIMIT_WINDOW_MS` | Variable | 可选 | `900000`（15 分钟） | **不建议改**：失败计数窗口（60 s–24 h） |
+  | `AUTH_RATE_LIMIT_MAX_FAILURES` | Variable | 可选 | `10` | **不建议改**：窗口内允许的失败次数，第 N+1 次起封锁（3–100） |
+  | `AUTH_RATE_LIMIT_BLOCK_MS` | Variable | 可选 | `900000`（15 分钟） | **不建议改**：封锁时长（60 s–24 h） |
+  | `AUTH_RATE_LIMIT_BURST_WARN` | Variable | 可选 | `50` | **不建议改**：全局失败**告警**阈值（只打日志不封锁，10–10000） |
+
+#### 部署开关（Variables 怎么生效、怎么改）
+
+表里那些**可选 Variable** 就是部署开关：每次部署时由 `deploy.yml` 的 `Resolve deploy switches` 步骤读取，
+做「默认值兜底 + 取值校验」后经 `wrangler-action` 的 `vars` 输入绑成 Worker 变量。
+所以**改开关 = 改仓库变量 + 重新部署**（push 一提交，或在 Actions 页面手动 `workflow_dispatch`）：
+
+```text
+Settings → Secrets and variables → Actions → Variables → New repository variable
+   Name: UI_ENABLED     Value: false
+然后要么推一个提交，要么 Actions → Deploy → Run workflow
+```
+
+- **变量没配 / 留空**：用上表「默认」列的值（也就是 `wrangler.toml` 里的默认），**不会**把空串绑给 Worker。
+- **取值写错**（布尔写 `yes`/`1`、数字写负值或超量级）：`Resolve` 步骤**当场失败**并指出变量名，
+  不会"静默按默认值跑"。
+- 本地 `wrangler dev` 与线上**同一套默认**：改默认值请改 `wrangler.toml`；只想改线上就用变量覆盖。
+
+| 开关 | `true` / 其它 | `false` |
+|---|---|---|
+| `UI_ENABLED` | 提供 Web 界面：`/ui/` 页面与 `/ui/api/*` 可用，根路径对浏览器跳转到 `/ui/` | **整个界面关闭**：`/ui`、`/ui/*`（含静态资源与 `/ui/api/*`）一律 **404**，根路径返回 `Server is running.`。协议面（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）**完全不受影响** |
+| `ENFORCE_STRONG_CREDENTIALS` | 命中弱口令（文档化默认值 / 过短）时**所有通道 fail-closed**（500） | 只警告：响应头带 `x-credential-warning: weak` 并打一条 `[security]` 日志，服务照常 |
+
+> `MAX_SAVED_HISTORY_COUNT` / `HISTORY_RETENTION_MINUTES` 直接换数字即可；上限分别是 1000000 条与
+> 5256000 分钟（10 年），越界会被 `Resolve` 拦下。
+>
+> **这两个参数还有第二条生效路径（免重新部署）**：Web 界面的「维护」面板可直接在线改
+> （`PUT /ui/api/settings`，值写进 D1 Meta 覆盖部署变量；填 `0` = 关闭该阶段、留空 = 清除覆盖、回落到变量）。
+> 也就是说：**改保留策略不必重新部署**。代价是两处状态要分清 —— 变量是"默认值/兜底"，界面里改的是"当前覆盖值"，
+> 界面里清除覆盖后又会回到变量。⚠️ 注意：若把界面关掉（`UI_ENABLED=false`），这条在线路径就没了，那时只能走变量。
+
+#### `MAX_REQUEST_BODY_BYTES`：同步大文件时才需要动
+
+写端点（`PUT /SyncClipboard.json`、`POST /api/history`、`PATCH /api/history/*`、`PUT /file/*`）有一个
+请求体上限，**超限直接 413**。默认 **48 MiB**，可调到 **64 MiB**（允许范围 256 KiB–64 MiB）。
+
+| 情形 | 你该做什么 |
+| --- | --- |
+| 同步的文件/文件夹都在 48 MiB 以内（客户端默认上限 20 MB，绝大多数情况） | **什么都不用做** |
+| 有单个文件/文件夹超过 48 MiB 且 < 64 MiB | 把变量设成 `67108864`，重新部署 |
+| 需要 >64 MiB 的单文件 | 当前架构不支持（写端点按"整包读入内存"设计），见下方说明 |
+
+- **两层校验**：CI 的 `Resolve` 步骤按范围表拦（写错就让部署失败）；万一有值绕过 CI 到了 Worker
+  （例如直接在控制台改），运行期会**回落默认值并打一条 `[limits]` 日志** —— 配置失误绝不升级成"写请求全 500"。
+- **为什么上限不是"平台给的 100 MiB"**：真正约束不是"平台单请求 100 MiB"，而是**isolate 只有 128 MiB
+  内存、且被所有并发请求共享**；超过我们允许的范围会有 isolate OOM 风险，而 OOM 会让**并发中的其他正常
+  请求一起 503**，比"这次上传失败"严重得多。完整推导（含合计预算与默认值的取值依据）见
+  [`docs/design.md`](docs/design.md) §7.1。
+- **>64 MiB 的单文件**：需要把上传路径改成流式（架构级改动），可行性已评估、当前不做——
+  结论记在 [`docs/progress.md`](docs/progress.md) §48.4。
+
+#### 限速四参数：可以调，但**不建议变化**
+
+`AUTH_RATE_LIMIT_WINDOW_MS` / `MAX_FAILURES` / `BLOCK_MS` / `BURST_WARN` 是认证失败的限速参数
+（默认：15 分钟窗口内失败 10 次 → 封锁 15 分钟；全局 50 次失败只告警）。**请保持默认**：
+
+- 它们是**削峰 + 防爆破的纵深防御**，不是访问控制边界（真正的门是 Basic 凭据）。
+- 调松 = 缩短暴力破解的代价；调紧 = 客户端多设备/脚本反复试错时容易被误伤（封锁期内**正确凭据也会被拒**）。
+- 唯二正当的调整场景：**被扫描时临时收紧**，或排障时临时放宽 —— 事后应改回默认。
+- 允许范围与校验行为见 [`docs/design.md`](docs/design.md) §7.1 与 `src/rateLimit.ts`。
+
+> **安全阀不建议做成开关**：zip 解压上限、hash/路径校验、单连接队列封顶等是安全边界，
+> 保持"改代码才改"才是对的——配置项多了，边界就会被悄悄放宽。
 
 **Basic Auth 凭据的两种管理方式**（任选）：
 
@@ -307,11 +379,8 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 ## 容量提示
 
 - **Workers 免费版每天 10 万请求**。官方客户端即使在事件驱动模式下，也在每 10 秒跑一次
-  `TestAliveHelper` 探活，而那次探活是**两个请求**：`OfficialAdapter.TestConnectionAsync` 先做
-  WebDAV 存活检测（**`PROPFIND /`**，`WebDavBase.Test()`）再取 `/api/version` 比对版本下限。
-  单客户端因此约 **17.3k 请求/天**（2 × 8640），免费版大致可支撑 **≤5 个客户端**，更多需升级 Workers Paid。
-  （早先文档只算了 `/api/version` 一个请求、写成 8.6k，是漏算了 PROPFIND 那一半；
-  对上游 `28c7e596` 的对照已按 `OfficialAdapter.cs`/`WebDavBase.cs` 订正。）
+  `TestAliveHelper` 探活，而那次探活是**两个请求**（`PROPFIND /` + `/api/version`）。
+  单客户端因此约 **17.3k 请求/天**，免费版大致可支撑 **≤5 个客户端**，更多需升级 Workers Paid。
 - **Web 界面开着标签也会计费**，量级取决于推送通道是否连上（`/ui/api/poll` 一次 D1 读）：
   · **可见 + 推送已连接**（默认）：轮询降为 60 秒看门狗 ≈ **1.4k Worker 请求/天**；另有 DO 侧开销
     ——客户端每 30 秒一次 WS 心跳（≈2.9k 条/天）与 DO 每 15 秒一次心跳 alarm（≈5.8k 次/天），
@@ -319,8 +388,9 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
   · **可见但推送没连上**（被代理/CSP 阻断、DO 不可达）：退回 10 秒轮询 ≈ 8.6k 请求/天；
   · **标签在后台**：推送通道主动断开（省下那条常驻连接与心跳），轮询 30 秒 ≈ 2.9k 请求/天。
   作为对照：一个官方客户端的探活本身就是 ≈17.3k 请求/天。
-- **单请求体上限**：平台 100MB，本实现另有 **32 MiB 应用层上限**（超限 413）——客户端默认文件上限 20MB，而 isolate 只有 128MB 内存，接近平台上限的体会在解析期 OOM（见 `src/requestLimits.ts` 注释）。
-- **Group（文件夹）解压上限**：解压总量 64 MiB / 条目 1000 / 单条目压缩比 100:1（见 `src/hash.ts`），超限被拒。
+- **单请求体上限**：默认 **48 MiB**（可调到 64 MiB），超限 413 —— 这是为了保住 isolate 的内存余量，
+  见「部署开关」一节。
+- **Group（文件夹）解压上限**：解压总量 64 MiB / 条目 1000 / 单条目压缩比 100:1，超限被拒。
 - D1 / R2 的免费额度对个人剪贴板场景（文本与中小文件）通常绰绰有余。
 
 ## 安全基线
@@ -332,7 +402,7 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 | 认证失败限速 | 同一 IP 或同一用户名在 15 分钟内失败 10 次即封锁 15 分钟（429 + `Retry-After`）；正确凭据不计数并清零；**失败路径不写 D1**（快路径在 isolate 内存，权威计数在 DO，低频落盘） | `src/rateLimit.ts` 的 `AUTH_RATE_LIMIT_*` |
 | 写端点来源校验 | `/ui/api/*` 的 POST/PATCH/PUT/DELETE 拒绝外源 `Origin` 与 `Sec-Fetch-Site: cross-site`；无 `Origin` 的命令行客户端放行 | `src/index.ts` |
 | 传输强制 | 明文请求（非 loopback）301 到 https；https 响应带 HSTS（`max-age=31536000; includeSubDomains`） | `src/index.ts` / `src/requestLimits.ts` |
-| 请求体上限 | `PUT /SyncClipboard.json`、`POST /api/history`、`PATCH /api/history/*` 超过 **32 MiB** 直接 413 | `MAX_REQUEST_BODY_BYTES`（`src/requestLimits.ts`） |
+| 请求体上限 | `PUT /SyncClipboard.json`、`POST /api/history`、`PATCH /api/history/*`、`PUT /file/*` 超过 **48 MiB**（可调至 64 MiB）直接 413 | `MAX_REQUEST_BODY_BYTES`（`src/requestLimits.ts`） |
 | 归档解压上限 | Group zip：解压总量 64 MiB / 条目 1000 / 单条目压缩比 100:1（含 8 MiB 绝对下限，避免误伤小文件） | `src/hash.ts` |
 | multipart | 分界串长度上限 70 字节（RFC 2046）；分界串查找为原生扫描（不再 O(体×串)） | `src/multipart.ts` |
 | 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
@@ -363,13 +433,10 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
   跑一轮（软删单批 **500 条**，与上游一致）。日常使用（每天几十条剪贴板）每轮只处理 0~5 条，**完全无感**；
   但三种批量情形会看到"延迟"：把 `MAX_SAVED_HISTORY_COUNT` 调小、把保留期调短、换机后客户端一次重传几千条历史
   —— 等待期内这些记录仍算**活跃**（统计数字与客户端历史面板都还看得到），它们的数据文件也仍占 R2。
-  实测 300 条过期记录与 500 条超量都是**一轮内**处理完，故延迟量级是"≤20 分钟 + 若干轮"。
-  上限来自平台单次调用的内部子请求上限（本项目按 800 计预算，见 `src/cleanup.ts` 的记账模型）
-- **大文件的内存占用高于上游**：上游 `PUT /SyncClipboard.json` 用 `File.Move`（不读数据），
-  本实现因 R2 无 move/rename 必须把暂存对象**读入内存**再重传到 `history/`；`POST /api/history`
-  则整体读入请求体后解析（上游是 `MultipartReader` 流式）。峰值内存 ≈ 文件大小。
-  客户端默认单文件上限 20MB，本地实测 20MB / 60MB 均正常；若把客户端上限提到 ~50MB 以上，
-  需留意 Workers 128MB 内存上限
+  实测 300 条过期记录与 500 条超量都是**一轮内**处理完，故延迟量级是"≤20 分钟 + 若干轮"
+- **大文件会占用服务端内存**：上传落盘时服务端要把数据读进内存（R2 没有 move/rename，上游则用
+  `File.Move` 不读数据），峰值 ≈ 文件大小。客户端默认单文件上限 20 MB，实测 20 MB / 60 MB 均正常；
+  超过服务端上限（默认 48 MiB）会被 413 拒绝 —— 上限的取值依据与调整方法见「部署开关」一节
 - **单账号单空间**：一个部署 = 一套凭据 = 一个剪贴板空间（与上游语义一致，非多租户）
 
 ## 项目结构
@@ -396,28 +463,12 @@ public/                 静态资源：robots.txt（站点根）+ ui/（原生 E
 test/                   全部 20 个套件 + live-signalr.mjs（线上验证脚本）
 tools/                  ab-upstream-probe.ps1（与**官方服务端发布件**逐条 A/B 对照的探针/守卫）
 docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md / backend-gaps.md
+tools/                  ab-upstream-probe.ps1（与官方服务端发布件逐条 A/B 对照的探针/守卫）
 schema.sql              D1 建表语句
 ```
 
-### 与官方服务端做 A/B 对照（`tools/ab-upstream-probe.ps1`）
-
-本仓库的兼容性主张有**三类**证据：套件里的黑盒断言、**真上游服务端**的逐条 A/B、**真客户端** E2E。第二类靠这个探针：
-
-```bash
-# 一次性准备：本机只需有 ASP.NET Core 运行时（无需 SDK），上游 release 直接附了服务端发布件
-gh release download v3.2.0 -R Jeric-X/SyncClipboard -p 'SyncClipboard.Server.zip' -D "$TEMP/scsrv-upstream"
-Expand-Archive "$TEMP/scsrv-upstream/SyncClipboard.Server.zip" -DestinationPath "$TEMP/scsrv-upstream/app"
-# 在 <run> 目录**先自写** appsettings.json：发布件默认监听 http://*:5033（所有网卡），务必改回环 + 合成凭据
-dotnet "$TEMP/scsrv-upstream/app/SyncClipboard.Server.dll" --contentRoot "$TEMP/scsrv-upstream/run"
-
-# 另一侧起本实现，然后对跑
-npx wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1
-pwsh -File tools/ab-upstream-probe.ps1          # 退出码 = **未登记差异**的条数
-```
-
-探针会逐条打印两边的**状态码 / `Allow` / `WWW-Authenticate`**，并把差异分成**一致 / 已知偏离（必须在
-`docs/protocol.md` §10 有登记）/ 未登记差异**三类；第二段再对 `negotiate` 的 18 个取值做**逐字**比较。
-结果与结论见 [`docs/progress.md`](docs/progress.md) §44。
+> `tools/ab-upstream-probe.ps1` 的用途、准备步骤与结果记录见 [`docs/design.md`](docs/design.md) §12（测试策略）
+> 与 [`docs/progress.md`](docs/progress.md) §44 —— 它是**开发/验证**用的工具，日常使用不需要它。
 
 ## 文档
 

@@ -30,6 +30,66 @@ export const AUTH_RATE_LIMIT_MAX_FAILURES = 10;
 export const AUTH_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000;
 // 全局失败告警阈值（只 console.warn，不封锁）
 export const AUTH_RATE_LIMIT_BURST_WARN = 50;
+
+// ===== 可被 GitHub 仓库变量覆盖（2026-09-15 接线）=====
+//
+// **四个参数都不建议改**（README「部署开关」里也这么写）。它们是"削峰 + 防爆破"的纵深防御，
+// 不是访问控制边界（真正的门是 Basic 凭据）。把它们调松会缩短暴力破解的代价，调紧则可能
+// 在客户端多设备/脚本反复试错时误伤。保留可调只是为了"被扫描时临时收紧"这一个场景。
+//
+// 校验范围与 CI 侧（deploy.yml 的 Resolve 步骤）**同一套**：运行期越界 → **回落默认值**并打一次日志
+// （不 fail-closed：配置失误不该升级成全站不可用），CI 侧越界 → 直接让部署失败（改配置的人立刻知道）。
+export interface AuthRateLimitConfig {
+  windowMs: number;
+  maxFailures: number;
+  blockMs: number;
+  burstWarn: number;
+}
+
+export const DEFAULT_AUTH_RATE_LIMIT_CONFIG: AuthRateLimitConfig = {
+  windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+  maxFailures: AUTH_RATE_LIMIT_MAX_FAILURES,
+  blockMs: AUTH_RATE_LIMIT_BLOCK_MS,
+  burstWarn: AUTH_RATE_LIMIT_BURST_WARN,
+};
+
+export const AUTH_RATE_LIMIT_RANGES: Record<keyof AuthRateLimitConfig, { min: number; max: number }> = {
+  windowMs: { min: 60_000, max: 24 * 60 * 60 * 1000 },
+  maxFailures: { min: 3, max: 100 },
+  blockMs: { min: 60_000, max: 24 * 60 * 60 * 1000 },
+  burstWarn: { min: 10, max: 10_000 },
+};
+
+/** 从 Worker 环境解析限速配置：**逐字段**校验，非法字段单独回落默认值（一个好字段不会因别的字段写错被丢）。 */
+export function authRateLimitConfig(env: {
+  AUTH_RATE_LIMIT_WINDOW_MS?: string;
+  AUTH_RATE_LIMIT_MAX_FAILURES?: string;
+  AUTH_RATE_LIMIT_BLOCK_MS?: string;
+  AUTH_RATE_LIMIT_BURST_WARN?: string;
+}): AuthRateLimitConfig {
+  const read = (key: keyof AuthRateLimitConfig, raw: string | undefined): number => {
+    const value = (raw ?? '').trim();
+    if (value === '') return DEFAULT_AUTH_RATE_LIMIT_CONFIG[key];
+    const parsed = Number(value);
+    const { min, max } = AUTH_RATE_LIMIT_RANGES[key];
+    if (Number.isInteger(parsed) && parsed >= min && parsed <= max) return parsed;
+    warnRateLimitOverrideOnce(`${key}=${value}`, `${min}..${max}`);
+    return DEFAULT_AUTH_RATE_LIMIT_CONFIG[key];
+  };
+  return {
+    windowMs: read('windowMs', env.AUTH_RATE_LIMIT_WINDOW_MS),
+    maxFailures: read('maxFailures', env.AUTH_RATE_LIMIT_MAX_FAILURES),
+    blockMs: read('blockMs', env.AUTH_RATE_LIMIT_BLOCK_MS),
+    burstWarn: read('burstWarn', env.AUTH_RATE_LIMIT_BURST_WARN),
+  };
+}
+
+let rateLimitOverrideWarned = false;
+function warnRateLimitOverrideOnce(got: string, range: string): void {
+  if (rateLimitOverrideWarned) return;
+  rateLimitOverrideWarned = true;
+  console.warn(`[security] 限速参数取值无效，已回落默认值：${got}（允许范围 ${range}）`);
+}
 // DO 侧内部端点（仅 Worker → DO 调用，不经外部路由暴露）
 export const AUTH_RATE_LIMIT_PATH = '/auth-rate-limit';
 // DO 侧低频落盘的 storage key（每 AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES 次失败或产生新封锁时落一次）
@@ -62,11 +122,15 @@ export interface WaitUntil {
 // 记一次失败：窗口内累加、窗口过期重置；达到阈值则开始封锁。
 // 注意封锁只看 blockedUntil，与 count 是否被窗口重置无关（已封锁的 key 不会再走到这里：
 // 预检会先 429，凭据比较不会发生，因此不存在「被封锁的 key 又被记一次失败」）。
-export function applyAuthFailure(state: AuthLimitState | undefined, now: number): AuthLimitState {
-  const sameWindow = state !== undefined && now - state.windowStart < AUTH_RATE_LIMIT_WINDOW_MS;
+export function applyAuthFailure(
+  state: AuthLimitState | undefined,
+  now: number,
+  config: AuthRateLimitConfig = DEFAULT_AUTH_RATE_LIMIT_CONFIG,
+): AuthLimitState {
+  const sameWindow = state !== undefined && now - state.windowStart < config.windowMs;
   const count = (sameWindow ? state.count : 0) + 1;
   const blockedUntil =
-    count >= AUTH_RATE_LIMIT_MAX_FAILURES ? now + AUTH_RATE_LIMIT_BLOCK_MS : (state?.blockedUntil ?? 0);
+    count >= config.maxFailures ? now + config.blockMs : (state?.blockedUntil ?? 0);
   return { windowStart: sameWindow ? state.windowStart : now, count, blockedUntil };
 }
 
@@ -79,10 +143,14 @@ export function authLimitRetryAfterSeconds(state: AuthLimitState, now: number): 
 }
 
 // 清理过期项 + 容量封顶（isolate 侧与 DO 侧共用）。仅在条目数超过阈值时做全表扫描，避免每请求 O(n)。
-export function pruneAuthLimits(limits: Map<string, AuthLimitState>, now: number): void {
+export function pruneAuthLimits(
+  limits: Map<string, AuthLimitState>,
+  now: number,
+  config: AuthRateLimitConfig = DEFAULT_AUTH_RATE_LIMIT_CONFIG,
+): void {
   if (limits.size <= PRUNE_THRESHOLD) return;
   for (const [key, state] of limits) {
-    if (!isAuthLimitBlocked(state, now) && now - state.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
+    if (!isAuthLimitBlocked(state, now) && now - state.windowStart >= config.windowMs) {
       limits.delete(key);
     }
   }
@@ -156,7 +224,8 @@ export function checkAuthRateLimit(
     }
   }
   // 热状态（本 isolate 在窗口内见过失败）才拉 DO 快照：正常客户端完全不产生这次往返。
-  const hot = cache.lastFailureAt > 0 && now - cache.lastFailureAt < AUTH_RATE_LIMIT_WINDOW_MS;
+  const hot =
+    cache.lastFailureAt > 0 && now - cache.lastFailureAt < authRateLimitConfig(env).windowMs;
   if (ctx && hot && now - cache.lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
     cache.lastSnapshotAt = now;
     ctx.waitUntil(syncWithHub(env, 'snapshot', keys, now));
@@ -173,11 +242,12 @@ export function noteAuthFailure(
 ): void {
   const now = Date.now();
   const keys = authLimitKeys(request, username);
+  const config = authRateLimitConfig(env);
   cache.lastFailureAt = now;
   for (const key of keys) {
-    cache.limits.set(key, applyAuthFailure(cache.limits.get(key), now));
+    cache.limits.set(key, applyAuthFailure(cache.limits.get(key), now, config));
   }
-  pruneAuthLimits(cache.limits, now);
+  pruneAuthLimits(cache.limits, now, config);
   if (ctx) ctx.waitUntil(syncWithHub(env, 'report', keys, now));
 }
 
@@ -237,25 +307,33 @@ async function callHub(
 }
 
 // 把 DO 的权威封锁合并进本地缓存（只升不降：本地已知的封锁时限不会被 DO 的短时限拉回）
-function mergeBlocks(blocks: Record<string, number>, now: number): void {
+function mergeBlocks(
+  blocks: Record<string, number>,
+  now: number,
+  config: AuthRateLimitConfig,
+): void {
   for (const [key, blockedUntil] of Object.entries(blocks)) {
     if (blockedUntil <= now) continue;
     const prev = cache.limits.get(key);
     cache.limits.set(key, {
       windowStart: prev?.windowStart ?? now,
-      count: prev?.count ?? AUTH_RATE_LIMIT_MAX_FAILURES,
+      // 本地没有计数时按"已在阈值"记账：这条记录本就来自 DO 的封锁判定
+      count: prev?.count ?? config.maxFailures,
       blockedUntil: Math.max(prev?.blockedUntil ?? 0, blockedUntil),
     });
   }
-  pruneAuthLimits(cache.limits, now);
+  pruneAuthLimits(cache.limits, now, config);
 }
 
 // 全局失败量达到告警阈值时打一条显著日志（**不封锁**：阈值封锁会让攻击者能锁死合法用户）
-function warnOnBurst(burst: number, now: number): void {
-  if (burst < AUTH_RATE_LIMIT_BURST_WARN) return;
-  if (now - cache.lastBurstWarnAt < AUTH_RATE_LIMIT_WINDOW_MS) return;
+function warnOnBurst(burst: number, now: number, config: AuthRateLimitConfig): void {
+  if (burst < config.burstWarn) return;
+  if (now - cache.lastBurstWarnAt < config.windowMs) return;
   cache.lastBurstWarnAt = now;
-  console.warn('[security] credential guessing burst', { failuresInWindow: burst, windowMs: AUTH_RATE_LIMIT_WINDOW_MS });
+  console.warn('[security] credential guessing burst', {
+    failuresInWindow: burst,
+    windowMs: config.windowMs,
+  });
 }
 
 async function syncWithHub(
@@ -266,6 +344,7 @@ async function syncWithHub(
 ): Promise<void> {
   const result = await callHub(env, op, keys);
   if (result === null) return;
-  mergeBlocks(result.blocks, now);
-  if (op === 'report') warnOnBurst(result.burst, now);
+  const config = authRateLimitConfig(env);
+  mergeBlocks(result.blocks, now, config);
+  warnOnBurst(result.burst, now, config);
 }

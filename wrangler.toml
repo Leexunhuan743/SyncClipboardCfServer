@@ -39,8 +39,15 @@ new_sqlite_classes = ["SyncClipboardHub"]
 # 且 AppVersion.TryParse 解析失败时该检查会被静默跳过（OfficialAdapter 里 if 无 else）。
 VERSION = "3.2.0"
 # 历史保留策略（对齐上游 appsettings AppSettings.MaxSavedHistoryCount / HistoryRetentionMinutes）
+# 这两个值可被 GitHub 仓库变量覆盖（同名）：CI 部署时若配置了 MAX_SAVED_HISTORY_COUNT /
+# HISTORY_RETENTION_MINUTES，会以 --var 覆盖此处；不配就用这里的默认值（下游：src/cleanup.ts）。
 MAX_SAVED_HISTORY_COUNT = "1000"
 HISTORY_RETENTION_MINUTES = "10080"
+# Web 界面开关（默认开）。GitHub 仓库变量 UI_ENABLED=false 可关掉整个界面：/ui 与 /ui/api/* 一律 404，
+# 根路径对浏览器也不再跳转；协议面（/api/*、/SyncClipboard.json、/file/*、Hub）完全不受影响。
+# 判定与行为见 src/uiEnabled.ts；**只有显式 "false" 才关**，其余（含未设置）都是开。
+# 注：默认值写在这里而不是只放 CI，是为了"本地 wrangler dev 与线上同一套默认行为"。
+UI_ENABLED = "true"
 
 # 保留/清理定时任务（对齐上游 HistoryCleaner：保留期+条数上限 10 分钟、已删硬删+孤儿目录 12 小时）
 # CF 侧统一为**每 20 分钟**一次批量执行（见 src/cleanup.ts）。取 20 分钟而不是上游的 10 分钟：
@@ -60,14 +67,22 @@ crons = ["7,27,47 * * * *"]
 enabled = true
 
 # ============ 静态资源（Web UI）============
-# public/ui/ 下的文件由 Cloudflare 直接托管、不经过 Worker：
+# public/ui/ 下的文件由 Cloudflare 托管：
 #   public/ui/index.html → /ui/      public/ui/js/*.js → /ui/js/*.js
 # 协议路径（/、/api/*、/SyncClipboard.json、/file/*、Hub）都落在 Worker 上，与 /ui/* 无重叠；
 # 没有对应资源的请求（含全部协议请求）继续回落给 Worker 处理。
 # 注意：这里**不能**放 public/index.html —— 根路径要留给 PROPFIND（客户端的探活与目录列举）。
+#
+# run_worker_first（2026-09-15 新增）：让 /ui 与 /ui/* 的请求**先进 Worker**，由 Worker 根据
+# UI_ENABLED 决定"转回静态资源（env.ASSETS.fetch）"还是"404"。不加这一条时静态资源在 Worker
+# **之前**就被托管掉了，界面开关无从生效（要关就只能改仓库/删资源）。
+# 代价：界面请求多经过一层 Worker；协议面与根路径不受影响（只有这两个模式进 Worker）。
+# binding = "ASSETS" 是上面 run_worker_first 的前提：没有它，Worker 里拿不到静态资源绑定。
 [assets]
 directory = "./public"
+binding = "ASSETS"
 not_found_handling = "none"
+run_worker_first = ["/ui", "/ui/*"]
 
 # ============ Secrets（wrangler secret put，不要写进仓库）============
 # USERNAME / PASSWORD —— 与官方服务器相同的 HTTP Basic Auth 凭据

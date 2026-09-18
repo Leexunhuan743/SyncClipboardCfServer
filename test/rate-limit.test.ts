@@ -16,7 +16,10 @@ import {
   AUTH_RATE_LIMIT_BLOCK_MS,
   AUTH_RATE_LIMIT_MAX_FAILURES,
   AUTH_RATE_LIMIT_PATH,
+  AUTH_RATE_LIMIT_RANGES,
+  DEFAULT_AUTH_RATE_LIMIT_CONFIG,
   applyAuthFailure,
+  authRateLimitConfig,
 } from '../src/rateLimit';
 import type { AuthLimitState } from '../src/rateLimit';
 import {
@@ -25,7 +28,12 @@ import {
   SyncClipboardHub,
 } from '../src/durable/SyncClipboardHub';
 import worker from '../src/index';
-import { MAX_REQUEST_BODY_BYTES } from '../src/requestLimits';
+import {
+  MAX_REQUEST_BODY_BYTES,
+  MAX_REQUEST_BODY_BYTES_CEILING,
+  MAX_REQUEST_BODY_BYTES_FLOOR,
+  maxRequestBodyBytes,
+} from '../src/requestLimits';
 import { runCleanup } from '../src/cleanup';
 import type * as cleanupModule from '../src/cleanup';
 
@@ -84,7 +92,11 @@ interface AuthLimitResponseBody {
 }
 
 // DO stub：与 src/durable/SyncClipboardHub.ts 的 AUTH_RATE_LIMIT_PATH 端点同语义（report/snapshot/clear）
-function createEnv(identity?: TestIdentity): { env: Bindings; limits: Map<string, AuthLimitState> } {
+// overrides 用于把「开关型环境变量」（请求体上限、限速四参数）注进 env；不传即默认值。
+function createEnv(
+  identity?: TestIdentity,
+  overrides: Partial<Bindings> = {},
+): { env: Bindings; limits: Map<string, AuthLimitState> } {
   const limits = new Map<string, AuthLimitState>();
   let burst = 0;
   const hub = {
@@ -115,11 +127,19 @@ function createEnv(identity?: TestIdentity): { env: Bindings; limits: Map<string
     DB: {} as never,
     R2: {} as never,
     HUB: { idFromName: (name: string) => name, get: () => hub } as never,
+    // 静态资源绑定：本套件打的全是协议路径与 /ui/api/*，界面那只走 /ui/ 非 api 前缀，
+    // 因此这里永远不该被调用 —— 一旦被调用就说明路由判据被改坏了，让它显式失败而不是静默通过。
+    ASSETS: {
+      fetch: () => {
+        throw new Error('本套件不该访问静态资源（UI_ENABLED 门控/路由前缀判据变了？）');
+      },
+    } as unknown as Fetcher,
     VERSION: '3.2.0',
     MAX_SAVED_HISTORY_COUNT: '1000',
     HISTORY_RETENTION_MINUTES: '10080',
     USERNAME: identity?.user ?? USER,
     PASSWORD: identity?.pass ?? PASS,
+    ...overrides,
   } satisfies Bindings;
   return { env, limits };
 }
@@ -484,13 +504,14 @@ describe('F8 明文跳转与 HSTS', () => {
 
 describe('F9 请求体上限（413）', () => {
   const oversize = String(MAX_REQUEST_BODY_BYTES + 1);
-
-  it('三条「整包读入内存」的端点都按 content-length 快速 413', async () => {
-    const { env } = createEnv();
+  it('会把整包读入内存 / 会消费大对象的写端点都按 content-length 快速 413', async () => {    const { env } = createEnv();
     const cases: Array<{ method: string; path: string }> = [
       { method: 'PUT', path: '/SyncClipboard.json' },
       { method: 'POST', path: '/api/history' },
       { method: 'PATCH', path: '/api/history/Text-0123456789ABCDEF0123456789ABCDEF' },
+      // 暂存端点本身是流式的，但它一起限：否则"流式暂存大对象 + 小 JSON 提交"会绕过
+      // 请求头预检，让落库那步在 arrayBuffer() 处 OOM（真实护栏见 src/profile.ts）
+      { method: 'PUT', path: '/file/big.bin' },
     ];
     for (const item of cases) {
       const res = await fetchWorker(
@@ -693,5 +714,110 @@ describe('F11 scheduled 兜底', () => {
     await ctx.flush();
 
     expect(log.mock.calls.some((call) => String(call[0]).startsWith('[cleanup] expired='))).toBe(true);
+  });
+});
+
+// 2026-09-15：这两个旋钮可由 GitHub 仓库变量覆盖（见 README「部署开关」）。
+// 限速四参数在文档里明确写着**不建议变化**，所以这里既钉住"能改"，也钉住"非法值不改变可用性"。
+describe('环境变量覆盖：请求体上限 / 限速参数', () => {
+  it('maxRequestBodyBytes：仅接受 [FLOOR, CEILING] 内的整数，其余一律回落默认值', () => {
+    expect(maxRequestBodyBytes({})).toBe(MAX_REQUEST_BODY_BYTES);
+    expect(maxRequestBodyBytes({ MAX_REQUEST_BODY_BYTES: '' })).toBe(MAX_REQUEST_BODY_BYTES);
+    expect(maxRequestBodyBytes({ MAX_REQUEST_BODY_BYTES: '  ' })).toBe(MAX_REQUEST_BODY_BYTES);
+    // 合法覆盖（正常同步 40MB 文件的场景）
+    expect(maxRequestBodyBytes({ MAX_REQUEST_BODY_BYTES: '41943040' })).toBe(41943040);
+    expect(maxRequestBodyBytes({ MAX_REQUEST_BODY_BYTES: String(MAX_REQUEST_BODY_BYTES_FLOOR) })).toBe(
+      MAX_REQUEST_BODY_BYTES_FLOOR,
+    );
+    expect(maxRequestBodyBytes({ MAX_REQUEST_BODY_BYTES: String(MAX_REQUEST_BODY_BYTES_CEILING) })).toBe(
+      MAX_REQUEST_BODY_BYTES_CEILING,
+    );
+    // 非法/越界 → 默认（**不** fail-closed：配置写错不该把写请求全打死）
+    for (const bad of [
+      'abc',
+      '1.5',
+      '-1',
+      '0',
+      String(MAX_REQUEST_BODY_BYTES_FLOOR - 1),
+      String(MAX_REQUEST_BODY_BYTES_CEILING + 1),
+      '999999999999',
+    ]) {
+      expect(maxRequestBodyBytes({ MAX_REQUEST_BODY_BYTES: bad }), bad).toBe(MAX_REQUEST_BODY_BYTES);
+    }
+  });
+
+  it('authRateLimitConfig：逐字段校验，坏字段单独回落（好字段不受牵连）', () => {
+    expect(authRateLimitConfig({})).toEqual(DEFAULT_AUTH_RATE_LIMIT_CONFIG);
+    expect(authRateLimitConfig({ AUTH_RATE_LIMIT_MAX_FAILURES: '5' }).maxFailures).toBe(5);
+    // 窗口合法、失败数越界：只有越界那个字段回落
+    const mixed = authRateLimitConfig({
+      AUTH_RATE_LIMIT_WINDOW_MS: '60000',
+      AUTH_RATE_LIMIT_MAX_FAILURES: '1000',
+    });
+    expect(mixed.windowMs).toBe(60000);
+    expect(mixed.maxFailures).toBe(DEFAULT_AUTH_RATE_LIMIT_CONFIG.maxFailures);
+    // 每个字段的边界都按同一张表校验
+    for (const key of Object.keys(AUTH_RATE_LIMIT_RANGES) as Array<keyof typeof AUTH_RATE_LIMIT_RANGES>) {
+      const { min, max } = AUTH_RATE_LIMIT_RANGES[key];
+      const varName = {
+        windowMs: 'AUTH_RATE_LIMIT_WINDOW_MS',
+        maxFailures: 'AUTH_RATE_LIMIT_MAX_FAILURES',
+        blockMs: 'AUTH_RATE_LIMIT_BLOCK_MS',
+        burstWarn: 'AUTH_RATE_LIMIT_BURST_WARN',
+      }[key];
+      expect(authRateLimitConfig({ [varName]: String(min) })[key], `${varName}=${min}`).toBe(min);
+      expect(authRateLimitConfig({ [varName]: String(max) })[key], `${varName}=${max}`).toBe(max);
+      expect(authRateLimitConfig({ [varName]: String(min - 1) })[key], `${varName}=${min - 1}`).toBe(
+        DEFAULT_AUTH_RATE_LIMIT_CONFIG[key],
+      );
+      expect(authRateLimitConfig({ [varName]: String(max + 1) })[key], `${varName}=${max + 1}`).toBe(
+        DEFAULT_AUTH_RATE_LIMIT_CONFIG[key],
+      );
+      expect(authRateLimitConfig({ [varName]: 'xyz' })[key], `${varName}=xyz`).toBe(
+        DEFAULT_AUTH_RATE_LIMIT_CONFIG[key],
+      );
+    }
+  });
+
+  it('MX：把上限调到 1MiB 后，2MiB 的写请求 413；512KiB 的请求放行到鉴权（401）', async () => {
+    const oneMiB = 1024 * 1024;
+    const { env } = createEnv(undefined, { MAX_REQUEST_BODY_BYTES: String(oneMiB) });
+    const put = (contentLength: number) =>
+      fetchWorker(
+        env,
+        createCtx(),
+        new Request('https://sync.example.com/SyncClipboard.json', {
+          method: 'PUT',
+          body: 'x',
+          headers: { authorization: basic(USER, 'wrong'), 'content-length': String(contentLength) },
+        }),
+      );
+    // 超过覆盖后的上限 → 413（说明覆盖真的生效，而不是仍按默认 32MiB 放行）
+    expect((await put(2 * oneMiB)).status).toBe(413);
+    // 未超过 → 不被 413 拦，落到鉴权失败（401）。用错口令是为了不碰 DB/R2。
+    expect((await put(oneMiB / 2)).status).toBe(401);
+  });
+
+  it('MX：把失败阈值调到 3 后，第 4 次失败即 429（默认要第 11 次）', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id, { AUTH_RATE_LIMIT_MAX_FAILURES: '3' });
+    const ctx = createCtx();
+    for (let i = 0; i < 3; i++) {
+      const res = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'wrong-password'));
+      expect(res.status, `第 ${i + 1} 次失败`).toBe(401);
+    }
+    const blocked = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'wrong-password'));
+    expect(blocked.status, '第 4 次失败应命中覆盖后的阈值').toBe(429);
+  });
+
+  it('MX：阈值写坏时回落默认（第 11 次才封锁）—— 配置失误不改变可用性', async () => {
+    const id = createIdentity();
+    const { env } = createEnv(id, { AUTH_RATE_LIMIT_MAX_FAILURES: '0' });
+    const ctx = createCtx();
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) {
+      const res = await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'wrong-password'));
+      expect(res.status, `第 ${i + 1} 次失败`).toBe(401);
+    }
+    expect((await fetchWorker(env, ctx, versionRequest(id.ip, id.user, 'wrong-password'))).status).toBe(429);
   });
 });

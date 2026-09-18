@@ -457,7 +457,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 
 | 项 | 官方服务器 | 本实现 | 影响 |
 |---|---|---|---|
-| 请求体上限 | Kestrel 无限制（MaxRequestBodySize=int.MaxValue） | 平台 100MB（Free）/更高，**另有 32MiB 应用层上限**（超限 413，见 `src/requestLimits.ts` 注释：客户端默认 20MB；isolate 仅 128MB，接近 100MB 的体会在解析期 OOM） | **有意偏离**：单请求 >32MiB 失败；客户端默认 20MB 不受影响 |
+| 请求体上限 | Kestrel 无限制（MaxRequestBodySize=int.MaxValue） | 平台 100 MiB（Free）/更高，**应用层默认 48 MiB、可调到 64 MiB**（超限 413，见 `src/requestLimits.ts` 与 README「部署开关」：isolate 仅 128 MiB 且被并发共享） | **有意偏离**：单请求超过上限失败；客户端默认 20 MB 不受影响。**默认值沿革（2026-09-15）**：32 MiB → 64 MiB → **48 MiB**（按并发余量回落，依据见 README 与 `progress.md` §48） |
 | SignalR 传输 | WebSockets + SSE + LongPolling | 三种均实现，宣告顺序与格式表逐字对齐 | — |
 | 磁盘布局 | 本地文件系统 | R2 对象存储 | 对外不可见，语义等价 |
 | 并发 | 单进程信号量串行 | `(UserId,Type,Hash)` UNIQUE 索引 + 唯一冲突按 ShouldUpdate 合并 + `updateEntityIfVersion` 乐观锁 | 语义等价（多设备并发实测无重复行/丢更新） |

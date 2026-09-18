@@ -23,10 +23,10 @@ import {
   AUTH_RATE_LIMIT_PATH,
   AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES,
   AUTH_RATE_LIMIT_STORAGE_KEY,
-  AUTH_RATE_LIMIT_WINDOW_MS,
   applyAuthFailure,
   authLimitKeys,
   authLimitRetryAfterSeconds,
+  authRateLimitConfig,
   isAuthLimitBlocked,
   pruneAuthLimits,
 } from '../rateLimit';
@@ -460,12 +460,15 @@ export class SyncClipboardHub {
       });
     }
     const now = Date.now();
+    // 限速参数可由仓库变量覆盖（**不建议改**）：DO 与 Worker 必须读**同一套**取值，否则会出现
+    // "Worker 认为没封锁、DO 认为封锁"的分裂判定（两边都用 src/rateLimit.ts 的同一函数）。
+    const limitConfig = authRateLimitConfig(this.env);
     if (op === 'report') {
       for (const key of keys) {
-        this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now));
-        this.countBurst(now);
+        this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now, limitConfig));
+        this.countBurst(now, limitConfig.windowMs);
       }
-      pruneAuthLimits(this.authLimits, now);
+      pruneAuthLimits(this.authLimits, now, limitConfig);
       this.persistAuthLimits(now);
     } else if (op === 'clear') {
       for (const key of keys) {
@@ -481,8 +484,8 @@ export class SyncClipboardHub {
   }
 
   // 全局失败计数（仅在**告警**中使用；封锁只按 ip/user 维度，避免攻击者用垃圾请求锁死合法用户）
-  private countBurst(now: number): void {
-    if (now - this.burstWindowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
+  private countBurst(now: number, windowMs: number): void {
+    if (now - this.burstWindowStart >= windowMs) {
       this.burstWindowStart = now;
       this.burstCount = 0;
     }
@@ -615,9 +618,12 @@ export class SyncClipboardHub {
       return null;
     }
     for (const key of keys) {
-      this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now));
+      this.authLimits.set(
+        key,
+        applyAuthFailure(this.authLimits.get(key), now, authRateLimitConfig(this.env)),
+      );
     }
-    pruneAuthLimits(this.authLimits, now);
+    pruneAuthLimits(this.authLimits, now, authRateLimitConfig(this.env));
     this.persistAuthLimits(now);
     return unauthorized();
   }

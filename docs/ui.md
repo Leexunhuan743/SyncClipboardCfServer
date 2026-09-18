@@ -45,7 +45,9 @@
 
 ```
 浏览器
-  │  GET /ui/**            → Cloudflare 静态资源（public/ui/**，不经过 Worker）
+  │  GET /ui/**            → Cloudflare 静态资源（public/ui/**）
+  │      ↑ 但先经过 Worker：`[assets] run_worker_first = ["/ui", "/ui/*"]` + `binding = "ASSETS"`
+  │        —— 入口据此判断界面开关（UI_ENABLED），开着才转回 `env.ASSETS.fetch()`，关着直接 404
   │  GET/PATCH /ui/api/**  → Worker：src/ui/routes.ts（会话 Cookie 或 Basic 鉴权）
   │  GET /ui/api/**/data   → Worker → R2（图片预览 / 文件下载）
   ▼
@@ -53,6 +55,24 @@ Worker
   ├─ src/ui/*        UI 自己的面（本文件描述）
   ├─ src/routes/*    协议面（/api/history/*、/SyncClipboard.json、/file/*）—— 客户端依赖，**未改动语义**
   └─ src/durable/*   SignalR 兼容 Hub（客户端连接用；界面不走它，见 §6）
+
+### 2.1 界面开关（`UI_ENABLED`，默认开）
+
+`public/ui/*` 原本由 Cloudflare 直接托管、**不经过 Worker** —— 那样的话"关掉界面"就无从实现。
+2026-09-15 起 `[assets]` 增加了两条：`binding = "ASSETS"` 与 `run_worker_first = ["/ui", "/ui/*"]`，
+于是界面请求先到 `src/index.ts`，由它按 GitHub 仓库变量 `UI_ENABLED`（判定见 `src/uiEnabled.ts`）分流：
+
+| | 界面开着（默认） | `UI_ENABLED=false` |
+| --- | --- | --- |
+| `/ui`、`/ui/`、`/ui/js/*` 等 | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
+| `/ui/不存在的路径` | 资源 404 后**回落 Hono**，拿到 `notFoundPage`（与平台自身回落一致） | 404 纯文本（不产生界面痕迹） |
+| `/ui/api/*` | 照旧交给 Hono，守卫与业务不变 | **404 JSON** `{"error":"not_found"}` |
+| 根路径 `/`（`Accept: text/html`） | 302 → `/ui/` | **200 `Server is running.`**（不再把人引到不存在的界面） |
+| 协议面 | 不受影响 | **不受影响**（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub 全照常） |
+
+两条不变式由 `test/ui-guard.test.ts` 的「UI 部署开关」用例守着：关闭态**一次都不访问**静态资源且全 404；
+开启态资源未命中必须回落出 404 页（若哪天有人删掉 `run_worker_first`，关闭态会静默失效 —— 测试即红）。
+线上每次部署后由 CI 冒烟按开关断言 `/ui/`（200 或 404）与 `/ui/js/main.js` 200。
 ```
 
 三条不变式：

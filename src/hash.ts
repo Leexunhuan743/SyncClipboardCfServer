@@ -1,5 +1,6 @@
 // 哈希算法（协议契约 docs/protocol.md §8）——与上游 C# 实现逐字节一致
 import { Unzip, UnzipInflate } from 'fflate';
+import { ISOLATE_TRANSFER_BUDGET_BYTES } from './requestLimits';
 
 const enc = new TextEncoder();
 
@@ -93,7 +94,20 @@ export const GROUP_ZIP_MIN_RATIO_CHECK_BYTES = 8 * 1024 * 1024; // 比值守卫�
 //   而 fflate 默认「后者覆盖」。这里显式跳过同名后续条目，与上游保持同一语义（F12）。
 // - 解压上限（F9）：改用流式 Unzip（旧实现 unzipSync 会按声明尺寸一次性分配并全量解压），
 //   每收到一块解压结果就累计并检查上限，超限抛出 InvalidGroupDataError。
-export function parseGroupZip(zipBytes: Uint8Array): { entries: GroupEntrySpec[]; topLevel: string[]; totalSize: number } {
+// - 解压预算**随请求体收缩**（2026-09-15）：zip 的压缩体在解压期间一直存活（`contents` 与
+//   `zipBytes` 同时占内存），所以「body 上限」与「解压上限」不能各自贴顶。调用方传
+//   `groupZipDecompressionCap(zipBytes)`，把两者之和压在 ISOLATE_TRANSFER_BUDGET_BYTES 内。
+export function groupZipDecompressionCap(zipBytes: Uint8Array): number {
+  const remaining = ISOLATE_TRANSFER_BUDGET_BYTES - zipBytes.length;
+  // 下限 1 MiB：理论上不会走到（上限 80 MiB < 预算 96 MiB ⇒ 余量恒 ≥ 16 MiB），留下它只为
+  // 防止将来有人把上限调到预算之上时出现"预算为 0 ⇒ 任何 zip 都报错"这种难查的形态。
+  return Math.max(1 * 1024 * 1024, Math.min(GROUP_ZIP_MAX_TOTAL_BYTES, remaining));
+}
+
+export function parseGroupZip(
+  zipBytes: Uint8Array,
+  maxTotalBytes: number = GROUP_ZIP_MAX_TOTAL_BYTES,
+): { entries: GroupEntrySpec[]; topLevel: string[]; totalSize: number } {
   // 流式解压不读中央目录，合法性（EOCD 存在）由本函数先判，保持「不是 zip → 抛错」的既有语义
   if (!hasEndOfCentralDirectory(zipBytes)) {
     throw new InvalidGroupDataError('Transfer data is not a zip archive');
@@ -124,8 +138,8 @@ export function parseGroupZip(zipBytes: Uint8Array): { entries: GroupEntrySpec[]
       if (chunk.length > 0) {
         size += chunk.length;
         decompressedBytes += chunk.length;
-        if (decompressedBytes > GROUP_ZIP_MAX_TOTAL_BYTES) {
-          throw new InvalidGroupDataError(`Transfer data expands beyond ${GROUP_ZIP_MAX_TOTAL_BYTES} bytes`);
+        if (decompressedBytes > maxTotalBytes) {
+          throw new InvalidGroupDataError(`Transfer data expands beyond ${maxTotalBytes} bytes`);
         }
         // 压缩尺寸未知（流式写入的条目）时只能靠总量上限兜底。
         // 体积下限：小文件的比值天然偏高（1KB 文本压到 10 字节 = 100:1 属正常），

@@ -2,3 +2,23 @@
 # 复制为 .dev.vars 后填入你自己的值
 USERNAME=your-username
 PASSWORD=your-strong-password
+
+# ---- 可选开关（默认值见 wrangler.toml；本地取消注释即可试）----
+# 关掉 Web 界面：/ui 与 /ui/api/* 一律 404，根路径不再跳转（协议面不受影响）
+# UI_ENABLED=false
+#
+# 弱口令 fail-closed：命中文档化默认口令/过短口令时所有通道返回 500（默认只警告）
+# ENFORCE_STRONG_CREDENTIALS=true
+#
+# 历史保留策略（覆盖 wrangler.toml 的默认 1000 / 10080 分钟）
+# MAX_SAVED_HISTORY_COUNT=200
+# HISTORY_RETENTION_MINUTES=1440
+#
+# 请求体上限（默认 50331648 = 48MiB；允许 262144..67108864 = 256KiB..64MiB）
+# MAX_REQUEST_BODY_BYTES=67108864
+#
+# 认证失败限速四参数（默认 900000 / 10 / 900000 / 50）—— **不建议改**，见 README「部署开关」
+# AUTH_RATE_LIMIT_WINDOW_MS=900000
+# AUTH_RATE_LIMIT_MAX_FAILURES=10
+# AUTH_RATE_LIMIT_BLOCK_MS=900000
+# AUTH_RATE_LIMIT_BURST_WARN=50

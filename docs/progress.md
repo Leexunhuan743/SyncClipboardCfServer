@@ -133,7 +133,7 @@ push 到 `master` 只在**改动涉及产品代码或构建输入**时触发流�
 | 历史写路径 | `src/historyOps.ts` | ✅ | PATCH 黑盒 / ui 套件 | 官方 PATCH 与界面写操作共用 |
 | PROPFIND XML | `src/webdavXml.ts` | ✅ | 协议测试 | RFC 4918 multistatus |
 | 认证限速 | `src/rateLimit.ts` | ✅ | rate-limit 套件 | isolate 快路径 + DO 权威计数 |
-| 请求体上限 / loopback | `src/requestLimits.ts` | ✅ | limits / rate-limit 套件 | 32 MiB 与 F8 判定共用 |
+| 请求体上限 / loopback | `src/requestLimits.ts` | ✅ | limits / rate-limit 套件 | 默认 64 MiB（可调至 80 MiB，2026-09-15 由 32 MiB 提高）；与 F8 判定共用 |
 | Web 界面服务端面 | `src/ui/*` | ✅ | ui / ui-guard / ui-contract 套件 | 见 `docs/ui.md` §3 |
 
 ## 3. 决策日志
@@ -1164,11 +1164,11 @@ minor 差异（官方客户端不可达）；Web 界面的三条限制（不走 
 | 1.21.4 | 2026-09-15 | 文档：§39.4「复核驳回」表补齐**证据链**（六条，含文件:行号；③ 附 ASP.NET 官方文档引用）并区分证据等级（确定性代码路径 vs 未实测的框架文档推断）（详见 §39.4） |
 | 1.22.0 | 2026-09-15 | 第二十二轮：**真上游 A/B + 真客户端 E2E** —— 在本机起官方 v3.2.0 服务端发布件逐条对照（32 例状态码级 + 18 例 negotiate 文本级），找出并修复 negotiate 的**两处真缺陷**（错误串写错、把「超出 Int32」误并入「负数」分支）；再用官方 v3.2.0 客户端对生产做双向文本/文件与实时推送 E2E（详见 §44） |
 | 1.22.1 | 2026-09-15 | 路径**字面段**大小写归一（`src/pathCase.ts` + 入口最前面）：`/API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`/SYNCCLIPBOARDHUB/negotiate` 与上游同为 200；只归一字面段、取值不动，并加"遍历 `app.routes` 断言字面段全覆盖"的守卫（20 套件 / 328 例，A/B 未登记差异 0，详见 §44.7） |## 26. 数据处置：无数据记录与早期 e2e 残留（2026-09-13）
-
-线上**实测**（不沿用旧统计）：活跃 **79** 条中，**12 条 `hasData` 为真而取不到数据**；
-另有 **7 条早期轮次的人工 e2e 残留**（`wdfile.txt`、`r5push.txt`、`R5BIG-*`、`e2e-r5-*`、
-`webdav-precise-*`、`inline-live-*`、`r6-*`）。
-
+| 1.23.0 | 2026-09-15 | 第二十三轮：**部署开关** —— 新增 GitHub 变量 `UI_ENABLED`（默认开）可关掉整个 Web 界面（`/ui` 与 `/ui/api/*` 一律 404、根路径不再跳转，协议面零影响；实现需 `[assets] binding = "ASSETS"` + `run_worker_first`）；同一套机制接线 `ENFORCE_STRONG_CREDENTIALS` / `MAX_SAVED_HISTORY_COUNT` / `HISTORY_RETENTION_MINUTES`，CI 加"默认兜底 + 取值校验"并新增界面可达性冒烟（详见 §45） |
+| 1.24.0 | 2026-09-15 | 第二十四轮：**审计上游 Docker 变量并再接线两个旋钮** —— 上游那 4 个能对上的变量早已全有；新增 `MAX_REQUEST_BODY_BYTES`（默认 32MiB，允许 256KiB–64MiB：客户端 `MaxFileByte` 远大于它，此前撞 413 只能改代码）与限速四参数（**文档明确写"不建议变化"**）；CI 的 `resolve_int` 扩成带上下限、九变量名三处逐字一致（详见 §46） |线上**实测**（不沿用旧统计）：活跃 **79** 条中，**12 条 `hasData` 为真而取不到数据**；
+| 1.25.0 | 2026-09-15 | 第二十五轮：**请求体上限默认 32 → 64 MiB、上限 64 → 80 MiB**（用户要求；80 而非 85 见 §47.1）—— 因 Group 上传期间"压缩体与解压内容同时存活"，把两个上限改成"一份合计预算（96 MiB）+ 动态收缩的解压预算"，并加不变式守卫；全量 20 套件 / 344 例（详见 §47） |另有 **7 条早期轮次的人工 e2e 残留**（`wdfile.txt`、`r5push.txt`、`R5BIG-*`、`e2e-r5-*`、
+| 1.25.1 | 2026-09-15 | 请求体上限定稿：**默认 48 MiB、上限 64 MiB**（用户追问后按**真实数据**回落 —— 官方客户端默认 20 MB、本部署线上最大一条 29.0 MiB 的 Group；决定性依据是并发：2×48=96 MiB 留有 32 MiB 余量，2×64=128 MiB 正好顶格）；同节留档"不做流式上传"的结论与实测可行性（详见 §48） |`webdav-precise-*`、`inline-live-*`、`r6-*`）。
+| 1.25.2 | 2026-09-15 | 文档重构：README 回归**用户视角**（579 → 498 行）——请求体上限的完整推导搬进 `design.md` §7.1（并新增 ADR D17）、A/B 探针的步骤搬进 `design.md` §12、删掉文档史说明；README 只留"我要做什么"（详见 §49） |
 **两类的构成与并集**（实测，与 `matched=16`、备份 16 行一致）：
 
 | 分块 | 条数 | 内容 |
@@ -2009,7 +2009,7 @@ CDP `Performance.getMetrics` 取 `ScriptDuration` / `LayoutDuration` / `RecalcSt
 
 ### 39.3 判定为"有意偏离、本轮不修"
 
-32 MiB 体量上限、Group 解压上限、清理周期与批次、保留策略在线可调、`clear` 不广播、Range 只给 UI 面、
+32 MiB 体量上限（**订正：2026-09-15 起默认 64 MiB、可调至 80 MiB，见 §47**）、Group 解压上限、清理周期与批次、保留策略在线可调、`clear` 不广播、Range 只给 UI 面、
 PROPFIND 207、附件加固、hash 分隔符 400、时间字段忽略、hash 统一大写、Group `.` 段与重复条目语义
 ——**全部已在 `docs/protocol.md` §10 登记**，逐条理由见 `docs/upstream-parity.md` §4.3。
 
@@ -2487,3 +2487,424 @@ Hub 路径在进 Hono **之前**就被 `url.pathname === HUB_PATH` 精确判等�
 - **教训 3**：错误分支不能「合并同类项」。把「解析失败」和「数值越界/负值」合成一条
   `!Number.isSafeInteger(n) || n < 0` 看似更简洁，实际把两种**不同的对外语义**（invalid vs unsupported）
   压成了一个。
+
+## 45. 部署开关：可关掉的 Web 界面 + 开关审计（2026-09-15，v1.23.0）
+
+### 45.1 需求
+
+用户提出三点：① 确认界面现在是默认开启的；② 加一个 **GitHub 变量**可以选择是否开启这个界面；
+③ 顺便审计"还有什么适合做成可开/可关的开关，或需要在 Secrets and variables → Actions 里填"。
+①的答案：**是**，`public/ui/*` 一直由 Cloudflare 直接托管，没有开关。
+
+### 45.2 关键约束（它决定了实现形态）
+
+`public/ui/*` 走的是 `[assets] directory = "./public"`，**不经过 Worker** —— 也就是说"关掉界面"这件事
+在旧配置下**做不到**：平台在 Worker 之前就把静态资源托管掉了。于是必须改两处 `[assets]`：
+
+```toml
+binding = "ASSETS"                       # 没有它，Worker 里拿不到静态资源
+run_worker_first = ["/ui", "/ui/*"]      # 界面请求**先进 Worker**
+```
+
+之后由入口按 `UI_ENABLED`（GitHub 仓库变量，判定见 `src/uiEnabled.ts`）分流。这条取舍记进了 ADR **D16**
+（界面可关闭；协议面不受影响是硬边界）。
+
+### 45.3 实现
+
+| 位置 | 改动 |
+| --- | --- |
+| `src/uiEnabled.ts`（新） | `isUiEnabled(env)`：**只有显式 `'false'`**（忽略大小写与空白）才关，其余（含未设置）为开；`uiDisabledResponse(isApi)` 给出两种 404 体 |
+| `src/index.ts` | 入口最前面（**在鉴权之前**）分流：关 → 404；开 → `/ui/api/*` 交给 Hono、其余（含裸 `/ui`）转 `env.ASSETS.fetch()`，**资源 404 时回落 Hono** |
+| `src/routes/webdav.ts` | 根路径 `/` 的"浏览器 302 → `/ui/`"跟着开关走；关掉时返回 `Server is running.` |
+| `wrangler.toml` | `UI_ENABLED = "true"`（默认写在这里，保证本地 dev 与线上同一套默认）+ 上面两条 `[assets]` |
+| `src/env.ts` | 加 `ASSETS: Fetcher`（必填，生产恒有）与 `UI_ENABLED?: string` |
+| `test/rate-limit.test.ts` | 它的 `Bindings` 字面量补 `ASSETS` 桩：**被调用即抛错**（该套件只打协议面与 `/ui/api/*`，真去读资源就说明路由判据坏了） |
+
+### 45.4 我在实现中引入、又靠"对拍生产"抓回来的两处回归（本轮最值得记的）
+
+把平台行为搬进 Worker 时，**"看起来等价"和"逐条等价"差两次线上事故**：
+
+1. **裸 `/ui` 变成 404**。加 `run_worker_first` 后裸 `/ui` 也进了 Worker，而 Hono 里
+   `app.all('/ui/*', notFoundPage)` 注册在 `app.get('/ui', redirect)` **之前**，`strict:false` 下它先命中
+   ⇒ 用户手敲 `https://host/ui` 看到"页面不存在"。**生产原本是 307 → `/ui/`**（平台自己跳的）。
+   修法：裸 `/ui` 也交回静态资源 —— 由资源侧产生与改动前完全相同的 307。
+2. **`/ui/不存在的路径` 从"404 页"变成"空 404"**。我直接 `return env.ASSETS.fetch(request)`，
+   而平台的默认行为是"资源未命中 → 回落 Worker"（`not_found_handling = "none"`）⇒ 生产上这类路径拿到的是
+   Hono 的 404 页。修法：**资源返回 404 时不直接返回，而是继续走 Hono**。
+
+两处都是靠 `curl` 把**本地**与**生产（旧构建）**的同名路径按 状态码 / `Content-Type` / `Location` 逐条对拍
+发现的（两侧各 5 条）。这个动作以后凡是动到"平台↔Worker 边界"都必须做。
+
+### 45.5 CI 接线（变量 → Worker）
+
+`deploy.yml` 新增 `Resolve deploy switches` 步骤（`id: switches`）：从 `vars.*` 读原始值，
+**默认值兜底 + 取值校验**（布尔只认 `true|false`；整数非负且不超量级），结果写进 `GITHUB_ENV`
+（供 shell 用）与 `GITHUB_OUTPUT`（供表达式用，避免 `${{ env.X }}` 的自引用歧义），
+再由 `wrangler-action@v4` 的 `vars:` 输入按名绑成 Worker 变量。
+
+三个设计要点：**① 绝不把空串绑给 Worker**（`wrangler-action` 按名取同名环境变量，空值会覆盖掉
+`wrangler.toml` 的默认）；**② 写错就红**，不要"静默按默认值跑"；**③ 不把变量值拼进脚本**（避免当代码执行）。
+
+冒烟步骤按开关断言界面：`true` → `/ui/` 200 **且** `/ui/js/main.js` 200（守住 `run_worker_first` +
+ASSETS 转发这条新链路，它坏了界面就整片 404）；`false` → `/ui/` 404。
+
+### 45.6 开关审计（用户第 ③ 点）
+
+**已接线（本轮）**：`UI_ENABLED`、`ENFORCE_STRONG_CREDENTIALS`（代码里早就有，只是一直没接到 CI）、
+`MAX_SAVED_HISTORY_COUNT`、`HISTORY_RETENTION_MINUTES`。
+
+**已有（此前就有，未变）**：`SYNC_AUTH_CREDENTIALS`（是否由 CI 同步凭据）、`DEPLOY_URL`（自定义域名下的冒烟目标）；
+必需 secrets `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`，可选 secrets `USERNAME` / `PASSWORD`。
+README 的表格补齐了每个变量的**默认值与生效方式**（改变量 = 改配置 + 重新部署），并修掉了一处过时描述
+（`DEPLOY_URL` 曾写"未设置则跳过"，而现在的实现是回落到部署输出地址、**不跳过**）。
+
+**明确不做成开关（有意）**：~~请求体上限（32 MiB）~~（**订正：§46 已按用户要求接线，默认 64 MiB/可调 80 MiB**）、Group zip 解压上限、hash/路径校验 —— 它们是**安全边界**，
+保持"改代码才改"。配置项一多，边界就会被悄悄放宽，而这正是本项目一贯拒绝的取向（见 D9/§10 的登记习惯）。
+
+**候选（尚未接线，需要改代码从 env 读，等用户决定）**：
+- `MAX_REQUEST_BODY_BYTES`：现在硬编码在 `src/requestLimits.ts:9`；想收放单请求上限得改代码重部署。
+  风险：调大可能撞 isolate 128MB 内存。
+- 限速四参数（`AUTH_RATE_LIMIT_WINDOW_MS` / `_MAX_FAILURES` / `_BLOCK_MS` / `_BURST_WARN`，`src/rateLimit.ts:26-32`）：
+  被扫描时想临时放宽、或想更严时有用；改动集中在一个文件，但会牵动 DO 侧同一套常量与既有测试。
+
+### 45.7 验证
+
+- **单测**（`test/ui-guard.test.ts` 新增 4 条，进程内直连 Worker 入口）：关闭态七条路径全 404 且
+  **一次都不碰静态资源**、根路径不跳转、协议面无凭据仍 401；判定口径（只有显式 `false` 才关，`0`/`no`/空串都是开）；
+  开启态"资源命中即返回、未命中回落 Hono 的 404 页、`/ui/api/*` 不问资源"。
+- **本地实测两态**（`wrangler dev`）：开启态 8 条路径与**生产旧构建逐条一致**；关闭态 `/ui*` 全 404、
+  协议面 6 条全 200、根路径返回 `Server is running.`。
+- `wrangler deploy --dry-run` 绑定表出现 `env.ASSETS` 与 `env.UI_ENABLED ("true")`。
+- 全量 **20 套件 / 332 例**通过；CI 部署后由冒烟按开关断言界面可达性。
+
+### 45.8 教训
+
+1. **"平台托管"与"应用路由"的边界一旦挪动，就要对拍生产**（§45.4 的两处回归都是这么发现的）。
+2. **默认值必须写在配置里，而不是只写在 CI 里**：`UI_ENABLED = "true"` 放 `wrangler.toml`，
+   本地 dev 与线上才是同一套默认；CI 的职责是"覆盖 + 校验"，不是"定义默认"。
+3. **空值 ≠ 未设置**：`wrangler-action` 按名取环境变量，仓库变量没配时会拿到空串并**覆盖**掉配置默认值 ——
+   所以"解析 + 兜底"这一步不能省。
+
+## 46. 再接线两个旋钮：请求体上限 + 限速四参数（2026-09-15，v1.24.0）
+
+### 46.1 起点：上游 Docker 部署到底暴露了哪些变量（用户提问）
+
+读全了上游的 `docker-compose.yml` / `Dockerfile` / `Program.cs` / `appsettings.json` / `README_DOCKER.md`：
+
+- **compose / env**：`SYNCCLIPBOARD_USERNAME`、`SYNCCLIPBOARD_PASSWORD`（覆盖 appsettings 里的占位口令），
+  另有 `ASPNETCORE_hostBuilder__reloadConfigOnChange`（未设置时程序自己设成 false）与 `CLEAR_SQLITE_LOCK`
+  （迁移用的维护开关）。
+- **appsettings.json**：`Logging:LogLevel:{Default,Microsoft.AspNetCore}`、`AllowedHosts`、
+  `Kestrel:Endpoints:http:Url`（绑定地址/端口）、`Kestrel:Certificates:Default:Path|KeyPath`（HTTPS，注释示例）、
+  `AppSettings:{UserName,Password,MaxSavedHistoryCount,HistoryRetentionMinutes}`。
+- **volume**：`/data/syncclipboard-server:/app/data`（= `--contentRoot`，SQLite 与历史文件都在这儿）。
+
+对照结论（详见 README 表格）：**能对上的 4 个（凭据 ×2、条数上限、保留期）我们都已经有了**
+（后两个是 §45 那轮接的）；`Kestrel` 的端口/证书、`AllowedHosts`、SQLite 锁、配置文件热重载在
+Workers 上**没有对应物**（CF 终止 TLS、路由/域名由平台管、D1 无本地文件锁、配置就是 `wrangler.toml`）。
+于是"还可以做成开关的"只剩**我们独有、上游没有**的旋钮。
+
+### 46.2 本轮接线的两个（用户选 A + B）
+
+**A. `MAX_REQUEST_BODY_BYTES`（默认 32 MiB，允许 256 KiB–64 MiB）**（**订正：同一日晚些时候按用户要求改为默认 64 MiB、上限 80 MiB，见 §47**） —— 唯一一个"运维真的会撞上、
+撞上后无法自救"的旋钮：官方客户端 `MaxFileByte` 默认远大于 32 MiB（实测那份是 1.78 GB），
+客户端乐意传、服务端却回 413，而此前只能改代码重部署。
+- `src/requestLimits.ts`：加 `MAX_REQUEST_BODY_BYTES_FLOOR/CEILING` 与 `maxRequestBodyBytes(env)`；
+  **越界/非法值回落默认并打一次 `[limits]` 日志**（不 fail-closed —— 这个上限本身就是"防 OOM 护栏"，
+  因为配置写错就让所有写请求 500，是把配置失误升级成全站不可用）。
+- `src/index.ts` 的 F9 中间件改用 `maxRequestBodyBytes(c.env)`。
+
+**B. 限速四参数（`AUTH_RATE_LIMIT_*`）** —— 按用户要求**接了，但在文档里明确写"不建议变化"**。
+- `src/rateLimit.ts`：加 `AuthRateLimitConfig` / `DEFAULT_AUTH_RATE_LIMIT_CONFIG` / `AUTH_RATE_LIMIT_RANGES`
+  与 `authRateLimitConfig(env)`（**逐字段**校验，坏字段单独回落，好字段不受牵连）；
+  纯状态机 `applyAuthFailure` / `pruneAuthLimits` / `mergeBlocks` 与 burst 窗口都改为接收 config。
+- **DO 与 Worker 必须读同一套取值**（都在 `src/rateLimit.ts` 里解析），否则会出现
+  "Worker 认为没封锁、DO 认为封锁"的分裂判定 —— 这是这次重构最需要小心的地方。
+- 文档口径：默认 15 min 窗口 / 10 次 / 封锁 15 min / 告警 50；**调松 = 缩短爆破代价，调紧 = 误伤正常客户端**
+  （封锁期内正确凭据也会被拒）；唯二正当场景是"被扫描时临时收紧"或排障时临时放宽，事后改回。
+
+### 46.3 CI 与运行期两层校验（同一张范围表）
+
+`deploy.yml` 的 `resolve_int` 从"只查上限"扩成 **`名称 原始值 默认值 下限 上限`**：越界直接让部署失败
+（改配置的人立刻知道），而运行期对越界值回落默认（线上不因配置失误不可用）。九个变量名在
+`Resolve env` / `steps.switches.outputs` / `wrangler-action` 的 `vars:` 三处**逐字一致**，
+YAML 已用临时装的 `yaml` 解析器结构化校验过（步骤序列、env 键、vars 列表都对得上）。
+
+### 46.4 验证
+
+- 单测（`test/rate-limit.test.ts` 新增 5 条）：`maxRequestBodyBytes` 的合法/边界/非法七种取值；
+  `authRateLimitConfig` 的逐字段回落与四字段各自的上下界；行为上"把上限调到 1 MiB 后 2 MiB 请求 413、
+  512 KiB 请求放行到鉴权（401）"；"把失败阈值调到 3 后第 4 次失败即 429"；
+  "阈值写坏成 0 时回落默认（第 11 次才封锁）"。
+- 全量 **20 套件 / 340 例**通过；typecheck / lint 通过。
+- 缺口修复另有两条用例，见 §46.5。
+
+### 46.5 顺带修掉一个缺口：暂存对象可以绕过请求体上限
+
+写 README「为什么最大是 64 MiB」时把内存链路逐段核了一遍，发现一条**真实缺口**：
+
+```
+① PUT /file/big.bin          流式写 R2（不吃内存、当时不受任何上限约束）
+② PUT /SyncClipboard.json    体很小 ⇒ 骗过按 content-length 的预检
+③ 服务端把①的对象整包读回内存做哈希校验（profile.ts:236 的 temp.arrayBuffer()）⇒ 在此处 OOM
+```
+
+平台的单请求体上限是 100 MB，而 isolate 只有 128 MB —— 也就是说这条链**理论上能把 isolate 打死**
+（后果是同一 isolate 上并发中的其他请求一起 503，比 413 严重得多）。修法两处：
+
+1. **权威判定按对象实际大小**：`profile.ts` 在 `getTemp` 之后比较 `temp.size > maxDataBytes`（不看请求头），
+   超限抛新的 `PayloadTooLargeError` → `webdav.ts` 映射为 **413**，并顺手删掉暂存对象（不留垃圾）。
+2. **暂存端点一并纳入上限**：`index.ts` 的 F9 预检把 `PUT /file/*` 也加进去 —— 请求头预检只是"更早失败"
+   的快速路径，但它让"**任何单个传输对象 ≤ 上限**"成为一条可解释的不变式。
+
+测试：`test/limits.test.ts` 新增三条（超限 → PayloadTooLargeError + 不落库 + 删暂存；恰好等于上限 → 放行，
+边界是 `>` 而非 `>=`；**真实路由**：PUT /SyncClipboard.json 提交超限暂存对象 → 413 而不是 400/500 —— 这条
+把 `PayloadTooLargeError → 413` 的映射也钉住了，写它时顺带发现测试桩缺 `bucket.delete` 会伪装成 500）；`rate-limit.test.ts` 的 F9 预检用例扩到四条路径（含 `PUT /file/big.bin`）。
+`RecordingStorage` 桩补上 `size` 与 `deleteTemp`，与真实 `R2ObjectBody` 一致。
+
+### 46.6 明确**不**接线、并写出理由的（避免后人反复提）
+
+- **`head_sampling_rate`（日志采样）**：它是 `wrangler.toml` 的 `[observability]` 配置，**不是 Worker 变量**，
+  CI 的 `vars:` 输入改不到它；要变量化就得在 CI 里做配置文件变换，与"配置即真相"冲突。
+  需要采样时改一行 toml 或在 Cloudflare 控制台按 Worker 调。
+- **`ALLOWED_HOSTS`（Host 白名单）**：CF Routes 精确到 host+path，比在 Worker 里再做一遍更合适。
+- **清理批大小/子请求预算（`cleanup.ts`）**：这些数按"单次调用 1000 子请求"的平台预算反推而来，
+  单独调大某一项会挤掉其它阶段预算、出现"某阶段永远跑不完"的隐蔽故障。想快/慢应调保留期与条数上限。
+- **长轮询队列封顶、zip 解压上限、hash/路径校验**：保护 DO 内存/安全边界的硬限制，保持"改代码才改"。
+
+### 46.7 教训
+
+1. **"能对上上游的"往往早就有了，真正缺的是"我们独有、上游没有"的那部分** —— 审计时先把两侧清单都摊开，
+   比逐个比对更省事（上游 Docker 的变量总数其实只有 6 个左右）。
+2. **同一个语义有两个参数来源时，必须让两侧读同一份解析结果**（DO 与 Worker 的限速配置），
+   否则分裂判定会以"偶发不一致"的形式出现，最难查。
+3. **配置项要分两类**：能"回落默认"的（护栏型，如请求体上限、限速参数）与不能的（安全阀型，只读代码）。
+   前者写进文档并允许运行时兜底，后者一律不外露。
+
+## 47. 请求体上限：默认提到 64 MiB、上限开到 80 MiB（2026-09-15，v1.25.0）
+
+### 47.1 用户的要求与"80 还是 85"的取舍
+
+用户决定：**默认 64 MiB**，并允许手动调到 **80 或 85 MiB**（由我判断选哪个）。选 **80 MiB**，三条理由：
+
+1. **留着离平台上限的距离**：平台单请求硬上限是 100 MiB（Free/Pro），85 只剩 15 MiB 余量，80 留 20 MiB。
+   "离平台边界留一段"是本项目一贯取向（旧默认 32 MiB vs 平台 100 MB 是同一思路）。
+2. **合计预算算出来的就是 80**：isolate 128 MiB − 32 MiB（给运行时与并发）＝ **96 MiB 给单请求工作集**。
+   上限 80 MiB ⇒ 即使拉满，Group 解压仍剩 16 MiB 预算；85 只会把余量压到 11 MiB。
+3. **80 vs 85 对真实使用没有区别**（客户端实际文件是几十 MB 级）⇒ 那就选余量更大的那个。
+
+### 47.2 为什么不能只改两个数字：Group 上传有"第二份内存"
+
+写 README 推导时发现一个算术问题：**`parseGroupZip` 期间 zip 的压缩体一直存活**
+（`contents` 与 `zipBytes` 同时占内存）。于是旧的两个上限"请求体 32/64 MiB"与"解压 64 MiB"
+**不能各自贴顶**：默认刚提到 64 MiB 时，`64 + 64 = 128 MiB` 正好等于 isolate 上限；
+上限若设 80 则 `80 + 64 = 144 MiB` —— 那会在**解压中途 OOM**，而不是被 413/上限干净拒绝。
+（OOM 的后果是同一 isolate 上并发中的其他正常请求一起 503，比"这次上传失败"严重得多。）
+
+**修法：把两个上限换成"一份合计预算 + 动态收缩的解压预算"**：
+
+```
+ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB        // 单请求工作集 = body + 解压内容
+groupZipDecompressionCap(zipBytes) = clamp(96 MiB − zipBytes.length, 1 MiB, 64 MiB)
+```
+
+- **常规使用完全不受影响**：body 20 MiB ⇒ 解压仍可用满 64 MiB（客户端默认文件上限就是 20 MB）。
+- body 64 MiB（默认）⇒ 解压 32 MiB；body 80 MiB（上限）⇒ 解压 16 MiB。
+- 下限 1 MiB 只是兜底：理论上走不到（上限 80 < 预算 96 ⇒ 余量恒 ≥ 16 MiB），留下它只为防止
+  将来有人把上限调到预算之上时出现"预算 0 ⇒ 任何 zip 都报错"的难查形态。
+- 落点：`hash.ts` 新增 `groupZipDecompressionCap`，`parseGroupZip` 增加 `maxTotalBytes` 参数，
+  `profile.ts` 的两处调用（PUT /SyncClipboard.json 与 POST /api/history 的 Group 校验）都传入它。
+
+### 47.3 改了什么
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/requestLimits.ts` | 默认 32 → **64 MiB**；上限 64 → **80 MiB**；新增 `ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB` |
+| `src/hash.ts` | 新增 `groupZipDecompressionCap()`；`parseGroupZip(zipBytes, maxTotalBytes = 64 MiB)` |
+| `src/profile.ts` | 两处 Group 校验改为传动态解压预算 |
+| `.github/workflows/deploy.yml` | `resolve_int` 的默认/上限改为 67108864 / 83886080（下限仍 256 KiB） |
+| `.dev.vars.example` | 示例值同步（并标注可调到 80 MiB） |
+| README / `protocol.md` §10 / `upstream-parity.md` / `env.ts` 注释 | 全部数值与推导同步；README 那一节由「为什么最大是 64 MiB」改写为「为什么默认 64 MiB、上限 80 MiB」 |
+
+### 47.4 验证
+
+- `test/limits.test.ts` 新增 4 条：小 body 仍用满 64 MiB 解压上限（常规不受影响）；
+  大 body 下解压预算按剩余收缩（64 MiB→32 MiB、80 MiB→16 MiB、极端→1 MiB 下限）；
+  **不变式守卫**：任何允许的 body + 其解压预算 ≤ 96 MiB，且 `上限 ≤ 预算`、`默认 ≤ 上限`、`下限 ≤ 默认`
+  （将来有人把上限调到预算之上，这条会红）；行为上同一份 4 MiB 解压内容的 zip 在 1 MiB 预算下被拒。
+- `test/rate-limit.test.ts` 的 `maxRequestBodyBytes` 单测与 F9 行为用例自动跟随新默认值（断言用的是常量）。
+- 全量 **20 套件 / 344 例**通过；typecheck / lint 通过。
+
+### 47.5 教训
+
+1. **两个"看起来独立"的上限可能共享同一份资源**。这次是 body 与解压内容共享 isolate 堆；
+   昨天那次（§46.5）是"流式暂存"与"落库读回内存"共享同一条链路。**凡是上限，都要问一句"它和谁抢同一份资源"。**
+2. **提高默认值不只是改数字**：默认从 32 → 64 MiB 会把"body + 解压"的最坏情况正好推到 isolate 天花板，
+   所以必须同时引入预算分配（否则默认值本身就是个 OOM 隐患）。
+3. **上限的取值要有推导链，不要凑整数**：`100 MiB（平台）→ 128 MiB（isolate，并发共享）→ 96 MiB（工作集预算）
+   → 80 MiB（上限）`，每一步都能指着代码或平台文档。这样"为什么不是 85"才有答案。
+
+## 48. 请求体上限定稿：默认 48 MiB、上限 64 MiB（2026-09-15，v1.25.1）
+
+### 48.1 为什么回落到 48（用户在 §47 之后追问"48/64 合理吗，还是保持 64/80"）
+
+先用**真实数据**替代"越大越好"的直觉，查了两处：
+
+| 事实 | 值 | 来源 |
+| --- | --- | --- |
+| 官方客户端默认单文件上限 | **20 MB** | `SyncConfig.cs:23`（`MaxFileByte = 1024 * 1024 * 20`） |
+| 本部署线上记录 | **92 条、合计 25.22 MB** | 生产 `/api/history/statistics` |
+| 其中最大一条 | **29.0 MiB 的 Group（文件夹）**（30,376,492 字节） | 生产 `/api/history/query` 逐条 size 分布：49/50 条 <1 KB |
+
+⇒ 真实使用落在"20–29 MiB"这个量级，**48 MiB 已覆盖最大实测值并留 60% 余量**；而"可调"已经实现，
+真要传 60 MiB 设一次变量即可。所以默认值没必要贴到 64。
+
+**决定性的是并发，不是单请求**：isolate 的 128 MiB 是**所有并发请求共享**的。
+
+| 默认值 | 两个大上传重叠 | 结论 |
+| --- | --- | --- |
+| 48 MiB | 2 × 48 = 96 MiB | 还剩 32 MiB 给运行时 ⇒ 安全 |
+| 64 MiB | 2 × 64 = 128 MiB | 正好顶格 ⇒ 大概率 OOM |
+
+**上限取 64 而不是 80**：65–80 MiB 那一段里 Group 解压预算只剩 ≤16 MiB（body 越大解压预算越小），
+本就是名存实亡的一档；为它把离平台 100 MiB 的余量从 36 MiB 压到 20 MiB 不划算。
+
+**且不破坏既有行为**：上述那条 29.0 MiB 的 Group 在新默认下**照样通过** —— 解压预算 = 96 − 29 ≈ 67，
+封顶仍是 `GROUP_ZIP_MAX_TOTAL_BYTES` 64 MiB，与改前完全一致。
+
+### 48.2 改了什么
+
+- `src/requestLimits.ts`：默认 32 → 64 → **48 MiB**；上限 64 → 80 → **64 MiB**（`ISOLATE_TRANSFER_BUDGET_BYTES`
+  仍是 96 MiB，合计预算机制不变）。
+- `deploy.yml`：`resolve_int MAX_REQUEST_BODY_BYTES 50331648 262144 67108864`（默认/下限/上限三项同步）。
+- `.dev.vars.example`、`README`（变量表、限制小节、限制表、以及推导小节整节改写）、
+  `docs/protocol.md` §10、`docs/upstream-parity.md`（两处）、`src/env.ts` 注释：数值全部同步。
+- README 的推导小节标题由「为什么默认 64 MiB、上限 80 MiB」改为「为什么默认 48 MiB、上限 64 MiB」，
+  并把三条新依据写进去：客户端默认 20 MB / 线上最大 29.0 MiB / 并发 2×N 的算式。
+
+### 48.3 验证
+
+- 单测与不变式守卫沿用常量（`maxRequestBodyBytes`、`groupZipDecompressionCap` 的用例自动跟随新默认值），
+  全量 **20 套件 / 344 例**通过；typecheck / lint 通过。
+- CI：`Resolve` 解析出 `MAX_REQUEST_BODY_BYTES = 50331648（未配置，用默认值）`，部署后冒烟通过。
+
+### 48.4 顺带记下的一条"不做流式上传"的结论（用户问过，作为决策留档）
+
+用户问"为什么不流式传输直接到数据库"。要点（免得以后重复讨论）：
+
+1. **字节从来不进 D1**：D1 只有元数据行，数据体在 R2。问题实际是"为什么不边收边写 R2、边算哈希"。
+2. **已经有一半是流式的**：`PUT /file/{name}`（暂存）是 `c.req.raw.body` 直写 R2；所有下载直接回 R2 流。
+   瓶颈只在**提交**那两步（`PUT /SyncClipboard.json` 要把暂存对象整包读回校验哈希；`POST /api/history`
+   整包 `arrayBuffer()` 后解析）。
+3. **提交必须整包读的三条理由**：① 协议要求"先验证后落盘"（hash 不符 → 400 且不留对象，流式必然是
+   "先写后删"）；② Group 的哈希要**解压 zip + 按名字 UTF-8 排序 + 拼行**再哈希，排序必须在收齐条目后才做；
+   ③ R2 的 Workers 绑定**没有 copy/rename**（只有 get/put/multipart/delete/list），暂存→持久无论如保都要再读写一遍。
+4. **平台还有两道天花板，流式也绕不过**：单请求体 100 MiB（平台在读 body 前就判）、
+   CPU 时间（Free 10 ms / Paid 30 s —— 哈希与解压都是 CPU 工作，大文件本质需要付费计划）。
+5. **可行性实测过**（一次性探针，已清理）：`nodejs_compat` 下 `node:crypto` 的 **增量哈希可用** ——
+   8 MiB 请求体按 4096 字节分块喂 `hasher.update()`，digest 与本地 `sha256sum` 逐位一致，内存不持有整包；
+   R2 侧 `put(stream)` 已在用、大对象还能 `createMultipartUpload/uploadPart(stream)`。
+6. **结论**：现在不做（收益仅"80→100 MiB 的带宽"、成本是重写 multipart 解析器 + 哈希 + 失败语义 +
+   重证 Group 的 golden 逐位一致性）。触发条件：真要传 >64 MiB 的单文件、或并发大上传成为常态。
+   若将来做，建议**先只把 File/Image 的提交改成流式**（纯内容哈希，风险最小），Group 保持整包。
+
+## 49. README 回归"用户视角"：工程推导搬进 design.md（2026-09-15，v1.25.2）
+
+### 49.1 用户的要求
+
+"readme 是面向普通用户的，有的东西合理放在其他文档中"。核了一遍 README 后，确实有两类内容放错了地方：
+
+| 内容 | 原本在哪 | 问题 | 搬到哪 |
+| --- | --- | --- | --- |
+| 请求体上限的**完整推导**（平台 100 MiB → isolate 128 MiB 并发共享 → 工作集预算 96 MiB → 48/64 的取值依据、并发 2×N 对照表、零拷贝依据、残留风险、不做流式上传的结论） | README「部署开关」一节，约 60 行 | 面向普通用户的手册里出现 isolate 内存模型与预算算式 | `docs/design.md` **§7.1 资源上限与内存预算**（新增）+ ADR **D17** |
+| **A/B 探针的准备与运行步骤**（下载上游发布件、自写回环 appsettings、`dotnet ... --contentRoot`、探针命令行） | README「项目结构」下的 `### 与官方服务端做 A/B 对照` | 开发/验证工具，日常使用者不需要 | `docs/design.md` **§12 测试策略**（表格里新增一行 + 指向 `progress.md` §44 的步骤与结果） |
+| 「早先文档只算了 `/api/version`、写成 8.6k …已订正」这类**文档史**说明 | README「容量提示」 | 读者不关心我们上一版写错了什么 | 已在 `progress.md` 留档，README 直接删 |
+
+### 49.2 README 现在的样子（579 → 498 行）
+
+- 「部署开关」一节保留**用户真正要用的三件事**：变量表（含默认值列）、"改变量 + 重新部署"的操作、
+  以及 `UI_ENABLED` / `ENFORCE_STRONG_CREDENTIALS` 的行为对照表；**`MAX_REQUEST_BODY_BYTES` 改成一张
+  "情形 → 你该做什么"的三行表**（什么都不用做 / 设成 67108864 / 不支持 >64 MiB），推导只留一句
+  "为什么上限不是平台给的 100 MiB" 加指向 `design.md` §7.1 的链接。
+- 限速四参数保留"**不建议变化** + 三条理由"，把范围与校验细节改成指向 `design.md`。
+- 「已知限制」里两条被重写为用户可见的后果（清理吞吐的"≤20 分钟 + 若干轮"、大文件占内存且超限 413），
+  删掉内部的子请求预算记账模型与 `src/cleanup.ts` 之类的实现细节。
+- 「项目结构」保留 `tools/` 一行 + 一句"它是开发/验证工具，日常使用不需要"。
+- 新增 `docs/design.md` §7.1 是**唯一**的推导出处，README 与 `protocol.md` §10 都只链过去。
+
+### 49.3 验证
+
+- `test/docs.test.ts` 7 例通过（README 里的套件数声明、写库套件清单、`ui.md` 资源数等硬约束都没被破坏）。
+- 全量 **20 套件 / 344 例**通过。
+- 文档总量基本持平：README 变短、`design.md` 变长（推导搬家而非删除）。
+
+### 49.4 教训
+
+**"写在哪个文件"和"写没写"同样重要**：同样的推导留在 README＝把设计文档的负担塞给读者；搬进
+`design.md` §7.1 之后，README 的每一节都回答"我要做什么"，而 design 回答"为什么这样做"。
+判断标准很简单——**读者是"要部署/使用的人"还是"要改这个项目的人"**。
+
+## 50. 提交历史整理：89 → 33（2026-09-15，v1.25.2 不变）
+
+### 50.1 用户的要求
+
+"现在又89个commit 你合理的压缩commit 不要太杂乱"。核过之后：`master` 上 89 条里前 13 条是 §28 那轮的成果
+（根提交 + 12 个主题提交），**本来就已是一个主题一条**；后面 76 条是那之后逐轮攒下的本地细碎提交
+（同一件事的补丁、口径更正、版本号与 `package-lock` 同步各占一条）。故本轮**只压 14–89**：
+前 13 条原样保留（SHA 未变），76 条按主题压成 20 条。
+
+### 50.2 分组（76 → 20）
+
+| 新提交 | 覆盖旧序号 | 主题 |
+| --- | --- | --- |
+| `ba67be0` | 14–19 | `feat(ui)` 交互与动效打磨 + §28/§30 文档口径 |
+| `43e70ef` | 20–24 | `fix(security)` 残余 G1/G5 与 batch-delete 媒体类型（§31） |
+| `d4d1191` | 25–28 | `feat(ui)` A 批缺陷修复 + `public/` 设计评审（§32） |
+| `0f99e59` | 29–30 | `feat(ui)` 前端系统性完善（1.18.0） |
+| `d47ef1d` | 31–34 | `feat(ui-api)` 能力清单落地与前端接线（1.19.0） |
+| `5824e81` | 35–37 | `fix(clear)` 目录删除口径 + CSP 放行 ws/wss |
+| `1dc5ea6` | 38–42 | `perf(ui)` 筛选与列表更新提速（1.19.1–1.19.2） |
+| `99480eb` | 43–49 | `refactor` 拆分文件 / 统一行宽 + 性能测量口径 |
+| `b890f03` | 50–53 | `fix(history)`+`perf(db)` 媒体类型与收藏索引（1.20.0） |
+| `efaec86` | 54–56 | `ci` Node 24 / 部署前预检 / 部署后只读冒烟 |
+| `6909a9a` | 57–59 | `perf(cleanup)` 吞吐 115 → 500 条/轮（1.21.0） |
+| `f932377` | 60–62 | `chore(deps)` wrangler 3 → 4（1.21.1） |
+| `65e7887` | 63–64 | `chore(observability)` Workers Logs（1.21.2） |
+| `286fe7d` | 65–67 | `fix(version)` `/api/version` 对齐 3.2.0 + §39.4 证据链（1.21.4） |
+| `b414962` | 68–70 | `fix(hub)` negotiate 对齐真上游 + A/B 探针（1.22.0） |
+| `7126539` | 71–73 | `fix(routing)` 协议路径字面段大小写归一（1.22.1） |
+| `a9785b8` | 74–77 | `feat(ui)` `UI_ENABLED` 部署开关（1.23.0） |
+| `e5f310e` | 78–82 | `feat(limits)` 上限与限速参数的变量覆盖（1.24.0） |
+| `c83516d` | 83–87 | `feat(limits)` 定稿 48 MiB / 64 MiB（1.25.1） |
+| `ba86c7e` | 88–89 | `docs` README 回归用户视角（1.25.2） |
+
+分组原则：按**"一件事"**切，而不是按"一次改动"切——同一主题下的补丁、文档更新、版本号与
+`package-lock` 同步合为一条；不同主题不硬并（例如"性能打磨"与"文档口径更正"即使相邻也分开）。
+
+### 50.3 执行（D11 流程图逐条落实）
+
+① 备份分支 `backup/pre-squash-2026-09-15`（= 旧 HEAD `b43d9ca`）**已推送**到 origin，旧 SHA 永久可解析。
+② 从第 13 条 `9230bb8` 开临时分支，逐组 `git read-tree -u --reset <该组旧 tip>` 后直接 `git commit -F <msg>`
+（未用 `git add -A`，避免把未跟踪文件卷进历史）。
+③ 逐组断言：`git diff --name-only <新提交> <该组旧 tip>` 为空**且** `rev-parse <commit>^{tree}` 相等——20 组全部通过。
+④ 末态断言：`git diff b43d9ca HEAD` 为空，且 `HEAD^{tree}` == `b43d9ca^{tree}`（树逐字节一致）。
+⑤ 全量套件真门禁：`npm test` 显式判定退出码 → **20 套件 / 344 例通过，退出码 0**。
+⑥ `git push --force-with-lease origin squash/2026-09-15:master` → `b43d9ca...ba86c7e (forced update)`；
+推送后删掉临时分支，备份分支保留。
+
+> 分组是按**旧提交序号**（`from`/`to`）定义的，不手抄 SHA：脚本先 `git rev-list --reverse b43d9ca` 取全部 89 条，
+> 再断言分组**无缝隙、无重叠**地覆盖 14–89，最后逐组比对 tree 哈希。手抄 SHA 是这类操作最容易出错的地方。
+
+### 50.4 没有变的东西
+
+- 树逐字节一致 ⇒ **代码、文档、`package.json` 版本（1.25.2）、`wrangler.toml` 全部未改**，部署产物不变
+  （CI 仍会因 push 再跑一次）。
+- 文档引用的 SHA：1–13 未变（仍可解析）；14–89 的旧 SHA 改由 `backup/pre-squash-2026-09-15` 解析。
+- 更早两轮的备份分支（`backup-original-91`、`backup-pre-squash`、`backup/pre-round17`）仍**只留本机**（§30 的约定），
+  本轮除新增那条备份分支外没有改动远端 ref 的集合。
+
+### 50.5 教训
+
+**"压缩"的分辨率看的是主题，不是条数**：这一轮真正该压的只有 14–89（同一件事反复微调），
+而 1–13 已经是主题级提交——把它们一起重放既有风险又无收益，所以新分支直接从第 13 条起步。
+判断标准是"两条提交能不能合成一句不带'以及'的话"。

@@ -60,7 +60,7 @@
 
 | 上游 | 迁移对应物 | 结论 |
 |---|---|---|
-| `Web.cs` | `src/index.ts`（中间件链、路由装配）+ `src/hub.ts`（negotiate/转发） | 等价。上游 `AddSignalR()` 默认值（KeepAlive 15s / ClientTimeout 30s / 传输宣告顺序）逐项对齐；`MaxRequestBodySize=int.MaxValue` → 迁移 **32 MiB** + 413（已登记，安全收紧） |
+| `Web.cs` | `src/index.ts`（中间件链、路由装配）+ `src/hub.ts`（negotiate/转发） | 等价。上游 `AddSignalR()` 默认值（KeepAlive 15s / ClientTimeout 30s / 传输宣告顺序）逐项对齐；`MaxRequestBodySize=int.MaxValue` → 迁移**默认 48 MiB**（可调 64 MiB）+ 413（已登记，安全收紧） |
 | `BasicAuthenticationHandler.cs` | `src/auth.ts` | 等价 + 增强（常量时间比较、失败限速、弱凭据告警、未配置 fail-closed）；畸形头上游 500 / 迁移 401（已登记） |
 | `CredentialChecker/{I,Static,File}CredentialChecker.cs` | `src/auth.ts#verifyCredentials` + `env.USERNAME/PASSWORD` | 等价（三文件合并为一，**默认口令回退被有意去掉**） |
 | `Constants/SignalRConstants.cs` | `src/hub.ts#HUB_PATH` | 等价（`/SyncClipboardHub` 逐字） |
@@ -199,7 +199,7 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 
 | 项 | 理由 |
 |---|---|
-| Worker 请求体上限 32 MiB（上游无上限） | 安全收紧；isolate 只有 128MB 内存，放行接近平台上限的体会解析期 OOM |
+| Worker 请求体上限默认 48 MiB（上游无上限；可调至 64 MiB。沿革 32 → 64 → 48，见 §47/§48） | 安全收紧；isolate 只有 128 MiB 内存且被并发共享，放行接近平台上限的体会解析期 OOM。上限与分组解压共享同一份「工作集预算」（96 MiB），见 README「部署开关」 |
 | Group zip 解压上限（总量 64MiB / 条目 1000 / 压缩比 100:1） | 上游可在哈希校验前付出全量解压代价（已作为上游 Issue 5 提出）。**代价**：含 1000+ 文件的合法文件夹会被拒 → 属已知限制 |
 | 清理周期（每小时 vs 10min/12h）与批次（200/1000 vs 500） | CF 单次调用子请求上限（800 预算 + 阶段保底 + 游标续跑） |
 | 保留策略在线可调（Meta 覆盖） | 上游只能改配置文件重启；本实现只加不减语义 |

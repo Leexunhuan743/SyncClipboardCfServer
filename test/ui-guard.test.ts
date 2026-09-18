@@ -13,6 +13,8 @@
 import { describe, expect, it } from 'vitest';
 import { createUiRoutes } from '../src/ui/routes';
 import type { Bindings } from '../src/env';
+import worker from '../src/index';
+import { isUiEnabled } from '../src/uiEnabled';
 
 const USER = 'guard-probe-user';
 const PASS = 'guard-probe-password';
@@ -126,5 +128,102 @@ describe('/ui/api/* 鉴权不因注册顺序静默失效（遍历式回归）', 
       expect(res.status, `${path} 未经鉴权必须 401 而不是 404`).toBe(401);
       expect(await res.text(), `${path} 的拒答体`).toBe(GUARD_REJECTION);
     }
+  });
+});
+
+// 界面部署开关（GitHub 仓库变量 `UI_ENABLED`，判定见 src/uiEnabled.ts）。
+// 它必须**关得住静态资源**：`public/ui/*` 现在由 `[assets] run_worker_first = ["/ui", "/ui/*"]`
+// 先送进 Worker，再由出口决定"转回 ASSETS"还是"404"。若哪天 run_worker_first 被删掉，
+// 关闭态下资源仍会被平台直接托管 ⇒ 这两条断言会红（这正是要守的不变式）。
+describe('UI 部署开关（UI_ENABLED）', () => {
+  const CTX = { waitUntil: (_p: Promise<unknown>) => {}, passThroughOnException: () => {} } as unknown as ExecutionContext;
+
+  // 记录静态资源被访问的次数：关闭态**一次都不该**访问（关得干净），开启态该访问（说明转发链路在）
+  function makeEnv(uiEnabled: string | undefined, assetStatus: number) {
+    const seen: string[] = [];
+    const env = {
+      USERNAME: USER,
+      PASSWORD: PASS,
+      VERSION: 'flag-test',
+      ...(uiEnabled === undefined ? {} : { UI_ENABLED: uiEnabled }),
+      ASSETS: {
+        async fetch(req: Request): Promise<Response> {
+          seen.push(new URL(req.url).pathname);
+          return assetStatus === 200
+            ? new Response('asset-body', { status: 200, headers: { 'content-type': 'text/plain' } })
+            : new Response('', { status: 404 });
+        },
+      },
+    } as unknown as Bindings;
+    return { env, seen };
+  }
+
+  const at = (path: string, headers: Record<string, string> = {}) =>
+    worker.fetch(new Request(`https://sync.example.com${path}`, { headers }), makeEnv('true', 200).env, CTX);
+
+  it('关闭态：/ui、页面、静态资源、/ui/api/* 一律 404，且完全不碰静态资源', async () => {
+    const { env, seen } = makeEnv('false', 200);
+    const cases: [string, 'page' | 'api'][] = [
+      ['/ui', 'page'],
+      ['/ui/', 'page'],
+      ['/ui/index.html', 'page'],
+      ['/ui/js/main.js', 'page'],
+      ['/ui/api/session', 'api'],
+      ['/ui/api/login', 'api'],
+      ['/ui/api/history', 'api'],
+    ];
+    for (const [path, kind] of cases) {
+      // 注意：不带任何凭据——界面开关在**鉴权之前**判定，未认证也必须拿到 404（而不是 401）
+      const res = await worker.fetch(new Request(`https://sync.example.com${path}`), env, CTX);
+      expect(res.status, path).toBe(404);
+      expect(await res.text(), path).toBe(kind === 'api' ? '{"error":"not_found"}' : 'Not Found');
+    }
+    expect(seen, '关闭态不该去读静态资源').toEqual([]);
+  });
+
+  it('关闭态：根路径对浏览器 (Accept: text/html) 不再跳转，协议面照旧走鉴权', async () => {
+    const { env } = makeEnv('false', 200);
+    const root = await worker.fetch(
+      new Request('https://sync.example.com/', { headers: { accept: 'text/html' } }),
+      env,
+      CTX,
+    );
+    expect(root.status).toBe(200);
+    expect(await root.text()).toBe('Server is running.');
+    // 协议面未被界面开关波及：无凭据 → 仍然是 401（而不是 404/500）
+    const version = await worker.fetch(new Request('https://sync.example.com/api/version'), env, CTX);
+    expect(version.status).toBe(401);
+    // 鉴权失败并**不**依赖静态资源，也不该碰它
+    expect(await version.text()).toBe('Unauthorized');
+  });
+
+  it('判定口径：只有显式 false 才算关（未设置 / true / 其它值都是开）', () => {
+    expect(isUiEnabled({ UI_ENABLED: undefined } as unknown as Bindings)).toBe(true);
+    expect(isUiEnabled({} as unknown as Bindings)).toBe(true);
+    expect(isUiEnabled({ UI_ENABLED: 'true' } as unknown as Bindings)).toBe(true);
+    expect(isUiEnabled({ UI_ENABLED: 'TRUE' } as unknown as Bindings)).toBe(true);
+    expect(isUiEnabled({ UI_ENABLED: '' } as unknown as Bindings)).toBe(true); // 变量没配 ⇒ 退回线上默认（开）
+    expect(isUiEnabled({ UI_ENABLED: 'false' } as unknown as Bindings)).toBe(false);
+    expect(isUiEnabled({ UI_ENABLED: ' FALSE ' } as unknown as Bindings)).toBe(false);
+    expect(isUiEnabled({ UI_ENABLED: '0' } as unknown as Bindings)).toBe(true); // 不认 0/no/off，避免误关
+  });
+
+  it('开启态：/ui/* 先转静态资源；资源未命中(404)时回落给 Hono 的 404 页', async () => {
+    // 命中资源 → 原样返回（含 /ui 的 307 跳转，由静态资源自己产生）
+    const hit = await at('/ui/js/main.js');
+    expect(hit.status).toBe(200);
+    expect(await hit.text()).toBe('asset-body');
+
+    // 未命中资源 → 回落 Hono，拿到的是那张 404 页（与"静态资源直接托管"时平台自己回落的行为一致）
+    const { env, seen } = makeEnv('true', 404);
+    const missing = await worker.fetch(new Request('https://sync.example.com/ui/__missing__'), env, CTX);
+    expect(seen, '未命中也先问过静态资源').toEqual(['/ui/__missing__']);
+    expect(missing.status).toBe(404);
+    expect(await missing.text(), '应回落到 Hono 的 404 页而不是一张空 404').toContain('页面不存在');
+
+    // /ui/api/* 不走静态资源（它一直是 Worker 路由）
+    const api = await worker.fetch(new Request('https://sync.example.com/ui/api/__nope__'), env, CTX);
+    expect(api.status).toBe(401); // 未带凭据 ⇒ 先被守卫拦下
+    expect(seen, '/ui/api/* 不该去问静态资源').toEqual(['/ui/__missing__']);
   });
 });

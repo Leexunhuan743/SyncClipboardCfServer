@@ -202,6 +202,79 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      - name: Resolve deploy switches
+        id: switches
+        # 把「仓库变量（Settings → Secrets and variables → Actions → Variables）」解析成**有效的部署开关**，
+        # 再传给后面的 Deploy 步骤。三个要点：
+        #   ① **默认值兜底**：变量没配时用 wrangler.toml 里的默认语义（UI_ENABLED=true 等）——
+        #      绝不能把空串绑给 Worker，那会覆盖掉配置里的默认值（wrangler-action 的 vars 输入按名取值）。
+        #   ② **取值校验**：布尔只接受 true/false、整数只接受非负且不超量级，写错了当场红；
+        #      否则会"静默按默认值跑"，与配置者预期相反。
+        #   ③ 变量值经 env 传入、结果经 step outputs 传出，都不拼进脚本文本，避免被当成代码执行。
+        # 同时写 GITHUB_ENV（供 shell 直接用同名变量）与 GITHUB_OUTPUT（供后续步骤的表达式引用）。
+        env:
+          IN_UI_ENABLED: ${{ vars.UI_ENABLED }}
+          IN_ENFORCE_STRONG_CREDENTIALS: ${{ vars.ENFORCE_STRONG_CREDENTIALS }}
+          IN_MAX_SAVED_HISTORY_COUNT: ${{ vars.MAX_SAVED_HISTORY_COUNT }}
+          IN_HISTORY_RETENTION_MINUTES: ${{ vars.HISTORY_RETENTION_MINUTES }}
+          IN_MAX_REQUEST_BODY_BYTES: ${{ vars.MAX_REQUEST_BODY_BYTES }}
+          IN_AUTH_RATE_LIMIT_WINDOW_MS: ${{ vars.AUTH_RATE_LIMIT_WINDOW_MS }}
+          IN_AUTH_RATE_LIMIT_MAX_FAILURES: ${{ vars.AUTH_RATE_LIMIT_MAX_FAILURES }}
+          IN_AUTH_RATE_LIMIT_BLOCK_MS: ${{ vars.AUTH_RATE_LIMIT_BLOCK_MS }}
+          IN_AUTH_RATE_LIMIT_BURST_WARN: ${{ vars.AUTH_RATE_LIMIT_BURST_WARN }}
+        run: |
+          set -euo pipefail
+
+          emit() { # 名称 值
+            echo "$1=$2" >> "$GITHUB_ENV"
+            echo "$1=$2" >> "$GITHUB_OUTPUT"
+          }
+          note() { # 名称 原始值
+            if [ -z "${2:-}" ]; then echo "（未配置，用默认值）"; else echo "（来自仓库变量）"; fi
+          }
+
+          resolve_bool() { # 名称 原始值 默认值
+            local name="$1" raw="${2:-}" default="$3"
+            if [ -z "$raw" ]; then raw="$default"; fi
+            case "$raw" in
+              true|false) ;;
+              *) echo "::error::仓库变量 $name 只能是 true 或 false（当前 '$raw'）"; exit 1 ;;
+            esac
+            emit "$name" "$raw"
+            echo "开关 $name = $raw $(note "$name" "${2:-}")"
+          }
+
+          resolve_int() { # 名称 原始值 默认值 下限 上限
+            local name="$1" raw="${2:-}" default="$3" min="$4" max="$5"
+            if [ -z "$raw" ]; then raw="$default"; fi
+            case "$raw" in
+              ''|*[!0-9]*) echo "::error::仓库变量 $name 必须是非负整数（当前 '$raw'）"; exit 1 ;;
+            esac
+            if [ "$raw" -lt "$min" ] || [ "$raw" -gt "$max" ]; then
+              echo "::error::仓库变量 $name = $raw 超出允许范围 $min..$max"
+              exit 1
+            fi
+            emit "$name" "$raw"
+            echo "开关 $name = $raw $(note "$name" "${2:-}")"
+          }
+
+          # 界面开关默认**开**（与 wrangler.toml 的默认值一致）
+          resolve_bool UI_ENABLED "${IN_UI_ENABLED}" true
+          # 弱凭据硬失败默认**关**：线上当前用的就是文档化默认口令，置 true 会 fail-closed 直接切断同步
+          resolve_bool ENFORCE_STRONG_CREDENTIALS "${IN_ENFORCE_STRONG_CREDENTIALS}" false
+          # 历史保留策略：与 wrangler.toml 的默认一致（1000 条 / 7 天）
+          resolve_int MAX_SAVED_HISTORY_COUNT "${IN_MAX_SAVED_HISTORY_COUNT}" 1000 1 1000000
+          resolve_int HISTORY_RETENTION_MINUTES "${IN_HISTORY_RETENTION_MINUTES}" 10080 1 5256000
+          # 请求体上限：默认 48MiB，允许 256KiB..64MiB（默认值贴着"实际会发生的大小"取，才留得住并发余量：
+          # isolate 128MiB 被并发共享，默认 64 时两个大上传重叠就顶格；上限 64 离平台 100MiB 留 36MiB）
+          resolve_int MAX_REQUEST_BODY_BYTES "${IN_MAX_REQUEST_BODY_BYTES}" 50331648 262144 67108864
+          # 限速四参数：默认 15min / 10 次 / 15min / 50。**不建议改**（README 已写明），
+          # 这里的范围校验只为拦住手滑写错的量级；运行期对越界值另有"回落默认"的兜底。
+          resolve_int AUTH_RATE_LIMIT_WINDOW_MS "${IN_AUTH_RATE_LIMIT_WINDOW_MS}" 900000 60000 86400000
+          resolve_int AUTH_RATE_LIMIT_MAX_FAILURES "${IN_AUTH_RATE_LIMIT_MAX_FAILURES}" 10 3 100
+          resolve_int AUTH_RATE_LIMIT_BLOCK_MS "${IN_AUTH_RATE_LIMIT_BLOCK_MS}" 900000 60000 86400000
+          resolve_int AUTH_RATE_LIMIT_BURST_WARN "${IN_AUTH_RATE_LIMIT_BURST_WARN}" 50 10 10000
+
       - name: Deploy Worker
         id: deploy
         # 版本选择（2026-09-15）：
@@ -211,9 +284,33 @@ jobs:
         #      必须显式钉住 3.114.17 以免分叉；工具链升级后这个钉子已无必要，反而会锁住升级）。
         #      将来若再出现 devDependency 与 action 默认不一致，请显式钉回 devDependency 的版本。
         uses: cloudflare/wrangler-action@v4
+        env:
+          # 上一步解析出的**有效值**（默认值已兜底、非法值已拦下）。action 的 `vars` 输入按名取值，
+          # 故这里必须与下面的名单逐字一致。
+          UI_ENABLED: ${{ steps.switches.outputs.UI_ENABLED }}
+          ENFORCE_STRONG_CREDENTIALS: ${{ steps.switches.outputs.ENFORCE_STRONG_CREDENTIALS }}
+          MAX_SAVED_HISTORY_COUNT: ${{ steps.switches.outputs.MAX_SAVED_HISTORY_COUNT }}
+          HISTORY_RETENTION_MINUTES: ${{ steps.switches.outputs.HISTORY_RETENTION_MINUTES }}
+          MAX_REQUEST_BODY_BYTES: ${{ steps.switches.outputs.MAX_REQUEST_BODY_BYTES }}
+          AUTH_RATE_LIMIT_WINDOW_MS: ${{ steps.switches.outputs.AUTH_RATE_LIMIT_WINDOW_MS }}
+          AUTH_RATE_LIMIT_MAX_FAILURES: ${{ steps.switches.outputs.AUTH_RATE_LIMIT_MAX_FAILURES }}
+          AUTH_RATE_LIMIT_BLOCK_MS: ${{ steps.switches.outputs.AUTH_RATE_LIMIT_BLOCK_MS }}
+          AUTH_RATE_LIMIT_BURST_WARN: ${{ steps.switches.outputs.AUTH_RATE_LIMIT_BURST_WARN }}
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # 把开关绑成 Worker 变量（`vars` 输入 = 按**名字**取同名环境变量的值）。
+          # 名单**只列在这里**：新增可调项时 = Resolve 步骤给默认值 + 这里加一行 + README 开关表加一行。
+          vars: |
+            UI_ENABLED
+            ENFORCE_STRONG_CREDENTIALS
+            MAX_SAVED_HISTORY_COUNT
+            HISTORY_RETENTION_MINUTES
+            MAX_REQUEST_BODY_BYTES
+            AUTH_RATE_LIMIT_WINDOW_MS
+            AUTH_RATE_LIMIT_MAX_FAILURES
+            AUTH_RATE_LIMIT_BLOCK_MS
+            AUTH_RATE_LIMIT_BURST_WARN
 
       - name: Sync Basic Auth credentials
         # 可选步骤：在仓库变量 SYNC_AUTH_CREDENTIALS=true 且已配置 USERNAME/PASSWORD secrets 时执行。
@@ -252,6 +349,8 @@ jobs:
         # ② 已认证 /api/version → 200 且 body 等于 wrangler.toml 的 VERSION：凭据可用 **且**这次部署真生效
         # ③ 已认证 /api/history/statistics → 200 JSON：D1 绑定与查询路径可用
         # ④ 已认证 /SyncClipboard.json → 200 JSON：Meta /「当前 profile」读路径可用
+        # ⑤ /ui/ 按 UI_ENABLED 断言：true → 200 HTML + 一个子资源 200（守住 run_worker_first +
+        #    ASSETS 转发这条链路，它是 2026-09-15 新增的，坏了界面就整片 404）；false → 404
         # 未配置 USERNAME/PASSWORD secrets 时 ②③④ 降级为 ::notice:: 跳过（本仓库按 README「方式 A」
         # 把凭据只放在 Cloudflare —— 那是预期状态，不该让部署变红）。
         env:
@@ -259,6 +358,8 @@ jobs:
           DEPLOYED_URL: ${{ steps.deploy.outputs.deployment-url }}
           SYNC_USER: ${{ secrets.USERNAME }}
           SYNC_PASS: ${{ secrets.PASSWORD }}
+          # 界面开关的**实际生效值**（由 Resolve 步骤解析）——只用于决定断言该期望 200 还是 404
+          UI_ENABLED: ${{ steps.switches.outputs.UI_ENABLED }}
         run: |
           set -uo pipefail
           base="${DEPLOY_URL:-${DEPLOYED_URL:-}}"
@@ -311,6 +412,34 @@ jobs:
             fi
           else
             echo "::notice::未配置 USERNAME/PASSWORD secrets，跳过三条已认证断言（版本比对 / statistics / SyncClipboard.json）。按 README「方式 A」凭据只存在于 Cloudflare，这是预期状态；要启用它们，把两个值配成仓库 secrets 即可。"
+          fi
+
+          # ⑤ 界面可达性：按 UI_ENABLED 的实际生效值断言（无副作用，只是 GET）
+          if [ "${UI_ENABLED:-true}" = "false" ]; then
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$base/ui/" || echo 000)
+            if [ "$code" = "404" ]; then
+              echo "✓ UI_ENABLED=false：/ui/ → 404（界面已关闭）"
+            else
+              echo "::error::UI_ENABLED=false 时 /ui/ 期望 404，实际 $code"
+              fail=1
+            fi
+          else
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$base/ui/" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "✓ /ui/ → 200（界面可达）"
+            else
+              echo "::error::/ui/ → $code，期望 200：界面不可达。"
+              echo "　常见原因：wrangler.toml 的 [assets] run_worker_first / binding = \"ASSETS\" 被改动，"
+              echo "　或入口按 UI_ENABLED 做转发的那段逻辑坏了（见 src/index.ts 与 test/ui-guard.test.ts）。"
+              fail=1
+            fi
+            asset=$(curl -s -o /dev/null -w '%{http_code}' "$base/ui/js/main.js" || echo 000)
+            if [ "$asset" = "200" ]; then
+              echo "✓ /ui/js/main.js → 200（静态资源经 ASSETS 转发仍可达）"
+            else
+              echo "::error::/ui/js/main.js → $asset，期望 200（静态资源转发链路断了）"
+              fail=1
+            fi
           fi
 
           if [ "$fail" != "0" ]; then exit 1; fi

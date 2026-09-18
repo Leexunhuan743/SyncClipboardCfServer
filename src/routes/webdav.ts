@@ -3,13 +3,15 @@ import { Hono } from 'hono';
 import { Bindings } from '../env';
 import { HistoryDb, basename, BadRequestError as DbBadRequestError } from '../db';
 import { R2Storage } from '../storage';
-import { putSyncProfile, BadRequestError, NotFoundError } from '../profile';
+import { putSyncProfile, BadRequestError, NotFoundError, PayloadTooLargeError } from '../profile';
 import { parseProfileDto, profileDtoToJson, classifyStoredProfile } from '../serialization';
 import type { StoredProfileHealth } from '../serialization';
 import { textProfileHash } from '../hash';
 import { ProfileType, ProfileDto, isValidProfileHash } from '../types';
 import { broadcast } from '../hub';
 import { multistatusXml, xmlResponse } from '../webdavXml';
+import { isUiEnabled } from '../uiEnabled';
+import { maxRequestBodyBytes } from '../requestLimits';
 import { contentTypeOf, fileHeaders } from '../contentTypes';
 
 function invalidFileName(name: string): boolean {
@@ -27,9 +29,10 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // GET / —— 浏览器访问站点根时引导到 Web UI；其余调用方（含官方客户端的探活）保持原响应。
   // 官方客户端从不 GET 根路径：Test() 与 GetFolderSubList() 都是 PROPFIND（WebDavBase.cs:271/321），
   // 这里的 Accept 判断只是让任何按文本协议探活的脚本行为完全不变。
+  // 界面被关闭时（GitHub 变量 UI_ENABLED=false）不再把人引到不存在的 /ui/，直接返回探活响应。
   app.get('/', (c) => {
     const accept = c.req.header('accept') ?? '';
-    if (accept.includes('text/html')) return c.redirect('/ui/', 302);
+    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui/', 302);
     return c.text('Server is running.');
   });
 
@@ -113,12 +116,19 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
       return c.text('Hash contains invalid path characters', 400);
     }
     try {
-      await putSyncProfile(db, storage, dto, {
-        notifyProfile: (p) => broadcast(c.env, 'RemoteProfileChanged', p),
-        notifyHistory: (h) => broadcast(c.env, 'RemoteHistoryChanged', h),
-      });
+      await putSyncProfile(
+        db,
+        storage,
+        dto,
+        {
+          notifyProfile: (p) => broadcast(c.env, 'RemoteProfileChanged', p),
+          notifyHistory: (h) => broadcast(c.env, 'RemoteHistoryChanged', h),
+        },
+        maxRequestBodyBytes(c.env),
+      );
       return c.body(null, 200);
     } catch (err) {
+      if (err instanceof PayloadTooLargeError) return c.text('Payload Too Large', 413);
       if (err instanceof BadRequestError) return c.text(err.message, 400);
       if (err instanceof NotFoundError) return c.text(err.message, 404);
       if (err instanceof DbBadRequestError) return c.text(err.message, 400);
