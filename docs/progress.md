@@ -5295,6 +5295,44 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
   免得下次只改一边。`components.css` 里描述该面板的注释仍写「致谢」面板（描述的是这张卡片的用途，
   仍然准确，未改）。
 
+## 83. 第四次提交整理：58 → 15（2026-09-18，用户"尽量压缩一下 commit"）
+
+用户原话："你看一下全部的云端 commit 尽量的压缩一下commit"。
+
+**做法（严格照 `docs/design.md` 的 D11 执行流程）**：
+
+1. 留底备份分支 `backup/pre-squash-2026-09-18-4`（指向整理前的 `8156d45`，**只留本机**）。
+2. 从**根提交** `fbd14a9` 开临时分支，按主题**逐组回放**：`git read-tree -u --reset <该组旧 tip>`
+   后**直接** `git commit -F <msg>`（**没有** `git add -A`，避免把未跟踪文件卷进历史）。
+3. **逐组断言**：每个新提交的 `^{tree}` 必须与它那一组的旧 tip **逐字节相同**（比只验末态更强 ——
+   中间的杂物不会被下一组的 reset 悄悄抹掉）。14 组**全部 `treeSame=True`**。
+4. **末态断言**：`git diff --name-only <旧 HEAD> HEAD` 为空，且 `HEAD^{tree}` == `8156d45^{tree}`。
+5. 跑全量套件且用**真门禁**（直接判退出码，不经管道）。
+6. `git push --force-with-lease origin squash-tmp:master`，推送后删掉临时分支（备份分支保留）。
+
+**压缩结果**：根提交原样保留，其余 57 条按主题压成 **14 条**（合计 15 条）。
+
+| 新提交 | 合并了原来哪些 |
+|---|---|
+| `b003c21` feat(protocol): SignalR 三传输与逐条对齐上游（第九轮、F30/F31） | 4 条 |
+| `2fd53bd` fix(protocol)+ci: negotiate F32、孤儿清理 F33、质量门两 job | 4 条 |
+| `380b5da` feat(ui)+fix(security): Web 历史界面、文档守卫、安全审计全部修复 | 6 条 |
+| `b728de7` feat(ui): A 批缺陷修复、前端系统性完善、后端能力清单、清空语义 | 3 条 |
+| `7417462` perf+refactor: 类型筛选与列表提速、按接缝拆分、媒体类型与索引 | 4 条 |
+| `d20c339` ci+chore: Node 24、清理吞吐 500、wrangler 4、Workers Logs | 4 条 |
+| `d7ee225` fix(protocol): /api/version 3.2.0、negotiate 版本解析、路径大小写归一 | 3 条 |
+| `8a729f6` feat(ui)+limits+docs: UI_ENABLED、请求体上限定稿、文档视角重整 | 5 条 |
+| `0c0a49d` feat(ui): V2 界面重做（1.25.2）与 V1 重新纳入维护 | 3 条 |
+| `d232ecb` feat(ui-old): V1 生产级完善（探针/评审/六项能力/断点重排） | 4 条 |
+| `541f6c1` fix(ui-old): 交互收口（顶栏列表四处、行内操作、清除筛选） | 3 条 |
+| `a4b8967` feat(ui): 定位翻转（ADR D17）；页脚入口与致谢卡片；D11/§77/§78/D18 | 8 条 |
+| `9698bec` refactor+fix: 解除跨目录依赖、收敛 src 重复实现、V1 文案本地化、V2 清死代码 | 4 条 |
+| `74269cc` fix(ui-old): 页脚致谢卡片标题改为「致谢如下项目」 | 1 条（原样） |
+
+**为什么每组都要断言 tree 相同**（这次真用上了）：回放期间工作区会被反复重置到历史各时点的状态，
+任何一次"顺手 `git add`"或"少回放一组"都会让**最终内容**与整理前分叉，而只验末态是**看不出来**的
+（中间多出来的东西会被下一组的 `read-tree --reset` 抹掉）。
+
 
 
 
