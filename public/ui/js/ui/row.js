@@ -7,7 +7,7 @@
 // 正文因此拿回宽度。代价是行高从 56 涨到 64 —— 这个交换在截图里是明显的净收益。
 import { el, svg } from '../dom.js';
 import { iconPaths, iconForKind } from '../icons.js';
-import { typeLabel, formatSize, formatRelative, formatAbsolute, previewText, previewIsEmpty } from '../format.js';
+import { typeLabel, formatSize, formatRelative, formatAbsolute, previewText, previewIsEmpty, truncateText } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 // 数据文件地址来自 `../paths.js` 的纯函数（**不是**在这里再拼一遍模板串，也不是去 import `api.js`）：
 // 这条路径 `api.js` 与这里都要用，两处各写一份就会在改接口前缀时漏掉一处 —— 而缩略图 404
@@ -66,15 +66,18 @@ export function renderRow(spec) {
     onchange: (event) => spec.onSelect(item, event.target.checked, event),
   });
 
-  const checkCell = el('td', { class: 'board__cell board__cell--check' }, [check]);
-  const kindCell = el('td', { class: 'board__cell' });
-  const contentCell = el('td', { class: 'board__cell board__cell--content' });
-  const opsCell = el('td', { class: 'board__cell board__cell--ops' });
+  // `role` = 显式写出隐式语义：≤720px 时这些单元格的 `display` 变成 block/grid，
+  // 浏览器就不再从元素类型推导表格语义了（见 `board.js` 建表处的说明）。
+  const checkCell = el('td', { class: 'board__cell board__cell--check', role: 'cell' }, [check]);
+  const kindCell = el('td', { class: 'board__cell', role: 'cell' });
+  const contentCell = el('td', { class: 'board__cell board__cell--content', role: 'cell' });
+  const opsCell = el('td', { class: 'board__cell board__cell--ops', role: 'cell' });
 
   const row = el(
     'tr',
     {
       class: 'item',
+      role: 'row',
       dataset: { key: item.key, type: item.type },
       // 双击整行 = 预览。这是列表类界面的通用手势，且**不冲突**任何单击行为
       // （单击行不做任何事，选择靠复选框）。
@@ -127,11 +130,13 @@ function renderEntry(item, onOpen) {
   const textNode = el('span', {
     class: 'entry__text',
     text,
-    // `data-empty` 是 CSS 的空占位判据、`data-lines` 是行数档位。
-    // 用字面属性名而不是 `dataset` 对象：`dataset` 里值为 null 会被 `el()` 跳过，
-    // 而 `data-empty=""` 这种"存在即语义"的属性需要一个真的空串。
+    // `data-empty` 是 CSS 的空占位判据。用字面属性名而不是 `dataset` 对象：`dataset` 里值为 null
+    // 会被 `el()` 跳过，而 `data-empty=""` 这种"存在即语义"的属性需要一个真的空串。
+    //
+    // 这里原来还有一个写死 `'2'` 的 `data-lines`（"行数档位"），而 CSS 里只有
+    // `[data-lines="1"]` 一条规则、没有任何生产者 ⇒ 那档永远不会出现（`docs/AUDIT-missing-states.md` §3.2）。
+    // 现已删除：紧凑模式的单行截断改由 `:root[data-density="compact"]` 直接驱动 CSS（见 `board-v2.css`）。
     'data-empty': previewIsEmpty(item) ? '' : null,
-    'data-lines': '2',
   });
 
   const meta = renderMeta(item);
@@ -139,7 +144,7 @@ function renderEntry(item, onOpen) {
   return el('button', {
     class: 'entry',
     type: 'button',
-    'aria-label': `预览${typeLabel(item.type)}：${text.slice(0, 80)}`,
+    'aria-label': `预览${typeLabel(item.type)}：${truncateText(text, 80)}`,
     dataset: { action: 'preview' },
     onclick: () => onOpen?.(item),
   }, [
@@ -181,7 +186,13 @@ function renderMeta(item) {
   parts.push(el('span', { text: '·' }));
   parts.push(
     el('span', {
-      text: formatRelative(item.lastAccessed ?? item.lastModified ?? item.createTime),
+      // 与**分组标题同一个字段**（`createTime`，2026-09-18 修）。
+      // 此前这里是 `lastAccessed ?? lastModified ?? createTime`，而列表的时间分组与默认排序
+      // 都按 `createTime`（`board.js` 的 `dayGroup`）⇒ 一条刚被同步过的旧记录会同时出现
+      // 「3 天前」的小标题与「刚刚」的行内时间，两句都在说"这条是什么时候的"，却是两个口径。
+      // V1 的主时间列（`.col-created`）用的也是 `createTime`，修改/访问各有独立列。
+      // 三个值仍然全在 `title` 里。见 `docs/AUDIT-v1-v2-divergence.md` §5.4。
+      text: formatRelative(item.createTime),
       title: `创建 ${formatAbsolute(item.createTime)} · 修改 ${formatAbsolute(
         item.lastModified,
       )} · 访问 ${formatAbsolute(item.lastAccessed)}`,

@@ -1548,7 +1548,8 @@ th[aria-sort="descending"] .th-sort__arrow {
   color: var(--danger);
 }
 
-/* ============ 骨架屏（首屏未就绪时，避免布局跳动）============ */
+/* ============ 骨架屏（数据未落地时的占位，保留布局不跳）============
+ * 由 `js/components/list.js` 画（`renderSkeletonRows`）：行数按当前页大小给，上限 50。 */
 .skeleton {
   padding: var(--sp-4);
   display: flex;
@@ -1556,8 +1557,24 @@ th[aria-sort="descending"] .th-sort__arrow {
   gap: var(--sp-3);
 }
 
+/* 显式写回 display:none —— 上面那条 `display: flex` 会盖掉 `[hidden]` 的 UA 样式
+ * （全局兜底在 base.css，但这里保留这一条：它是"这个组件有开合状态"的显式声明）。 */
+.skeleton[hidden] {
+  display: none;
+}
+
+/* 行高**必须**等于真实行高，否则骨架就成了 CLS 的来源而不是它的解法。
+ * 47px 不是估的：`.table td` 是 `padding: 8px` + `border-bottom: 1px` + 行内最高的元素
+ * （正文行的 30px 图标按钮）= 8+8+1+30（推导写在 `.table td` 那条规则的注释里）。
+ * ⇒ **改 `.table td` 的内边距、或改行内控件的高度，就要同步改这里**（见 AGENTS.md §1）。
+ *
+ * 窄屏（≤720px）是卡片模式，真实行高约 98px，与这里不一致——**刻意不改**：
+ * 那一档下面的是分页与页脚，而 50 行 × 47px 已经把它们推到任何手机视口的折线以下，
+ * 落地时它们本来就不在视口里，位移不计入 CLS。要写死一个卡片行高，得先量出来（本仓库
+ * 对"猜的数值"有一条明确的纪律），而不是照着这里 ×2。 */
 .skeleton__row {
-  height: 40px;
+  flex: none;
+  height: 47px;
   border-radius: var(--r-sm);
   background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2));
   background-size: 200% 100%;

@@ -27,9 +27,14 @@ export function createToasts(container) {
     // 而"重来"的成本正好是刚刚失败的那一步（再去找到那一行、再点一次）。
     // 带动作时把停留时间拉长到 10 秒：2.6 秒既读不完也来不及点。
     const timeout = action ? Math.max(duration, 10_000) : duration;
+    // **不给每条提示加 `role`**（2026-09-18 修）：宿主（`index.html` 的 `#toasts`）已经是
+    // `aria-live="polite"`，在里面再嵌一个实时区域会让**同一句话被播报两遍** ——
+    // 外层 `aria-atomic="false"`、内层 `role="status"` 隐含 `atomic=true`，两个区域各播一次；
+    // 错误那条还会被 `role="alert"` 当成打断来念第二遍。V2 的 `ui/toast.js` 逐字记着这件事
+    // 并已经删掉，V1 漏了（见 `docs/AUDIT-v1-v2-divergence.md` §1.6）。让它只由宿主宣布。
     const node = el(
       'div',
-      { class: `toast${error ? ' toast--error' : ''}`, role: error ? 'alert' : 'status' },
+      { class: `toast${error ? ' toast--error' : ''}` },
       [
         svg(iconPaths(error ? 'warning' : 'info'), { size: 14 }),
         el('span', { text: message }),

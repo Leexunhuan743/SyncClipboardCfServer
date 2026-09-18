@@ -130,6 +130,13 @@ export function createToolbar({
     spellcheck: 'false',
   });
   const emitSearch = debounce(() => onSearch(searchInput.value.trim()), 260);
+  // 「立刻结算」的那几条路径（Esc / 清空按钮 / 原生 search 事件）必须先 `cancel()`：
+  // 否则输入事件排期的那次去抖调用照样会在 260ms 后跑一遍，读一次已经清空的输入框，
+  // **再发一次同样的列表请求**（V2 的 `ui/omnibox.js` 五处调用都这么做）。
+  const searchNow = (value) => {
+    emitSearch.cancel();
+    onSearch(value);
+  };
   // 输入法组合（中文/日文）：compositionstart 到 compositionend 之间，Chrome 会在**每次按键**上
   // 派发 `input` —— 于是「zhongwen」这种拼音串会被逐段当成搜索词发出去（打 8 个字母 = 8 次请求 +
   // 8 次列表重排），用户在选词时看到的列表则是按拼音乱跳的。
@@ -152,7 +159,7 @@ export function createToolbar({
   searchInput.addEventListener('search', () => {
     // 原生「清除」按钮（部分浏览器提供）走的也是这条路
     syncClear();
-    onSearch(searchInput.value.trim());
+    searchNow(searchInput.value.trim());
   });
   searchInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
@@ -160,7 +167,7 @@ export function createToolbar({
     event.stopPropagation();
     searchInput.value = '';
     syncClear();
-    onSearch('');
+    searchNow('');
   });
 
   const clearButton = el(
@@ -174,7 +181,7 @@ export function createToolbar({
       onclick: () => {
         searchInput.value = '';
         syncClear();
-        onSearch('');
+        searchNow('');
         searchInput.focus();
       },
     },

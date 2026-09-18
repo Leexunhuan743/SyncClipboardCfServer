@@ -69,15 +69,23 @@ export function createPager({ onPage }) {
   return {
     el: root,
 
-    update({ page, pageSize, total }) {
+    update({ page, pageSize, total, loading = false }) {
       const pages = Math.max(1, Math.ceil((total ?? 0) / pageSize));
       currentPage = Math.min(Math.max(1, page), pages);
 
       const from = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
       const to = Math.min(currentPage * pageSize, total ?? 0);
-      // 只有一页时不显示范围（"1–23 / 共 23 条 · 第 1/1 页"是废话，而它占了整条中间的宽度）
-      status.textContent =
-        pages <= 1 ? `共 ${total ?? 0} 条` : `${from}–${to} · 共 ${total ?? 0} 条 · 第 ${currentPage}/${pages} 页`;
+      // 「还没到」不等于「真的没有」（2026-09-18 修）：`total` 的初值是 `0`，而 `initialize()`
+      // 的第一句就是 `render()` ⇒ 首屏加载期间这里写的是「共 0 条」，与列表正在画骨架、
+      // 头栏写着「… 正在加载」自相矛盾；库里有记录时它更是一句假话。
+      // 分页没有骨架可画（它这一格就一行文字），只把那条断言换成一句不表态的等待文案。
+      // 见 `docs/AUDIT-missing-states.md` §1.4。
+      const pending = loading && (total ?? 0) === 0;
+      status.textContent = pending
+        ? '正在加载…'
+        : pages <= 1
+          ? `共 ${total ?? 0} 条`
+          : `${from}–${to} · 共 ${total ?? 0} 条 · 第 ${currentPage}/${pages} 页`;
 
       prev.disabled = currentPage <= 1;
       next.disabled = currentPage >= pages;

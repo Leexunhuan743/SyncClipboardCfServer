@@ -21,7 +21,7 @@ export class ApiError extends Error {
 
 async function request(
   path,
-  { method = 'GET', body, signal, textResponse = false, timeoutMs = 20_000 } = {},
+  { method = 'GET', body, signal, textResponse = false, blobResponse = false, timeoutMs = 20_000 } = {},
 ) {
   const controller = new AbortController();
   const cancel = () => controller.abort(signal?.reason);
@@ -36,6 +36,10 @@ async function request(
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
+
+    // 二进制响应（记录的数据文件）：成功时**不读文本** —— 把 8 MiB 的文件读成字符串再转回 Blob
+    // 是纯浪费。失败时照旧走下面那条统一路径，好让 404/401/429 的状态码与文案原样保留。
+    if (blobResponse && response.ok) return await response.blob();
 
     const text = textResponse && response.ok ? await readTextBody(response) : await response.text();
     if (textResponse && response.ok) return text;
@@ -155,6 +159,18 @@ export const api = {
 
   textData: (item, signal) => request(api.dataUrl(item), { signal, textResponse: true }),
 
+  /**
+   * 记录的数据文件，**二进制**（复制图片用）。
+   *
+   * 必须走这一层而不是裸 `fetch`：`request()` 带超时、可被 signal 取消，并把 401 交给
+   * `handleAuthError`。此前 `boot.js` 的「复制图片」用裸 `fetch`，于是网络半开（响应头/体永不到）时
+   * 那条 Promise **永不 settle** ⇒ 上层按钮的 `setPending` 一直是 true（`disabled`），
+   * 按钮永久转圈且永久不可点，会话过期也不会回登录页。
+   * V1 的 `api.js` 早有这一档（`fetchData`），注释逐字描述过同一个症状；
+   * 见 `docs/AUDIT-v1-v2-divergence.md` §1.4。
+   */
+  blobData: (item, signal) => request(api.dataUrl(item), { signal, blobResponse: true }),
+
   async patch(item, fields) {
     const raw = await request(
       `/ui/api/history/${encodeURIComponent(item.type)}/${encodeURIComponent(item.hash)}`,
@@ -208,9 +224,14 @@ export const api = {
    * 为什么要有它：V1 的首屏打三次请求（`history` + `statistics` + `info`），而 `statistics`
    * 内部还要跑三条查询（`docs/backend-gaps.md` §3.1）。V2 的概览带需要的是它们**合并后的
    * 一个快照**，且概览带与列表必须在同一次往返里对齐（否则数字与列表可能来自两个瞬间）。
+   *
+   * **不发 `tz`**（2026-09-18 修）：这个端点在服务端只读 `deleted`
+   * （`src/ui/routes.ts` 的 `readDeletedFlagOr400`），`tz` 从头到尾没人读 ——
+   * 一直发它只会制造"好像按本地时区算过"的错觉。（`/ui/api/activity` 的 `tz` 是真的被读的。）
+   * 见 `docs/AUDIT-v1-v2-divergence.md` §7.2。
    */
-  overview: (signal, { tz = tzOffset(), deleted = false } = {}) =>
-    request(`/ui/api/overview?${buildQuery({ tz, deleted })}`, { signal }),
+  overview: (signal, { deleted = false } = {}) =>
+    request(`/ui/api/overview?${buildQuery({ deleted })}`, { signal }),
 
   /**
    * 活动趋势：每天有多少条记录（按**客户端时区**切分「一天」）。

@@ -5,11 +5,11 @@
 //
 // 约定：**actions 返回结果，组件呈现结果**。行内按钮的「进行中 → 成功」状态由组件自己管，
 // 靠的是 action 的返回值（`true` 才算做成）——「发过请求」不等于「做成了」。
-import { api, handleAuthError, redirectToLogin, PAGE_BASE } from './api.js';
+import { api, ApiError, handleAuthError, redirectToLogin, PAGE_BASE } from './api.js';
 import { createStore } from './store.js';
 import { filtersFromUrl, filtersToApi, syncUrl, DEFAULT_FILTERS } from './filters.js';
 import { writeText, writeImage, itemIsImage } from './clipboard.js';
-import { typeLabel, downloadNameForText, safeFileName } from './format.js';
+import { typeLabel, downloadNameForText, safeFileName, charCount } from './format.js';
 import { debounce } from './dom.js';
 import { createLatestGate } from './latest.js';
 import { createPushChannel } from './signalr.js';
@@ -45,6 +45,10 @@ const store = createStore({
   filters: filtersFromUrl(),
   items: [],
   total: 0,
+  // 首屏数据还没落地。列表组件据此画骨架、而不是画空状态 —— 没有这一位时，
+  // 「还没到」会被读成「一条都没有」，于是页面一打开就断言「还没有任何记录」（2026-09-18 修）。
+  // 初始为 true：组件被建出来的那一刻，数据必然还没到。
+  loading: true,
   stats: null,
   info: null,
   username: null,
@@ -113,6 +117,20 @@ function setStale(stale) {
   if (!notice) return;
   notice.hidden = !stale;
   notice.textContent = stale ? '与服务器暂时失去联系，页面上的内容可能不是最新的；恢复后会自动刷新。' : '';
+}
+
+/**
+ * 这次失败是否意味着「**连不上**服务器」——横幅只在真的连不上时点亮。
+ *
+ * 判据（与 V2 `boot.js` 同构）：不是 `ApiError`（DNS / 断网 / CORS 这类 fetch 层的失败），
+ * 或者状态码 ≥ 500。**4xx 是服务端正常回答了**：搜索词超过 48 字节触发的 400、429 限速、
+ * 404 —— 它们都不会让「恢复后会自动刷新」成真，而横幅里那句"暂时失去联系"会让用户去
+ * **重启服务**（V2 的注释逐字记着这次实测）。V1 此前是任何失败都无地点亮，
+ * 于是搜索词过长时屏幕上同时出现「搜索词过长…」与「与服务器暂时失去联系」两种说法
+ * （`docs/AUDIT-v1-v2-divergence.md` §2.1）。
+ */
+function serverUnreachable(error) {
+  return !(error instanceof ApiError) || error.status >= 500;
 }
 
 // ===== 剪贴板 =====
@@ -278,7 +296,15 @@ function render() {
   stats.update(state.stats);
   toolbar.update({ filters: state.filters, byType: countsForView(state) });
   list.update(state);
-  pagination.update({ page: state.filters.page, pageSize: state.filters.pageSize, total: state.total });
+  pagination.update({
+    page: state.filters.page,
+    pageSize: state.filters.pageSize,
+    total: state.total,
+    // 分页也要能区分「还没到」与「真的没有」（见 components/pagination.js）——
+    // 首屏那一帧它此前写的是「没有可显示的记录」，与列表刚修掉的那句是同一个谎，
+    // 只是换了个控件（2026-09-18 补）。
+    loading: state.loading,
+  });
 }
 
 // ===== 数据 =====
@@ -294,7 +320,13 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
   const previousKeys = new Set(state.items.map((item) => item.key));
   const ticket = listGate.begin();
 
-  if (!silent) list.el.setAttribute('data-busy', 'true');
+  // 取数期间列表画什么，取决于"手上有没有旧内容"：
+  //   · 有 → 旧行原样留着 + 整块降对比（`data-busy`）。背景刷新（轮询/推送）也走这条；
+  //   · 没有 → 骨架（由 list 的 loading 档画）。这一档此前缺失，见 store 里 loading 的说明。
+  // `silent`（轮询 / 推送广播 / popstate）**不动** loading：那种刷新是"背景里补一下"，
+  // 把用户正在看的内容换成骨架是倒退；它只负责把新数据对账进去。
+  if (!silent) store.set({ loading: true });
+  if (!silent && state.items.length > 0) list.el.setAttribute('data-busy', 'true');
 
   try {
     const page = await api.list(filtersToApi(state.filters), ticket.signal);
@@ -322,7 +354,7 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 过渡本身就要 ~60ms 主线程（布局与样式各上百毫秒级——它要对 `.results` 整块做快照，
     // 成本随页大小上升），换来的只是一个数据表上的交叉淡入；而列表现在是一帧落地，
     // 本就没有「换面」需要掩饰。跨文档过渡（登录页 → 列表页）保留，那条由 CSS 声明、不走这里。
-    store.set({ items: page.items, total: page.total, flashKeys });
+    store.set({ items: page.items, total: page.total, flashKeys, loading: false });
     render();
 
     if (announce) toasts.info(`已刷新，共 ${page.total} 条记录`);
@@ -330,7 +362,10 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 被更新的请求 abort 掉不是失败：静默退出，由那次请求负责呈现
     if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
-    setStale(true);
+    // 失败也要把 loading 收掉：否则「加载失败 + 重试」之上还压着一层骨架，
+    // 那个可操作的错误态根本露不出来。
+    store.set({ loading: false });
+    if (serverUnreachable(error)) setStale(true);
     // 翻译成人话的那几条（400 搜索词过长 / 429 限速 / 其余原样）在**两版共用**的文案表里：
     // 此前 V1 与 V2 各写一份，症状是"同一件事两个界面说不同的话"。
     const message = describeListError(error, store.get().filters.search);
@@ -365,7 +400,7 @@ async function refreshStats() {
   } catch (error) {
     if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
-    setStale(true);
+    if (serverUnreachable(error)) setStale(true);
     return;
   }
   if (!statsGate.isCurrent(ticket)) return;
@@ -384,9 +419,15 @@ async function refreshStats() {
 // statistics + poll）变成两次（list + overview）；而「时钟差 / 最近一次同步 / 清理状态」
 // 这三样排障要看的东西也随它一起到手 —— 否则它们只在用户主动打开部署信息时才取。
 //
-// 失败**不阻断首屏**：列表那一份是单独取的，统计条与排障条留空即可（下一次轮询会把
-// 后两样补齐）；也不打开失联横幅 —— 那件事由列表与轮询自己报，不该由一张锦上添花的快照
-// 把整页标成"可能不是最新"。
+// 失败**不阻断首屏**：列表那一份是单独取的，统计条与排障条留空即可；也不打开失联横幅 ——
+// 那件事由列表与轮询自己报，不该由一张锦上添花的快照把整页标成"可能不是最新"。
+//
+// **但"留空"必须能自愈**（2026-09-18 修）：此前这里写着"下一次轮询会把后两样补齐"，
+// 而 `pollOnce()` 从不重取这份快照 —— 于是首屏那一次失败（一次网络抖动即可）会让统计条
+// **永久空着**，用户分不清"库里是 0"还是"坏了"，而注释还在替它担保。
+// 现在那句话成真了：`pollOnce` 在**轮询成功之后**若发现 `stats === null`（= 快照一次都没
+// 落地）就补取一次；成功后 `stats` 非空，这条分支自然关掉。见
+// `docs/AUDIT-missing-states.md` §2.1 / §4.1。
 //
 // 快照与 `refreshStats()` 写的是 store 里**同一个** `stats`，而它们是两条独立的取数路径
 // （首屏走快照、此后走 statistics）。故这里也有两条与 refreshStats 同源的纪律：
@@ -718,7 +759,7 @@ async function batchCopy() {
     return false;
   }
   toasts.info(
-    `已复制 ${texts.length} 条文本（${payload.length} 个字符` +
+    `已复制 ${texts.length} 条文本（${charCount(payload)} 个字符` +
       `${skipped > 0 ? `，跳过 ${skipped} 条非文本` : ''}）`,
   );
   return true;
@@ -835,7 +876,7 @@ async function copyItem(item, knownText) {
       text = full.text;
     }
     if (await writeText(text)) {
-      toasts.info(`已复制 ${text.length} 个字符`);
+      toasts.info(`已复制 ${charCount(text)} 个字符`);
       return true;
     }
     // 带"重试"：剪贴板写入失败多半是权限/焦点这类瞬时原因，让用户能在原地再来一次，
@@ -922,7 +963,7 @@ async function copyLatest(button) {
     }
     if (await writeText(text)) {
       flashSuccess(button, { label: '已复制' });
-      toasts.info(`已复制最近一条（${text.length} 个字符）`);
+      toasts.info(`已复制最近一条（${charCount(text)} 个字符）`);
       return true;
     }
     toasts.error(clipboardFailureHint(window.isSecureContext, '可以在列表里打开那一行手动复制。'), {
@@ -1000,7 +1041,7 @@ async function downloadTextItem(item) {
     }
     const name = downloadNameForText(item);
     saveBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), name);
-    toasts.info(`已下载 ${name}（${text.length} 个字符）`);
+    toasts.info(`已下载 ${name}（${charCount(text)} 个字符）`);
     return true;
   } catch (error) {
     if (handleAuthError(error)) return false;
@@ -1091,6 +1132,10 @@ async function pollOnce() {
     // 这两个数就是排障条上「最近同步 / 时钟差」的来源，故每次轮询顺手重画一次
     // （只改文本，不发请求；失联时它们保持不变，横幅负责说明为什么）。
     stats.setHealth(healthSnapshot());
+    // 首屏合成快照一次都没落地时补一次（`refreshOverview` 的注释里原本就承诺了这件事，
+    // 但此前没有任何代码实现它 ⇒ 统计条会永久空着）。**只在这次轮询成功之后**补，
+    // 所以服务端不可达时不会叠加请求；成功一次后 `stats` 非空，这条分支自然关掉。
+    if (store.get().stats === null) void refreshOverview();
     const signature = `${next.count}:${next.lastModified}`;
     const changed = marker !== null && signature !== marker;
     marker = signature;
@@ -1106,7 +1151,7 @@ async function pollOnce() {
   } catch (error) {
     if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
-    setStale(true);
+    if (serverUnreachable(error)) setStale(true);
   }
 }
 
@@ -1173,15 +1218,21 @@ function initNoticeBar() {
 }
 
 async function boot() {
-  // 提示条的接线在会话判定**之前**：未登录会被重定向，但那一下也该是可关闭的
-  initNoticeBar();
-
   // 同一文档里被重复求值（例如应用被以 /ui 与 /ui_old/ 两个 URL 同时加载时，
-  // 模块图会出现两份）会让第二次 boot 找不到已被替换掉的挂载点，得到半渲染的页面。
-  // 实测触发过，故此处在文档上留一个标记。
+  // 模块图会出现两份）会让第二次求值再做一遍**模块级的副作用**、并让第二次 boot 找不到
+  // 已被替换掉的挂载点，得到半渲染的页面。实测触发过，故在文档上留一个标记。
+  //
+  // ⚠️ 守卫必须是**这个函数的第一句**（2026-09-18 修）：此前它排在 `initNoticeBar()` 之后，
+  // 于是重复求值的那一份仍会多绑一次提示条的关闭按钮 —— 守卫管不到它本该管的东西。
+  // 模块级那几行（`createToasts` / `createConfirm` / …）在**模块求值时**就往 body 里塞
+  // 常驻 `<dialog>`，那一段这里管不到，见 `docs/AUDIT-v1-v2-divergence.md` §4.1
+  // （V2 的解法是把这些创建搬进守卫之后）。
   const root = document.documentElement;
   if (root.dataset.appBooted === '1') return;
   root.dataset.appBooted = '1';
+
+  // 提示条的接线在会话判定**之前**：未登录会被重定向，但那一下也该是可关闭的
+  initNoticeBar();
 
   const session = await api.session();
   if (!session.authenticated) {
@@ -1200,9 +1251,17 @@ async function boot() {
   document.getElementById('results-mount').replaceChildren(list.el);
   document.getElementById('pagination').replaceWith(pagination.el);
 
+  // 这一帧画的是**骨架**，不是空状态：store 的 `loading` 初始为 true，列表据此走加载档。
+  // 此前这里画的是一句确定的「还没有任何记录」——而数据请求还没发出去，
+  // 于是首屏的等待被读成"库里一条都没有"（2026-09-18 修）。
   render();
   // 首屏两次请求：列表 + 合成快照（见 refreshOverview 的说明）。
   // 快照落地后统计条、变更标记与排障面一起就位，故这里不再单独调 refreshStats()。
+  //
+  // 为什么**不**把 `refresh()` 提到 `await api.session()` 之前并发出去（那能省一个往返）：
+  // ① 未登录时两条路会各自跳一次登录页，多一个必然 401 的请求；
+  // ② V2 的 `boot.js` 也是这个次序（它同样写了"未登录直接跳登录页，不把骨架屏留给用户"），
+  //    两版的分歧要能解释得清——省下的那一次往返换不来这个代价。
   await Promise.all([refresh(), refreshOverview()]);
   // 趋势晚一拍：先让列表落地，再补这张锦上添花的图
   void refreshActivity();

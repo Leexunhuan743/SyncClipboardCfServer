@@ -456,12 +456,16 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
     // 自包含的代价是"两份必然漂移"，而这里漂移的后果是**删除语义被写错**
     // （"带数据文件的记录软删时立即清数据文件"这条最不能错）。守卫从 import 行起逐字比对，
     // 因此也覆盖了两版共有的私有函数 `describeTarget`。V2 真被删掉时，连这条守卫一起删。
-    const ANCHOR = "import { typeLabel } from './format.js';";
+    // 锚点 = **第一条 import 语句**，而不是写死的那一行（2026-09-18 修）：原来写死的
+    // `import { typeLabel } from './format.js';` 在本次给两版都加上 `truncateText` 之后，
+    // 两个文件里都不存在了。断言确实先炸了（不会静默通过），但报出来的原因是"守卫失效"、
+    // 不是真实的文案漂移 —— 换成结构性判据之后，以后再增删 import 就不会误报。
+    const ANCHOR_RE = /^import[ \t]/m;
     // 归一换行：本守卫管的是"文案是否一致"，不是"行尾是 CRLF 还是 LF"
     // （不同编辑器的保存行为会让后者无意义地红）。
     const body = (text: string, label: string): string => {
-      const at = text.indexOf(ANCHOR);
-      expect(at, `${label} 里找不到锚点 \`${ANCHOR}\`（守卫可能失效）`).toBeGreaterThan(-1);
+      const at = text.search(ANCHOR_RE);
+      expect(at, `${label} 里找不到 import 行（守卫可能失效）`).toBeGreaterThan(-1);
       return text.slice(at).replace(/\r\n/g, '\n');
     };
     const v1 = body(readFileSync(join(V1_DIR, 'js/messages.js'), 'utf8'), 'V1 的 messages.js');

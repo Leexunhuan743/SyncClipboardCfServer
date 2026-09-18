@@ -63,13 +63,25 @@ export const RANGE_PRESETS = [
 const TYPES = new Set(['All', 'Text', 'Image', 'File', 'Group']);
 const SORTS = new Set(SORT_FIELDS.map((f) => f.value));
 const RANGES = new Set(RANGE_PRESETS.map((r) => r.value));
-const DAY_MS = 86_400_000;
-
 function clampInt(raw, fallback, min, max) {
   if (raw === null || raw === undefined || raw === '') return fallback;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
+}
+
+/**
+ * 按**日历日**偏移，而不是 `± n × 86400000`（2026-09-18 修，对齐 V1 的 `addDays`）。
+ *
+ * 为什么：常数 24 小时在跨夏令时切换的时区里会落偏一小时 —— `startOfDay(now) - 6 * 86400000`
+ * 可能指向前一天的 23:00，于是「近 7 天」从半天中间开始、两端各差一小时。`setDate()` 是
+ * 日历运算，时区规则交给运行时。V1 在 `ui_old/js/filters.js` 里早就改成了这条，注释逐字写着
+ * "没有理由留一个**只在别人的时区里错**的算法" —— V2 漏了（`docs/AUDIT-v1-v2-divergence.md` §1.9）。
+ */
+function addDays(ms, days) {
+  const date = new Date(ms);
+  date.setDate(date.getDate() + days);
+  return date.getTime();
 }
 
 /** 预设范围 → `[after, before)` 的毫秒边界；`null` 表示该侧不设限。 */
@@ -78,9 +90,9 @@ export function rangeBounds(filters, now = Date.now()) {
     case 'today':
       return { after: startOfDay(now), before: null };
     case '7d':
-      return { after: startOfDay(now) - 6 * DAY_MS, before: null };
+      return { after: addDays(startOfDay(now), -6), before: null };
     case '30d':
-      return { after: startOfDay(now) - 29 * DAY_MS, before: null };
+      return { after: addDays(startOfDay(now), -29), before: null };
     case 'custom':
       return { after: filters.after ?? null, before: filters.before ?? null };
     default:
@@ -110,7 +122,8 @@ export function fromDateInput(value, edge) {
   // Date 构造函数对越界分量是**滚动**而不是报错（`2026-13-99` → 2027-04-09），
   // 故必须回读校验：解析出的年月日与输入一致才算合法日期。
   if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
-  return edge === 'end' ? date.getTime() + DAY_MS : date.getTime();
+  // `edge='end'` 交的是**次日 00:00**，同样走日历运算（跨夏令时的那一天不是 24 小时）
+  return edge === 'end' ? addDays(date.getTime(), 1) : date.getTime();
 }
 
 export function filtersFromUrl(search = location.search) {

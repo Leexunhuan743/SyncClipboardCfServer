@@ -2,6 +2,18 @@
 import { api, ApiError, rateLimitMessage, PAGE_BASE } from './api.js';
 import { resolveNext } from './next-target.js';
 
+// ===== 文档级幂等守卫（2026-09-18 补）=====
+// 应用被以两个 URL 同时加载时，模块图里会出现**两份**同一模块（`docs/ui.md` 记过这个场景，
+// 实测触发过），于是本模块被求值两次：`initNoticeBar()` 再绑一次关闭按钮、下面那个 `submit`
+// 监听器再绑一次 ⇒ **一次提交打两次 `POST /ui/api/login`**（第二次带着已被消费的凭据，
+// 用户看到的是"用户名或密码不正确"，而其实是重复提交）。列表页一直在守这件事
+// （`main.js` 的 `dataset.appBooted`），登录页此前完全没有等价守卫 ——
+// 见 `docs/AUDIT-v1-v2-divergence.md` §4.1。
+// 重复的那一份仍会求值（ES 模块顶层不能 `return`），但**不再产生任何副作用**。
+const APP_ROOT = document.documentElement;
+const DUPLICATE_EVAL = APP_ROOT.dataset.appBooted === '1';
+APP_ROOT.dataset.appBooted = '1';
+
 // 顶部提示条：与列表页（js/main.js）共用同一个 localStorage 键与同一套行为。
 // 键名两处必须逐字一致 —— 不一致的后果是"在登录页关掉了，进列表页又冒出来"。
 const NOTICE_KEY = 'sb-ui-notice-dismissed';
@@ -28,7 +40,7 @@ function initNoticeBar() {
   });
 }
 
-initNoticeBar();
+if (!DUPLICATE_EVAL) initNoticeBar();
 
 const form = document.getElementById('login-form');
 const errorBox = document.getElementById('login-error');
@@ -70,8 +82,14 @@ function setLoading(loading) {
   submit.disabled = loading;
 }
 
-form.addEventListener('submit', async (event) => {
+async function submitLogin(event) {
   event.preventDefault();
+  // 重入守卫（2026-09-18 补）：`setLoading(true)` 会把按钮 `disabled`，但那挡不住**已经派发
+  // 出去**的第二次 submit（双击、按住回车重复触发、或模块被求值两次而绑了两份监听器）。
+  // V2 的 `ui/login.js` 一直是 `if (submit.hasAttribute('data-loading')) return;` ——
+  // 这道防线 V1 此前没有（`docs/AUDIT-v1-v2-divergence.md` §4.1）。
+  if (submit.dataset.loading === 'true') return;
+
   const username = usernameInput.value.trim();
   const password = passwordInput.value;
 
@@ -104,16 +122,20 @@ form.addEventListener('submit', async (event) => {
     }
     showError(`登录失败：${error.message}`, passwordInput, false);
   }
-});
+}
 
-// 已登录就不必再看这张表单
-api
-  .session()
-  .then((session) => {
-    if (session.authenticated) location.replace(nextUrl);
-  })
-  .catch(() => {
-    /* 探测失败不阻塞登录 */
-  });
+if (!DUPLICATE_EVAL) {
+  form.addEventListener('submit', submitLogin);
 
-usernameInput.focus();
+  // 已登录就不必再看这张表单（探测失败不阻塞登录；重复求值的那一份不再多发一次请求）
+  api
+    .session()
+    .then((session) => {
+      if (session.authenticated) location.replace(nextUrl);
+    })
+    .catch(() => {
+      /* 探测失败不阻塞登录 */
+    });
+
+  usernameInput.focus();
+}

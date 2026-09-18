@@ -41,9 +41,12 @@ export function createPagination({ onPage }) {
     // 只认**纯整数**：`parseInt('2abc')` 会得到 2，而"打错的页码被猜成另一页"比不跳更难解释
     const raw = jump.value.trim();
     const target = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
-    // 跳完就清空并交还焦点：留在输入框里会让人以为「还没跳」，也可能被下一次回车重复触发。
+    // 清空输入框（留着会让人以为「还没跳」），但**不 `blur()`**（2026-09-18 修）：
+    // 此前这里 `jump.blur()`，注释写的是"交还焦点"，而那只是把焦点丢回 `<body>` ——
+    // 键盘用户下一次 Tab 要从文档开头重来。V2 的 `ui/pager.js` 已删掉同一个 `blur()`，
+    // 注释逐字记着症状；见 `docs/AUDIT-v1-v2-divergence.md` §1.7 / §2.3。
+    // 焦点留在输入框里是安全的：分页条是常驻节点，翻页只改它的文本与服务端数据。
     jump.value = '';
-    jump.blur();
     if (!Number.isFinite(target)) return;
     const clamped = Math.min(Math.max(target, 1), totalPages);
     if (clamped !== currentPage) onPage(clamped);
@@ -63,18 +66,28 @@ export function createPagination({ onPage }) {
 
   return {
     el: node,
-    update({ page, pageSize, total }) {
+    update({ page, pageSize, total, loading = false }) {
       currentPage = page;
       totalPages = Math.max(1, Math.ceil(total / pageSize));
       const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
       const to = Math.min(page * pageSize, total);
+      // 「还没到」与「真的没有」在这里也要分开（2026-09-18 补）：
+      // `total === 0` 在首屏那一刻只表示"还不知道"，而它会**同时**把范围文本与页码标签
+      // 写成两个确定的结论（「没有可显示的记录」「第 1 / 1 页」）—— 库里有记录时两句都是假的。
+      // 列表补了骨架档（见 components/list.js），分页没有骨架可画，故这里只把两处断言
+      // 换成一句不表态的等待文案（同一时刻列表与分页说的必须是同一件事）。
+      const pending = loading && total === 0;
 
       // 防御性夹取：真正的修法在 main.js（fetch 落地后把越界页码夹回末页，见那里的注释）。
       // 这一条是第二道保险 —— 万一将来有别的路径把越界页码送进来，也不该渲染出
       // 「第 101–100 条」这种起点大于终点的区间。取值只是让文案自洽，不代表该页真有数据。
       const safeFrom = total === 0 ? 0 : Math.min(from, total);
-      range.textContent = total === 0 ? '没有可显示的记录' : `第 ${safeFrom}–${to} 条，共 ${total} 条`;
-      pageLabel.textContent = `第 ${page} / ${totalPages} 页`;
+      range.textContent = pending
+        ? '正在加载…'
+        : total === 0
+          ? '没有可显示的记录'
+          : `第 ${safeFrom}–${to} 条，共 ${total} 条`;
+      pageLabel.textContent = pending ? '' : `第 ${page} / ${totalPages} 页`;
       prev.disabled = page <= 1;
       next.disabled = page >= totalPages;
       jump.max = String(totalPages);

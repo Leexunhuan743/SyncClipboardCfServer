@@ -85,7 +85,11 @@
 }
 
 /* 同步状态：点 + 文案。点用 `data-state` 换色 —— 它是**唯一**用颜色表达"健康度"的地方，
- * 因此三态的色相差异要够大（青=实时、琥珀=轮询、灰=失联）。 */
+ * 因此色相差异要够大（青=实时、琥珀=轮询、灰=还没握过手）。
+ *
+ * `data-state` 由 `js/ui/appbar.js` 写，**三档可达**：`live` / `poll` / `connecting`。
+ * 此前这里写着"灰=失联"，而代码把"通道断着"折进了 `poll` —— 灰只出现在第一次 `update()`
+ * 之前的那一瞬（初值是 `offline`）。见 `docs/AUDIT-missing-states.md` §2.3。 */
 .sync {
   display: flex;
   align-items: center;
@@ -115,6 +119,15 @@
 .sync[data-state="poll"] .sync__dot {
   background: var(--star);
   box-shadow: 0 0 0 3px var(--star-soft);
+}
+
+/* 握手中的过渡态（2026-09-18 补）：此前这一档**没有任何规则** —— `connecting` 能写进
+ * `data-state`，点却只拿着上面那条基础色，与"还没握过手"长得一样。
+ * 不给它第三个色相：它只持续一两秒，多一个色相只会让"青/琥珀"这两档更难记。
+ * 用比基础色更亮的灰，读作"正在建立"而不是"没建立"。 */
+.sync[data-state="connecting"] .sync__dot {
+  background: var(--ink-muted);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink-muted) 18%, transparent);
 }
 
 .sync__label {
@@ -409,6 +422,14 @@
 
 .omnibox:focus-within .omnibox__icon {
   color: var(--accent);
+}
+
+/* 搜索在途：`ui/omnibox.js` 的 `setBusy()` 会写 `data-busy`，而此前**没有任何 CSS 消费者**
+ * —— 那条注释承诺的"把图标降透明"从未出现过（`boot.js` 每次 `render()` 都在写这个属性，
+ * 包括每 10 秒的轮询）。见 `docs/AUDIT-missing-states.md` §3.3。
+ * 只降不透明、不做转圈：转圈会让人以为"搜索在跑"，而实际只是等一次往返（通常 100ms 内）。 */
+.omnibox[data-busy] .omnibox__icon {
+  opacity: 0.45;
 }
 
 .omnibox__input {
@@ -762,14 +783,21 @@
     display: none;
   }
 
-  /* `刷新` 在窄屏收进抽屉的一部分：它旁边就是"清除筛选"，两个都是低频动作，
-     而 390px 宽的一行放不下「收藏 + 回收站 + 时间范围 + 清除筛选 + 刷新」。 */
+  /* `刷新` 在窄屏**移到顶栏**（`appbar.js` 那个 `data-when="narrow"` 的图标按钮）：
+     它旁边就是"清除筛选"，两个都是低频动作，而 390px 宽的一行放不下
+     「收藏 + 回收站 + 时间范围 + 清除筛选 + 刷新」。
+     2026-09-18 之前这条规则只做了隐藏、没有替身 —— 注释说"收进抽屉的一部分"，而抽屉里
+     没有刷新控件 ⇒ 手机上唯一的刷新手段是等 10 秒轮询（见 `docs/AUDIT-missing-states.md` §3.4）。 */
   .filters > .icon-btn {
     display: none;
   }
 
+  /* 顶栏只留状态点：文案在 390px 上放不下。
+     状态**不会被读屏丢掉** —— `appbar.js` 另有一个 `sr-only` 的 `role="status"` 区域只承载
+     状态词，它不随视口显隐（此前这条注释说"文案靠 title/aria-label"：`title` 确实写了，
+     `aria-label` 从来没设过，而 `display: none` 会把 `.sync__label` 整段移出无障碍树）。 */
   .sync__label {
-    display: none; /* 顶栏只留状态点，文案靠 title/aria-label */
+    display: none;
   }
 
   /* 窄屏没有完整搜索框，这里补一个图标入口（宽屏它被上面的规则隐藏） */
@@ -778,7 +806,10 @@
   }
 }
 
-/* 极窄（<380px）：数字降一档，避免主数字换成两行 */
+/* 极窄（<380px）：数字降一档，避免主数字换成两行。
+   ⚠️ 目前是**死规则**：主数字（`.overview__value`）挂的是 `--fs-title`，没有任何东西消费
+   `--fs-display` ⇒ 这里改了也不生效。要么把主数字改回 `--fs-display`、要么删掉这条，
+   属设计决策，见 `docs/AUDIT-missing-states.md` §5.3。 */
 @media (max-width: 380px) {
   :root {
     --fs-display: 1.5rem;

@@ -21,8 +21,16 @@ export function typeChipClass(name) {
 
 export function formatSize(bytes) {
   const n = Number(bytes);
-  if (!Number.isFinite(n) || n <= 0) return '—';
-  if (n < 1024) return `${n} B`;
+  if (!Number.isFinite(n)) return '—';
+  // `0` 是**真值**，不是"取不到"（2026-09-18 修）：此前 `n <= 0` 与"无效"并成一档，
+  // 于是全新实例（或记录已被清空）的「存储占用」显示成破折号 —— 它读作"取不到/坏了"，
+  // 而同一行的「记录 0 条」「已收藏 0 条」都是 `0`，自相矛盾；`docs/upstream-issues.md`
+  // 还记着上游 `catch {}` 会让 `totalFileSizeMB` 静默变 0，那个 0 同样是真值。
+  // 见 `docs/AUDIT-v1-v2-divergence.md` §5.2（V2 对同一字段显式给 `'0 B'`）。
+  if (n <= 0) return '0 B';
+  // 取整：调用方传进来的常是浮点积（`MB × 1024 × 1024`），不取整会写出
+  // 「104.85760000000001 B」这种字节数。
+  if (n < 1024) return `${Math.round(n)} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let value = n / 1024;
   let index = 0;
@@ -82,6 +90,44 @@ export function formatAbsolute(iso) {
   if (Number.isNaN(ms)) return iso;
   const d = new Date(ms);
   return `${formatDate(d)} ${formatClock(d)}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * 把字符串切成"用户眼里的一个字符"。
+ *
+ * 剪贴板里出现 emoji / 组合字符很常见，而**「字符」不能按 UTF-16 码元数**：
+ *   · `slice(0, n)` 切在第 n 个码元上、而它正好是代理对的前半时，会留下半个字符，
+ *     渲染成 `�`（删除确认框、行内 `aria-label` 都会露出来）；
+ *   · `.length` 把 10 个 emoji 报成 **20 个字符**。
+ *
+ * 优先用 `Intl.Segmenter` 的**字素簇**（用户眼里的"一个字"：`👨‍👩‍👧` 算 1 个）；
+ * 它不可用时（Firefox < 125）退回 `Array.from` 的**码点** —— 组合序列会被数成几段，
+ * 但至少切不出半个字符。两者都严格优于按码元切。
+ *
+ * 注意与服务端 `src/ui/query.ts` 的同名函数**不是一回事**：那个只修代理对边界、按码元计数，
+ * 因为它的 500 是**协议上限**（`UI_LIST_TEXT_LIMIT`）；这里量的是"用户看到的字符"。
+ * 见 `docs/AUDIT-v1-v2-divergence.md` §5.3。
+ */
+const SEGMENTER =
+  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null;
+
+function splitChars(text) {
+  const value = text ?? '';
+  if (SEGMENTER === null) return Array.from(value);
+  return [...SEGMENTER.segment(value)].map((part) => part.segment);
+}
+
+/** 截断到最多 `max` 个字符。**省略号由调用方加** —— 本函数只负责"不切坏"。 */
+export function truncateText(text, max) {
+  const parts = splitChars(text);
+  return parts.length <= max ? parts.join('') : parts.slice(0, max).join('');
+}
+
+/** 用户看到的字符数（提示条的「已复制 N 个字符」用它，别再写 `text.length`）。 */
+export function charCount(text) {
+  return splitChars(text).length;
 }
 
 // 列表单元格里显示的文本：文本记录用正文，文件类用文件名。

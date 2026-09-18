@@ -18,9 +18,13 @@ let dialogSeq = 0;
  * 建一个对话框外壳。返回的 `open()` 每次调用都重建内容，避免上一次的 DOM 残留。
  *
  * @param {{ title: string, sub?: string, body: (ctx) => Node, foot?: (ctx) => Node[],
- *           closeLabel?: string, onClose?: () => void }} spec
+ *           closeLabel?: string, onClose?: () => void, canClose?: () => boolean }} spec
+ *   `canClose`（可选）：返回 false 时**所有"溜走"的路径都失效** —— ✕、取消、以及平台给的
+ *   Esc。用于"已经发出去了的请求"在途期间：那三条路都只 disable 一个确认键，挡不住它们
+ *   （见 `createConfirm` 的说明与 `docs/AUDIT-v1-v2-divergence.md` §3.1）。
  */
 export function createDialog(spec) {
+  const canClose = () => spec.canClose?.() ?? true;
   // 标题的 id 是对话框可访问名的来源（见下面 `<dialog>` 的 `aria-labelledby`）。
   // 没传就自己生成一个：`aria-labelledby` 指向空值等于没有名字，而这正是要避免的。
   const titleId = spec.titleId ?? `dialog-title-${++dialogSeq}`;
@@ -36,7 +40,11 @@ export function createDialog(spec) {
       'aria-label': '关闭',
       title: '关闭',
       dataset: { icon: 'close' },
-      onclick: () => dialog.close('dismiss'),
+      // 走同一条守卫：在途时这个 ✕ 不算"取消"
+      onclick: () => {
+        if (!canClose()) return;
+        dialog.close('dismiss');
+      },
     },
     [svg(iconPaths('close'))],
   );
@@ -62,6 +70,9 @@ export function createDialog(spec) {
      * 结算的时机必须是"用户做了决定的那一刻"，不能等 `close` 事件。
      */
     close(value) {
+      // 在途时不许从旁边溜走：结算成 `null/false` 会让调用方以为"用户取消了"，
+      // 而那个请求其实正在（或已经）成功 —— 调用方的收尾全在 `if (!ok)` 之后。
+      if (!canClose()) return;
       settle(value);
       dialog.close();
     },
@@ -87,6 +98,12 @@ export function createDialog(spec) {
     resolver?.(value);
     resolver = null;
   }
+
+  // 平台给的 Esc：`cancel` 事件是**可取消的**，在途时必须挡在这里 ——
+  // 等 `close` 事件再拦就晚了（对话框已经关了，而结算已经发生）。
+  dialog.addEventListener('cancel', (event) => {
+    if (!canClose()) event.preventDefault();
+  });
 
   // `close` 只作**旁路兜底**（例如用户按了 Esc、或平台自行关闭）。主路径已结算时它是空操作。
   dialog.addEventListener('close', () => {
@@ -146,6 +163,9 @@ export function createDialog(spec) {
 
     /** 由 `foot` 里的按钮调用：结算并关闭。 */
     close(value) {
+      // 在途时不许从旁边溜走：结算成 `null/false` 会让调用方以为"用户取消了"，
+      // 而那个请求其实正在（或已经）成功 —— 调用方的收尾全在 `if (!ok)` 之后。
+      if (!canClose()) return;
       settle(value);
       dialog.close();
     },
@@ -164,10 +184,15 @@ export function createDialog(spec) {
 export function createConfirm() {
   let action = null;
   let confirmLabel = '确认删除';
+  // 「有请求在飞」的旗子：`setPending(confirm, true)` 只 disable 了**确认键**，
+  // 而 ✕ / 取消 / Esc 三条路都还能把对话框关掉（见 `foot` 里的说明）。
+  let busy = false;
 
   const dialog = createDialog({
     title: '确认操作',
     body: () => el('div'),
+    // 在途期间不许溜走：只要 `busy`，✕ / 取消 / Esc 全部失效（`createDialog` 的 `canClose`）
+    canClose: () => !busy,
     // 取消在前、确认在后，且**初始焦点落在取消上**：销毁性操作里 Enter 的默认结果应当是安全的那个
     // （V1 的 `confirm.js` 是同一套约定：原生 dialog 会把焦点给第一个可聚焦元素，也就是右上角的关闭键）。
     foot: (ctx) => {
@@ -188,11 +213,19 @@ export function createConfirm() {
           // `setPending` = `data-loading`（转圈）+ `aria-busy` + `disabled`（挡住连点）——
           // 与这一处原来的三个动作完全一致，只是不再各处手写。
           setPending(confirm, true);
+          // **整个在途期间把"取消"那三条路也关掉**（2026-09-18 修）：它们此前仍然可用，
+          // 于是用户按 Esc / 点 ✕ / 点取消时 `ask()` 结算成 `false`，而请求其实成功了 ——
+          // 调用方的收行、清选择集、刷新全写在 `if (!ok)` 之后，界面因此把"已经删掉"当作
+          // "没删"，要等 ≤10 秒的轮询才无声消失（批量删除时还继续写着"已选 N 条"）。
+          // 见 `docs/AUDIT-v1-v2-divergence.md` §3.1。
+          busy = true;
           try {
             await action();
+            busy = false;
             ctx.close(true);
           } catch (error) {
-            // 失败留在原地：原因写在对话框里，用户可以重试或取消
+            // 失败留在原地：原因写在对话框里，用户可以重试或取消（故这里放开 `busy`）
+            busy = false;
             ctx.showError(error?.message ?? String(error));
           } finally {
             setPending(confirm, false);

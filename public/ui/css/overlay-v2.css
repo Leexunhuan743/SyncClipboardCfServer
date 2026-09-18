@@ -251,8 +251,13 @@
 }
 
 /* ── 徽标 ──
- * 只用于"状态"，不用于"分类"（分类由类型色条承担）。故只有三个语义：
- * 提示（默认）、警示（数据缺失）、强调（收藏/置顶）。 */
+ * 只用于"状态"，不用于"分类"（分类由类型色条承担）。故只有两个语义：
+ * 提示（默认）、警示（数据缺失）。
+ * 2026-09-18 删掉了 `[data-tone="star"]` / `[data-tone="pin"]` 两条：它们对应的
+ * "强调（收藏/置顶）"这一档**没有生产者** —— `.tag` 只在 `ui/row.js` 里建两处
+ * （`正文已截断` 无 tone、`已删除` 是 `warn`），而同处的注释明确写着
+ * "收藏/置顶不进这里 —— 它们已经由行尾的按钮状态表达，再放一个徽标就是同一件事说两遍"。
+ * 那是 JS 的**有意决定**，CSS 却按相反的意思留了一档。见 `docs/AUDIT-missing-states.md` §3.2。 */
 .tag {
   display: inline-flex;
   align-items: center;
@@ -265,16 +270,6 @@
   font-size: var(--fs-micro);
   font-weight: var(--fw-medium);
   white-space: nowrap;
-}
-
-.tag[data-tone="star"] {
-  background: var(--star-soft);
-  color: var(--star);
-}
-
-.tag[data-tone="pin"] {
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .tag[data-tone="warn"] {

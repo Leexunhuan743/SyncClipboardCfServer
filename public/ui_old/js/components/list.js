@@ -16,8 +16,15 @@ import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty
 import { itemIsImage } from '../clipboard.js';
 import { buildThumb, buildFlags, TOGGLES, applyToggleState, playPop } from './row-content.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
+import { DEFAULT_FILTERS } from '../filters.js';
 
 const ENTER_STAGGER_LIMIT = 12; // 超过 12 行就不再错峰：延迟累积会让第 50 行等两秒
+
+// 骨架的行数区间。上限 50 与 V2 的 `board.js` 同源：行数只需把折线以下的内容先推开，
+// 而 50 行 × 47px 已经远超任何视口，每页 500 行时画 500 条骨架没有意义；
+// 下限 3 是"页面看起来在加载"的最小量。行数**必须**贴近真实页大小，理由见 renderSkeletonRows。
+const SKELETON_MAX_ROWS = 50;
+const SKELETON_MIN_ROWS = 3;
 
 // 行的「内容签名」：只有这些字段变了才需要重建该行。
 // createTime 不在其中（它真的是常量）；但**修改/访问时间必须在内**——它们是这两个字段里
@@ -316,7 +323,50 @@ export function createList(actions) {
   ]);
 
   const empty = el('div', { class: 'empty', hidden: true });
-  const node = el('section', { class: 'results', 'aria-label': '剪贴板历史' }, [head, table, empty]);
+  // 骨架：数据还没落地时的占位。`role="status"` 而不是 `alert`——它是一段持续状态，
+  // 不该在读屏里抢断（与失联横幅同一条判据，见 main.js 的 setStale）。
+  const skeleton = el('div', {
+    class: 'skeleton',
+    role: 'status',
+    'aria-label': '正在加载剪贴板历史',
+  });
+  const node = el('section', { class: 'results', 'aria-label': '剪贴板历史' }, [
+    head,
+    table,
+    empty,
+    skeleton,
+  ]);
+
+  // 结果区同一时刻只有一种形态：骨架 / 表格 / 空态（错误态复用空态的容器）。
+  // 三者的显隐集中在**这一处**：此前分散在 update() 与 showError() 里各写一遍，
+  // 而那正是"骨架还挂着、表格已经出来"这类并存状态的来源。
+  function setView(view) {
+    skeleton.hidden = view !== 'loading';
+    table.hidden = view !== 'table';
+    empty.hidden = view !== 'empty';
+  }
+
+  // 初始就是加载中：组件被建出来的那一刻数据必然还没到，把这件事写死在这里，
+  // 就不必依赖"外层一定会先调一次 render()"这个约定（那是一次隐式的时序依赖）。
+  // 骨架的**行**由首帧的 update() 画（`renderSkeletonRows` 需要知道每页条数）。
+  setView('loading');
+
+  // 画骨架行。行数按**当前页大小**给 —— 这不是审美取舍，是布局正确性：
+  // 骨架行高与真实行同高（`.skeleton__row` 的高度绑定 `.table td`，见 components.css），
+  // 行数又贴近真实页大小，于是内容落地时折线以上的内容**一点不动**。
+  // 反例是 V2 实测过的（A-02）：6 行骨架（384px）对 50 行真实表（3930px），
+  // 内容一到，页脚与分页从视口里被整段顶出去 —— CLS 0.90。
+  function renderSkeletonRows(pageSize) {
+    const requested = Number(pageSize) || DEFAULT_FILTERS.pageSize;
+    const rows = Math.min(SKELETON_MAX_ROWS, Math.max(SKELETON_MIN_ROWS, requested));
+    // 行数没变就不重建：重建会让 CSS 动画从头播一次，骨架跟着闪一下
+    if (skeleton.childElementCount === rows) return;
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < rows; index += 1) {
+      fragment.append(el('div', { class: 'skeleton__row' }));
+    }
+    skeleton.replaceChildren(fragment);
+  }
 
   const rowByKey = new Map();
   // 首屏是否已经画过：入场错峰只属于首屏（见 update 里的说明）
@@ -525,16 +575,20 @@ export function createList(actions) {
     return row;
   }
 
-  function renderHead({ total, filtered, selection: selected }) {
+  function renderHead({ total, filtered, selection: selected, loading = false }) {
     const hasSelection = selected.size > 0;
     headInfo.hidden = hasSelection;
     headSelection.hidden = !hasSelection;
     if (!hasSelection) {
-      headInfo.textContent = recycleMode
-        ? `回收站 · 共 ${total} 条`
-        : filtered
-          ? `筛选中 · 共 ${total} 条`
-          : `共 ${total} 条记录`;
+      // 「共 0 条记录」在首屏是一句**假话**（还没到 ≠ 一条都没有），故加载态单独一档。
+      // 文案与 V2 的 board.js 同形（那边是「… 正在加载」）。
+      headInfo.textContent = loading
+        ? '正在加载…'
+        : recycleMode
+          ? `回收站 · 共 ${total} 条`
+          : filtered
+            ? `筛选中 · 共 ${total} 条`
+            : `共 ${total} 条记录`;
       // 有筛选时才给"一键复位"；选中态那一行已被批量按钮占满，故那时也收起
       headClear.hidden = !filtered;
       return;
@@ -654,6 +708,22 @@ export function createList(actions) {
       selection = state.selection;
       recycleMode = Boolean(filters.deleted);
 
+      // 「还没到」与「真的没有」是两件事（2026-09-18 修）。
+      // 此前没有这一档：`items.length === 0` 同时充当这两个含义，于是从 boot 到首屏那次
+      // `refresh()` 落地之间的整段时间（真机上是几百毫秒到数秒），界面都在断言
+      // 「还没有任何记录」—— 库里明明有一千多条。库里的记录越多，这句假话越刺眼。
+      // 顺带修掉同一个来源的第二处：结果区头栏那时写的是「共 0 条记录」。
+      //
+      // 判据放在视图层、而不是各调用点：任何路径只要没把 loading 收掉，画出来的就是骨架，
+      // 而不是一个伪造的空状态。
+      if (state.loading && items.length === 0) {
+        renderSkeletonRows(filters.pageSize);
+        setView('loading');
+        lastHead = { total: 0, filtered: false, loading: true };
+        renderHead({ ...lastHead, selection });
+        return;
+      }
+
       // 入场错峰**只在首屏**（第一份非空结果）播一次，那是「页面来了」的一次性仪式；此后任何更新
       // （切类型、翻页、改筛选、轮询）都走按行对账：级联 12 行 × 40ms = 440ms 的尾巴在用户**已经在看
       // 这张表**时只会读成「内容慢半拍」，而且它要求整表重建（节点全新建）——实测（6× CPU 降速）
@@ -686,8 +756,7 @@ export function createList(actions) {
         filters.search !== '' ||
         filters.range !== 'all' ||
         filters.deleted;
-      empty.hidden = items.length > 0;
-      table.hidden = items.length === 0;
+      setView(items.length > 0 ? 'table' : 'empty');
       if (items.length === 0) {
         empty.replaceChildren(
           ...buildEmptyState({ filtered, search: filters.search, recycle: recycleMode }),
@@ -704,15 +773,20 @@ export function createList(actions) {
           ?.setAttribute('aria-sort', isActive ? (filters.order === 'asc' ? 'ascending' : 'descending') : 'none');
       }
 
-      lastHead = { total, filtered };
-      renderHead({ total, filtered, selection });
+      lastHead = { total, filtered, loading: false };
+      renderHead({ ...lastHead, selection });
     },
 
     // 初次加载失败：不能把骨架屏留在那里（那就是「无限骨架」），要给出可操作的错误态。
     // 已经有内容时不用它——那种情况下保留旧数据 + 一条提示比清空更正确。
     showError(message, onRetry) {
-      table.hidden = true;
-      empty.hidden = false;
+      setView('empty');
+      // **头栏的口径也必须一起改**（2026-09-18 补）：加载档刚把这里写成「正在加载…」，
+      // 而失败路径不调 render()（见 main.js 的 catch），留着它就会出现
+      // 上面说"还在取"、下面说"加载失败"的自相矛盾。失败时条数**未知**，
+      // 故这里既不给数字也不给替代文案 —— 说明由错误态正文单独承担。
+      headInfo.textContent = '';
+      headClear.hidden = true;
       empty.replaceChildren(
         svg(iconPaths('warning'), { size: 32, class: 'empty__icon' }),
         el('p', { class: 'empty__title', text: '加载失败' }),
@@ -735,7 +809,9 @@ export function createList(actions) {
         if (checkbox && checkbox.checked !== selected) checkbox.checked = selected;
       }
       syncSelectAll();
-      renderHead({ total: lastHead.total, filtered: lastHead.filtered, selection });
+      // 展开 `lastHead` 而不是逐个字段抄：头栏的口径（总数/是否筛选中/是否加载中）只该有
+      // `lastHead` 一个来源，逐个抄会在下次给头栏加字段时漏一处。
+      renderHead({ ...lastHead, selection });
     },
 
     // 写操作结果就地更新该行：不重拉整页，也不重建行——重建会丢掉焦点，
@@ -783,12 +859,11 @@ export function createList(actions) {
       row.addEventListener('animationend', drop, { once: true });
       setTimeout(drop, 240); // 兜底：reduced-motion 或动画被跳过时也要收掉
       lastHead = { ...lastHead, total: Math.max(0, lastHead.total - 1) };
-      if (currentItems.length === 0) {
-        table.hidden = true;
-        empty.hidden = false;
-      }
+      if (currentItems.length === 0) setView('empty');
       syncSelectAll();
-      renderHead({ total: lastHead.total, filtered: lastHead.filtered, selection });
+      // 展开 `lastHead` 而不是逐个字段抄：头栏的口径（总数/是否筛选中/是否加载中）只该有
+      // `lastHead` 一个来源，逐个抄会在下次给头栏加字段时漏一处。
+      renderHead({ ...lastHead, selection });
     },
 
     // 把焦点交回结果区（调用方在确认对话框**关闭之后**调用）。

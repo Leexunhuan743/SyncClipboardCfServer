@@ -20,12 +20,14 @@
 // 必须逐字一致（V2 真被删掉时，连同那条守卫一起删）。改文案时**两版都要改**，守卫会告诉你漏了哪边。
 //
 // 本模块**不碰 DOM、不碰网络、不碰状态**：入参是数据，出参是字符串。
-import { typeLabel } from './format.js';
+import { typeLabel, truncateText } from './format.js';
 
 /** 删除确认里"删的是哪一条"：文本给正文开头，其余给文件名/类型名。 */
 function describeTarget(item) {
   if (item.type === 'Text') {
-    const text = (item.text ?? '').slice(0, 40);
+    // 按**字符**截而不是码元（2026-09-18 修）：`slice(0, 40)` 落在代理对中间时会留下半个
+    // 字符，确认框里渲染成 `�`。这一整段在两版之间逐字一致（见文件头的对等守卫）。
+    const text = truncateText(item.text ?? '', 40);
     return `「${text}…」`;
   }
   return `「${item.dataName ?? typeLabel(item.type)}」`;

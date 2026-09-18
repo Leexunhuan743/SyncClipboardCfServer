@@ -163,14 +163,21 @@ describe('format · 展示层', () => {
     expect(formatSize(1024 * 1024 * 3)).toBe('3.0 MB');
   });
 
-  it('相对时间分档：未来时间退回时钟，超过一周退回日期', () => {
+  it('相对时间分档：未来时间显式说"以后"，超过一周退回日期', () => {
     const now = new Date(2026, 8, 13, 12, 0, 0).getTime();
     const iso = (ms: number): string => new Date(ms).toISOString();
     expect(formatRelative(iso(now - 10_000), now)).toBe('刚刚');
     expect(formatRelative(iso(now - 5 * 60_000), now)).toBe('5 分钟前');
     expect(formatRelative(iso(now - 3 * 3_600_000), now)).toBe('3 小时前');
-    expect(formatRelative(iso(now + 60_000), now)).toMatch(/^\d{2}:\d{2}$/);
     expect(formatRelative(iso(now - 30 * DAY), now)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // 未来时间戳**必须显式说"以后"**（2026-09-18 修）：这条原来断言未来值退回 `hh:mm`，
+    // 于是一条 2035 年的记录在列表里显示成 "09:03" —— 读起来像"今天早上刚发生的"，
+    // 把"这台设备的时钟可能不对"这条线索（协议侧 >5 分钟就中止历史同步）整个藏掉。
+    // 断言随行为一起改，别让旧断言继续固化已被判定为缺陷的行为（AGENTS.md §1）。
+    expect(formatRelative(iso(now + 60_000), now)).toBe('1 分钟后');
+    expect(formatRelative(iso(now + 3 * 3_600_000), now)).toBe('3 小时后');
+    expect(formatRelative(iso(now + 3 * DAY), now)).toBe('3 天后');
+    expect(formatRelative(iso(now + 30 * DAY), now)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it('列表摘要：空文本有占位，非 Text 用数据文件名', () => {

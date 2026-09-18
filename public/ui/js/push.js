@@ -19,10 +19,16 @@ const HEARTBEAT_MS = 30_000;
 // 重连退避：首次 2 秒，逐次翻倍到 60 秒。断线期间界面继续靠轮询收敛（见 boot.js）。
 const RETRY_MIN_MS = 2_000;
 const RETRY_MAX_MS = 60_000;
-// 连续失败到这一次数就停止重连。动机：环境若根本不支持 WebSocket（或被 CSP / 代理稳定阻断），
-// 每 ≤60 秒重试一次的代价是 ≈1.4k 请求/天 —— 与它取代的轮询同量级，白花。
-// 计数在**握手成功**时清零；页面切回前台会重新 start()（同时清零），故不会永久失效。
+// 连续失败到这一次数就**停下快速重连**（不是永久放弃）。动机：环境若根本不支持 WebSocket
+// （或被 CSP / 代理稳定阻断），每 ≤60 秒重试一次的代价是 ≈1.4k 请求/天 —— 与它取代的轮询同量级，白花。
+// 计数在**握手成功**时清零；页面切回前台会重新 start()（同时清零）。
+//
+// **冷却**（2026-09-18 补）：此前到 5 次就直接 `return`，于是"标签页一直可见、推送被稳定阻断"的
+// 环境里**再也没有自愈路径**——只有切一次前后台才会恢复。V1 早就修过这同一处
+// （`ui_old/js/signalr.js` 的注释逐字写着"此前这里是永久停手…唯一的恢复路径是切一次标签页"），
+// 冷却 10 分钟后清零再试一次。见 `docs/AUDIT-v1-v2-divergence.md` §1.3。
 const MAX_CONSECUTIVE_FAILURES = 5;
+const RETRY_COOLDOWN_MS = 10 * 60_000;
 
 /** 把一个 WebSocket 帧拆成若干条消息（RS 分隔；尾部/连续分隔符不算消息）。 */
 export function parseFrames(text) {
@@ -54,6 +60,7 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
   let socket = null;
   let heartbeat = 0;
   let retryTimer = 0;
+  let cooldownTimer = 0;
   let retryDelay = RETRY_MIN_MS;
   let state = 'offline';
   let stopped = false;
@@ -73,10 +80,23 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
     heartbeat = 0;
     clearTimeout(retryTimer);
     retryTimer = 0;
+    clearTimeout(cooldownTimer);
+    cooldownTimer = 0;
   }
 
   function scheduleRetry() {
-    if (stopped || retryTimer || failures >= MAX_CONSECUTIVE_FAILURES) return;
+    if (stopped || retryTimer || cooldownTimer) return;
+    if (failures >= MAX_CONSECUTIVE_FAILURES) {
+      // 不再快速重试，但**不是永久放弃**：冷却一段时间后清零，再试一次。
+      // 少这一档的话，"标签页一直可见 + 推送被稳定阻断"就再也没有自愈路径了。
+      cooldownTimer = setTimeout(() => {
+        cooldownTimer = 0;
+        failures = 0;
+        retryDelay = RETRY_MIN_MS;
+        open();
+      }, RETRY_COOLDOWN_MS);
+      return;
+    }
     const delay = retryDelay;
     retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
     retryTimer = setTimeout(() => {
@@ -165,6 +185,11 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
       }
       stopped = false;
       failures = 0;
+      // 退避也要归零：连断几次后切走再切回来，第一次重连不该还等在上次的 60 秒上限上
+      // （V1 的 `start()` 同样归零，见 `ui_old/js/signalr.js`）。
+      retryDelay = RETRY_MIN_MS;
+      clearTimeout(cooldownTimer);
+      cooldownTimer = 0;
       open();
     },
     stop() {

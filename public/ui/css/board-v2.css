@@ -373,8 +373,14 @@ button.entry:focus-visible {
   font-style: italic;
 }
 
-/* 单行模式（紧凑/短内容）：只画一行，省 18px 行高 */
-.entry__text[data-lines="1"] {
+/* 紧凑模式下正文只画一行（2026-09-18 修）。
+ *
+ * 这条规则原来挂在 `.entry__text[data-lines="1"]` 上，而全仓唯一的 `data-lines` 生产者
+ * （`ui/row.js`）写死的是 `'2'`，密度切换只改 `--row-h`、从不写这个属性 ⇒ **那一档从未出现过**。
+ * 现在挂到**已经存在**的密度开关上（`:root[data-density="compact"]`，见 `tokens-v2.css`）：
+ * 少了一个没有任何生产者的属性，而行为正是当初注释里写的那个意思（紧凑时只留一行、省行高）。
+ * 见 `docs/AUDIT-missing-states.md` §3.2。 */
+:root[data-density="compact"] .entry__text {
   -webkit-line-clamp: 1;
 }
 
@@ -519,12 +525,13 @@ button.entry:focus-visible {
   animation: pop-once 320ms var(--ease-pop) 1;
 }
 
-/* 置顶：选中时填实并换色。它与收藏是**两个独立维度**，故用两个不同的视觉通道：
- * 收藏 = 颜色（琥珀），置顶 = 填充（实心图标）+ 强调色。
- * 颜色是单通道信息，色觉障碍下"填充 vs 描边"仍可区分，而"琥珀 vs 灰"可能不可区分。 */
-.icon-btn[data-icon="pin"][aria-pressed="true"] {
-  color: var(--accent);
-}
+/* 「置顶」的选中态**不在这里**（2026-09-18 删掉了一条死规则）。
+ * 这里原本有 `.icon-btn[data-icon="pin"][aria-pressed="true"]`，注释还写着"它与收藏是两个
+ * 独立维度，故用两个不同的视觉通道"—— 但行内 `.icon-btn` 的图标集只有
+ * `undo / copy / download / star / dots`（`ui/rowops.js`），**没有 pin**：置顶是 `⋯` 菜单项
+ * （`menus.js`），不产生 `data-icon`。那条约 V2 重构后遗留的规则从未命中过。
+ * 真要做到"填充 vs 描边"的双通道，得先把置顶的入口从菜单搬回行内 —— 那是设计决策，不是修 bug。
+ * 见 `docs/AUDIT-missing-states.md` §3.2。 */
 
 /* 就地成功态：按钮变成对勾 + 结果文案（V1 的状态机，V2 沿用并把时长收紧）。
  * `data-state="ok"` 与 `data-loading` 互斥，由 JS 保证。 */
@@ -702,6 +709,16 @@ button.entry:focus-visible {
     clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
+  }
+
+  /* 但**里面那个真的按钮**不能照抄这一套（2026-09-18 修）：`.sort-btn` 仍在 Tab 顺序里，
+   * 而焦点环被父级的 `overflow: hidden` 一并剪掉 ⇒ 键盘用户 Tab 进一个**看不见的按钮**，
+   * 按 Enter 会异步改排序且没有任何可见反馈。
+   * `visibility: hidden`（不是 `display: none`）刚好：把按钮移出 Tab 顺序与无障碍树，
+   * 而 `<th>` 的列名「内容」不在这里面，照旧留在树里给单元格提供列上下文。
+   * 见 `docs/AUDIT-missing-states.md` §6.1。 */
+  .board__head-row .sort-btn {
+    visibility: hidden;
   }
 
   .board__table,

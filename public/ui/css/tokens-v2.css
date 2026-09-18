@@ -270,6 +270,13 @@
 @media (pointer: coarse) {
   :root {
     --col-ops: var(--col-ops-coarse);
-    --control-h: 40px;
+    /* 两个控件高度令牌此前停在 40 / 28px —— **都低于**上面写着"不可下调"的 `--hit-min: 44px`。
+     * `.icon-btn` 有一个 `::before` 把命中区撑到 44（`board-v2.css` 的 coarse 块），
+     * 而 `.btn` / `.chip` / `.input` / `.select` **没有**那层扩区 ⇒ 它们就是真的小目标：
+     * 分页的「上一页 / 下一页」、批量条的动作、抽屉里的「保存保留策略 / 清空回收站」
+     * ——其中还有删除。V1 有 7 处 coarse 分支逐控件抬到 44px（`ui_old/css/components.css`）。
+     * 见 `docs/AUDIT-missing-states.md` §6.2。 */
+    --control-h: var(--hit-min);
+    --control-h-sm: var(--hit-min);
   }
 }

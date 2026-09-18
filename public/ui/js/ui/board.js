@@ -27,11 +27,17 @@ const ENTER_STAGGER_LIMIT = 10; // 超过 10 行不再错峰：延迟累积会�
  *           onSort, onPageSize, onClearFilters, onOpenDrawer, onRetry }} handlers
  */
 export function createBoard(handlers) {
-  const table = el('table', { class: 'board__table' });
+  // 这里的 `role` 全是**显式写出隐式语义**，一个都不改变表格模式下的行为。
+  // 为什么必须写：≤720px 时 `board-v2.css` 把 `table/tbody/tr/td` 改成
+  // `block / flex / grid`（卡片流），而 `display` 一改，浏览器就不再从元素类型推导出
+  // 表格语义 ⇒ 读屏听到的是一串没有列上下文的单元格值。
+  // V1 早就这么做了（`ui_old/js/components/list.js` 逐格补 `role`，`components.css` 的
+  // 窄屏块里逐字记着这件事），V2 漏了。见 `docs/AUDIT-missing-states.md` §6.3。
+  const table = el('table', { class: 'board__table', role: 'table' });
   const colgroup = el('colgroup');
-  const headRow = el('tr', { class: 'board__head-row' });
-  const thead = el('thead', {}, [headRow]);
-  const tbody = el('tbody');
+  const headRow = el('tr', { class: 'board__head-row', role: 'row' });
+  const thead = el('thead', { role: 'rowgroup' }, [headRow]);
+  const tbody = el('tbody', { role: 'rowgroup' });
   table.append(colgroup, thead, tbody);
 
   const headCount = el('span', { class: 'board-head__count' });
@@ -88,7 +94,9 @@ export function createBoard(handlers) {
   }
 
   const th = (label, className, node) =>
-    el('th', { class: `board__head-cell ${className}`, scope: 'col' }, [node ?? label]);
+    el('th', { class: `board__head-cell ${className}`, scope: 'col', role: 'columnheader' }, [
+      node ?? label,
+    ]);
 
   // 表头的「内容」列表头同时是排序入口（点击在创建/修改时间之间轮换的直觉不足，
   // 故它只承担"内容"这一列的名字；完整排序在右上角的菜单里）。
@@ -241,8 +249,8 @@ export function createBoard(handlers) {
   function renderDayMark(group, count) {
     let row = dayMap.get(group.key);
     if (!row) {
-      row = el('tr', { class: 'daymark', dataset: { group: group.key } }, [
-        el('td', { colspan: '4' }, [el('span'), el('span', { class: 'daymark__count' })]),
+      row = el('tr', { class: 'daymark', dataset: { group: group.key }, role: 'row' }, [
+        el('td', { colspan: '4', role: 'cell' }, [el('span'), el('span', { class: 'daymark__count' })]),
       ]);
       dayMap.set(group.key, row);
     }
@@ -279,11 +287,18 @@ export function createBoard(handlers) {
     const countText = `${state}\u0001${total ?? 0}\u0001${filters.search ?? ''}`;
     if (headCount.dataset.key !== countText) {
       headCount.dataset.key = countText;
-      headCount.replaceChildren(
-        el('strong', { text: state === 'loading' ? '…' : String(total ?? 0) }),
-        document.createTextNode(state === 'loading' ? ' 正在加载' : ' 条记录'),
-        document.createTextNode(filters.search ? ` · 搜索“${filters.search}”` : ''),
-      );
+      // 三档而不是两档（2026-09-18 修）：`loading` 之外还有 **`error`**，而失败时条数是**未知**的 ——
+      // 此前它落进"否则"那一支，写出「0 条记录」，于是一行里上面写「0 条记录」、下面写「加载失败」。
+      // 「0 条」只属于 `empty` 那一档（那时它确实是 0，写在下面反而是对的）。
+      // 见 `docs/AUDIT-missing-states.md` §1.5。
+      const parts = [];
+      if (state === 'loading') {
+        parts.push(el('strong', { text: '…' }), document.createTextNode(' 正在加载'));
+      } else if (state !== 'error') {
+        parts.push(el('strong', { text: String(total ?? 0) }), document.createTextNode(' 条记录'));
+      }
+      if (filters.search) parts.push(document.createTextNode(` · 搜索“${filters.search}”`));
+      headCount.replaceChildren(...parts);
     }
 
     if (busy) boardNode.setAttribute('data-busy', '');
@@ -529,7 +544,20 @@ function applySelectAllState(selectAll, items, selection) {  if (!selectAll || !
   selectAll.indeterminate = selectedOnPage > 0 && selectedOnPage < items.length;
 }
 
-/** 焦点交给邻居行里的**同一个操作**（都找不到时交给第一行的选择框）。 */
+/**
+ * 焦点交给邻居行里的**同一个操作**。
+ *
+ * `action` 必须是邻居行**真的会有的**图标名（`ui/rowops.js` 只产 `undo / copy / download / star / dots`）。
+ * 2026-09-18 之前两个调用点传的是 `'delete'` / `'restore'` —— 这两个 `data-icon` 值**没有任何生产者**，
+ * 于是选择器永不命中、`nextFocus` 恒为 `null`，`removeItem` 里那句 `if (nextFocus) nextFocus.focus()`
+ * 是死路 ⇒ **删/恢复一行后焦点掉到 `<body>`**，键盘用户下一次 Tab 从页面开头重来。
+ * 当时这段注释还承诺"都找不到时交给第一行的选择框"，而函数体是直接 `return null` —— 承诺不存在。
+ * 见 `docs/AUDIT-missing-states.md` §3.1。
+ *
+ * 已知仍**未覆盖**的一档：删掉的是**最后一行**（列表变空）时邻行不存在，焦点仍会落到 `<body>`；
+ * V1 的 `restoreFocus()` 链条里有"空状态的主按钮"这一档（`ui_old/js/components/list.js`），
+ * 但那要等空状态渲染完成，而 `removeItem` 此刻拿不到它。留待后续（同见 §3.1）。
+ */
 function neighborButton(row, action) {
   if (!action) return null;
   const rows = [...(row.parentElement?.children ?? [])];

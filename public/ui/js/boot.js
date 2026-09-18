@@ -28,7 +28,7 @@ import { createLatestGate } from './latest.js';
 import { createPushChannel } from './push.js';
 import { writeText, writeImage, itemIsImage } from './clipboard.js';
 import { currentDensity, setDensity, currentTheme, setTheme } from './theme.js';
-import { typeLabel, formatRelative, formatSize } from './format.js';
+import { typeLabel, formatRelative, formatSize, charCount } from './format.js';
 import { rowMenuItems, sortMenuItems } from './menus.js';
 import {
   batchDeleteConfirmSpec,
@@ -138,6 +138,9 @@ function boot() {
     onLogout: logout,
     onOpenDrawer: () => drawer.open(),
     onFocusSearch: () => omnibox.focus(),
+    // 窄屏的刷新入口（宽屏由筛选条里那个按钮承担 —— ≤720px 时它被隐藏，
+    // 而抽屉里没有替身；见 `ui/appbar.js` 的说明）
+    onRefresh: () => void refresh({ announce: true }),
   });
 
   const overview = createOverview({ onOpenDrawer: () => drawer.open() });
@@ -314,6 +317,8 @@ function boot() {
       page: current.filters.page,
       pageSize: current.filters.pageSize,
       total: current.total,
+      // 分页也要能区分「还没到」与「真的没有」（见 ui/pager.js）
+      loading: current.loading,
     });
   }
 
@@ -364,6 +369,7 @@ function boot() {
       page: current.filters.page,
       pageSize: current.filters.pageSize,
       total: current.total,
+      loading: current.loading,
     });
 
     // 列表**头**也要在这里刷（只刷头，不碰行 —— 行由 `render()` 的对账负责）。
@@ -507,7 +513,10 @@ function boot() {
       // 点了没反应。判据取"这一页为空、但总数不为零、且页码确实越界"，夹回最后一页重发一次。
       const lastPage = Math.max(1, Math.ceil((page.total ?? 0) / current.filters.pageSize));
       if (page.items.length === 0 && (page.total ?? 0) > 0 && current.filters.page > lastPage) {
-        setFilters({ page: lastPage }, { push: true });
+        // `push: false`：这是界面的**自我修正**，不该进浏览器的后退历史 ——
+        // 用 push 的话，打开 `?page=999` 会多压一条记录，用户按后退又回到越界页、再自校正一次，
+        // 形成后退循环。V1 在同一处写着"用 replace 而不是 push"（`docs/AUDIT-v1-v2-divergence.md` §1.2）。
+        setFilters({ page: lastPage }, { push: false });
         return;
       }
 
@@ -726,7 +735,9 @@ function boot() {
     selection.delete(item.key);
     store.patch({ items: state().items.filter((i) => i.key !== item.key), selection });
     // 就地收掉这一行（等下一次整页刷新才消失会读成"点了没反应"）
-    board.removeItem(item, 'delete');
+    // 第二个参数是**邻居行里要找的那个图标名**，不是动作名：删除的发起控件是 `⋯` 菜单，
+    // 而行的图标集只有 undo/copy/download/star/dots（见 ui/board.js 的 neighborButton）。
+    board.removeItem(item, 'dots');
     renderChrome();
 
     // 静默刷新补齐：删掉一行后当前页会缺一条，下一页的第一条应该顶上来
@@ -746,7 +757,8 @@ function boot() {
     try {
       await api.patch(item, { isDelete: false });
       store.patch({ items: state().items.filter((i) => i.key !== item.key) });
-      board.removeItem(item, 'restore');
+      // 同上：恢复的发起控件是行内的「恢复」（图标名就是 `undo`）
+      board.removeItem(item, 'undo');
       renderChrome();
       void refresh({ silent: true });
       void refreshOverview();
@@ -788,7 +800,7 @@ function boot() {
     if (!full) return false;
     const ok = await writeText(full.text ?? '');
     if (ok) {
-      toasts.ok(`已复制 ${(full.text ?? '').length} 个字符`);
+      toasts.ok(`已复制 ${charCount(full.text)} 个字符`);
       return true;
     }
 
@@ -814,12 +826,9 @@ function boot() {
       return false;
     }
     try {
-      const response = await fetch(api.dataUrl(item), { credentials: 'same-origin' });
-      if (!response.ok) {
-        toasts.error(response.status === 404 ? '数据文件不在了（可能已被清理任务删除）' : '取图片失败');
-        return false;
-      }
-      const result = await writeImage(await response.blob());
+      // 走 `api` 层而不是裸 `fetch`：带超时、可取消、401 会跳登录（见 `api.blobData` 的说明）。
+      // 裸 fetch 在"网络半开"时会永不 settle，而本按钮走 `setPending`（disabled）⇒ 永久转圈。
+      const result = await writeImage(await api.blobData(item));
       if (result.status === 'ok') {
         toasts.ok('图片已复制到剪贴板');
         return true;
@@ -831,6 +840,11 @@ function boot() {
       toasts.error(`复制图片失败：${result.reason ?? '未知原因'}`);
       return false;
     } catch (error) {
+      if (handleAuthError(error)) return false;
+      if (error instanceof ApiError && error.status === 404) {
+        toasts.error('数据文件不在了（可能已被清理任务删除）');
+        return false;
+      }
       toasts.error(`复制图片失败：${error.message}`);
       return false;
     }
@@ -878,7 +892,7 @@ function boot() {
         full = result;
         sheet.updateContent(
           el('pre', { class: 'readout', tabindex: '0', text: full.text ?? '' }),
-          `${(full.text ?? '').length} 个字符 · ${formatRelative(full.lastAccessed ?? full.createTime)}`,
+          `${charCount(full.text)} 个字符 · ${formatRelative(full.lastAccessed ?? full.createTime)}`,
         );
       } catch (error) {
         if (controller.signal.aborted || handleAuthError(error)) return;
@@ -981,17 +995,28 @@ function boot() {
     if (items.length === 0) return false;
 
     if (name === 'delete') {
+      // 服务端的返回值必须**接出来**：`confirm.ask` 的 `action` 只关心成败，而批量写会回
+      // `{ updated, failed }`（`src/ui/routes.ts`）。此前这个分支完全不读它，直接报
+      // 「已删除 N 条」⇒ 部分失败被报成**全成功**（某条已被别处删除/恢复时就会发生）。
+      // 同文件的通用分支（下面 star/pin/restore 那一段）一直读了它，V1 的 `runBatch` 更会在
+      // `failed` 非零时直接抛错 —— 只有这里漏了。见 `docs/AUDIT-v1-v2-divergence.md` §7.1。
+      let outcome = null;
       const ok = await confirm.ask({
         ...batchDeleteConfirmSpec(items.length),
         action: async () => {
-          await api.batchUpdate(items, { isDelete: true });
+          outcome = await api.batchUpdate(items, { isDelete: true });
         },
       });
       if (!ok) return false;
       clearSelection();
       await refresh({ silent: true });
       void refreshOverview();
-      toasts.ok(`已删除 ${items.length} 条`);
+      const failed = Number(outcome?.failed) || 0;
+      if (failed > 0) {
+        toasts.info(`已删除 ${outcome.updated} 条，${failed} 条未生效（可能已被别处改过）`);
+      } else {
+        toasts.ok(`已删除 ${items.length} 条`);
+      }
       return true;
     }
 

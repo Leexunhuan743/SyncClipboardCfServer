@@ -78,11 +78,18 @@ async function request(path, { method = 'GET', body, signal, timeout = REQUEST_T
     // 照样能把调用方挂住，而那正是这条超时要防的东西。
     const text = await response.text();
     let payload = null;
+    // 「状态码是 2xx」与「body 是 JSON」是**两件事**。此前这条 catch 把解析失败静默折成 `{}`，
+    // 于是「200 + 非 JSON」的响应（拦截式代理 / 门户认证页 / 被静态层以 200 回的 HTML ——
+    // `docs/frontend-checklist.md` 记的那类事故）会让调用方读到 `total: undefined`，
+    // 列表据此渲染成「还没有任何记录」，**而且没有任何错误提示**。
+    // 这是同一个谎的第三个成因（前两个：`total === 0` 既当"还没到"又当"真的没有"，
+    // 见 `docs/AUDIT-missing-states.md` §1）。V2 在同一处抛 502（`ui/js/api.js`）。
+    let unreadable = false;
     if (text) {
       try {
         payload = JSON.parse(text);
       } catch {
-        payload = {};
+        unreadable = true;
       }
     }
 
@@ -93,6 +100,11 @@ async function request(path, { method = 'GET', body, signal, timeout = REQUEST_T
         retryAfterSeconds: Number.isFinite(raw) && raw > 0 ? Math.round(raw) : null,
         payload,
       });
+    }
+    // 失败响应走上面那条分支（它的文案来自 payload.detail / statusText）；
+    // 这里只剩「**成功但读不动**」这一种：宁可报错，也不要让调用方把空对象读成"零条记录"。
+    if (unreadable) {
+      throw new ApiError(502, '服务器返回了无法读取的数据，请刷新后重试。');
     }
     return payload;
   } finally {

@@ -83,10 +83,16 @@ export function createOverview({ onOpenDrawer }) {
   /**
    * 未加载时的占位。
    *
-   * 为什么不是一个破折号「—」：概览带的主数字用的是 `--fs-display`（24–30px），
+   * 为什么不是一个破折号「—」：概览带的主数字**按设计**该用 `--fs-display`（24–30px），
    * 一个破折号在那个尺寸下是一条**又粗又长的黑横杠**，看起来像渲染坏了
    * （实测截图里三个数字位置都是这样）。不确定的时候给一条淡色的小骨架条，
    * 它同时表达了"这里将会有一个数字"和"还没到"。
+   *
+   * ⚠️ 但 `.overview__value` 现在挂的是 `--fs-title`（**17px**），不是 `--fs-display` ——
+   * 于是上面那条"粗黑横杠"的理由、以及 `shell-v2.css` 里 `≤380px` 的"数字降一档"
+   * 都落空了（那个 `@media` 改的是没人消费的令牌 ⇒ 是条死规则）。
+   * 这是"设计意图 vs 实现"的分歧，**本轮不动视觉**、只把事实写在这里，见
+   * `docs/AUDIT-missing-states.md` §5.3。骨架条本身仍然比破折号好，理由不变。
    */
   function placeholder() {
     return el('span', { class: 'overview__ghost', 'aria-hidden': 'true' });
@@ -96,10 +102,20 @@ export function createOverview({ onOpenDrawer }) {
     // **只有内容真的变了才改 DOM**（2026-09-16 审计）：`renderChrome()` 每 10 秒的轮询都会
     // 调到这里，而概览带上的数字几乎每次都不变。无条件 `replaceChildren` 会替换掉整段子节点
     // （实测：每次刷新 20 次 DOM 变更），既浪费又让"这次刷新到底动了什么"难以判断。
+    //
+    // ⚠️ 判据不能写成 `const shown = node.dataset.value ?? null`（2026-09-18 修）：首次调用时
+    // `dataset.value` 是 **`undefined`**（`dom.js` 的 `text` 只写 `textContent`），而首次传入的
+    // `text` 也是 `null`（`renderChrome()` 先于 `/ui/api/overview` 落地）—— `undefined ?? null`
+    // 与 `null` 相等 ⇒ **在 append(placeholder()) 之前就 return 了**，于是构造时写死的那个 `—`
+    // 一直留到数据到达，而 `.overview__ghost` **一次都没被绘制过**（`placeholder()` 只在
+    // "有值 → 又变回 null" 时才会走到，而 `stats` 从不写回 null）。
+    // 见 `docs/AUDIT-missing-states.md` §1.3：那份设计文档把"未加载时给淡色骨架条"记成已修，
+    // 实际是死代码 —— 与 V1 首屏骨架那次是同一个机制。
     const nextText = text === null || text === undefined ? null : String(text);
-    const shown = node.dataset.value ?? null;
-    if (shown === nextText) return;
-    node.dataset.value = nextText ?? '';
+    const next = nextText ?? '';
+    const shown = Object.hasOwn(node.dataset, 'value') ? node.dataset.value : undefined;
+    if (shown === next) return;
+    node.dataset.value = next;
     node.replaceChildren();
     if (nextText === null) node.append(placeholder());
     else node.append(el('span', { text: nextText }));

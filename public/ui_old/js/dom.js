@@ -56,11 +56,22 @@ export function svg(pathData, { size = 16, class: classNames = '' } = {}) {
   return node;
 }
 
+/**
+ * 尾沿去抖。返回的函数上带 `cancel()`：**调用方在"立刻结算"的那条路径上必须用它**，
+ * 否则已经排期的那一次还会在窗口末尾再跑一遍。
+ *
+ * 为什么必须有（2026-09-18 补）：搜索框的 Esc / 清空按钮 / 原生 `search` 事件都会直接调
+ * `onSearch('')`，而输入事件排期的那次去抖调用无法取消 ⇒ 260ms 后它读一次已经清空的输入框、
+ * **又发一次同样的列表请求**。V2 的 `debounce` 一直带 `cancel`，且五处调用都用上了
+ * （`ui/omnibox.js`）；见 `docs/AUDIT-v1-v2-divergence.md` §3.3。
+ */
 export function debounce(fn, wait) {
   let timer = 0;
-  return (...args) => {
+  const debounced = (...args) => {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), wait);
   };
+  debounced.cancel = () => clearTimeout(timer);
+  return debounced;
 }
 

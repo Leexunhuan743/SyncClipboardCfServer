@@ -10,7 +10,7 @@
 //   §1.8 服务端时钟与本机的差值（官方客户端在 |差| > 5 分钟时**中止历史同步**）
 import { el, clear } from '../dom.js';
 import { PAGE_SIZES, SORT_FIELDS, toDateInput, fromDateInput } from '../filters.js';
-import { formatAbsolute, describeClockSkew } from '../format.js';
+import { formatAbsolute, describeClockSkew, typeLabel } from '../format.js';
 import { iconButton, labelButton } from './button.js';
 import { flashOk, setPending } from './toast.js';
 
@@ -275,12 +275,30 @@ export function createDrawer(handlers) {
     }
   }
 
+  /**
+   * 只在**用户没有正在这个框里打字**时才回写。
+   *
+   * 为什么必须有：`paint()` 由 `renderChrome()` 驱动，而它**每 10 秒**（轮询）就会被调一次 ——
+   * 抽屉开着、用户正在填「保留天数 / 最大条数 / 自定义起止日期」时，无条件赋值会把半成品
+   * 覆盖回服务端的旧值 ⇒ 用户敲的东西**静默消失**，看起来像"填不进去"。
+   * V1 对同一件事有这条守卫（`ui_old/js/main.js` 的 `editing` 判据，注释写着"正在输入时不覆盖"），
+   * V2 此前漏了（见 `docs/AUDIT-v1-v2-divergence.md` §1.1）。
+   */
+  function setInputValue(node, value) {
+    if (document.activeElement === node) return;
+    if (node.value !== value) node.value = value;
+  }
+
   function paint(spec) {
   const { info, activity, filters, density, clockOffsetMs } = spec;
 
   // ---- 活动趋势 ----
   clear(barsBox);
-  const days = Array.isArray(activity) ? activity : [];
+  // **「还没取到」不是「没有活动」**：`activity === null` 表示还没取到（`refreshActivity` 失败时
+  // 静默退出且不重试，见 `boot.js`），`[]` 才是"这段时间真的没有活动"（`docs/AUDIT-missing-states.md` §2.2）。
+  // 把两者读成同一档，会把"取数失败"讲成"这台服务器从来没被用过"。
+  const loaded = Array.isArray(activity);
+  const days = loaded ? activity : [];
   // 摘要行：把"最近有没有在用"一句话说完，图表要展开才看（理由见上面区块声明处）
   const activeDays = days.filter((d) => Number(d.total) > 0).length;
   const sum = days.reduce((n, d) => n + (Number(d.total) || 0), 0);
@@ -288,18 +306,40 @@ export function createDrawer(handlers) {
     el('span', { class: 'section__title', text: '活动趋势' }),
     el('span', {
       class: 'details__value',
-      text: days.length === 0 ? '还没有数据' : `近 ${days.length} 天 ${sum} 条 · ${activeDays} 天有记录`,
+      text: !loaded
+        ? '尚未取到'
+        : days.length === 0
+          ? '还没有数据'
+          : `近 ${days.length} 天 ${sum} 条 · ${activeDays} 天有记录`,
     }),
   );
-  if (days.length === 0) {
+  if (!loaded) {
+    barsBox.append(el('p', { class: 'note', text: '活动数据还没取到，稍后会自己补上。' }));
+  } else if (days.length === 0) {
     barsBox.append(el('p', { class: 'note', text: '还没有活动数据。' }));
   } else {
     const max = Math.max(1, ...days.map((d) => Number(d.total) || 0));
+    // 柱子按**当天占比最高的类型**上色：`data-kind` 是 CSS 的判据（`overlay-v2.css` 的
+    // `.bar__fill[data-kind=…]`），而服务端**每天都给了四个类型的计数**
+    // （`readActivity` 的 `Text / Image / File / Group`）—— 此前前端一个都没读，
+    // 于是那四条颜色规则从未生效过，所有柱子恒为强调色（`docs/AUDIT-missing-states.md` §3.2）。
+    // 0 条的那天没有"主导类型"，不写 `data-kind`，落到 CSS 的基础色。
+    const KINDS = ['Text', 'Image', 'File', 'Group'];
+    const dominantOf = (day) => {
+      let best = null;
+      for (const kind of KINDS) {
+        const n = Number(day[kind]) || 0;
+        if (n > 0 && (best === null || n > best.n)) best = { kind, n };
+      }
+      return best;
+    };
     // 只展示最近 14 天：抽屉里再长就读不完，完整曲线由概览带的缩略图承担
     for (const day of days.slice(-14)) {
       const value = Number(day.total) || 0;
+      const dominant = dominantOf(day);
+      const breakdown = KINDS.map((kind) => `${typeLabel(kind)} ${Number(day[kind]) || 0}`).join(' / ');
       barsBox.append(
-        el('div', { class: 'bar' }, [
+        el('div', { class: 'bar', title: `${day.day ?? ''}：共 ${value} 条（${breakdown}）` }, [
           // `String(day.day ?? '')`：`day.day` 是服务端字段，格式异常时 `.slice` 会抛 TypeError，
           // 而它抛在 `paint()` 里 —— 整个抽屉的内容都画不出来。一个字段坏掉不该让整块面板空白
           // （`spark.js` / `overview.js` 对同一个字段都做了同样的防护）。
@@ -307,6 +347,7 @@ export function createDrawer(handlers) {
           el('span', { class: 'bar__track' }, [
             el('span', {
               class: 'bar__fill',
+              dataset: dominant ? { kind: dominant.kind } : {},
               style: { width: `${Math.round((value / max) * 100)}%` },
             }),
           ]),
@@ -329,8 +370,8 @@ export function createDrawer(handlers) {
   // ---- 自定义范围 ----
   if (filters.range === 'custom') {
     rangeSection.hidden = false;
-    afterInput.value = toDateInput(filters.after);
-    beforeInput.value = toDateInput(filters.before);
+    setInputValue(afterInput, toDateInput(filters.after));
+    setInputValue(beforeInput, toDateInput(filters.before));
   } else {
     rangeSection.hidden = true;
   }
@@ -341,11 +382,16 @@ export function createDrawer(handlers) {
     // 分钟 → 天。**只在能被整天整除时**显示成整数天，否则给出小数（8641 分钟是 6.0007 天，
     // 四舍五入成 6 再保存回去会**改变用户的配置**）。
     const minutes = retention.retentionMinutes;
-    retentionInput.value = minutes === null || minutes === undefined ? '' : String(round(minutes / 1440, 3));
-    maxCountInput.value =
+    setInputValue(
+      retentionInput,
+      minutes === null || minutes === undefined ? '' : String(round(minutes / 1440, 3)),
+    );
+    setInputValue(
+      maxCountInput,
       retention.maxSavedHistoryCount === null || retention.maxSavedHistoryCount === undefined
         ? ''
-        : String(retention.maxSavedHistoryCount);
+        : String(retention.maxSavedHistoryCount),
+    );
     retentionInput.placeholder = '跟随部署变量';
     maxCountInput.placeholder = '跟随部署变量';
 
@@ -360,7 +406,14 @@ export function createDrawer(handlers) {
   // ---- 清理状态 ----
   clear(cleanupFacts);
   const cleanup = info?.cleanup;
-  if (!cleanup || !cleanup.lastRunAt) {
+  if (!info) {
+    // 部署信息**一次都没取到**：此时"清理任务跑过没有"是**未知**的。
+    // 此前这里会落进下面那条断言，于是界面替服务器说"清理任务还没有运行过"——
+    // 把"我不知道"说成"它没跑过"（`docs/AUDIT-missing-states.md` §2.2）。
+    cleanupFacts.append(
+      el('p', { class: 'note', text: '部署信息还没取到，暂时无法判断清理任务的状态。' }),
+    );
+  } else if (!cleanup || !cleanup.lastRunAt) {
     cleanupFacts.append(
       el('p', {
         class: 'note',
