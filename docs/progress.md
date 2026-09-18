@@ -5273,6 +5273,28 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 4. **`README.md`**：
    - 目录结构与文档索引补全 `public/ui_old/` 默认界面说明及 `ui-v2-design.md`、`ui-v2-audit.md`、`frontend-checklist.md` 索引。
 
+## 82. 页脚致谢卡片标题改成「致谢如下项目」（2026-09-18，用户要求）
+
+用户原话："ui_old 的 致谢 改成 致谢如下项目"。
+
+**改动**：`public/ui_old/index.html` 的页脚卡片标题（`.footer-links__title`）由「致谢」改为「**致谢如下项目**」，
+并把同一个 `nav.footer-links__panel` 的 `aria-label` **一起**改成同一串文字。
+
+**为什么连 `aria-label` 一起改**（不是顺手扩范围）：那是这张卡片的**可访问名**，原先与可见标题逐字相同；
+只改可见文字会让两者分叉 —— 而"可见标签必须包含在可访问名里"是 WCAG 2.5.3 的硬要求，
+不一致时读屏用户听到的名字与屏幕上看到的对不上。改完两者仍是同一串文字。
+
+**没有连带影响的核对**：
+- 样式无影响 —— 面板是 `width: max-content` + `min-width: 15rem`，决定宽度的始终是最长那行 URL
+  （55+ 字符），标题从 2 字变 6 字远够不到这个宽度。
+- 测试无影响 —— `test/manual/probe-ui-old.mjs` 的 FOOTER 一节读的是几何量（面板是否在触发器上方、
+  是否出视口、`itemCount`、各链接 `href`）与入口的 `title`，**没有断言卡片标题的文字**；
+  `test/ui-guard.test.ts` 只扫 `modulepreload` / 资源存在性 / 挂载点字面量，与页脚文案无关。
+- 文档已同步：`docs/ui.md` §3.2 第 20 条（页脚相关链接）里的卡片名同步为「致谢如下项目」。
+- 注释口径：`index.html` 的 `aria-label` 上方补了一句说明"两者必须逐字一致，否则违反 WCAG 2.5.3"，
+  免得下次只改一边。`components.css` 里描述该面板的注释仍写「致谢」面板（描述的是这张卡片的用途，
+  仍然准确，未改）。
+
 
 
 

@@ -278,9 +278,10 @@ Worker
     用户要求改回项目名，见 `progress.md` §79）。它带 `title`（本项目的 GitHub 仓库地址）：
     **可见文字是本产品的名字，`title` 才是"它会开到哪"**——有文本内容的链接里 `title` 不参与命名，
     只作描述与悬停提示；悬停（细指针）或键盘聚焦
-    （`:focus-within`）时在它**上方**拉出一张「致谢」卡片，列上游 `SyncClipboard`
+    （`:focus-within`）时在它**上方**拉出一张「致谢如下项目」卡片，列上游 `SyncClipboard`
     与 `clipserver` 及各自完整 URL（2026-09-18 用户要求删掉 `clipserver` 后面的「（另一个实现）」括注、
-    并去掉上游那条的「客户端」三个字：致谢卡片里只要名字就够了，解释留给 README 与 `design.md` D15）。收起态是 `opacity: 0 + pointer-events: none`
+    并去掉上游那条的「客户端」三个字：致谢卡片里只要名字就够了，解释留给 README 与 `design.md` D15；
+    卡片标题与 `nav` 的 `aria-label` 逐字一致，均为「致谢如下项目」，见 `progress.md` §82）。收起态是 `opacity: 0 + pointer-events: none`
     （不是 `display: none`）——链接留在 Tab 顺序里；触屏没有 hover，那一档把卡片改成**常驻**。
     动效是 160ms 的淡入 + 6px 上浮（状态过渡，写在组件里而非 motion.css）。见 `progress.md` §72。
 21. **分页在窄屏的行结构**（2026-09-18 用户截图报的）：范围文本允许独占一行，但
