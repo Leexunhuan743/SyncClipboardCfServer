@@ -14,20 +14,22 @@ import { isAuthConfigured, verifyCredentials, drainRequestBody } from '../auth';
 import { issueSession, clearSession } from './session';
 import { uiAuthMiddleware, authenticateUi } from './guard';
 import { parseProfileType, parseHistoryRecordUpdateDto, historySizeMB } from '../serialization';
-import { applyHistoryUpdate } from '../historyOps';
+import { applyHistoryUpdate, clearAllHistory } from '../historyOps';
 import {
   UiQueryError,
   listUiHistory,
-  countByType,
+  countByTypeViews,
   readChangeMarker,
+  parseDeletedFlag,
   parseUiHistoryQuery,
   toUiItem,
 } from './query';
 import { fileHeaders } from '../contentTypes';
-import { AVAILABLE_TRANSPORTS } from '../hub';
+import { AVAILABLE_TRANSPORTS, HUB_PATH, issueConnectionToken } from '../hub';
 import { notFoundPage } from './notFound';
 import { isValidProfileHash, HistoryRecordUpdateDto } from '../types';
-import { CLEANUP_META_KEYS, CLEANUP_PHASES } from '../cleanup';
+import { CLEANUP_META_KEYS, CLEANUP_PHASES, readRetentionSettings } from '../cleanup';
+import { createUiMaintenanceRoutes } from './maintenance';
 
 // 清理的**可观测面**（F11）：清理任务把「本轮开始时间 / 失败信息 / 续跑游标」写进 Meta，
 // `/ui/api/info` 只读展示同一批键——「静默未清理」因此可以被看见。
@@ -67,12 +69,64 @@ function parsePathIds(
   return { type, hash };
 }
 
+// ===== Range（只给下面那个数据端点，见 docs/backend-gaps.md §2.3）=====
+// 为什么只在这里加：协议侧 `/file/{name}`（src/routes/webdav.ts）与 `/api/history/{id}/data`
+// （src/routes/history.ts）忽略 `Range` 是**对齐上游的有意行为**（上游 `File(bytes, …)` 的
+// `EnableRangeProcessing` 默认 false，F29b 记录在案，test/fix-regressions.test.ts 有断言守着），
+// 给那边加 206 会变成新的有意偏离。这里是本站自己的面，加 206 后浏览器/播放器能按需取片段。
+type RangeSpec = { offset: number; length?: number } | { suffix: number };
+
+// 解析 `Range: bytes=a-b` / `bytes=a-` / `bytes=-n`；无法识别一律返回 null，调用方回退 200 全量。
+// 有意不做的两件事：
+//   ① 多段（`bytes=a-b,c-d`）：那要 multipart/byteranges 响应体，收益低（浏览器极少发多段），
+//      正则整体不匹配即落到「回退全量」；
+//   ② `If-Range` 条件：本端点不外发 ETag / Last-Modified，客户端没有可用来发 If-Range 的校验器，
+//      真收到也只当普通 Range 处理（不引入校验器状态）。
+function parseRangeHeader(raw: string | undefined): RangeSpec | null {
+  if (!raw) return null;
+  // 单位名大小写不敏感（RFC 9110 §14.1）；只认单段
+  const match = /^\s*bytes\s*=\s*(\d*)-(\d*)\s*$/i.exec(raw);
+  if (!match) return null;
+  const startRaw = match[1]!;
+  const endRaw = match[2]!;
+  // `bytes=-n`：末尾 n 字节。n=0 语法合法但不可满足（RFC 9110 §14.1.2），留给 resolveRange 判 416
+  if (startRaw === '') return endRaw === '' ? null : { suffix: Number(endRaw) };
+  if (endRaw === '') return { offset: Number(startRaw) };
+  const start = Number(startRaw);
+  const end = Number(endRaw);
+  if (end < start) return null; // 畸形：last-byte-pos 小于 first-byte-pos
+  return { offset: start, length: end - start + 1 };
+}
+
+// 按对象实际大小把区间落成可返回的 [start, end]；不可满足（起点越界、末尾 0 字节）返回 null。
+// 调用方保证 size > 0：零长度对象在端点里按「忽略 Range」处理（见那里的注释）。
+// 超长数字串解析成 Infinity 时走「起点越界」这一支，不会把非法值透给 R2。
+function resolveRange(spec: RangeSpec, size: number): { start: number; end: number } | null {
+  if ('suffix' in spec) {
+    if (spec.suffix <= 0) return null;
+    return { start: Math.max(size - spec.suffix, 0), end: size - 1 };
+  }
+  if (spec.offset >= size) return null;
+  const last = spec.length === undefined ? size - 1 : Math.min(spec.offset + spec.length - 1, size - 1);
+  return { start: spec.offset, end: last };
+}
+
 export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
   const stores = (c: { env: Bindings }) => ({
     db: new HistoryDb(c.env.DB),
     storage: new R2Storage(c.env.R2),
+  });
+
+  // 缓存策略（后端能力评估 §3.2）：`/ui/api/*` 的 JSON 响应一律 `no-store`。
+  // 列表/统计/变更信号都是「随时会变」的私有数据，被浏览器缓存住只会让界面显示陈旧内容
+  // （返回键回退时尤其明显）。判据是「响应尚未自带 cache-control 才补」而不是路径放行名单：
+  // 数据端点自带 `private, max-age=60`（预览/缩略图复用），自动落在例外里；
+  // 将来新增自带缓存语义的端点也不需要改这里。
+  app.use('/ui/api/*', async (c, next) => {
+    await next();
+    if (!c.res.headers.has('cache-control')) c.res.headers.set('cache-control', 'no-store');
   });
 
   // ===== 公开端点 =====
@@ -166,10 +220,37 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       return Response.json({ error: 'not_found' }, { status: 404 });
     }
     const fileName = basename(record.transferDataFile);
-    const object = await storage.getHistory(record.type, record.hash, fileName);
+    // 带合法 Range 时先取元数据（size）：区间是否可满足必须自己判定（理由见 storage.headHistory 注释）。
+    // 成本：带 Range 的请求 = 1 次 R2 head + 1 次 R2 区间读（无 Range 仍是 1 次 get），相对
+    // src/cleanup.ts 的 SUBREQUEST_BUDGET(800) 可忽略；R2 也只读取命中的那段字节。
+    const requested = parseRangeHeader(c.req.header('range'));
+    const meta = requested ? await storage.headHistory(record.type, record.hash, fileName) : null;
+    // 对象不存在时 size 取 0：下面整段都不会生效，最终由 get 的 null 判定回到 404 data_missing。
+    const size = meta?.size ?? 0;
+    // 零长度对象按 200 全量处理：RFC 9110 §14.2 允许服务端「对没有内容的表示忽略 Range」——
+    // 那种表示按 §14.1.2 只剩「非零后缀区间」一种可满足形态，无论 206 还是 416 都要拼出退化的
+    // content-range，不如直接忽略（也避免把零长度区间交给 R2）。
+    const slice = requested && size > 0 ? resolveRange(requested, size) : null;
+    if (requested && size > 0 && !slice) {
+      // 不可满足：不回对象体，只给出总长度（RFC 9110 §14.4 的 `bytes */size`）。
+      // 这里**有意不设** cache-control，落到 `/ui/api/*` 中间件的 `no-store`：区间不可满足是
+      // 「此刻这个对象的结论」，按数据端点的 60 s 私有缓存留住它，会让客户端在数据变大后仍拿旧结论。
+      return new Response(null, {
+        status: 416,
+        headers: { 'content-range': `bytes */${size}`, 'accept-ranges': 'bytes' },
+      });
+    }
+    const object = await storage.getHistory(
+      record.type,
+      record.hash,
+      fileName,
+      slice ? { offset: slice.start, length: slice.end - slice.start + 1 } : undefined,
+    );
     // 记录存在但 R2 对象没了 —— 必须与「记录不存在」区分开：
     // `hasData` 是元数据推导（filePaths.length>0 || transferDataFile!==''），不代表对象真的在。
     // 线上就有这种记录（数据被已修复的孤儿清理事故误删）。前端据此渲染「数据不可用」而不是裂图。
+    // Range 判定放在这条之前不会削弱它：head 拿不到对象时 slice 为 null，走的仍是原来的全量 get，
+    // 由下面的 null 判定返回同一个 404 data_missing。
     if (!object) return Response.json({ error: 'data_missing' }, { status: 404 });
 
     const headers = fileHeaders(fileName, object.size);
@@ -183,7 +264,14 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       );
     }
     headers.set('cache-control', 'private, max-age=60');
-    return new Response(object.body, { headers });
+    // 206 与 200 共用上面这条缓存策略：`private` 表示只有浏览器本地缓存（本 Worker 既不写边缘缓存、
+    // 也不做 Range 分片缓存），因此加 Range 不会削弱预览/缩略图的复用，只是浏览器按 URL 分开存缓存条目。
+    headers.set('accept-ranges', 'bytes');
+    if (!slice) return new Response(object.body, { headers });
+    // 206：fileHeaders 已按整个对象设过 content-length，这里换成切片长度
+    headers.set('content-length', String(slice.end - slice.start + 1));
+    headers.set('content-range', `bytes ${slice.start}-${slice.end}/${object.size}`);
+    return new Response(object.body, { status: 206, headers });
   });
 
   // PATCH /ui/api/history/:type/:hash —— 收藏 / 置顶 / 删除
@@ -225,8 +313,16 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     return Response.json(toUiItem(result.entity));
   });
 
-  // POST /ui/api/history/batch-delete —— 批量删除（逐条走同一条写路径：各自广播、各自清数据目录）
-  guarded.post('/ui/api/history/batch-delete', async (c) => {
+  // POST /ui/api/history/batch-update —— 批量写（收藏 / 置顶 / 删除 / 恢复）
+  //
+  // 逐条走 `applyHistoryUpdate`（与单条 PATCH、官方 PATCH **同一条写路径**）：各自广播、
+  // 各自做 shouldUpdate 判定、删除时各自清 R2 数据目录。因此这里不做任何「批量捷径」——
+  // 捷径会让「界面改的」与「客户端改的」逐渐分叉。
+  //
+  // 成本（子请求记账）：一条记录 ≈ 1 读 + 1 写 + 1 广播（删除时再 +2 的 R2 目录清理），
+  // 100 条封顶 ≈ 500 次，留一倍余量（200 条正好顶到单次调用 1000 次的内部子请求上限、零余量）。
+  // 超出的部分由调用方分片（js/api.js 的 batchUpdate），不是拒绝服务。
+  guarded.post('/ui/api/history/batch-update', async (c) => {
     // 只接受 application/json（审计残余 G3 的第二条）：跨站**表单**（`enctype=text/plain` 或
     // `multipart/form-data`）能直接发出 POST 且不经过 CORS 预检，而 JSON 必须由脚本构造
     // （那类请求会被来源校验挡下）。它与 F4 的来源校验是纵深的两层，且不改变本页自身的行为——
@@ -241,19 +337,37 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
-    const items = (body as { items?: unknown })?.items;
+    const { items, update } = (body ?? {}) as { items?: unknown; update?: unknown };
     if (!Array.isArray(items) || items.length === 0) {
       return Response.json({ error: 'items_required' }, { status: 400 });
     }
-    if (items.length > 200) {
+    // 上限 100 而不是 200：每条记录 ≈5 次子请求（1 读 + 1 写 + 1 次 DO 广播，删除再 +2 次 R2
+    // 目录清理），200 条正好等于单次调用的 1000 次内部子请求上限、**零余量** —— 任一条走到冲突回读
+    // 或目录多一页 list 就会中途超限。100 条 = 约 500 次，留一倍余量。
+    // 调用方（js/api.js 的 batchUpdate）按 100 分片串行发，选 200 条也能一次做完。
+    if (items.length > 100) {
       return Response.json({ error: 'too_many_items' }, { status: 400 });
+    }
+    // 字段白名单与单条 PATCH 一致：只认 starred / pinned / isDelete，且必须是布尔。
+    // 非布尔的静默忽略会让「批量收藏」在某个拼错的字段名下变成一次静默成功的空操作。
+    const raw = (update ?? {}) as Record<string, unknown>;
+    const fields: { starred?: boolean; pinned?: boolean; isDelete?: boolean } = {};
+    for (const key of ['starred', 'pinned', 'isDelete'] as const) {
+      if (raw[key] === undefined || raw[key] === null) continue;
+      if (typeof raw[key] !== 'boolean') {
+        return Response.json({ error: 'invalid_request' }, { status: 400 });
+      }
+      fields[key] = raw[key] as boolean;
+    }
+    if (Object.keys(fields).length === 0) {
+      return Response.json({ error: 'no_supported_field' }, { status: 400 });
     }
 
     const { db } = stores(c);
-    let deleted = 0;
+    let updated = 0;
     const failed: string[] = [];
-    for (const raw of items) {
-      const entry = raw as { type?: unknown; hash?: unknown };
+    for (const rawItem of items) {
+      const entry = rawItem as { type?: unknown; hash?: unknown };
       const ids =
         typeof entry?.type === 'string' && typeof entry?.hash === 'string'
           ? parsePathIds(entry.type, entry.hash)
@@ -268,25 +382,95 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
         continue;
       }
       const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, {
-        isDelete: true,
+        ...fields,
         version: existing.version + 1,
         lastModified: new Date(Math.max(Date.now(), existing.lastModified + 1)).toISOString(),
       });
-      if (result.kind === 'updated') deleted++;
+      if (result.kind === 'updated') updated++;
       else failed.push(`${entry.type}-${entry.hash}`);
     }
-    return Response.json({ deleted, failed: failed.length });
+    return Response.json({ updated, failed: failed.length });
+  });
+
+  // POST /ui/api/history/clear —— 清空历史：`scope=trash` 只清回收站，`scope=all` 清全部。
+  //
+  // 与协议端点 `DELETE /api/history/clear` 同语义，但**不逐条广播**（有意如此，三条理由）：
+  //   ① 上游的广播触发点清单里没有 clear（docs/protocol.md §6），逐条补广播会成为新的有意偏离；
+  //   ② 1000 条记录逐条广播 = 1000 次 DO 子请求，超过单次调用 1000 次子请求的上限 —— 饱和时必然半途失败；
+  //   ③ 本站的其它标签页靠 `/ui/api/poll` 的变更信号收敛（计数变化必然触发），本页自己做完即刷新。
+  guarded.post('/ui/api/history/clear', async (c) => {
+    if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/json')) {
+      await drainRequestBody(c.req.raw);
+      return Response.json({ error: 'unsupported_media_type' }, { status: 415 });
+    }
+    let scope: unknown;
+    try {
+      scope = ((await c.req.json()) as { scope?: unknown })?.scope;
+    } catch {
+      return Response.json({ error: 'invalid_request' }, { status: 400 });
+    }
+    if (scope !== 'trash' && scope !== 'all') {
+      return Response.json({ error: 'invalid_scope' }, { status: 400 });
+    }
+    const { db } = stores(c);
+    if (scope === 'trash') {
+      // 回收站记录的 R2 目录在软删时就已删除，故只需删行；真残留由清理任务的孤儿阶段兜底。
+      // 只取计数、不 RETURNING 整批行：1318 条回收站记录里带 FilePaths 的全会进 isolate 内存，
+      // 而这些行唯一的用途是个数字（接口的调用方也不读它）。
+      return Response.json({ scope, deleted: await db.purgeDeletedRecords() });
+    }
+    // 清全部：与协议端点共用同一份实现（含成本与窄竞态的说明）
+    return Response.json({ scope, deleted: await clearAllHistory(c.env) });
+  });
+
+  // POST /ui/api/hub-ticket —— 换一张短期连接票据，用于建立 WebSocket（替代 10 秒轮询）
+  //
+  // 为什么需要它：浏览器的 `new WebSocket(url)` **不能设置请求头**，而 Hub 的连接鉴权在 DO 内
+  // （`?id=` 或 Basic 头，见 SyncClipboardHub.connectionAuthFailure）。票据由本端点签发——
+  // 它走会话 Cookie 鉴权，DO 侧只校验该 token 已登记且未过期（10 分钟，仅约束「登记后多久
+  // 内必须发起连接」；连上后由连接本身维持）。
+  //
+  // 前端两条纪律（写在 public/ui/js/signalr.js 里）：① 60 秒内至少发一条消息，否则 DO 的
+  // 静默清理会关掉它；② 保留轮询作为降级路径——推送链路任何一段出问题，界面都还能收敛。
+  guarded.post('/ui/api/hub-ticket', async (c) => {
+    await drainRequestBody(c.req.raw);
+    try {
+      const token = await issueConnectionToken(c.env);
+      return Response.json({ token, path: `${HUB_PATH}?id=${token}` });
+    } catch {
+      // DO 打不通时如实失败（503）：前端据此继续用轮询，而不是拿一张注定连不上的票据去重试
+      return Response.json({ error: 'hub_unavailable' }, { status: 503 });
+    }
   });
 
   // GET /ui/api/statistics —— 官方统计 + 按类型计数（官方那套没有类型分布）
+  //
+  // 两个键是有意分开的，因为**两个消费方的口径不同**：
+  //   · `byType`        —— 随 `deleted` 走：工具栏的类型计数必须与当前视图同源，否则回收站里
+  //                        会写着活跃记录的数（列表说 1019、控件说 1009）。
+  //   · `byTypeActive`  —— **恒为活跃口径**：统计条「存储占用」的明细用它。已删记录的 R2 数据文件
+  //                        在软删时就已删除，把那行换成已删计数会与"存储占用"这个标题对不上。
   guarded.get('/ui/api/statistics', async (c) => {
     const { db, storage } = stores(c);
+    let deleted = false;
+    try {
+      deleted = parseDeletedFlag(new URL(c.req.url).searchParams);
+    } catch (err) {
+      // 与列表端点同一套映射：非法值 → 400（不是 500）
+      if (err instanceof UiQueryError) return Response.json({ error: err.message }, { status: 400 });
+      throw err;
+    }
     const bytes = await storage.totalHistorySize();
-    const [stats, byType] = await Promise.all([
+    const [stats, views] = await Promise.all([
       db.statistics(historySizeMB(bytes)),
-      countByType(c.env.DB),
+      countByTypeViews(c.env.DB),
     ]);
-    return Response.json({ ...stats, byType });
+    // byType 随视图走（工具栏的类型计数必须与列表同源），byTypeActive 恒为活跃口径
+    return Response.json({
+      ...stats,
+      byType: deleted ? views.byDeleted : views.byActive,
+      byTypeActive: views.byActive,
+    });
   });
 
   // GET /ui/api/info —— 部署信息（把「服务器地址该填什么」直接给出来）
@@ -294,12 +478,13 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     const { db, storage } = stores(c);
     const origin = new URL(c.req.url).origin;
     const bytes = await storage.totalHistorySize();
-    const [stats, byType, meta] = await Promise.all([
+    const [stats, views, meta, retention] = await Promise.all([
       db.statistics(historySizeMB(bytes)),
-      countByType(c.env.DB),
+      countByTypeViews(c.env.DB),
       db.getMetaValues(CLEANUP_META_KEY_LIST),
+      readRetentionSettings(db, c.env),
     ]);
-    // 清理侧：键在「从未跑过清理」时不存在，故全部容忍缺省（D1 报错与上面两个查询同样向上抛，
+    // 清理侧：键在「从未跑过清理」时不存在，故全部容忍缺省（D1 报错与上面几个查询同样向上抛，
     // 不在这里特殊化——诊断面整体失败比"部分字段静默为默认值"更容易被发现）。
     const lastError = meta.get(CLEANUP_META_KEYS.lastError) ?? '';
     return Response.json({
@@ -307,9 +492,15 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       // 客户端「服务器地址」填这个（本实现把 WebDAV 兼容端点放在站点根）
       serverUrl: `${origin}/`,
       hubTransports: AVAILABLE_TRANSPORTS,
+      // 保留策略：与清理任务读**同一份生效值**（readRetentionSettings：Meta 覆盖优先、env 回落）——
+      // 此前这里直接读 env，于是「清理按 Meta 跑、界面显示按 env」会当场分叉（后端能力评估 §2.5）。
+      // 连**来源**一起报：界面要用它显示「此处的设置 / 部署环境变量」，而 /ui/api/settings 是另一个
+      // 端点、界面并不调用它——来源只报在那边就等于永远显示「部署环境变量」（复核发现的接线缺口）。
       retention: {
-        maxSavedHistoryCount: Number(c.env.MAX_SAVED_HISTORY_COUNT) || null,
-        retentionMinutes: Number(c.env.HISTORY_RETENTION_MINUTES) || null,
+        maxSavedHistoryCount: retention.maxSavedHistoryCount,
+        retentionMinutes: retention.retentionMinutes,
+        maxCountSource: retention.maxCountSource,
+        retentionSource: retention.retentionSource,
       },
       storage: { totalBytes: bytes, totalFileSizeMB: stats.totalFileSizeMB },
       counts: {
@@ -317,7 +508,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
         active: stats.activeCount,
         starred: stats.starredCount,
         deleted: stats.deletedCount,
-        byType,
+        byType: views.byActive,
       },
       // 清理可观测性（F11）：lastRunAt=null 说明从来没跑过；lastError=null 说明上轮无失败
       // （cleanup 正常时写空串，这里归一化）；游标非 0 = 该阶段本轮没跑完、下轮续跑。
@@ -335,9 +526,19 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   });
 
   // GET /ui/api/poll —— 变更信号（前端据此决定要不要重拉列表）
-  guarded.get('/ui/api/poll', async (c) => Response.json(await readChangeMarker(c.env.DB)));
+  //
+  // 顺带回传服务端时间：官方客户端在**时钟差 > 5 分钟**时会中止历史同步（docs/protocol.md），
+  // 那是「同步不动」最常见的根因之一，而界面此前没有任何地方能看到这个差。
+  // 放在这里是因为它本来就被周期性调用——不必为此新增端点，也不必多一次请求。
+  guarded.get('/ui/api/poll', async (c) =>
+    Response.json({ ...(await readChangeMarker(c.env.DB)), serverTime: new Date().toISOString() }),
+  );
 
   app.route('/', guarded);
+
+  // 后台维护端点（完整性自检 / 保留策略）：必须在 `app.route('/', guarded)` **之后**注册，
+  // 否则 `/ui/api/*` 的守卫中间件排在它们后面，鉴权静默失效（见 src/ui/maintenance.ts 头部说明）。
+  app.route('/', createUiMaintenanceRoutes());
 
   // `/ui/*` 的兜底 404（只覆盖 UI 命名空间；协议路径的 404 语义不动）。
   // Hono 的路由器让更具体的路由优先，故这一条只在没有其它匹配时命中。

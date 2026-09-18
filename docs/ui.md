@@ -21,7 +21,8 @@
 | 4 | 数据文件归档 | **已具备**（R2 `history/{Type}_{Hash}/{file}`） |
 | 5 | **Web 历史界面** | **本轮新增**（见下） |
 | 5a | 列表分页、每页条数可选 | 新增：UI 层支持 20/50/100/200，官方 API 保持固定 50 |
-| 5b | 类型筛选 / 搜索 / 收藏筛选 / 日期范围 | 复用官方查询语义（`Types` 位掩码、`SearchText`、`Starred`、`Before/After`） |
+| 5b | 类型筛选 / 搜索 / 收藏筛选 / 日期范围 | 复用官方查询语义（`Types` 位掩码、`SearchText`、`Starred`、`Before/After`）；**日期范围本轮接入**：预设（今天 / 近 7 天 / 近 30 天）+ 自定义区间，边界按**本地日界**计算 |
+| 5k | **回收站**（查看已删除 / 恢复） | **本轮新增**：`deleted=true` 只看已删除行（`src/ui/query.ts`）；可恢复的（无数据文件）给出「恢复」，其余禁用并说明原因——判据与服务端守卫一致，见 §5 第 4 条 |
 | 5c | 多列排序（id/type/size/created_at） | 新增：UI 层支持 6 个排序字段 + 升降序；官方 API 仍只有 createTime/lastAccessed |
 | 5d | 收藏切换 | 复用 `PATCH`（星标/置顶），走与官方 PATCH 同一个实现 |
 | 5e | 删除 / 批量删除 | 单条复用 `PATCH isDelete`；批量是 UI 独有的选择集语义 |
@@ -71,7 +72,7 @@ Worker
 
 ## 3. 模块划分
 
-### 3.1 服务端（`src/ui/`，5 个模块，一个文件一个职责）
+### 3.1 服务端（`src/ui/`，6 个模块，一个文件一个职责）
 
 | 文件 | 职责 |
 |---|---|
@@ -79,6 +80,7 @@ Worker
 | `guard.ts` | 鉴权：会话 Cookie 或 Basic；401 的响应形状与失败路径的请求体排空 |
 | `query.ts` | 只读查询层：参数解析、白名单排序、LIKE 转义、分页、按类型计数、变更信号。拥有 `UiHistoryItem` / `UiListQuery` 等类型 |
 | `routes.ts` | 路由装配：把 HTTP 映射到上面三者 + 复用协议层的 `HistoryDb`/`R2Storage`/`applyHistoryUpdate` |
+| `maintenance.ts` | 维护面：数据完整性自检（R2 列举 × D1 期望目录差集）与保留策略的在线读写（写 Meta 覆盖，0 = 关闭该阶段，空 = 回落部署环境变量） |
 | `notFound.ts` | `/ui/*` 未匹配路径的 404 页（只覆盖 UI 命名空间，不碰协议 404 语义） |
 
 共享层的小幅开放：`db.ts` 导出 `rowToEntity`/`DbRow`（界面按自己的排序读同一张表，若另写一份映射，
@@ -88,13 +90,14 @@ Worker
 
 ### 3.2 前端（`public/ui/`，真文件 + 原生 ES 模块，无构建步骤）
 
-共 32 个资源：`public/ui/` 下 31 个（2 个 HTML + 6 张样式表 + 19 个 JS 模块（10 个顶层 + 9 个组件）
+共 36 个资源：`public/ui/` 下 34 个（2 个 HTML + 6 张样式表 + 22 个 JS 模块（13 个顶层 + 9 个组件）
 + `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest`），
-外加站点根的 `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）。
+外加站点根的 `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`
+（Cloudflare 静态资源的响应头：CSP/安全头 + 缓存策略——这批文件不经过 Worker，只能在那里声明）。
 
 | 文件 | 职责 |
 |---|---|
-| `index.html` / `login.html` | 页面外壳与挂载点；主题在首帧前由内联脚本定好（深色用户不会看到白闪） |
+| `index.html` / `login.html` | 页面外壳与挂载点；主题在首帧前由阻塞式的 `/ui/js/theme-init.js` 定好（深色用户不会看到白闪） |
 | `css/tokens.css` | 设计令牌：颜色（浅/深）、字号阶梯、间距、圆角、阴影、时长与缓动 |
 | `css/base.css` | 重置、排版、`:focus-visible`、跳转链接、微标签 |
 | `css/layout.css` | 骨架：顶栏、统计条、工具栏、结果区、页脚 |
@@ -103,7 +106,9 @@ Worker
 | `css/auth.css` | 登录页专属样式（列表页不加载） |
 | `js/api.js` | `/ui/api` 调用封装、类型归一化、401 统一跳登录 |
 | `js/filters.js` | 筛选状态 ⇄ URL（可链接、可后退、刷新不丢） |
-| `js/store.js` | 状态容器（订阅制），不掺 DOM 不掺网络 |
+| `js/store.js` | 状态容器：`get` / `set`，不掺 DOM 不掺网络。**刻意不提供订阅**——此前有过一个 `subscribe()` 而全仓无人调用；「看起来像响应式、实际全靠手动 `render()`」的接口只会误导下一个人（真要改成订阅驱动，得连同组件的重建策略一起设计） |
+| `js/signalr.js` | 原生 SignalR 推送通道（`createPushChannel`）：票据换 WebSocket、`\x1e` 分帧、30 秒心跳（DO 静默 60 秒即断）、退避重连。**轮询不被关掉**——在线时它降级为 60 秒看门狗（见 §3.3 第 8 条） |
+| `js/latest.js` | 竞态守卫（`createLatestGate`）：一次往返的「**最新请求胜出**」——`begin()` abort 掉上一个请求并给出序号，`isCurrent(ticket)` 决定这次结果是否落地。列表 / 统计 / 变更信号各持一个实例（见 §3.3 第 6 条） |
 | `js/dom.js` | DOM 工具。**不提供任何插入 HTML 的途径**（见 §7） |
 | `js/icons.js` | 图标路径常量表（不用 emoji；含原地成功态用的 `check`） |
 | `js/clipboard.js` | 剪贴板写入（文本 / 图片）：安全上下文探测、非 PNG 转码、失败降级与**带原因的判别结果**（`{status, reason}`：`unsupported` 与 `failed` 分别对应「换环境」和「权限/激活问题」，并把底层原因带进提示，不混成一句「不支持」） |
@@ -120,6 +125,8 @@ Worker
 | `js/main.js` | 装配点：唯一知道「谁是谁」的地方；`actions` 返回「是否做成」供组件呈现，另承载 `/` 快捷键与翻页/改筛选后的滚动定位 |
 | `js/login.js` | 登录页逻辑 |
 | `js/next-target.js` | 登录后「下一跳」的判定（纯函数 `resolveNext`）：只接受**同源**目标，否则回落站内默认页。独立成文件是为了能被测试直接覆盖（见 §7） |
+| `js/theme-init.js` | 首帧前把主题写进 `<html data-theme>` 的**经典脚本**（不是模块：模块默认 defer，会晚于首帧）。外链而非内联，CSP 才能保持 `script-src 'self'` |
+| `_headers` | 静态资源的响应头：CSP（`default-src 'none'` + 逐项白名单）、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的短 TTL + `stale-while-revalidate`、图标/manifest 的长缓存 |
 
 ### 3.3 前端交互约定（改动这些地方前先读）
 
@@ -129,7 +136,27 @@ Worker
 2. **原地反馈优先于提示条。** 用户按的是哪个控件，结果（进行中 / 成功）就落在哪个控件上（`setPending` / `flashSuccess`）；提示条只承载需要解释或跨控件的反馈（错误、降级）。
 3. **同一视图内的刷新按行对账。** `list.js` 用内容签名（`signature()`）比对，未变化的行**不重建**——重建成整表会让每 10 秒一次的轮询重载缩略图、打断动画、丢掉焦点。新视图（翻页/改筛选）才整表重建并错峰入场。
 4. **对话框的结算不依赖 `close` 事件。** 主路径（确认 / 取消）在**决定的当下**结算 Promise，`close` / `cancel` 只作旁路兜底（Esc、点背景）。依赖事件会让「事件不来即永不结算」，调用方 `await` 之后的收尾（提示、刷新）整段丢失——实测 headless Chromium 上 `dialog.close()` 后 `close` 事件就不来。
-5. **删除成功后行就地收掉**（`list.removeItem`），随后静默刷新补齐并对其余行对账；等下一次整页刷新才消失会读成「点了没反应」。
+5. **删除成功后行就地收掉**（`list.removeItem`），随后静默刷新补齐并对其余行对账；等下一次整页刷新才消失会读成「点了没反应」。收行时**必须把焦点交给邻居**：焦点原本在被移除的按钮上，不管就会落到 `<body>`，键盘用户得从页面开头重新 Tab（`removeItem` 因此会记住「哪个操作」并在邻居行里找同一个按钮，都没有时交给空状态的主按钮）。
+6. **每次列表 / 统计 / 变更信号的往返都过 `latest.js` 的守卫**：`begin()` 拿 ticket、`isCurrent()` 通过才允许写回 store，且 `catch` 里要先看 `signal.aborted`（被取代不是失败）。少了这一步就是「陈旧响应覆盖新状态」——实测复现过：URL 与筛选控件说 Text、列表里是 46 行图片，且不会自愈。
+
+7. **推送是轮询的加速器，不是替代品。** 可见时用 `/ui/api/hub-ticket` 换票据、建 WebSocket
+   （`js/signalr.js`：`\x1e` 分帧、30 秒心跳——DO 静默 60 秒即断、退避重连），收到任何广播都走
+   **与轮询完全相同的那次刷新**（增量对账只有一份实现），并对广播做 300ms 尾沿去抖——批量写是
+   **逐条广播**的，不去抖会让一次「批量收藏 200 条」连开 200 次列表请求。连接在线时轮询降为
+   60 秒看门狗；断线、拿不到票据（503）、环境不支持——失败都自动回到 10 秒轮询，且**连续失败
+   5 次后停止重试**（坏环境里每 ≤60 秒白试一次 ≈1.4k 请求/天），回前台重新尝试。
+   **轮询代码不会被删**：看门狗的存在就是为了「广播没到」这种情况（DO 休眠、代理掐连接）。
+8. **后台标签页主动断开推送。** 隐藏页的定时器被浏览器节流到 ≥1 分钟，30 秒心跳必然漏掉 60 秒静默
+   窗口，那条路会退化成「断开→退避重连」的抖动（每次重连 = 一次票据 POST + 一次 WS + 一次 DO 唤醒），
+   比它省下的轮询还贵，且连接不断时 DO 永不休眠（计费）。隐藏期间交给 30 秒轮询兜底。
+9. **行内开关（收藏 / 置顶）就地更新、徽标同步。** 目标状态取**按下那一刻**的行数据（连点两次的
+   第二次必须反向）；`patchItem` 采纳服务端回传的元数据（`version`/`lastModified`/`lastAccessed`，
+   见 §5 第 7 条），并就地替换徽标容器——`signature()` 必须包含**会变**的展示字段（`lastModified` /
+   `lastAccessed`），否则轮询刷新后行不重建、时间停在首次渲染值（按「访问」排序时看起来像排序坏了）。
+10. **深链接 `#Type-<hash>`**：`hash` 空闲（筛选状态在 query string），打开即预览那一条；
+    打开预览时把当前记录写进 hash（可分享），关闭时清掉，避免刷新又弹出上一条。
+    ⚠️ 清 hash 依赖 `dialog` 的 `close` 事件：headless 的隐藏标签页里该事件不派发（页面被冻结），
+    故这条行为**只在真实浏览器可靠**，本机浏览器回归未覆盖到它。
 
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
@@ -164,14 +191,18 @@ Worker
 | POST | `/ui/api/login` | 表单登录，签发会话 Cookie | 400 请求体非法 / 401 凭据错误 / 500 未配置凭据 |
 | POST | `/ui/api/logout` | 清除本机 Cookie（公开端点，但会排空请求体）；**不吊销已泄露的令牌**，撤销手段见 §4 | — |
 | GET | `/ui/api/session` | 探测登录状态（**总是 200**，用 `authenticated` 表达） | — |
-| GET | `/ui/api/history` | 列表：`page` `pageSize`(≤500) `types` `search` `starred` `after` `before` `sort` `order` `includeDeleted` | 400 参数非法 |
+| GET | `/ui/api/history` | 列表：`page` `pageSize`(≤500) `types` `search` `starred` `after` `before` `deleted` `sort` `order` `includeDeleted` | 400 参数非法 |
 | GET | `/ui/api/history/:type/:hash` | 单条元数据（**正文完整**） | 400/404 |
-| GET | `/ui/api/history/:type/:hash/data` | 数据文件；`?download=1` 走附件 | 404 `not_found` / 404 `data_missing` |
+| GET | `/ui/api/history/:type/:hash/data` | 数据文件；`?download=1` 走附件。**支持 Range**（单区间 206 + `content-range` + `accept-ranges`；后缀区间 `bytes=-n`；不可满足 → 416 + `bytes */size`；多段 → 按 200 全量回退；协议侧的 `/file/{name}` 与 `/api/history/{id}/data` **有意忽略 Range**，见 F29b） | 404 `not_found` / 404 `data_missing` |
 | PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`） | 400/404/409 |
-| POST | `/ui/api/history/batch-delete` | 批量软删（≤200 条，逐条走同一条写路径）；**只接受 `application/json`** | 400 / 415（内容类型不是 JSON，审计残余 G3） |
-| GET | `/ui/api/statistics` | 官方统计 + 按类型分布 | — |
+| POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（≤200 条，逐条走同一条写路径）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
+| POST | `/ui/api/history/clear` | 清空历史：`{scope:'trash'\|'all'}`。trash = 只删已删除行并返回计数（不物化整批行）；all = 与协议 `DELETE /api/history/clear` **共用** `historyOps.clearAllHistory`（删行 + 整棵 `history/` 前缀清理）。**不逐条广播**（上游的广播触发点清单里没有 clear，见 §6 的说明；跨标签页收敛靠 `/ui/api/poll` 的计数变化） | 400 / 415 |
+| POST | `/ui/api/hub-ticket` | 签发一张 Hub 连接票据（`{token, path}`），供前端建立 WebSocket；DO 打不通时 503（前端据此继续轮询） | 503 |
+| GET | `/ui/api/integrity` | 数据完整性自检：`{checkedAt, recordsWithData, historyObjects, missingCount, missing[], missingTruncated}`。成本 = 1 次 D1 + `ceil(对象数/1000)` 次 R2 列举（**不逐条 HEAD**） | — |
+| PUT | `/ui/api/settings` | 保留策略的在线调整：`{retention:{retentionMinutes, maxSavedHistoryCount, retentionSource, maxCountSource}}`；`null` = 清除覆盖、`0` = 关闭该阶段。**没有对应的 GET**：读取走 `/ui/api/info` 的 `retention`（同一份 `readRetentionSettings`，连通来源字段一起给） | 400 / 415 |
+| GET | `/ui/api/statistics` | 官方统计 + 按类型分布。**两个计数键口径不同**：`byType` 随 `?deleted=true` 走（工具栏的类型计数要与当前视图同源），`byTypeActive` **恒为活跃口径**（统计条「存储占用」的明细用它——已删记录的 R2 文件在软删时就删了） | 400 参数非法 |
 | GET | `/ui/api/info` | 部署信息（客户端该填的地址、版本、传输、保留策略、存储；`cleanup` 为清理状态：`lastRunAt` / `lastError` / 各阶段游标） | — |
-| GET | `/ui/api/poll` | 变更信号 `{count, lastModified}` | — |
+| GET | `/ui/api/poll` | 变更信号 `{count, lastModified, serverTime}`——`serverTime` 供界面显示与本机的时钟差（官方客户端在 \|差\| > 5 分钟时中止历史同步） | — |
 
 四处刻意的设计：
 
@@ -182,13 +213,28 @@ Worker
    事故误删）。界面据此渲染「数据不可用」，而不是裂图或静默失败。
 3. **`sort` 用 `Object.hasOwn` 做白名单**：`'constructor' in SORT_COLUMNS` 为真（走原型链），
    随后把原生函数源码插进 `ORDER BY` → SQL 语法错误 500，白名单形同虚设（审查代理发现，已修）。
-4. **删除是软删，不是立即清除**：`PATCH {"isDelete":true}`（单条与批量同一条写路径）只置 `IsDeleted=1`
-   并清 R2 数据目录；D1 行在 **30 天**（`cleanup.ts` 的 `DELETED_RETENTION_DAYS`）内仍存在，
+4. **删除是软删，但数据文件立即清除**：`PATCH {"isDelete":true}`（单条与批量同一条写路径）置 `IsDeleted=1`
+   并**立即删除 R2 数据目录**；D1 行在 **30 天**（`cleanup.ts` 的 `DELETED_RETENTION_DAYS`）内仍存在，
    **正文经协议 API 仍可读**，到期才由清理任务硬删（D1 行 + R2 目录）。这是与上游 `HistoryCleaner`
-   一致的语义（协议面对齐，不单边偏离）；界面的删除确认文案按此表述（「服务端仍保留该记录（软删），
-   30 天后才彻底清除」），**不承诺「立即彻底删除」**。要做「立即彻底清除」得作为新功能立项（D1 与 R2 双清）。
+   一致的语义（协议面对齐，不单边偏离）。界面的确认文案按**有无数据文件**分开表述：
+   带数据文件的记录 →「会立即清除数据文件（不可恢复），仅元数据保留 30 天后彻底清除」；
+   无数据文件的内联文本 →「30 天内还能从回收站恢复」——统一写成前者会让人以为内容还在、可以反悔，
+   统一写成后者又会让可恢复的记录被白白放弃。
+   **回收站视图**（`deleted=true`）据此设计：所列记录里只有「数据文件为空」的那些能被恢复
+   （`db.ts` 的守卫：`isDelete=false` 且 `existing.transferDataFile !== ''` → 404），
+   界面按 `hasData` 判定并禁用不可恢复的按钮、给出原因，而不是让用户白点一次 404。
    注意两个期限不是同一个数字：活跃记录的保留期是 `HISTORY_RETENTION_MINUTES`（默认 7 天，
    过期的未收藏/未置顶记录被软删），30 天是**已删除记录**的硬删期限。
+
+5. **`/ui/api/*` 的 JSON 一律 `no-store`，数据端点例外**：列表/统计/变更信号都是「随时会变」
+   的私有数据，被浏览器缓存住只会让界面显示陈旧内容（返回键回退时最明显）；判据是「响应尚未自带
+   `cache-control` 才补」，故数据端点自带的 `private, max-age=60`（预览/缩略图复用）自动落在例外里。
+   变更信号 `/ui/api/poll` 顺带回传 `serverTime`：官方客户端在时钟差 > 5 分钟时会中止历史同步，
+   界面的「部署信息」把它显示出来（不为此新增端点，也不多一次请求）。
+6. **搜索串上限 48 字节（`MAX_SEARCH_BYTES`）在入口翻译成 400**：`normalizeSearchText` 抛的是
+   `InvalidQueryValueError`，若不在查询层翻译成 `UiQueryError`，它会刺穿路由的映射变成 500
+   （实测：49 字节的搜索词）。协议侧对同一个错误是 400，两边语义一致；界面把这条错误翻译成
+   「搜索词过长（约 16 个汉字）」。
 
 ---
 
@@ -197,10 +243,18 @@ Worker
 | 项 | 理由 |
 |---|---|
 | `/dav` 前缀别名 | 本项目的 WebDAV 端点在站点根，`PROPFIND` 的 `href` 是从根计算的绝对路径。要让 `/dav` 前缀可用，必须改写协议输出（href 前缀）——为一个迁移便利去碰协议保真不值得。迁移方式：客户端服务器地址填 `https://<host>/`（界面「部署信息」里直接给出并可复制） |
-| 界面走 SignalR Hub 实时推送 | 需要给 DO 的连接鉴权加一条 Cookie 通道，即改动协议侧代码；收益只是「更快一点」。改用 `/ui/api/poll` 的变更信号（可见 10s / 隐藏 30s），完全隔离在 UI 面内 |
 | 服务端会话表 / 内存会话 | Workers 没有可靠的进程内状态；签名 Cookie 语义等价且零存储（见 ADR D13） |
 | Web 字体 | 目标是国内网络：外部字体 CDN 大概率加载失败，会出现「先无字后有字」的闪烁，比系统栈更糟。层级由字号阶梯（12/13/14/18/30px）与 `tabular-nums` 承担 |
 | 列表缩略图预检 | 缩略图用 `loading="lazy"`，对象缺失时由 `<img>` 的 `error` 降级为占位——不为每一行预先发一次探测请求 |
+
+> 反向清单（后端**已具备但界面未接**的能力、以及可新增的端点与改造）见 `docs/backend-gaps.md`；
+> 其中本轮已实施的部分记在 `docs/progress.md`。
+>
+> **「界面走 SignalR Hub 实时推送」已从本表移除**（本轮实施，见 §3.3 第 8 条）：原先的理由
+> （「需要给 DO 的连接鉴权加一条 Cookie 通道，即改动协议侧代码」）经复核不成立——DO 的连接鉴权
+> 本来就接受 `?id=<token>`，票据由 `/ui/api/hub-ticket` 走会话 Cookie 签发，协议侧一行未改。
+> 保留的纪律是：**轮询不关**（连上时 60 秒看门狗、未连上 10 秒、隐藏 30 秒），且页面切到后台
+> 主动断开推送通道（后台定时器被节流会退化成「断开→重连」抖动，比它省下的轮询还贵）。
 
 ---
 
@@ -225,10 +279,10 @@ Worker
   而跳到站外——登录成功后与「已登录时打开登录页」两处 `location.replace` 都会中招。
   按 origin 判定后 `//evil.example`、`/\evil.example`、`javascript:alert(1)` 全部落回站内默认页 `/ui/`，
   站内目标（如 `?next=/ui/?x=1`）照常可用。回归用例见 `test/next-target.test.ts`。
-- **失败路径排空请求体**：受守卫的 `PATCH` / `batch-delete` 都带 body，一旦在未读完入站体时就发出响应，
+- **失败路径排空请求体**：受守卫的 `PATCH` / `batch-update` / `clear` 都带 body，一旦在未读完入站体时就发出响应，
   Workers 会抛 `Can't read from request stream after response has been sent.` 并让**本 isolate 的后续请求**
   以 503 结束。已在守卫的 401/500、login 的 500、logout、三条 400 早退路径逐一排空；
-  另有 `batch-delete` 的非 JSON → 415 早退（同样先排空，见 §5 的接口表）。
+  另有 `batch-update` / `clear` 的非 JSON → 415 早退（同样先排空，见 §5 的接口表）。
   `test/ui.test.ts` 里有对应的可观测回归用例（400/401 之后紧跟一个正常请求，断言仍是 200）。
 - **`noindex`**：私有实例，不该被收录。
 - **base64url 末字符的填充位不参与解码**：32 字节签名编成 43 个字符（43×6 = 258 位，比 256 多 2 位），末字符只用高 **4** 位、低 **2** 位是填充位，而 `atob` 忽略填充位。因此「只改末字符填充位」的篡改解码后字节完全相同、验签照样通过——**这不是漏洞**（伪造仍需知道 HMAC），但用它来构造「伪造 Cookie」的测试会随签名值随机通过/失败（改末位约 1/4 命中同一字节，而签名含 `exp`、每轮都不同）。`test/ui.test.ts` 已改为篡改签名首位，并额外断言「篡改后的 base64 解码成不同字节」——把前提本身也测出来，这类失败就不能再靠运气出现。
@@ -309,10 +363,13 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | error | 就地呈现并说明原因（`复制图片失败：<原因>`），登录错误带 `role="alert"` 且焦点回到出错的字段 |
 | empty | 设计过的空状态：说明 + 出口按钮（清除筛选 / 如何配置客户端） |
 | **首次加载失败** | **本轮补上**：此前会把骨架屏永远留在页面上（正是清单点名的「无限骨架」）→ 现在给出「加载失败 + 原因 + 重试」；已有内容时则保留旧数据只给一条提示（比清空更正确） |
+| **失去联系**（轮询/统计失败） | **本轮补上**：这两条链路是**静默**的（10s 一次，没有 UI 事件），失败此前没有任何迹象，页面会一直显示旧数据让人以为「服务器上没有新内容」。现在显示一条 `role="status"` 的横幅，成功的那次请求把它收掉 |
+| 回收站为空 / 收回筛选 | 空状态按语境换文案与出口：回收站给「返回历史记录」，筛选态给「清除筛选条件」（含时间范围与回收站两个新维度） |
 
 ### 9.4 深色模式
 
-- ✅ 令牌层整体重映射（组件层一行未改，符合「level-2 token remap only」）+ `<head>` 里的阻塞式内联脚本在首帧前定好主题（实测 5 次重载 `data-theme` 均在首帧前就位、CLS 全 0）。
+- ✅ 令牌层整体重映射（组件层一行未改，符合「level-2 token remap only」）+ 首帧前定主题（实测 5 次重载 `data-theme` 均在首帧前就位、CLS 全 0）。该脚本**本轮从内联外置**为 `/ui/js/theme-init.js`：外链才能让 CSP 保持 `script-src 'self'`（内联要么开 `'unsafe-inline'`、要么维护 hash）。它必须是**经典脚本**——`type="module"` 默认 defer，会晚于首帧。
+- ✅ **`color-scheme` 跟随生效主题**（本轮修）：在 `tokens.css` 的 `:root` 与 `:root[data-theme="dark"]` 各声明一次。此前只有 `base.css` 里一句 `color-scheme: light dark`（跟随**系统**），于是浅色系统 + 应用内切深色时，原生 `<select>` 下拉、滚动条、数字输入的 spinner 仍是浅色。实测：改前两种 `data-theme` 下计算值都是 `light dark`，改后分别为 `light` / `dark`。
 - ⚠️ 偏离：没有改用 `light-dark()`。它能省掉一半令牌，但令牌的**派生项**（类型色、阴影）仍需成对书写；更关键的是不支持该函数的浏览器会丢掉整条声明、调色板直接失效，而当前写法在任何浏览器都成立。
 
 ### 9.5 让页面「像成品」的小东西
@@ -370,13 +427,23 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 - **行内操作在窄屏恒为可见**（不依赖 hover），触屏（`pointer: coarse`）下所有按钮命中区 44px。
 - **语义**：改了 `display` 会让 `<table>` 的隐式角色丢失，故 `role="table" / rowgroup /
   row / columnheader / cell` 已在 `list.js` 显式补齐。
+- **触屏平板（>720px + `pointer: coarse`）不是窄屏**：卡片重排只在 ≤720px 生效，所以平板仍是表格；
+  而桌面操作列（116/88px）是按 30px 图标按钮摊的，触屏上按钮 44px、图片/文件行有 **4 个**按钮
+  （4×44 + 3×4 间距 = 188px 内容宽，再加单元格 24px 内边距 = **212px**）塞不进去。
+  本轮修法**不是**把重排条件加上 `coarse`（那会让 1024px 的 iPad 也变卡片、每屏只放几行），
+  而是**在 coarse 下把操作列按内容放宽到 212px**，超出部分从内容列（弹性列）取。
+  实测（**4 按钮的 Image 行**，用 Text 行的 3 按钮行验会得出假结论）：810px 下操作列 88 → **212px**、
+  越界按钮 **0**（188px 时是 1 个按钮越出 12px）；721 / 810 / 1024 三档内容列 83 / 172 / 326px、文档溢出 0。
+- **触屏命中区补齐**：`.th-sort`（窄屏卡片模式下它就是排序条，命中区只有 42×19）与 `.search__clear`
+  （写死 24×24）此前漏在 `pointer: coarse` 白名单外，是全页唯一两处低于 44px 的可点控件。
+  现在分别是 **42×44 / 44×44**；清空按钮变大后输入框右侧内边距同步让位（48px），文字不会钻到按钮下面。
 
 ## 10. 验证记录
 
 | 项 | 结果 |
 |---|---|
 | `npx tsc --noEmit` | 干净（含 `test/**`） |
-| `npm test` | **全部 18 套件通过**（用例数见命令输出；`test/ui.test.ts` 覆盖 `/ui/api/*` 的鉴权、列表语义与写操作；`test/next-target.test.ts` 覆盖登录跳转的判定） |
+| `npm test` | **全部 20 套件通过**（用例数见命令输出；`test/ui.test.ts` 覆盖 `/ui/api/*` 的鉴权、列表语义、回收站视图与写操作；`test/ui-logic.test.ts` 覆盖筛选/格式化/归一化等纯逻辑；`test/next-target.test.ts` 覆盖登录跳转的判定） |
 | 横向溢出（320/375/414/768/1024/1440） | **全部 0px**（修复了工具栏与分页在 320px 下溢出 185px） |
 | 对比度（浅/深，9 类文本） | 全部 ≥ 4.5:1（修复了三级文本 2.92 / 4.05 两处不达标） |
 | 区块重叠 / 非预期裁切 | 0（几何断言） |
@@ -385,10 +452,15 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 登录跳转 `?next=`（headless Chromium 导航日志 + 纯函数用例） | 打开 `/ui/login.html?next=/%5Cevil.example`（反斜杠变体，浏览器解析为 `http://evil.example/`）时，**零交互**的已登录跳转落在 `/ui/`（同源），没有站外跳转；`//evil.example`、`javascript:alert(1)`、`https://evil.example`、空值同样落回默认页，`/ui/?x=1` 与 `/` 正常返回；页面零 console 错误。用例：`test/next-target.test.ts` |
 | 窄屏行布局（触屏模拟） | 内容列 84px → **239px@375 / 278px@414**、行高 170px → **106px**、操作按钮 **44×44**（独占整行、换行确定）、元信息「类型 · 时间」可见、表头排序保留、溢出 0 |
 | 桌面（1440） | 行 55px、七列齐全、`.cell-content__meta` 隐藏——窄屏改动对桌面零影响 |
-| 触屏命中区（`pointer: coarse`） | `.btn`/`.select` 44px、`.icon-btn` 44×44（含 `flex: none`）、星标 44×44、分段控件 40px |
+| 触屏命中区（`pointer: coarse`） | `.btn`/`.select` 44px、`.icon-btn` 44×44（含 `flex: none`）、星标 44×44、分段控件 40px、**`.th-sort` 42×44 / `.search__clear` 44×44**（本轮补） |
+| **A 批修复轮**（2026-09-13，详见 `docs/progress.md` §33） | 竞态：同一实验（首个列表请求延迟 2.5s + 120ms 内改两次筛选）下 3.5s 时列表**仍是 Text/50 行**（改前被迟到的图片响应改成 46 行、头部计数同样被改写）；焦点：删除确认后落在**邻居行的删除按钮**（改前 `document.activeElement === BODY`）；`color-scheme` 随生效主题（`light`/`dark`，改前恒 `light dark`）；深色销毁性确认按钮对比 **5.50:1**（改前白字 2.77:1）；列表页「部署信息」的说明文字 12px + 弱化色（改前 14px 无样式）；810px + 触屏操作列 88→**212px**（按 4 按钮的 Image 行算）、越界按钮 **0**（188px 时越出 12px）；18 个 JS 资源**全在 22–24ms 内开始**（改前三层瀑布 20/39/50–60ms） |
+| 跨文件契约守卫（`ui-contract`，9 例） | ① 每页 `modulepreload` == 该页 import 闭包；② BEM 类名**按页**双向核对（用到的必须在**该页加载的样式表**里有定义、定义了的必须有人用）；③ CSS 消费的 `data-*`/`aria-*` 必须有生产者（JS 或 HTML）；④ 用 Node 原生 ESM 解析器逐个解析模块（只容忍顶层碰 DOM 的运行时错误）。**四次变异实验**（删一行预载 / 加一条死类 / 加一条没人写的属性选择器 / 把 TS 语法写回 `.js`）均按预期变红 |
 | 无障碍底线（baseline-ui 逐条） | 动效关闭下内容完整；无「仅靠 hover」的控件；Tab 全站有焦点环、无死环（站数随数据变化，定义见 §9.8 第 3 条）；`<dialog>` 释放焦点；网格轨道 `minmax(0, 1fr)`；`overflow-x: clip` 兜底；图片容器预留高度 |
 | **交互打磨轮**（headless Chromium + 本地实例，逐项断言） | 登录流带 `?next=` 回到原 URL；排序指示器随 `th[aria-sort]` 出现（此前是死状态）；星标就地更新（行 DOM 节点不变）且播一次弹出；复制成功后按钮本身变「已复制」；刷新/删除按钮请求中转圈（同步采样 `data-loading`/`aria-busy`，请求结束后清除）；删除对话框初始焦点在「取消」、请求中不关闭、成功后行就地消失并提示「已删除」且**静默刷新确实发出**（页面请求序列 PATCH → /ui/api/statistics → GET /ui/api/history）；`Shift+点击` 范围选择 4 行；行点击开预览（焦点落主操作）、Esc 与点背景均可关闭；选中文字时点行不触发预览；部署信息复制按钮就地成功态；翻页与跳页（跳页后输入清空并失焦）；连点 6 次刷新提示封顶 4 条且页面不冻结；对话框实例唯一（`.dialog--narrow` = 1，排除重复模块图）；`prefers-reduced-motion` 下动画归零、删除照常收行（无 `data-leaving` 僵尸行） |
-| 本轮门禁 | `npx tsc --noEmit` 干净；`npm test` **全部 18 个套件通过**（用例数见命令输出；含本轮新增的 `clipboard`） |
+| 当轮门禁（A 批，历史的数字不改写） | `npx tsc --noEmit` 干净；`npm test` 全部套件通过（当轮为 19 个测试文件；用例数见命令输出，含当轮新增的 `clipboard`） |
+| **系统性完善轮**（2026-09-13，详见 `docs/progress.md` §34） | 时间范围：预设 `range=today` 请求携带本地日界 `after`、自定义区间带 `after/before`（`?range=custom&after=1788969600000` → API `after=1788969600000`）；回收站：`?deleted=1` → API `deleted=true`、行内只剩「恢复」（带数据文件的图片记录全部 `disabled` 且 tooltip 说明原因）、恢复一条后计数 −1 且行就地消失并提示「已恢复」；**类型计数与视图同源**：回收站工具栏 `全部 1064 / 文本 667`（已删口径），同一屏的存储明细仍是 `文本 742`（活跃口径）；切回活跃视图 `1009 / 742`；快速切换 6 次两个方向都正确；星标一条后统计条「已收藏」251 → **252 就地更新**（不再等列表刷新）；选择列在回收站隐藏（`display: none`）；失联横幅全程 `hidden`；工具栏在 1440 / 375 两档无横向溢出（自定义日期行独占一行，桌面 36 → 84px）；新元素对比度 —— 统计条回收站入口 **5.47（浅）/ 6.62（深）**、失联横幅 **5.66 / 5.44**（均 ≥ 4.5:1）；登录页在外置主题脚本 + CSP 下三条路径全通过（空提交本地校验、错口令 401 文案、成功登录回列表），零异常 |
+| **本轮静态投递**（`_headers`） | 实测响应头：`content-security-policy`（`default-src 'none'` + 逐项白名单）、`x-content-type-options: nosniff`、`referrer-policy: same-origin`、`cache-control: public, max-age=300, stale-while-revalidate=86400`（js/css）；页面在**零 CSP 违规**下加载（CDP `Log.entryAdded` + `Runtime.exceptionThrown` 全量采集，0 条） |
+| **前端 lint**（`npm run lint`，eslint 只覆盖 `public/ui/js`——该目录不在 `tsc` 的 include 里） | 首次运行抓到 `buildActions(item, actions, ref)` 的 `ref` 从未使用（既有代码）；复核轮加上 `no-shadow` 后又抓到一处**真缺陷的成因**（见 §10 末的复核记录）：`refreshStats` 的局部 `const stats = await api.statistics(...)` 遮蔽了模块级组件实例，`stats.update(...)` 每次都抛 TypeError 被 catch 吞掉 |
 | **主世界错误采集**（CDP `Runtime.exceptionThrown` + `Log.entryAdded`） | 遍历改筛选 / 翻页 / 换排序（三条视图过渡路径）后 **0 异常**。采集方式说明：`page.on('console')` 在本 harness 抓不到任何条目（合成 `console.log` 亦无输出），隔离世界的 `window.onerror` 也看不到主世界——**只有 CDP 这条路可信**；本轮据此发现并修掉一个真实缺陷（见下） |
 
 **本轮修掉的两处「状态是死的」缺陷**（都不影响功能、只影响可信度，正因如此长期无人发现）：
@@ -424,3 +496,31 @@ harness 只能「关掉它」或「用 `app.cdp_url` 连一个显式拉起的实
 
 其余「版式」结论来自几何、对比度与命中测试的断言，不是肉眼看图；行内缩略图的降级路径在 headless 下需强制
 `loading="eager"` 才能触发（headless 不发懒加载请求），已在真实触发条件下验证。
+
+**复核记录（同日，外部复核指出）**：回收站视图里工具栏的**类型计数**与列表对不上——计数来自 `/ui/api/statistics`，
+而它统计的是**活跃记录**（`countByType` 写死 `IsDeleted = 0`）。顺着这条线发现并修掉两个真问题：
+
+1. **统计的绘制路径是死的**（既有缺陷，早于本轮）：`refreshStats()` 里 `const stats = await api.statistics(...)`
+   **遮蔽**了模块级的组件实例 `const stats = createStats(...)`，于是 `stats.update(...)` 在响应对象上找不到方法
+   → 每次调用抛 `TypeError` → 被同一个 `try` 的 `catch` 吞掉，末尾的 `toolbar.update(...)` 因此从未执行。
+   界面之所以看着正常，是因为 `render()`（列表刷新路径）顺手把统计也画了一遍——所以计数总是"慢一拍"，
+   而统计条的三个数字只在列表刷新时才更新。本轮给它加了 `setStale(true)` 后，失败被放大成
+   **「与服务器暂时失去联系」横幅误报**（每次统计刷新都会打开它）。
+   修法：局部改名 + 把绘制移出 fetch 的 `try`（真出渲染异常不该被当成网络失败）。
+   复验：星标一条记录，「已收藏」251 → **252 就地变化**（不再等下一次列表刷新）；全程 `notice.hidden === true`。
+2. **计数与视图不同源**：`/ui/api/statistics` 增加 `deleted=true`（与列表共用 `parseDeletedFlag`），
+   `countByType` 带上 `IsDeleted` 条件；前端把这份计数**打上视图标签**（`stats.view`），守卫站在**绘制点**
+   （`countsForView()`）——不一致时按「暂无计数」处理，而不是显示另一个视图的数字。
+   复验（headless Chromium，快速切换 6 次）：进回收站 `全部 1019 / 文本 635`、切回 `1009 / 740`，
+   两个方向都不再出现「显示另一套计数」或「空白」。
+3. **把这类遮蔽纳入 lint**：`no-undef` 抓不到（`stats` 确实有定义），`no-shadow` 能——已开（顺手抓出
+   `list.js` 的 `filter((node) => …)` 参数遮蔽，一并改名）。
+
+**评审记录（同日的只读设计评审）**：6 条**已复现**缺陷（陈旧响应覆盖新状态、删除后焦点丢到 `<body>`、
+810px+触屏按钮溢出操作列、`color-scheme` 不随主题、`.auth__note` 在列表页无样式、模块瀑布 3 层）、
+一批可机械核对的缺口（死规则/令牌缺口/命中区漏网/缩略图拉原图/静态资源无缓存与安全头）与四批完善方向，
+记在 `docs/progress.md` §32；其中 **A 批（竞态、焦点、主题跟随、死代码、触屏与预载 + 契约守卫）已在 §33 实施并实测**，
+**B/C/D 批的主体（尺寸与命中区令牌、遮罩与长时长令牌、`_headers` 与 CSP、静态资源缓存、缩略图阈值、
+失联状态、时间范围、回收站与恢复、删除文案口径、前端纯逻辑套件）已在 §34 实施并实测**；
+仍未做的只有 **L2 浏览器回归套件**（需要 `puppeteer-core` 等新依赖，且本环境的浏览器验证一直是手跑 + CDP 采集）。
+本节表格描述的是**已验证的事实**，与待办不要混读。

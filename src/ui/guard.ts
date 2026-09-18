@@ -28,7 +28,7 @@ export async function authenticateUi(
 
 // 未配置凭据时给出可诊断的 500（与协议端点同一条走查路径），而不是让人对着 401 反复猜。
 //
-// **失败路径必须先排空请求体**：受守卫的 PATCH / batch-delete 都带 body，一旦在未读完入站体时
+// **失败路径必须先排空请求体**：受守卫的 PATCH / batch-update 都带 body，一旦在未读完入站体时
 // 就发出响应，Workers 运行时会抛「Can't read from request stream after response has been sent.」
 // 并让本 isolate 的**后续请求**以 503 结束（auth.ts 的 drainRequestBody 注释记录了实测过程；
 // index.ts、durable/SyncClipboardHub.ts 的各提前返回点同样处理）。会话过期后在页面上点一次收藏

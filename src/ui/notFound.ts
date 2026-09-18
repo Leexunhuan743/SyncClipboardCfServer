@@ -38,8 +38,17 @@ const HTML = `<!doctype html>
 `;
 
 export function notFoundPage(_env: Bindings): Response {
+  // 这一页由 Worker 出（不是静态资源），拿不到 `public/_headers` 里的那套头，故在这里单独补齐：
+  // 它没有任何脚本，故 `script-src 'none'`；两处内联 style 是这页唯一的"样式"，与其为它开
+  // 'unsafe-inline' 去放宽整站策略，不如就地允许（这页不含任何用户数据）。
   return new Response(HTML, {
     status: 404,
-    headers: { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' },
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'same-origin',
+      'content-security-policy':
+        "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    },
   });
 }

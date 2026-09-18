@@ -18,31 +18,55 @@ import { setPending, flashSuccess, isPending } from './toast.js';
 
 const ENTER_STAGGER_LIMIT = 12; // 超过 12 行就不再错峰：延迟累积会让第 50 行等两秒
 
+// 缩略图只对「小图」直接取原图。数据端点不做缩放（R2 透传），所以一条 32 MiB 的图片记录
+// 就是一整张 32 MiB 的下载——`loading="lazy"` 只推迟它，不减少它。超过阈值改用占位，
+// 要看原图走行内「预览」（那是一次**用户主动**的请求）。
+const THUMB_MAX_BYTES = 512 * 1024;
+
+function thumbPlaceholder(className, title, icon) {
+  return el('div', { class: `cell-content__thumb ${className}`, title }, [svg(iconPaths(icon), { size: 16 })]);
+}
+
 // 行的「内容签名」：只有这些字段变了才需要重建该行。
-// 不含 createdTime 这类只影响展示格式、由服务端保证不变的字段。
+// createTime 不在其中（它真的是常量）；但**修改/访问时间必须在内**——它们是这两个字段里
+// 变得最勤的（每次同步都推进 LastAccessed），不进签名会让轮询刷新后行不重建、
+// 两列时间停在首次渲染的值：按「访问」排序时时间会显得不单调，看起来像排序坏了。
 function signature(item) {
   return [
     item.type,
     item.starred,
     item.pinned,
+    item.isDeleted,
     item.size,
     item.hasData,
     item.textTruncated,
     item.dataName ?? '',
     item.text ?? '',
+    item.lastModified ?? '',
+    item.lastAccessed ?? '',
   ].join('\u0001');
 }
 
 // 行 → 该行当前的 item 与可变引用（收藏状态在行内就地更新，闭包不能拿旧对象）
 const rowRefs = new WeakMap();
 
+// 最近一次按下的行内操作与它所属的行（见 actionButton 里的说明）。
+let lastRowAction = null;
+
 function buildThumb(item) {
   if (item.type !== 'Image') return null;
 
   if (!item.hasData) {
-    return el('div', { class: 'cell-content__thumb cell-content__thumb--missing', title: '服务器上没有这条记录的图片数据' }, [
-      svg(iconPaths('warning'), { size: 16 }),
-    ]);
+    return thumbPlaceholder('cell-content__thumb--missing', '服务器上没有这条记录的图片数据', 'warning');
+  }
+
+  // 大图不拉原图：见 THUMB_MAX_BYTES 的说明
+  if (Number(item.size) > THUMB_MAX_BYTES) {
+    return thumbPlaceholder(
+      'cell-content__thumb--large',
+      `图片较大（${formatSize(item.size)}），点击预览查看`,
+      'image',
+    );
   }
 
   const image = el('img', {
@@ -55,9 +79,7 @@ function buildThumb(item) {
   image.addEventListener('error', () => {
     // 记录说 hasData，但对象已被清理（线上真实存在这种记录）——换成可读状态
     image.replaceWith(
-      el('div', { class: 'cell-content__thumb cell-content__thumb--missing', title: '数据不可用：文件已不在服务器上' }, [
-        svg(iconPaths('warning'), { size: 16 }),
-      ]),
+      thumbPlaceholder('cell-content__thumb--missing', '数据不可用：文件已不在服务器上', 'warning'),
     );
   });
   return image;
@@ -76,7 +98,9 @@ function buildFlags(item) {
     flags.push(el('span', { class: 'chip chip--neutral', text: '含数据文件' }));
   }
   if (item.textTruncated) flags.push(el('span', { class: 'chip chip--neutral', text: '长文本' }));
-  return flags.length ? el('div', { class: 'cell-content__flags' }, flags) : null;
+  // 恒返回容器（空容器由 CSS 的 `:empty` 隐藏）：收藏/置顶是行内开关，按下之后徽标要立刻跟上——
+  // 有稳定容器才能就地替换，而不是等下一次轮询重建整行（重建会丢焦点、重载缩略图）。
+  return el('div', { class: 'cell-content__flags' }, flags);
 }
 
 // 行内操作按钮：跑 action → 成功就地显示结果、失败留给 action 自己提示（toast）。
@@ -93,9 +117,13 @@ function actionButton({ action, label, icon, run, successLabel = null, disabled 
       disabled,
       onclick: async () => {
         if (isPending(button)) return;
+        // 记下「按的是哪一行的哪个操作」：删除要走确认对话框，等它关闭时焦点已经不在这一行了
+        // （showModal 把焦点搬进对话框，关闭时又还给那个**可能已被移除**的按钮），
+        // 所以来源只能在按下的当下记。
+        lastRowAction = { key: button.closest('tr')?.dataset.key ?? null, action };
         setPending(button, true);
         try {
-          const ok = await run();
+          const ok = await run(button);
           if (ok && successLabel) flashSuccess(button, { label: successLabel });
         } finally {
           setPending(button, false);
@@ -107,15 +135,23 @@ function actionButton({ action, label, icon, run, successLabel = null, disabled 
   return button;
 }
 
-function applyStarState(button, starred) {
-  const label = starred ? '取消收藏' : '收藏';
-  button.setAttribute('aria-pressed', starred ? 'true' : 'false');
+// 行内开关（收藏 / 置顶）：字段与文案成对出现——行内按钮、批量操作、就地更新三处都读这一份，
+// 各写一份必然出现「行内按钮说取消收藏、批量按钮说收藏」这类自相矛盾的界面。
+const TOGGLES = {
+  star: { field: 'starred', labels: { on: '取消收藏', off: '收藏' } },
+  pin: { field: 'pinned', labels: { on: '取消置顶', off: '置顶' } },
+};
+
+function applyToggleState(button, on, labels) {
+  const label = on ? labels.on : labels.off;
+  button.setAttribute('aria-pressed', on ? 'true' : 'false');
   button.setAttribute('aria-label', label);
   button.setAttribute('title', label);
 }
 
-// 重放收藏动画：同一个 data-pop 属性不会重启动画，故先删、强制回流、再置上。
-function playStarPop(button) {
+// 重放开关动画：同一个 data-pop 属性不会重启动画，故先删、强制回流、再置上。
+function playPop(button) {
+  if (!button) return;
   const icon = button.querySelector('svg');
   if (!icon) return;
   delete button.dataset.pop;
@@ -124,7 +160,24 @@ function playStarPop(button) {
   icon.addEventListener('animationend', () => delete button.dataset.pop, { once: true });
 }
 
-function buildActions(item, actions, ref) {
+function buildActions(item, actions) {
+  // 回收站里的行只做一件事：恢复。能否恢复由**服务端的守卫**决定——已删除且数据文件名为空
+  // （transferDataFile === ''）才允许把 IsDeleted 置回 0；带数据文件的记录在软删时已清掉数据，
+  // 服务端会返回 404，故这里直接禁用并说明原因，不让用户白点一次。
+  if (item.isDeleted) {
+    return el('div', { class: 'row-actions' }, [
+      actionButton({
+        action: 'restore',
+        label: '恢复',
+        icon: 'undo',
+        run: () => actions.onRestore(item),
+        successLabel: '已恢复',
+        disabled: item.hasData,
+        title: item.hasData ? '数据文件已随删除清除，不可恢复' : '恢复到历史记录',
+      }),
+    ]);
+  }
+
   const buttons = [
     actionButton({
       action: 'preview',
@@ -215,8 +268,10 @@ export function createList(actions) {
         sortableHeader('类型', 'type', 'col-type'),
         el('th', { scope: 'col', role: 'columnheader' }, [el('span', { text: '内容' })]),
         sortableHeader('大小', 'size', 'col-size'),
-        sortableHeader('时间', 'createTime', 'col-time'),
-        el('th', { class: 'col-star', scope: 'col', role: 'columnheader' }, [el('span', { class: 'sr-only', text: '收藏' })]),
+        sortableHeader('创建', 'createTime', 'col-time'),
+        sortableHeader('修改', 'lastModified', 'col-modified'),
+        sortableHeader('访问', 'lastAccessed', 'col-accessed'),
+        el('th', { class: 'col-star', scope: 'col', role: 'columnheader' }, [el('span', { class: 'sr-only', text: '收藏与置顶' })]),
         el('th', { class: 'col-actions', scope: 'col', role: 'columnheader' }, [el('span', { class: 'sr-only', text: '操作' })]),
       ]),
     ]),
@@ -232,22 +287,27 @@ export function createList(actions) {
   let selection = new Set();
   // 范围选择的锚点（Shift+点击的起点）
   let anchorIndex = null;
+  // 收行后焦点该落到哪里：removeItem 记下（哪个操作、第几行），调用方在**对话框关闭之后**
+  // 调 restoreFocus() 落地——模态期间文档是 inert 的，那时候 focus() 会被忽略。
+  let pendingFocus = null;
   // 选择变化时也要知道「总数/是否在筛选中」，否则头部计数会被当前页长度覆盖
   // （实测缺陷：勾选任意一行后，「共 788 条记录」变成「共 50 条记录」）。
   let lastHead = { total: 0, filtered: false };
 
-  function buildEmptyState({ filtered, search }) {
-    const title = filtered ? '没有符合条件的记录' : '还没有任何记录';
-    const hint = filtered
-      ? search
-        ? `没有匹配「${search}」的记录。可以换个关键词，或清除筛选条件。`
-        : '当前筛选条件下没有记录。可以清除筛选条件查看全部。'
-      : '在任意设备上复制内容后，SyncClipboard 客户端会把它同步到这台服务器，记录会出现在这里。';
+  function buildEmptyState({ filtered, search, recycle }) {
+    const title = recycle ? '回收站是空的' : filtered ? '没有符合条件的记录' : '还没有任何记录';
+    const hint = recycle
+      ? '删除的记录会在这里保留 30 天：元数据仍在（可恢复的会给出「恢复」按钮），数据文件在删除时已被清除。'
+      : filtered
+        ? search
+          ? `没有匹配「${search}」的记录。可以换个关键词，或清除筛选条件。`
+          : '当前筛选条件下没有记录。可以清除筛选条件查看全部。'
+        : '在任意设备上复制内容后，SyncClipboard 客户端会把它同步到这台服务器，记录会出现在这里。';
     const buttons = [];
-    if (filtered) {
+    if (filtered || recycle) {
       buttons.push(
         el('button', { class: 'btn', type: 'button', onclick: () => actions.onClearFilters() }, [
-          el('span', { class: 'btn__label', text: '清除筛选条件' }),
+          el('span', { class: 'btn__label', text: recycle ? '返回历史记录' : '清除筛选条件' }),
         ]),
       );
     }
@@ -265,27 +325,11 @@ export function createList(actions) {
     ];
   }
 
-  function buildRow(item, index, animate, flashKeys) {
-    const row = el('tr', {
-      class: 'row',
-      role: 'row',
-      dataset: {
-        key: item.key,
-        selected: selection.has(item.key) ? 'true' : 'false',
-        enter: animate && index < ENTER_STAGGER_LIMIT ? 'true' : 'false',
-        flash: flashKeys.has(item.key) ? 'true' : 'false',
-      },
-    });
-    if (animate && index < ENTER_STAGGER_LIMIT) row.style.setProperty('--row-index', String(index));
-    // 类型色条：把类型写进行内变量，CSS 用它给 hover 时的左侧色条上色
-    row.style.setProperty(
-      '--row-accent',
-      `var(--type-${item.type.toLowerCase()}, var(--accent))`,
-    );
+  // 回收站视图：行内动作换成「恢复」，选择列照常渲染（批量恢复 / 清空回收站都要用它）
+  let recycleMode = false;
 
-    const ref = { item };
-    rowRefs.set(row, ref);
-
+  // 复选框（含 Shift 范围选择）。回收站里同样需要它：批量恢复与清空回收站都以选择集为入口。
+  function buildCheckbox(item, index) {
     const checkbox = el('input', {
       class: 'checkbox',
       type: 'checkbox',
@@ -305,7 +349,32 @@ export function createList(actions) {
       anchorIndex = index;
     });
     checkbox.addEventListener('change', () => actions.onSelect(item, checkbox.checked));
-    const checkboxWrap = el('label', { class: 'check-wrap' }, [checkbox]);
+    return el('label', { class: 'check-wrap' }, [checkbox]);
+  }
+
+  function buildRow(item, index, animate, flashKeys) {
+    const row = el('tr', {
+      class: 'row',
+      role: 'row',
+      dataset: {
+        key: item.key,
+        selected: selection.has(item.key) ? 'true' : 'false',
+        enter: animate && index < ENTER_STAGGER_LIMIT ? 'true' : 'false',
+        flash: flashKeys.has(item.key) ? 'true' : 'false',
+        deleted: item.isDeleted ? 'true' : 'false',
+      },
+    });
+    if (animate && index < ENTER_STAGGER_LIMIT) row.style.setProperty('--row-index', String(index));
+    // 类型色条：把类型写进行内变量，CSS 用它给 hover 时的左侧色条上色
+    row.style.setProperty(
+      '--row-accent',
+      `var(--type-${item.type.toLowerCase()}, var(--accent))`,
+    );
+
+    const ref = { item };
+    rowRefs.set(row, ref);
+
+    const checkboxWrap = buildCheckbox(item, index);
 
     const body = el('div', { class: 'cell-content__body' }, [
       el('div', {
@@ -333,34 +402,47 @@ export function createList(actions) {
 
     const content = el('div', { class: 'cell-content' }, [buildThumb(item), body].filter(Boolean));
 
-    const starButton = el(
-      'button',
-      {
-        class: 'icon-btn star-btn',
-        type: 'button',
-        dataset: { action: 'star' },
-        'aria-pressed': item.starred ? 'true' : 'false',
-        'aria-label': item.starred ? '取消收藏' : '收藏',
-        title: item.starred ? '取消收藏' : '收藏',
-        onclick: async () => {
-          if (isPending(starButton)) return;
-          const current = ref.item;
-          setPending(starButton, true);
-          try {
-            await actions.onStar(current, !current.starred);
-          } finally {
-            setPending(starButton, false);
-          }
+    // 收藏 / 置顶：同一形状的开关按钮，只差图标、字段与文案。
+    // 目标状态取**按下那一刻**的行数据（不是构建时的闭包值）——连点两次的第二次必须反向。
+    function toggleButton(action) {
+      const spec = TOGGLES[action];
+      const on = Boolean(ref.item[spec.field]);
+      const button = el(
+        'button',
+        {
+          class: `icon-btn ${action}-btn`,
+          type: 'button',
+          dataset: { action },
+          'aria-pressed': on ? 'true' : 'false',
+          'aria-label': on ? spec.labels.on : spec.labels.off,
+          title: on ? spec.labels.on : spec.labels.off,
+          onclick: async () => {
+            if (isPending(button)) return;
+            const current = ref.item;
+            setPending(button, true);
+            try {
+              await actions[action === 'star' ? 'onStar' : 'onPin'](current, !Boolean(current[spec.field]));
+            } finally {
+              setPending(button, false);
+            }
+          },
         },
-      },
-      [svg(iconPaths('star'))],
-    );
+        [svg(iconPaths(action))],
+      );
+      return button;
+    }
 
-    const timeCell = el('td', { class: 'cell-time', role: 'cell' }, [
-      el('span', { text: formatRelative(item.createTime), title: formatAbsolute(item.createTime) }),
-    ]);
+    // 已删除的行没有这两个动作：收藏与置顶都是活跃记录的属性（回收站里只该有「恢复」）
+    const flagButtons = item.isDeleted ? [] : [toggleButton('star'), toggleButton('pin')];
 
-    row.append(
+    // 三个时间列：创建 / 修改 / 访问。都是可排序表头（白名单见 src/ui/query.ts 的 SORT_COLUMNS），
+    // 之前只有创建时间可点，另两个字段要手改 URL 才用得上。
+    const timeCell = (className, value) =>
+      el('td', { class: `cell-time ${className}`, role: 'cell' }, [
+        el('span', { text: formatRelative(value), title: formatAbsolute(value) }),
+      ]);
+
+    const cells = [
       el('td', { class: 'col-check', role: 'cell' }, [checkboxWrap]),
       el('td', { class: 'col-type', role: 'cell' }, [
         el('span', { class: `chip ${typeChipClass(item.type)}` }, [
@@ -370,10 +452,14 @@ export function createList(actions) {
       ]),
       el('td', { class: 'row__cell-content', role: 'cell' }, [content]),
       el('td', { class: 'col-size', role: 'cell' }, [el('span', { text: formatSize(item.size) })]),
-      timeCell,
-      el('td', { class: 'col-star', role: 'cell' }, [starButton]),
-      el('td', { class: 'col-actions', role: 'cell' }, [buildActions(item, actions, ref)]),
-    );
+      timeCell('col-created', item.createTime),
+      timeCell('col-modified', item.lastModified),
+      timeCell('col-accessed', item.lastAccessed),
+      // 回收站里的行没有收藏/置顶动作（见 flagButtons）
+      el('td', { class: 'col-star', role: 'cell' }, flagButtons),
+      el('td', { class: 'col-actions', role: 'cell' }, [buildActions(item, actions)]),
+    ];
+    row.append(...cells.filter(Boolean));
 
     // 整行可点开预览：点在按钮/复选框/标签上时不触发；
     // 用户正在选文字（想手动复制）时也不触发——那一下点是在划线，不是在「打开」。
@@ -391,15 +477,48 @@ export function createList(actions) {
     headInfo.hidden = hasSelection;
     headSelection.hidden = !hasSelection;
     if (!hasSelection) {
-      headInfo.textContent = filtered ? `筛选中 · 共 ${total} 条` : `共 ${total} 条记录`;
+      headInfo.textContent = recycleMode
+        ? `回收站 · 共 ${total} 条`
+        : filtered
+          ? `筛选中 · 共 ${total} 条`
+          : `共 ${total} 条记录`;
       return;
     }
+
+    // 批量按钮的文案随选区**当前状态**反过来：选中的都已收藏时给的是「取消收藏」。
+    // 固定写「收藏」会让用户对着已收藏的记录点一个看起来没反应的按钮（服务端确实写了一次，
+    // 状态却不变）——这类「点了没反应」正是要避免的。
+    const chosen = [...selected.values()];
+    const batchButton = (action, label, icon, handler) =>
+      el('button', { class: action === 'delete' ? 'btn btn--danger' : 'btn', type: 'button', onclick: handler }, [
+        svg(iconPaths(icon), { size: 15 }),
+        el('span', { class: 'btn__label', text: label }),
+      ]);
+
+    const buttons = recycleMode
+      ? [
+          batchButton('restore', '恢复选中', 'undo', () => actions.onBatchRestore()),
+          batchButton('delete', '清空回收站', 'trash', () => actions.onEmptyTrash()),
+        ]
+      : [
+          batchButton(
+            'star',
+            chosen.every((item) => item.starred) ? '取消收藏' : '收藏',
+            'star',
+            () => actions.onBatchFlag('star'),
+          ),
+          batchButton(
+            'pin',
+            chosen.every((item) => item.pinned) ? '取消置顶' : '置顶',
+            'pin',
+            () => actions.onBatchFlag('pin'),
+          ),
+          batchButton('delete', '删除选中', 'trash', () => actions.onBatchDelete()),
+        ];
+
     headSelection.replaceChildren(
       el('span', { text: `已选 ${selected.size} 条` }),
-      el('button', { class: 'btn btn--danger', type: 'button', onclick: () => actions.onBatchDelete() }, [
-        svg(iconPaths('trash'), { size: 15 }),
-        el('span', { class: 'btn__label', text: '删除选中' }),
-      ]),
+      ...buttons,
       el('button', { class: 'btn btn--quiet', type: 'button', onclick: () => actions.onSelectAll(false) }, [
         el('span', { class: 'btn__label', text: '取消选择' }),
       ]),
@@ -454,6 +573,7 @@ export function createList(actions) {
       const { items, total, filters, viewToken, flashKeys } = state;
       selection = state.selection;
       currentItems = items;
+      recycleMode = Boolean(filters.deleted);
 
       const animate = viewToken !== lastViewToken;
       lastViewToken = viewToken;
@@ -473,11 +593,18 @@ export function createList(actions) {
         reconcile(items, flashKeys ?? new Set());
       }
 
-      const filtered = filters.types !== 'All' || filters.starred || filters.search !== '';
+      const filtered =
+        filters.types !== 'All' ||
+        filters.starred ||
+        filters.search !== '' ||
+        filters.range !== 'all' ||
+        filters.deleted;
       empty.hidden = items.length > 0;
       table.hidden = items.length === 0;
       if (items.length === 0) {
-        empty.replaceChildren(...buildEmptyState({ filtered, search: filters.search }));
+        empty.replaceChildren(
+          ...buildEmptyState({ filtered, search: filters.search, recycle: recycleMode }),
+        );
       }
 
       syncSelectAll();
@@ -524,28 +651,44 @@ export function createList(actions) {
       renderHead({ total: lastHead.total, filtered: lastHead.filtered, selection });
     },
 
-    // 收藏结果就地更新该行：不重拉整页，也不重建行——重建会丢掉焦点，
-    // 而键盘用户刚按下的那个星标正是焦点所在。
-    patchItem(item, { pop = false } = {}) {
+    // 写操作结果就地更新该行：不重拉整页，也不重建行——重建会丢掉焦点，
+    // 而键盘用户刚按下的那个开关正是焦点所在。
+    // `pop` 指定要重放动画的那个开关（'star' | 'pin'），其余情况不动画。
+    patchItem(item, { pop = null } = {}) {
       const row = rowByKey.get(item.key);
       if (!row) return;
       const ref = rowRefs.get(row);
       if (ref) ref.item = item;
       row.dataset.sig = signature(item);
-      const star = row.querySelector('[data-action="star"]');
-      if (star) {
-        applyStarState(star, !!item.starred);
-        if (pop) playStarPop(star);
+      for (const [action, spec] of Object.entries(TOGGLES)) {
+        const button = row.querySelector(`[data-action="${action}"]`);
+        if (button) applyToggleState(button, Boolean(item[spec.field]), spec.labels);
       }
+      // 徽标（置顶/数据可用性/长文本）也要跟着变：置顶按钮按下后，徽标不该等到下一次轮询才出现
+      const flags = row.querySelector('.cell-content__flags');
+      if (flags) flags.replaceWith(buildFlags(item));
+      if (pop) playPop(row.querySelector(`[data-action="${pop}"]`));
       const index = currentItems.findIndex((entry) => entry.key === item.key);
       if (index >= 0) currentItems[index] = item;
     },
 
     // 删除成功后立刻把行收掉：等下一次整页刷新再消失，读起来是「点了没反应」。
     // 后续的静默刷新会对账剩下的行（并补齐本页缺的一条）。
+    // 焦点不在**这里**交接：删除都要过确认对话框，收行时焦点还在对话框里、文档是 inert 的，
+    // 这时候 focus() 会被忽略。这里只记下「哪个操作、第几行」，由调用方在对话框关闭后
+    // 调 restoreFocus() 落地。
     removeItem(key) {
       const row = rowByKey.get(key);
       if (!row) return;
+      const index = currentItems.findIndex((item) => item.key === key);
+      // 来源优先取「按下时记下的操作」（对话框是模态的，那一刻的焦点已经不可靠）；
+      // 没有对话框的场景（例如将来从别处收行）再看当前焦点是否还在这行里。
+      const focusedInRow = row.contains(document.activeElement)
+        ? (document.activeElement.closest('[data-action]')?.dataset.action ?? null)
+        : null;
+      const originAction = lastRowAction?.key === key ? lastRowAction.action : focusedInRow;
+      pendingFocus = { action: originAction, index };
+
       rowByKey.delete(key);
       currentItems = currentItems.filter((item) => item.key !== key);
       const drop = () => row.remove();
@@ -559,6 +702,39 @@ export function createList(actions) {
       }
       syncSelectAll();
       renderHead({ total: lastHead.total, filtered: lastHead.filtered, selection });
+    },
+
+    // 把焦点交回结果区（调用方在确认对话框**关闭之后**调用）。
+    // 目标链：相邻行里的同一个操作 → 空状态的主按钮 → 表头全选框。
+    // 不做这件事的后果是实测过的：焦点随被移除的按钮一起消失、落到 <body>，
+    // 键盘用户得从页面开头重新 Tab。
+    restoreFocus() {
+      if (!pendingFocus) return;
+      const { action, index } = pendingFocus;
+      pendingFocus = null;
+      const survivors = [...tbody.children].filter((row) => row.dataset.leaving !== 'true');
+      const neighbor = survivors[index] ?? survivors[index - 1] ?? null;
+      const target =
+        (action ? neighbor?.querySelector(`[data-action="${action}"]`) : null) ??
+        (empty.hidden ? null : empty.querySelector('button')) ??
+        selectAll;
+      if (!target) return;
+      // 落点必须**晚于**对话框的焦点还原：那是浏览器关闭模态时的补焦步骤（还回去的元素——
+      // 行内删除按钮——已被移除，于是焦点先落到 viewport，实测 1–2ms 后又变一次）。
+      // 而且 rAF 不能用来重试：headless 与后台标签页里它不会连续触发（实测只跑到第一帧）。
+      // 故在**删除确认后的固定窗口内**用定时器反复落点（上限 ~0.5s），一旦落地就停手。
+      // 判据不能用「焦点在别的元素上就停」——实测那一刻焦点可能还停在正在关闭的对话框里。
+      let rounds = 0;
+      const place = () => {
+        if (!target.isConnected) return;
+        // 「上一轮落下之后**留住了**」才算成功：不能在 focus() 之后立刻判成功——
+        // 浏览器的补焦晚 1–2ms 到（实测：focus() 成功的同一毫秒内就被 focusout 夺走）。
+        if (document.activeElement === target) return;
+        target.focus();
+        rounds += 1;
+        if (rounds < 8) setTimeout(place, 60);
+      };
+      setTimeout(place, 0);
     },
   };
 }

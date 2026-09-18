@@ -43,6 +43,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.json'
       - 'vitest.config.ts'
+      - 'eslint.config.js'       # 前端静态检查的配置（改坏了 lint 门禁就失效）
       - '.github/workflows/**'   # CI 自身
   workflow_dispatch:
 
@@ -52,7 +53,7 @@ concurrency:
 
 jobs:
   quality:
-    # 真正的质量门：typecheck + **全部 18 个套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
+    # 真正的质量门：typecheck + lint + **全部 20 个套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
     # 黑盒套件需要服务器：这里用 wrangler dev（miniflare）起一个本地实例，
     # 不触碰任何线上资源、也不需要 Cloudflare 凭据。
     # 单独成 job 有两个好处：与部署进程隔离（dev server 不残留），且失败即不部署。
@@ -71,6 +72,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Lint（零构建前端：public/ui/js 不在 tsc 的 include 里）
+        run: npm run lint
 
       - name: Start local server (miniflare) and run all suites
         env:

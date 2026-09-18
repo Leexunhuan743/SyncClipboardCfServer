@@ -394,9 +394,9 @@ describe('F4 /ui/api/* 状态变更端点的来源校验', () => {
   });
 });
 
-describe('G3 · batch-delete 只接受 application/json', () => {
+describe('G3 · batch-update 只接受 application/json', () => {
   function batch(contentType: string, body: string, identity: TestIdentity): Request {
-    return new Request('https://sync.example.com/ui/api/history/batch-delete', {
+    return new Request('https://sync.example.com/ui/api/history/batch-update', {
       method: 'POST',
       body,
       headers: {

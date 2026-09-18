@@ -45,7 +45,7 @@
 | D8 | 存储时间用 epoch 毫秒 INTEGER（D1），DTO 边界转 ISO8601 | 排序/比较精确，协议输出为标准 ISO 字符串 | 已定 |
 | D9 | 严格复刻官方行为，不做行为超集 | 兼容性以官方实现为准（如 `GET /file/{name}` 仅按历史查找） | 已定 |
 | D10 | 测试 = 协议级集成测试（`wrangler dev` + 真实 HTTP + `@microsoft/signalr`）+ 真实客户端联调 | 与 .NET 客户端同协议的 JS SignalR 客户端可验证握手细节 | 已定 |
-| D11 | **提交粒度与推送策略**（2026-09-13 修订）：**本地**可多次 minor commit（细碎、随手记）；**推送到云端 `master` 前**按主题压成合适的提交（每个逻辑变更一条），不把一堆小提交直接推 | 本地细碎便于迭代与回滚；云端历史要能看出演进，不该被几十条同类微调淹没。**修订原因**：原约定"禁止 squash/force push"在实践里产生 91 条提交、其中大量是同一件事的反复微调，云端历史反而更难读（已在用户要求下把 91 → 12）。**改写已推送历史时的硬约束**：① 先建备份分支；② 用树快照回放，保证新 HEAD 与旧 HEAD **树逐字节一致**（`git diff` 必须为空）；③ 推送前跑全量套件且**真门禁**（`set -o pipefail` 或 `if` 判定退出码，别让管道吞掉失败）；④ 用 `--force-with-lease` 推送，不用裸 `--force` | 已定（2026-09-12，2026-09-13 修订） |
+| D11 | **提交粒度与推送策略**（2026-09-13 修订）：**本地**可多次 minor commit（细碎、随手记）；**推送到云端 `master` 前**按主题压成合适的提交（每个逻辑变更一条），不把一堆小提交直接推 | 本地细碎便于迭代与回滚；云端历史要能看出演进，不该被几十条同类微调淹没。**修订原因**：原约定"禁止 squash/force push"在实践里产生 91 条提交、其中大量是同一件事的反复微调，云端历史反而更难读（已在用户要求下把 91 条压成 13 条：根提交 + 12 个主题提交，见 `docs/progress.md` §28）。**改写已推送历史时的硬约束**：① 先建备份分支；② 用树快照回放，保证新 HEAD 与旧 HEAD **树逐字节一致**（`git diff` 必须为空）；③ 推送前跑全量套件且**真门禁**（`set -o pipefail` 或 `if` 判定退出码，别让管道吞掉失败）；④ 用 `--force-with-lease` 推送，不用裸 `--force` | 已定（2026-09-12，2026-09-13 修订） |
 
 > **D11 执行流程（2026-09-13 实测通过）**：① 留底并**推送**备份分支：`git branch -f backup/pre-squash-<日期>` → `git push -u origin backup/pre-squash-<日期>`（旧 SHA 因此永远可解析，文档里的历史引用不会悬空）；② 从根提交开新分支，逐组 `git read-tree -u --reset <该组旧 tip>` 后**直接** `git commit -F <msg>`——**不要** `git add -A`（它会把未跟踪的临时文件卷进历史）；③ 逐组断言 `git diff --name-only <新提交> <该组旧 tip>` 为空（只验末态不够：中间的杂物会被下一组的 reset 悄悄抹掉）；④ 末态断言 `git diff <旧 HEAD> HEAD` 为空；⑤ 跑全量套件且用真门禁；⑥ `git push --force-with-lease origin <新分支>:master`，推送后删掉临时分支（备份分支保留）。
 | D12 | Web 界面用 **Workers 静态资源 + 独立 `/ui/api/*` 命名空间**承载 | 官方 `/api/history/*` 是**协议契约**，不能为界面需要（可变页大小、多列排序、选择集、缩略图）而改动；界面另开一层，但读写同一张表、复用同一套行映射与 DTO 序列化 | 已定（2026-09-13） |
@@ -107,7 +107,7 @@ flowchart TB
 
 ```
 SyncClipboardCfServer/
-├── package.json / tsconfig.json / vitest.config.ts / wrangler.toml
+├── package.json / tsconfig.json / vitest.config.ts / eslint.config.js / wrangler.toml
 ├── schema.sql                  # D1 建表语句（部署时执行）
 ├── docs/
 │   ├── design.md               # 本文件
@@ -116,16 +116,19 @@ SyncClipboardCfServer/
 │   └── progress.md             # 开发进度追踪
 ├── public/                     # 静态资源（由 Cloudflare 直接托管，不走 Worker）
 │   ├── robots.txt              # 必须放站点根（爬虫只读根路径）
+│   ├── _headers                # 响应头：CSP/安全头 + js/css 的短 TTL 与 stale-while-revalidate
 │   └── ui/
 │       ├── index.html / login.html / manifest.webmanifest
 │       ├── favicon.svg / favicon-32.png / apple-touch-icon.png
 │       ├── css/                # tokens / base / layout / components / motion / auth
-│       └── js/                 # api / clipboard / dom / filters / format / icons / login / main / store
+│       └── js/                 # api / clipboard / dom / filters / format / icons / latest / login / main / next-target / store / theme-init
 │           └── components/     # confirm / header / info / list / pagination / preview / stats / toast / toolbar
 ├── src/
 │   ├── index.ts                # Worker 入口：Hono 装配、中间件、Hub 转发、Cron
 │   ├── env.ts                  # 绑定类型（D1/R2/HUB/Vars/Secrets）
 │   ├── auth.ts                 # Basic Auth 校验、凭据校验、请求体排空
+│   ├── rateLimit.ts            # 认证失败限速：isolate 内存快路径 + DO 权威计数（F7）
+│   ├── requestLimits.ts        # 请求体上限与 loopback 判定（F8/HSTS 与 F9 共用）
 │   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
 │   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间与体积口径转换
 │   ├── hash.ts                 # Text / File / Image / Group 哈希（协议级精确复刻）
@@ -159,7 +162,9 @@ SyncClipboardCfServer/
     ├── cleanup.test.ts         # 保留/清理语义
     ├── fixes.test.ts           # 历次缺陷的回归
     ├── fix-regressions.test.ts # 修复回归
-    ├── ui.test.ts              # /ui/api/* 的接口与鉴权
+    ├── ui.test.ts              # /ui/api/* 的接口与鉴权（含回收站视图与恢复）
+    ├── ui-logic.test.ts        # 零构建前端的纯逻辑（筛选/格式化/归一化）
+    ├── ui-contract.test.ts     # 跨文件契约（预载清单、BEM 类名、属性生产者、原生可解析）
     └── support/target-guard.ts # 写库套件的目标守卫（非本机需显式放行）
 ```
 
@@ -190,6 +195,8 @@ CREATE TABLE IF NOT EXISTS HistoryRecords (
   Version INTEGER NOT NULL DEFAULT 0,
   IsDeleted INTEGER NOT NULL DEFAULT 0
 );
+-- (UserId, Type, Hash) 唯一（F5）：建索引前先删除历史遗留的重复行（同一 key 只保留 ID 最小者）
+CREATE UNIQUE INDEX IF NOT EXISTS ux_h_user_type_hash ON HistoryRecords(UserId, Type, Hash);
 CREATE INDEX IF NOT EXISTS idx_h_user_type_hash ON HistoryRecords(UserId, Type, Hash);
 CREATE INDEX IF NOT EXISTS idx_h_user_create   ON HistoryRecords(UserId, CreateTime);
 CREATE INDEX IF NOT EXISTS idx_h_user_access   ON HistoryRecords(UserId, LastAccessed);
@@ -397,16 +404,24 @@ npm run deploy
 | SignalR | `@microsoft/signalr`（与 .NET 客户端同协议）连本地 hub | negotiate、握手、ping、广播接收 |
 | E2E | 本机官方客户端（WinUI3/Avalonia）连接 `wrangler dev` / 部署 URL | 真实客户端全流程（含历史同步） |
 
-**套件清单**（`npm test` = 18 套件）：`hash`、`fixes`（数据层，用 node:sqlite 建真实 SQLite）、
+**套件清单**（`npm test` = 20 套件）：`hash`、`fixes`（数据层，用 node:sqlite 建真实 SQLite）、
 `protocol`、`fix-regressions`、`cleanup`、`query-filters`、`signalr`、`transports`、`ui`（Web 界面的
-`/ui/api/*`：会话生命周期、双通道鉴权、列表过滤与排序白名单、写操作、数据端点语义）、`docs`（文档口径
+`/ui/api/*`：会话生命周期、双通道鉴权、列表过滤与排序白名单、写操作、数据端点语义、回收站视图与恢复）、
+`docs`（文档口径
 守卫：套件数与前端资源数必须与实际一致），以及安全加固轮新增的 `next-target`（登录跳转同源判定）、
 `dto-validation`（PATCH/PUT 整数校验与 `/data` 头编码）、`limits`（multipart 分界串与 zip 解压上限）、
 `cleanup-budget`（清理预算/游标/失败可观测）、`rate-limit`（认证失败限速与来源校验、头部与体量）、
 `ui-guard`（遍历 `/ui/api/*` 断言未带凭据一律 401）、`hardening`（审计残余 G2/G6：未配置凭据时会话 fail-closed、
-SearchText 按字节限长）、`clipboard`（前端剪贴板写入的判别结果：环境不支持 / 转码失败 / 权限拒绝三态分开）。
+SearchText 按字节限长）、`clipboard`（前端剪贴板写入的判别结果：环境不支持 / 转码失败 / 权限拒绝三态分开）、
+`ui-logic`（零构建前端的纯逻辑：时间范围的本地日界与开区间上界、URL ⇄ 筛选状态往返、
+展示格式化、API 边界的归一化与查询串构造），
+`ui-contract`（零构建前端的跨文件契约：每页 modulepreload == 该页 import 闭包；BEM 类名**按页**双向核对
+——用到的必须在**该页加载的样式表**里有定义、定义了的必须有人用；CSS 消费的 `data-*`/`aria-*` 必须有生产者。
+它的前身是手工审计：`.auth__note` 跨表失效、`.btn--icon` 等 4 条死规则、`[data-pop]` 从未被写这些真缺陷
+都只在人眼过一遍时才被发现）。
 
-其中**纯逻辑套件**（`hash`、`fixes`、`docs`、`next-target`、`limits`、`ui-guard` 等）进程内运行、不需要
+其中**纯逻辑套件**（`hash`、`fixes`、`docs`、`next-target`、`limits`、`ui-guard`、`ui-logic` 等）
+进程内运行、不需要
 服务器；其余黑盒套件由运行者（或 CI 的 `quality` job）先起 `wrangler dev` 再跑。
 
 `query-filters` 专门覆盖 `/api/history/query` 的**过滤与排序语义**（SearchText / Starred / Types /
@@ -441,7 +456,7 @@ SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历�
 （曾发生「孤儿判定键形式不一致 → 每小时清空 history/」的生产事故，而当时只有数据层单测）。
 
 **CI 执行策略**（`.github/workflows/deploy.yml` 的 `quality` job）：
-`typecheck` + **全部 18 个套件**。黑盒套件由 CI 自行起 `wrangler dev --local`（miniflare）——
+`typecheck` + `lint` + **全部 20 个套件**。黑盒套件由 CI 自行起 `wrangler dev --local`（miniflare）——
 D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需要 Cloudflare 凭据、也不接触线上资源**；
 `deploy` job 通过 `needs: quality` 依赖它，质量门失败即不部署。
 

@@ -256,6 +256,203 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
   });
 });
 
+// ===== 保留策略在线可调（docs/backend-gaps.md §2.5）=====
+//
+// 覆盖写：PUT /ui/api/settings（受守卫，走本套件的 Basic 凭据）。
+async function putSettings(body: Record<string, unknown>) {
+  return req('/ui/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+// 保留策略响应（GET/PUT 同形）
+interface SettingsRetention {
+  retentionMinutes: number | null;
+  maxSavedHistoryCount: number | null;
+  retentionSource: string;
+  maxCountSource: string;
+}
+
+// 响应体是**外部输入**（HTTP JSON），故按契约逐字段判形状再取值，而不是裸 `as` 断言后直接用 ——
+// 形状不符会在这里直接失败（顺带也是一条契约断言：四个键必须齐、两个值必须是数字或 null）。
+function isSettingsRetention(v: unknown): v is SettingsRetention {
+  if (typeof v !== 'object' || v === null) return false;
+  if (
+    !('retentionMinutes' in v && 'maxSavedHistoryCount' in v && 'retentionSource' in v && 'maxCountSource' in v)
+  ) {
+    return false;
+  }
+  const numOrNull = (x: unknown): boolean => x === null || (typeof x === 'number' && Number.isFinite(x));
+  return (
+    numOrNull(v.retentionMinutes) &&
+    numOrNull(v.maxSavedHistoryCount) &&
+    typeof v.retentionSource === 'string' &&
+    typeof v.maxCountSource === 'string'
+  );
+}
+
+function isSettingsBody(v: unknown): v is { retention: SettingsRetention } {
+  return typeof v === 'object' && v !== null && 'retention' in v && isSettingsRetention(v.retention);
+}
+
+async function readSettingsBody(res: Response): Promise<SettingsRetention> {
+  const raw: unknown = await res.json();
+  if (!isSettingsBody(raw)) throw new Error(`/ui/api/settings 响应形状不符：${JSON.stringify(raw)}`);
+  return raw.retention;
+}
+
+// 造一条**超过 env 保留期**的记录（8 天前；env 的 HISTORY_RETENTION_MINUTES=10080=7 天，
+// 与本文件既有用例同一前提），返回它的 hash。POST /api/history 允许显式给出时间戳，故可构造过期条件。
+async function createExpiredRecord(label: string): Promise<string> {
+  const name = `${label}-${RUN}.bin`;
+  const content = Buffer.from(`${label}-${RUN}`);
+  const hash = fileHash(name, content);
+  const old = new Date(Date.now() - 8 * DAY_MS).toISOString();
+  const b = `bnd${RUN}${label}`;
+  const { body, contentType } = multipart(
+    b,
+    {
+      hash,
+      type: 'File',
+      text: name,
+      version: '0',
+      isDeleted: 'false',
+      size: String(content.length),
+      createTime: old,
+      lastModified: old,
+      lastAccessed: old,
+    },
+    { filename: name, content },
+  );
+  const created = await req('/api/history', { method: 'POST', headers: { 'Content-Type': contentType }, body });
+  expect(created.status, `构造过期记录失败（${name}）`).toBe(200);
+  return hash;
+}
+
+// 单条记录是否已被软删（走协议单条端点，与既有用例同口径）。
+// 同样按外部输入处理：先判形状再取值，避免把一个裸断言直接当数据用。
+async function isDeleted(hash: string): Promise<boolean> {
+  const res = await req(`/api/history/File-${hash}`);
+  expect(res.status, `读取记录失败（${hash}）`).toBe(200);
+  const body: unknown = await res.json();
+  if (typeof body !== 'object' || body === null || !('isDeleted' in body) || typeof body.isDeleted !== 'boolean') {
+    throw new Error(`/api/history 单条响应缺少 isDeleted：${JSON.stringify(body)}`);
+  }
+  return body.isDeleted;
+}
+
+// 收尾软删自己造的记录（已删/已硬删都容忍：前者是幂等重删，后者只可能发生在 30 天后）
+async function softDeleteRecord(hash: string): Promise<void> {
+  const res = await req(`/api/history/File/${hash}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ isDelete: true, version: 10_000, lastModified: new Date().toISOString() }),
+  });
+  expect([200, 404], `收尾软删失败（${hash}）：${res.status}`).toContain(res.status);
+}
+
+// 收尾：Meta 覆盖必须清干净。留着覆盖会让实例的**真实** Cron 按测试值跑
+// （retentionMinutes=0 会一直关掉保留期清理）——这是比残留记录更危险的残留。
+afterAll(async () => {
+  const res = await putSettings({ retentionMinutes: null, maxSavedHistoryCount: null });
+  expect(res.status, '收尾清除保留策略覆盖失败').toBe(200);
+});
+
+describe('保留策略在线可调（GET/PUT /ui/api/settings 与 Cron 的联动）', () => {
+  it('覆盖值对 Cron 生效，清除覆盖回落 env（同一条记录两次 Cron 对照）', { timeout: 90_000 }, async (ctx) => {
+    if (!cronAvailable) return ctx.skip();
+
+    // 覆盖取「更宽」的值（保留期上界 1 年、条数上限极大）：这样两种策略对下面这条 8 天前的记录
+    // 给出**相反**的结论（env 必删 / 覆盖必留），而不会像「设一个很小的保留期」那样把实例上
+    // 所有更旧的记录一并软删（本机活跃 1000+ 条）——测试不能以破坏共享实例为代价换区分度。
+    // 条数上限必须同时压住：活跃数超过 env 的 1000，trim 阶段会从最旧的非收藏记录开始删，
+    // 而这条 8 天前的记录正是最旧的 —— 不压住 trim 就分不清是哪个阶段删的。
+    const pinCount = await putSettings({ maxSavedHistoryCount: 1_000_000 });
+    expect(pinCount.status, '压住条数上限失败').toBe(200);
+    const pinned = await readSettingsBody(pinCount);
+    expect(pinned.maxCountSource).toBe('meta');
+    expect(pinned.maxSavedHistoryCount).toBe(1_000_000);
+    // 只改一个字段：另一个字段必须仍是 env（缺省 = 不改动）
+    expect(pinned.retentionSource, '未提供的字段被改动了').toBe('env');
+
+    const applied = await putSettings({ retentionMinutes: 525_600 });
+    expect(applied.status).toBe(200);
+    const retention = await readSettingsBody(applied);
+    expect(retention.retentionMinutes).toBe(525_600);
+    expect(retention.retentionSource).toBe('meta');
+    expect(retention.maxCountSource, '前一次的条数覆盖被覆盖掉了').toBe('meta');
+
+    const hash = await createExpiredRecord('cron-meta');
+    expect(await triggerCron(), '触发 /__scheduled 失败').toBeLessThan(400);
+    expect(await isDeleted(hash), 'Meta 覆盖未生效：记录按 env 的 7 天被软删').toBe(false);
+
+    // 清除保留期覆盖（条数上限仍压着）→ 记录在下一次 Cron 里被**保留期阶段**删掉
+    // （trim 不是来源，故这一条断言能证明「回落 env」真的回到了 10080 分钟）
+    const cleared = await putSettings({ retentionMinutes: null });
+    expect(cleared.status).toBe(200);
+    const fallback = await readSettingsBody(cleared);
+    expect(fallback.retentionSource).toBe('env');
+    expect(fallback.retentionMinutes, 'env 回落值与本套件「env = 7 天」的前提一致').toBe(10080);
+    expect(fallback.maxCountSource, '清除一个字段时另一个被连带清除了').toBe('meta');
+
+    expect(await triggerCron()).toBeLessThan(400);
+    expect(await isDeleted(hash), '清除覆盖后未回落 env：过期记录仍未被软删').toBe(true);
+  });
+
+  it('覆盖值 0 = 关闭该阶段，绝不被当成非法值回落默认（回归守卫）', { timeout: 90_000 }, async (ctx) => {
+    if (!cronAvailable) return ctx.skip();
+
+    // 0 是**合法**覆盖值（关闭保留期清理）。若实现把它当非法值回落默认 10080，
+    // 这条 8 天前的记录会被软删 —— 用户的「别清理」会静默变成「按默认清理」。
+    // 同时压住 trim（同上一条的理由），使唯一的删除来源只剩保留期阶段。
+    const applied = await putSettings({ retentionMinutes: 0, maxSavedHistoryCount: 1_000_000 });
+    expect(applied.status).toBe(200);
+    const retention = await readSettingsBody(applied);
+    expect(retention.retentionMinutes).toBe(0);
+    expect(retention.retentionSource).toBe('meta');
+
+    const hash = await createExpiredRecord('cron-zero');
+    expect(await triggerCron()).toBeLessThan(400);
+    expect(await isDeleted(hash), 'retentionMinutes=0 未关闭保留期阶段：过期记录被软删了').toBe(false);
+
+    await softDeleteRecord(hash);
+  });
+
+  it('PUT 的取值校验：415 / 400 分支（受守卫端点，走已认证请求）', async () => {
+    // 非 JSON content-type → 415（跨站表单能不经预检发出 PUT，必须挡在解析之前）
+    const wrongType = await req('/ui/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain' },
+      body: '{"retentionMinutes":0}',
+    });
+    expect(wrongType.status).toBe(415);
+    expect(await wrongType.json()).toEqual({ error: 'unsupported_media_type' });
+
+    // 非法 JSON 体，以及「合法 JSON 但字段非法」的全部形态 —— 一律 400 invalid_request。
+    // 注意 null 不在此列：它是合法的「清除覆盖」（已在上面的用例里覆盖）。
+    const bodies = [
+      '{',
+      JSON.stringify({ retentionMinutes: -1 }),
+      JSON.stringify({ retentionMinutes: 1.5 }),
+      JSON.stringify({ retentionMinutes: 525_601 }),
+      JSON.stringify({ retentionMinutes: '30' }),
+      JSON.stringify({ maxSavedHistoryCount: 1_000_001 }),
+      JSON.stringify({}),
+    ];
+    for (const body of bodies) {
+      const res = await req('/ui/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      expect(res.status, `body=${body}`).toBe(400);
+      expect(await res.json(), `body=${body}`).toEqual({ error: 'invalid_request' });
+    }
+  });
+});
+
 // 收尾：删除本套件留下的活跃对照记录（其余记录已被 Cron 软删，无需处理）。
 // 清理失败必须让套件失败 —— 静默残留会让共享/线上实例积累垃圾记录。
 afterAll(async () => {

@@ -33,7 +33,7 @@
 /* ============ 新记录高亮：只闪一次，落在最终态 ============ */
 @media (prefers-reduced-motion: no-preference) {
   .row[data-flash="true"] {
-    animation: row-flash 1600ms var(--ease-standard) 1;
+    animation: row-flash var(--dur-flash) var(--ease-standard) 1;
   }
 }
 
@@ -60,9 +60,10 @@
   }
 }
 
-/* ============ 星标：按下即弹，用 linear() 表达过冲（cubic-bezier 做不到）============ */
+/* ============ 行内开关（收藏 / 置顶）：按下即弹，用 linear() 表达过冲 ============ */
 @media (prefers-reduced-motion: no-preference) {
-  .star-btn[data-pop="true"] svg {
+  .star-btn[data-pop="true"] svg,
+  .pin-btn[data-pop="true"] svg {
     animation: star-pop var(--dur-standard) var(--ease-pop);
   }
 }

@@ -20,7 +20,7 @@ import {
 } from '../serialization';
 import { ProfileType, HistoryQueryDto, INT32_MIN, INT32_MAX, isValidProfileHash } from '../types';
 import { broadcast } from '../hub';
-import { applyHistoryUpdate } from '../historyOps';
+import { applyHistoryUpdate, clearAllHistory } from '../historyOps';
 import { parseBoundary, parseMultipart, MultipartResult } from '../multipart';
 
 const UNPROCESSABLE_ENTITY = 422;
@@ -330,12 +330,8 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
 
   // DELETE /api/history/clear
   app.delete('/api/history/clear', async (c) => {
-    const { db, storage } = handlers(c);
-    const entities = await db.clearAll();
-    for (const e of entities) {
-      await storage.deleteHistoryWorkingDir(e.type, e.hash);
-    }
-    return c.json({ deleted: entities.length }, 200);
+    // 与 UI 的清空共用一份实现（src/historyOps.ts 的 clearAllHistory），顺序与成本写在那里
+    return c.json({ deleted: await clearAllHistory(c.env) }, 200);
   });
 
   return app;

@@ -11,8 +11,8 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 36px;
-  /* 画出来的盒子是 36，命中区靠 padding 之外的行高补足到 44 左右 */
+  min-height: var(--control-h);
+  /* 画出来的盒子是 36（--control-h），命中区靠 padding 之外的行高补足到 44 左右 */
   padding: 0 var(--sp-3);
   font-size: var(--fs-sm);
   font-weight: 500;
@@ -49,7 +49,8 @@
 /* 销毁性操作的主按钮：填色以区别于普通按钮，但仍然只有一个主按钮 */
 .btn--danger-solid {
   --btn-bg: var(--danger);
-  --btn-fg: #ffffff;
+  /* 不能写死 #ffffff：深色主题的 --danger 是亮红，白字对比只有 2.77:1 */
+  --btn-fg: var(--danger-ink);
   --btn-bd: transparent;
 }
 
@@ -57,12 +58,6 @@
   .btn--danger-solid:hover {
     --btn-bg: color-mix(in srgb, var(--danger) 84%, #000);
   }
-}
-
-.btn--icon {
-  padding: 0;
-  width: 36px;
-  min-width: 36px;
 }
 
 .btn__label {
@@ -89,8 +84,10 @@
   transform: scale(0.97);
 }
 
-.btn[disabled],
-.btn[aria-disabled="true"] {
+/* 只用原生 [disabled]：全站按钮的禁用都是 `button.disabled = true`（分页首末页、对话框请求中），
+ * 没有任何代码写 aria-disabled；此前这里还并列了一个 `[aria-disabled="true"]`，
+ * 它永远匹配不到——正是 test/ui-contract.test.ts 抓的那类死规则。 */
+.btn[disabled] {
   opacity: 0.45;
   cursor: not-allowed;
   pointer-events: none;
@@ -161,7 +158,7 @@
 
 .input,
 .select {
-  min-height: 36px;
+  min-height: var(--control-h);
   padding: 0 var(--sp-3);
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -246,6 +243,30 @@ input[type="search"]::-webkit-search-decoration {
   }
 }
 
+/* 自定义时间范围（工具栏内，仅 range=custom 时出现）。用 hidden 切换，
+ * 故必须显式写回 display:none —— 否则 `display:flex` 会盖掉 [hidden] 的默认行为。
+ * flex-basis:100% 让它独占一整行：塞进筛选组里会把工具栏挤成三行。 */
+.date-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.date-range[hidden] {
+  display: none;
+}
+
+.date-range__label {
+  font-size: var(--fs-xs);
+  color: var(--ink-muted);
+}
+
+.input--date {
+  min-width: 138px;
+}
+
 /* ============ 分段控件（类型筛选）============ */
 .segmented {
   display: inline-flex;
@@ -261,7 +282,7 @@ input[type="search"]::-webkit-search-decoration {
   border: 0;
   background: transparent;
   color: var(--ink-muted);
-  min-height: 30px;
+  min-height: var(--control-h-sm);
   padding: 0 var(--sp-3);
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
@@ -275,11 +296,11 @@ input[type="search"]::-webkit-search-decoration {
     color var(--dur-fast) var(--ease-standard);
 }
 
-.segmented__item[aria-pressed="true"],
-.segmented__item[aria-checked="true"] {
+/* 分段控件用 aria-pressed（toolbar.js 写的），没有 aria-checked 的生产者 */
+.segmented__item[aria-pressed="true"] {
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 1px 1px rgb(27 26 24 / 6%);
+  box-shadow: var(--shadow-keyline);
 }
 
 .segmented__count {
@@ -430,8 +451,14 @@ th[aria-sort="descending"] .th-sort__arrow {
 .col-time {
   width: 132px;
 }
+.col-modified,
+.col-accessed {
+  width: 104px;
+}
+/* 两个 30px 的开关按钮 + 2px 间距 + 单元格内边距：写 56（只有一个按钮时的宽度）会把
+ * 置顶按钮挤到换行、或压到相邻列上。 */
 .col-star {
-  width: 56px;
+  width: 84px;
 }
 .col-actions {
   width: 116px;
@@ -439,7 +466,9 @@ th[aria-sort="descending"] .th-sort__arrow {
 
 @media (max-width: 900px) {
   .col-size,
-  .col-time {
+  .col-time,
+  .col-modified,
+  .col-accessed {
     width: 84px;
   }
   .col-actions {
@@ -448,10 +477,9 @@ th[aria-sort="descending"] .th-sort__arrow {
 }
 
 @media (max-width: 720px) {
-  .col-type,
-  .col-size {
-    display: none;
-  }
+  /* 类型/大小两列的隐藏**不在这里**：这个块位于文件前半段，特异性(0,1,0) 的
+   * `.col-type{display:none}` 会被后面 `.table tr.row > td.col-type`(0,3,2) 按回来——
+   * 写了也没有任何效果（实测：真正生效的是文件末尾那一处）。这里只留内边距。 */
   .table th,
   .table td {
     padding: var(--sp-3) var(--sp-2);
@@ -520,7 +548,8 @@ th[aria-sort="descending"] .th-sort__arrow {
   display: block;
 }
 
-.cell-content__thumb--missing {
+.cell-content__thumb--missing,
+.cell-content__thumb--large {
   display: grid;
   place-items: center;
   color: var(--ink-faint);
@@ -551,19 +580,15 @@ th[aria-sort="descending"] .th-sort__arrow {
   font-style: italic;
 }
 
-.cell-content__name {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--ink-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .cell-content__flags {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+/* 没有标记时不留空位：容器恒在（行内改标记时可就地替换），靠 :empty 收起它的占位。 */
+.cell-content__flags:empty {
+  display: none;
 }
 
 /* 窄屏专用的元信息行（类型 · 大小 · 时间）：桌面由独立列承担，故这里隐藏 */
@@ -653,17 +678,20 @@ th[aria-sort="descending"] .th-sort__arrow {
   pointer-events: none;
 }
 
-/* 星标：选中态用琥珀，且不靠颜色单独表意（图标本身从空心变实心） */
-.star-btn[aria-pressed="true"] {
+/* 行内开关（收藏 / 置顶）：选中态用同一个强调色，且不靠颜色单独表意（图标本身换形状） */
+.star-btn[aria-pressed="true"],
+.pin-btn[aria-pressed="true"] {
   color: var(--star);
 }
 
-.star-btn[aria-pressed="true"] svg {
+.star-btn[aria-pressed="true"] svg,
+.pin-btn[aria-pressed="true"] svg {
   fill: currentColor;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .star-btn[aria-pressed="true"]:hover {
+  .star-btn[aria-pressed="true"]:hover,
+  .pin-btn[aria-pressed="true"]:hover {
     background: var(--star-soft);
   }
 }
@@ -745,7 +773,7 @@ th[aria-sort="descending"] .th-sort__arrow {
 
 .pagination__jump {
   min-width: 74px;
-  min-height: 36px;
+  min-height: var(--control-h);
 }
 
 /* ============ 空状态：设计过的状态，不是空白 ============ */
@@ -798,7 +826,7 @@ th[aria-sort="descending"] .th-sort__arrow {
 }
 
 .dialog::backdrop {
-  background: rgb(20 19 18 / 45%);
+  background: var(--overlay);
 }
 
 .dialog__head {
@@ -825,12 +853,12 @@ th[aria-sort="descending"] .th-sort__arrow {
   overflow: auto;
 }
 
-/* 对话框内的就地错误（确认失败时留在原地，不清空用户的上下文） */
-.dialog__error {
+/* 对话框/表单内的就地错误（确认失败、登录失败）：两处形状相同，故只有一份实现——
+ * 它此前是两份逐字重复的规则（`.dialog__error` 与只被登录页加载的 `.auth__error`）。 */
+.alert--error {
   display: flex;
   align-items: flex-start;
   gap: var(--sp-2);
-  margin-top: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
   background: var(--danger-soft);
@@ -838,8 +866,81 @@ th[aria-sort="descending"] .th-sort__arrow {
   font-size: var(--fs-sm);
 }
 
-.dialog__error[hidden] {
+.alert--error[hidden] {
   display: none;
+}
+
+/* 在对话框里它跟在说明文字后面，需要一条间隔；在登录表单里它是首个子元素（间距由表单 gap 给） */
+.dialog__body > .alert--error {
+  margin-top: var(--sp-3);
+}
+
+/* ============ 部署信息里的维护面板 ============
+ * 四小节（清理 / 保留策略 / 完整性 / 危险操作）共用一条左色条：它们都是「读一眼状态」的地方，
+ * 彼此靠标题分组，不再各画一张卡片——单用户实例的对话框不需要卡片墙。 */
+.panel {
+  margin-top: var(--sp-4);
+  padding-left: var(--sp-3);
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.panel__title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.panel__form,
+.panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.field-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 数值输入：够放 6 位数，又不至于占满整行 */
+.input--num {
+  width: 120px;
+}
+
+.panel__out {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.panel__list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.panel__item {
+  display: flex;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--ink-muted);
+}
+
+.panel__item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dialog__body--flush {
@@ -907,16 +1008,24 @@ th[aria-sort="descending"] .th-sort__arrow {
 
 .toast--error {
   background: var(--danger);
-  color: #fff;
+  color: var(--danger-ink);
 }
 
-/* ============ 数据不可用（hasData 为真但对象已不在）============ */
-.missing {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--ink-faint);
-  font-size: var(--fs-xs);
+/* ============ 状态横幅（失联提示）============
+ * 描述的是**持续状态**（与服务器失去联系、内容可能过期），故不使用会自行消失的提示条。 */
+.notice {
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+}
+
+.notice--warn {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 /* ============ 骨架屏（首屏未就绪时，避免布局跳动）============ */
@@ -932,7 +1041,7 @@ th[aria-sort="descending"] .th-sort__arrow {
   border-radius: var(--r-sm);
   background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2));
   background-size: 200% 100%;
-  animation: sheen 1.4s linear infinite;
+  animation: sheen var(--dur-skeleton) linear infinite;
 }
 
 @keyframes sheen {
@@ -1007,7 +1116,7 @@ th[aria-sort="descending"] .th-sort__arrow {
 }
 
 
-/* ---- 触屏（pointer: coarse）：把命中区提到 44px ----
+/* ---- 触屏（pointer: coarse）：把命中区提到 --hit-min（44px）----
  * 桌面用 30/36px 的紧凑按钮是有意的（数据表要密），但触屏上 30px 的命中区
  * 会造成误点。这里只放大**粗指针**下的尺寸，桌面视觉不变；
  * 不靠伪元素外扩命中区——相邻按钮只隔 2px，外扩会让命中区互相重叠。 */
@@ -1015,17 +1124,17 @@ th[aria-sort="descending"] .th-sort__arrow {
   .btn,
   .input,
   .select {
-    min-height: 44px;
+    min-height: var(--hit-min);
   }
 
   .icon-btn {
-    width: 44px;
-    height: 44px;
+    width: var(--hit-min);
+    height: var(--hit-min);
     flex: none;
   }
 
   .segmented__item {
-    min-height: 44px;
+    min-height: var(--hit-min);
   }
 
   .checkbox {
@@ -1036,12 +1145,37 @@ th[aria-sort="descending"] .th-sort__arrow {
   /* 复选框的真实命中区由外层 label 决定（原生 label 会把点击转发给 input）：
    * 单元格虽宽，但点空白处不会勾选——触屏上就是勾错行的来源。 */
   .check-wrap {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-min);
+    min-height: var(--hit-min);
   }
 
   .row-actions {
     gap: var(--sp-1);
+  }
+
+  /* 排序按钮与搜索清空按钮此前漏在白名单外：窄屏卡片模式下排序条就是 .th-sort，
+   * 命中区只有 42×19；.search__clear 写死 24×24 —— 全页唯一两处低于 44px 的可点控件。 */
+  .th-sort {
+    min-height: var(--hit-min);
+  }
+
+  .search__clear {
+    right: 0;
+    min-width: var(--hit-min);
+    min-height: var(--hit-min);
+  }
+
+  /* 清空按钮变大后必须让出等宽的右侧内边距，否则输入的文字会钻到按钮底下 */
+  .input--search {
+    padding-right: 48px;
+  }
+
+  /* 桌面操作列 116/88px 是按 30px 图标按钮摊的；触屏上按钮宽度是 44px——图片/文件行有
+   * **4 个**按钮（预览 + 复制图片 + 下载 + 删除），4×44 + 3×4(gap) = 188px 的**内容**宽度，
+   * 再加单元格左右合计 24px 内边距 = **212px**（--col-actions-coarse）。写 188 时实测仍有
+   * 1 个按钮越出 12px（量的是 Image 行的 4 按钮行；Text 行只有 3 个按钮，量它会得出假结论）。 */
+  .col-actions {
+    width: var(--col-actions-coarse);
   }
 }
 
@@ -1125,10 +1259,15 @@ th[aria-sort="descending"] .th-sort__arrow {
     display: flex;
   }
 
-  /* 行内操作**确定地**独占一整行：flex-basis 100% 让换行与字体/按钮数无关。
+  /* 行内操作**确定地**独占一整行：flex-basis 100% 让换行与按钮数无关。
    * 4 个 44px 按钮 + 间距 ≈ 188px，任何窄屏都放得下，故不会溢出、也不会被压小。 */
   .row .col-actions {
     flex: 1 1 100%;
     justify-content: flex-end;
   }
+}
+
+/* 已删除的行：内容整体降一档对比——回收站里最重要的信息就是「它已经不在活跃列表里」 */
+.row[data-deleted="true"] .cell-content__text {
+  color: var(--ink-muted);
 }

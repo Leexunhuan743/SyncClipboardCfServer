@@ -35,13 +35,6 @@
   min-width: 0;
 }
 
-.brand__mark {
-  width: 26px;
-  height: 26px;
-  flex: none;
-  color: var(--accent);
-}
-
 .brand__text {
   display: flex;
   flex-direction: column;
@@ -137,6 +130,26 @@
 .stat__sub {
   font-size: var(--fs-xs);
   color: var(--ink-faint);
+}
+
+/* 回收站入口：副标题里的可点计数。做成按钮而不是纯文本，是因为它**能进去**
+ * （仅凭一行小字没人知道回收站还能点）。 */
+.stat__link {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .stat__link:hover {
+    color: var(--accent-hover);
+  }
 }
 
 /* ---- 工具栏：筛选在左、分页在右，窄屏换行 ---- */

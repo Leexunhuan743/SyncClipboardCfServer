@@ -1,0 +1,41 @@
+# Cloudflare Workers 静态资源的响应头配置（`[assets]` 目录下的特殊文件，不会被当作资源发布）。
+#
+# 为什么需要它：Worker 出的响应可以自己设头，但这批文件由边缘直接返回（不经过 Worker），
+# 只能在这里声明。两件事：
+#   1. **安全头**：整站同源、私有实例，故给最严的一套——脚本/样式只许本站、不许被嵌入、
+#      不开 inline（首帧主题脚本已外置为 /ui/js/theme-init.js 正是为了这条）；
+#   2. **缓存**：默认是 `max-age=0, must-revalidate`（无指纹就不敢长缓存），每次导航 16 个文件
+#      都要回源重验证。这里给 js/css 一个短 TTL + stale-while-revalidate：部署后最多 5 分钟内
+#      新旧混用（本页自身的一致性由“同一次请求拿到同一批文件”保证），之后自动收敛，无需指纹。
+
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: same-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+
+# 代码类：短 TTL + 后台重验证（见文件头）
+/ui/js/*
+  Cache-Control: public, max-age=300, stale-while-revalidate=86400
+
+/ui/css/*
+  Cache-Control: public, max-age=300, stale-while-revalidate=86400
+
+# 图标与 manifest：改动极少，可以长一些
+/ui/favicon.svg
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/ui/favicon-32.png
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/ui/apple-touch-icon.png
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/ui/manifest.webmanifest
+  Cache-Control: public, max-age=3600
+
+/robots.txt
+  Cache-Control: public, max-age=3600

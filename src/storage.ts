@@ -81,8 +81,23 @@ export class R2Storage {
     await this.bucket.put(historyKey(type, hash, fileName), body, contentType ? { httpMetadata: { contentType } } : undefined);
   }
 
-  async getHistory(type: ProfileType, hash: string, fileName: string): Promise<R2ObjectBody | null> {
-    return this.bucket.get(historyKey(type, hash, fileName));
+  // range 直接透传给 R2 的区间读（由 R2 切片段，不把整个对象读进 Workers 内存再截断）。
+  // 目前只有 UI 数据端点（`GET /ui/api/history/:type/:hash/data`）会传：协议侧忽略 Range
+  // 是对齐上游的**有意**行为（F29b，docs/backend-gaps.md §2.3），那边不应改。
+  async getHistory(
+    type: ProfileType,
+    hash: string,
+    fileName: string,
+    range?: { offset: number; length: number },
+  ): Promise<R2ObjectBody | null> {
+    return this.bucket.get(historyKey(type, hash, fileName), range ? { range } : undefined);
+  }
+
+  // 只取元数据、不下载对象体：调用方要先知道 size 才能判断 Range 是否可满足。
+  // 不把「起点 ≥ 对象大小」的区间直接交给 R2——文档只承诺「请求的字节数多于对象存在时会少返回」，
+  // 越界区间（按 HTTP 语义应当 416）的行为未定义，拿 size 自行判定更稳。
+  async headHistory(type: ProfileType, hash: string, fileName: string): Promise<R2Object | null> {
+    return this.bucket.head(historyKey(type, hash, fileName));
   }
 
   // 删除单个历史工作目录（上游 DeleteProfileData 语义）
@@ -110,6 +125,21 @@ export class R2Storage {
       cursor = listed.truncated ? listed.cursor : undefined;
     } while (cursor);
     return [...dirs];
+  }
+
+  // 列出 history/ 下的**全部对象 key**（数据完整性自检的 R2 一侧；期望 key 由 DB 记录算出后求差集）。
+  // 分页列举而不是逐条 HEAD：Free 计划单次调用的内部服务子请求上限是 1000（本仓库按它设了
+  // SUBREQUEST_BUDGET = 800，见 src/cleanup.ts:28-31），本机记录总数 2000+ 逐条 HEAD 一次调用即触顶；
+  // 列举是 1000 键/页，成本 = ceil(对象数 / 1000) 次子请求（本机实测 305 个对象 ⇒ 1 轮）。
+  async listHistoryObjectKeys(): Promise<Set<string>> {
+    const keys = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const listed = await this.bucket.list({ prefix: HISTORY_PREFIX, cursor });
+      for (const obj of listed.objects) keys.add(obj.key);
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+    return keys;
   }
 
   // 删除指定工作目录前缀（传入 "Type_hash/" 形式）

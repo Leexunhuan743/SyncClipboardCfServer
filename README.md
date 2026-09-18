@@ -39,11 +39,13 @@ SyncClipboard 客户端支持三类服务端，能力并不相同：
   服务端校验上传数据（不符即拒绝），避免坏数据在设备间扩散
 - **保留与清理**：Cron Trigger 定时执行保留期裁剪、条数上限、已删除记录硬删与孤儿对象清理
 - **Web 历史界面**（`/ui/`）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
-  支持文本复制、图片预览、文件下载、收藏置顶、批量删除与部署信息。
+  支持时间范围（今天 / 近 7 天 / 近 30 天 / 自定义）、回收站（含恢复）、文本复制、图片预览、
+  文件下载、收藏置顶、批量删除与部署信息。
   界面与官方 API 读写同一套数据，写操作走与官方 `PATCH` 相同的实现（含广播与数据清理）。
   详见 [`docs/ui.md`](docs/ui.md)
 - **健壮性**：并发写入用唯一索引 + 乐观并发控制；大文件上传零冗余拷贝；
-  WebSocket 升级需鉴权；附件响应带 `nosniff` / CSP 防护
+  WebSocket 升级需鉴权；附件响应带 `nosniff` / CSP 防护，界面静态资源另有 `_headers`
+  声明的 CSP 与缓存策略
 
 ## 架构
 
@@ -117,10 +119,12 @@ cp .dev.vars.example .dev.vars     # 填入 USERNAME / PASSWORD
 npm run dev                        # → http://127.0.0.1:8787
 ```
 
-运行测试（18 个套件）：
+运行测试（20 个套件）：
 
 ```bash
-npm run typecheck                  # tsc --noEmit
+npm run typecheck                  # tsc --noEmit（src + test）
+npm run lint                       # eslint（零构建前端 public/ui/js——它不在 tsc 的 include 里）
+npm run check                      # 上面两条
 
 # 单元/数据层套件（无需服务器）
 npx vitest run test/hash.test.ts test/fixes.test.ts
@@ -188,7 +192,7 @@ npm run deploy
 - **注意**：`deploy` job 需要下方两个 Secret，**未配置时该 job 会失败并列出缺少的名称**
   （`quality` job 不需要凭据，其协议/界面/文档/单元用例仍会照常运行并通过）
 - **流程**：两个 job
-  1. **`quality`**：`typecheck` + **全部 18 个套件**。黑盒套件由 CI 自行用
+  1. **`quality`**：`typecheck` + `lint` + **全部 20 个套件**。黑盒套件由 CI 自行用
      `wrangler dev`（miniflare）起一个本地实例来跑 —— **不接触线上资源，也不需要 Cloudflare 凭据**，
      D1 用 `--local` 初始化，凭据用 `--var` 临时注入。
   2. **`deploy`**（`needs: quality`，质量门失败则不部署）：
@@ -236,11 +240,22 @@ npm run deploy
 部署完成后，浏览器打开 Worker 地址（根路径会自动跳到 `/ui/`），用与客户端相同的
 `USERNAME` / `PASSWORD` 登录，即可：
 
-- 按类型 / 收藏筛选，全文搜索，按类型/大小/时间排序，翻页与每页条数切换
+- 按类型 / 收藏筛选，**按时间范围筛选**（今天 / 近 7 天 / 近 30 天 / 自定义起止日期），全文搜索，
+  按类型/大小/时间排序，翻页与每页条数切换
+- **回收站**：查看已删除的记录（30 天内仍在），把还能恢复的记录一键恢复——
+  数据文件在删除时已清除，故只有「文本且无数据文件」的记录可恢复，界面会禁用其余按钮并说明原因
 - 预览文本全文、预览图片、下载文件；**数据文件已被清理的记录会明确显示「数据不可用」**，
   而不是裂图或静默失败
-- 收藏 / 置顶 / 删除（单条与批量）——写操作走与官方 `PATCH` 相同的实现，
-  客户端会同步收到变更广播
+- 收藏 / **置顶** / 删除（单条与**批量**：批量收藏、取消收藏、置顶、恢复、删除）——
+  写操作走与官方 `PATCH` 相同的实现，客户端会同步收到变更广播
+- **实时更新**：页面可见时与 Hub 建立 WebSocket（用短期票据换连接，票据 10 分钟内可复用），别的设备一同步这边立刻可见；
+  连接不可用时自动回落到轮询（10 秒），轮询始终保留为兜底
+- **记录级深链接**：`/ui/#Text-<hash>` 打开即预览该条，链接可直接分享/收藏
+- **维护面板**（部署信息对话框内）：清理任务的运行状态与失败信息、数据完整性自检
+  （找出「记录说有数据、存储里却没有对象」的条目）、保留策略在线调整（0 = 关闭该阶段）、清空全部历史；
+  「清空回收站」在**回收站视图**的选择条上（那里才看得到要清的东西）
+- 与服务器失去联系时（轮询/统计失败）页面顶部出现一条状态横幅，恢复后自动收起，
+  而不是继续显示可能过期的数据
 - 查看「部署信息」：客户端该填的服务器地址（可一键复制）、版本、传输方式、保留策略、存储占用
 
 界面细节（模块划分、接口契约、鉴权模型、设计系统、验证记录）见 [`docs/ui.md`](docs/ui.md)。
@@ -253,8 +268,13 @@ npm run deploy
 - **Workers 免费版每天 10 万请求**。官方客户端即使在事件驱动模式下，仍会每 10 秒调用一次
   `/api/version` 探活（`TestAliveHelper`），单客户端约 **8.6k 请求/天**；叠加历史同步与轮询，
   免费版大致可支撑 **5–10 个客户端**，更多需升级 Workers Paid。
-- **Web 界面开着标签也会计费**：页面每 10 秒取一次变更信号（`/ui/api/poll`，一次 D1 读），
-  标签隐藏时降为 30 秒。即「一个界面标签开一天」≈ 8.6k 请求，与一个客户端的探活量级相当。
+- **Web 界面开着标签也会计费**，量级取决于推送通道是否连上（`/ui/api/poll` 一次 D1 读）：
+  · **可见 + 推送已连接**（默认）：轮询降为 60 秒看门狗 ≈ **1.4k Worker 请求/天**；另有 DO 侧开销
+    ——客户端每 30 秒一次 WS 心跳（≈2.9k 条/天）与 DO 每 15 秒一次心跳 alarm（≈5.8k 次/天），
+    两者走 Durable Objects 的计量口径、**不占 Worker 请求额度**；
+  · **可见但推送没连上**（被代理/CSP 阻断、DO 不可达）：退回 10 秒轮询 ≈ 8.6k 请求/天；
+  · **标签在后台**：推送通道主动断开（省下那条常驻连接与心跳），轮询 30 秒 ≈ 2.9k 请求/天。
+  作为对照：一个官方客户端的探活本身就是 ≈8.6k 请求/天。
 - **单请求体上限**：平台 100MB，本实现另有 **32 MiB 应用层上限**（超限 413）——客户端默认文件上限 20MB，而 isolate 只有 128MB 内存，接近平台上限的体会在解析期 OOM（见 `src/requestLimits.ts` 注释）。
 - **Group（文件夹）解压上限**：解压总量 64 MiB / 条目 1000 / 单条目压缩比 100:1（见 `src/hash.ts`），超限被拒。
 - D1 / R2 的免费额度对个人剪贴板场景（文本与中小文件）通常绰绰有余。
@@ -274,6 +294,7 @@ npm run deploy
 | 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
 | 清理可观测 | 清理按预算分阶段执行、游标续跑、失败写入 `cleanup:lastError`（`/ui/api/info` 可读） | `src/cleanup.ts` |
 | 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` / `src/requestLimits.ts` |
+| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式/连接限本站、`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的短 TTL + `stale-while-revalidate`（无指纹 ⇒ 部署后有 **≤5 分钟**的新旧混用窗口，之后自动收敛；强制刷新可立即取新版）。Worker 自出的 `/ui/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
 
 > **部署前必做**：`USERNAME` / `PASSWORD` 必须是**高熵随机值**。默认/占位口令 + 公开的 `*.workers.dev` 等于把全部剪贴板历史与附件
 > 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
@@ -289,9 +310,10 @@ npm run deploy
 - 第三方**畸形 zip**（隐式目录、重复条目、`a` 与 `a/` 同名冲突）的语义与上游存在 minor 差异
   ——官方客户端恒写显式目录条目且无重复，该路径不可达
 - `Content-Type` 映射表小于 .NET 的 `FileExtensionContentTypeProvider`（客户端按文件名落盘，不校验该头）
-- 无应用层解压上限（与上游一致，受平台内存约束）
-- Web 界面**不通过 SignalR 取实时更新**（那需要改动协议侧的连接鉴权），改用每 10 秒一次的
-  变更信号轮询；页面隐藏时降为 30 秒
+- Web 界面可见时走 SignalR 实时推送（票据换 WebSocket，**不动协议侧的连接鉴权**：DO 本来就
+  接受 `?id=<token>`，票据由 `/ui/api/hub-ticket` 签发），轮询保留为兜底：连上时 60 秒一次、
+  未连上时 10 秒一次、页面隐藏时 30 秒一次；环境不支持或被稳定阻断时**连续失败 5 次后不再重试**
+  （避免在坏环境里每 ≤60 秒白试一次），回前台会重新尝试
 - Web 界面的图片缩略图依赖数据文件存在：对象已被清理的记录会显示占位与「数据不可用」
 - **大文件的内存占用高于上游**：上游 `PUT /SyncClipboard.json` 用 `File.Move`（不读数据），
   本实现因 R2 无 move/rename 必须把暂存对象**读入内存**再重传到 `history/`；`POST /api/history`
@@ -317,12 +339,12 @@ src/
 ├── historyOps.ts       历史记录的写路径（官方 PATCH 与 Web 界面共用）
 ├── contentTypes.ts     附件 Content-Type 与响应头加固（WebDAV 与界面共用）
 ├── routes/             webdav.ts / history.ts
-├── ui/                 Web 界面的服务端面：session / guard / query / routes / notFound
+├── ui/                 Web 界面的服务端面：session / guard / query / routes / maintenance / notFound
 └── durable/            SyncClipboardHub.ts（Hub）+ signalr.ts（协议编解码）
 public/                 静态资源：robots.txt（站点根）+ ui/（原生 ES 模块，无构建步骤）
                         文件清单以 docs/ui.md §3 为准（避免四处各列一份、加文件时漏更新）
-test/                   全部 18 个套件 + live-signalr.mjs（线上验证脚本）
-docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md
+test/                   全部 20 个套件 + live-signalr.mjs（线上验证脚本）
+docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md / backend-gaps.md
 schema.sql              D1 建表语句
 ```
 
@@ -336,6 +358,7 @@ schema.sql              D1 建表语句
 | [docs/ui.md](docs/ui.md) | Web 历史界面：功能融合清单、模块划分、接口契约、鉴权模型、设计系统、验证记录 |
 | [docs/security-fix-plan.md](docs/security-fix-plan.md) | 安全审计修复计划（cfserver-audit-003 的 11 Findings）：优先级、逐条修复设计、实施状态 |
 | [docs/upstream-issues.md](docs/upstream-issues.md) | 上游 SyncClipboard 自身的安全问题（7 条，附 `文件:行` 证据与复现），用于回馈上游 |
+| [docs/backend-gaps.md](docs/backend-gaps.md) | 后端能力缺口与可完善项评估：已建未接（§1）/ 可新增（§2）/ 效率欠账（§3），附建议顺序与复核记录 |
 
 ## 许可证
 

@@ -52,10 +52,14 @@ const EXPECTED_API_ROUTES: readonly string[] = [
   'GET /ui/api/history/:type/:hash',
   'GET /ui/api/history/:type/:hash/data',
   'PATCH /ui/api/history/:type/:hash',
-  'POST /ui/api/history/batch-delete',
+  'POST /ui/api/history/batch-update',
+  'POST /ui/api/history/clear',
+  'POST /ui/api/hub-ticket',
   'GET /ui/api/statistics',
   'GET /ui/api/info',
   'GET /ui/api/poll',
+  'GET /ui/api/integrity',
+  'PUT /ui/api/settings',
 ];
 
 describe('/ui/api/* 鉴权不因注册顺序静默失效（遍历式回归）', () => {
@@ -70,12 +74,12 @@ describe('/ui/api/* 鉴权不因注册顺序静默失效（遍历式回归）', 
       '注册的 /ui/api/* 具体路由与清单不一致：新增/删除端点必须先在 EXPECTED_API_ROUTES 登记，公开端点还要进 PUBLIC_PROBES',
     ).toEqual([...EXPECTED_API_ROUTES].sort());
 
-    // 通配条目 = 守卫中间件 + `/ui/api/*` 的 JSON 404 兜底，两者都是 ALL 方法。
+    // 通配条目 = 缓存策略中间件（`no-store`）+ 守卫中间件 + `/ui/api/*` 的 JSON 404 兜底，三者都是 ALL 方法。
     // 带具体方法的通配路由意味着「守卫之外的宽匹配」，必须显式分类，故这里直接拒绝。
     expect(
       wildcard.map((r) => `${r.method} ${r.path}`),
       '出现未分类的通配路由（守卫之外的宽匹配）',
-    ).toEqual(['ALL /ui/api/*', 'ALL /ui/api/*']);
+    ).toEqual(['ALL /ui/api/*', 'ALL /ui/api/*', 'ALL /ui/api/*']);
   });
 
   it('未带凭据：白名单外一律 401，白名单内不被拦', async () => {

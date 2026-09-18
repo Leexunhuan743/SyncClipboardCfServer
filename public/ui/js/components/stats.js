@@ -10,10 +10,14 @@ function createStat(label) {
   const node = el('div', { class: 'stat' }, [el('span', { class: 'stat__label', text: label }), value, sub]);
   return {
     node,
-    set(numberText, unitText, subText) {
+    set(numberText, unitText, subText = '') {
       value.replaceChildren(el('span', { text: numberText }), unit);
       unit.textContent = unitText ?? '';
-      sub.textContent = subText ?? '';
+      sub.replaceChildren(el('span', { text: subText }));
+    },
+    // 把副标题换成任意节点（回收站计数是个可点的入口，不是纯文本）
+    setSub(child) {
+      sub.replaceChildren(child);
     },
   };
 }
@@ -25,7 +29,7 @@ const TYPE_LABELS = [
   ['Group', '组合'],
 ];
 
-export function createStats() {
+export function createStats({ onOpenRecycle } = {}) {
   const records = createStat('记录');
   const starred = createStat('已收藏');
   const storage = createStat('存储占用');
@@ -42,15 +46,32 @@ export function createStats() {
       if (!stats) return;
       const active = stats.activeCount ?? 0;
       const deleted = stats.deletedCount ?? 0;
-      records.set(
-        String(active),
-        '条',
-        deleted > 0 ? `另有 ${deleted} 条在回收站（30 天后清除）` : '无已删除记录',
-      );
+      records.set(String(active), '条');
+      if (deleted > 0) {
+        // 回收站入口：这是唯一一处告诉用户「删掉的东西还在、30 天后才清除」的地方，
+        // 也是进回收站视图最自然的入口（数字本身可点，不必先去工具栏找筛选器）。
+        records.setSub(
+          el(
+            'button',
+            {
+              class: 'stat__link',
+              type: 'button',
+              title: '查看回收站',
+              onclick: () => onOpenRecycle?.(),
+            },
+            [el('span', { text: `另有 ${deleted} 条在回收站（30 天后清除）` })],
+          ),
+        );
+      } else {
+        records.setSub(el('span', { text: '无已删除记录' }));
+      }
       starred.set(String(stats.starredCount ?? 0), '条', `共 ${stats.totalCount ?? 0} 条记录`);
 
       const mb = Number(stats.totalFileSizeMB ?? 0);
-      const byType = stats.byType ?? {};
+      // 「存储占用」的明细必须用**恒活跃**的那一份（`byTypeActive`）：已删记录的 R2 数据文件
+      // 在软删时就删了，拿随视图走的 `byType` 会把已删计数写到这行，与标题对不上。
+      // 兜底 `?? stats.byType`：只在版本混用（缓存里的旧服务端响应）时可能缺这个键。
+      const byType = stats.byTypeActive ?? stats.byType ?? {};
       const breakdown = TYPE_LABELS.filter(([key]) => (byType[key] ?? 0) > 0)
         .map(([key, label]) => `${label} ${byType[key]}`)
         .join(' · ');

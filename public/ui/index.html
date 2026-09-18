@@ -30,23 +30,30 @@
     <link rel="stylesheet" href="/ui/css/layout.css" />
     <link rel="stylesheet" href="/ui/css/components.css" />
     <link rel="stylesheet" href="/ui/css/motion.css" />
-    <script>
-      // 首帧之前定主题：放到样式表之后、渲染之前，避免深色用户看到一瞬白屏
-      (function () {
-        try {
-          var saved = localStorage.getItem('sb-ui-theme');
-          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var theme = saved === 'dark' || saved === 'light' ? saved : prefersDark ? 'dark' : 'light';
-          document.documentElement.dataset.theme = theme;
-          // 让浏览器 UI（移动端顶栏/状态栏）跟随生效主题，而不是只跟随系统
-          var meta = document.querySelector('meta[name="theme-color"]');
-          var bg = meta && getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
-          if (meta && bg) meta.setAttribute('content', bg);
-        } catch (err) {
-          document.documentElement.dataset.theme = 'light';
-        }
-      })();
-    </script>
+    <!-- 模块预载：零构建的代价是依赖要按层发现——实测瀑布是 main(20ms) → 第二层(39ms) → icons/format(50-60ms)，
+         到最后一层要花两个额外往返，而 icons.js 是首屏渲染必需的。入口之外的模块全部列在这里，
+         浏览器在解析 main.js 之前就能并行拉取，瀑布压成一层。
+         清单必须与该页的 import 闭包**完全一致**（多了浪费一个请求、少了留一段瀑布），守卫见 test/ui-contract.test.ts。 -->
+    <link rel="modulepreload" href="/ui/js/api.js" />
+    <link rel="modulepreload" href="/ui/js/store.js" />
+    <link rel="modulepreload" href="/ui/js/filters.js" />
+    <link rel="modulepreload" href="/ui/js/clipboard.js" />
+    <link rel="modulepreload" href="/ui/js/dom.js" />
+    <link rel="modulepreload" href="/ui/js/latest.js" />
+    <link rel="modulepreload" href="/ui/js/signalr.js" />
+    <link rel="modulepreload" href="/ui/js/format.js" />
+    <link rel="modulepreload" href="/ui/js/icons.js" />
+    <link rel="modulepreload" href="/ui/js/components/header.js" />
+    <link rel="modulepreload" href="/ui/js/components/stats.js" />
+    <link rel="modulepreload" href="/ui/js/components/toolbar.js" />
+    <link rel="modulepreload" href="/ui/js/components/list.js" />
+    <link rel="modulepreload" href="/ui/js/components/pagination.js" />
+    <link rel="modulepreload" href="/ui/js/components/preview.js" />
+    <link rel="modulepreload" href="/ui/js/components/confirm.js" />
+    <link rel="modulepreload" href="/ui/js/components/toast.js" />
+    <link rel="modulepreload" href="/ui/js/components/info.js" />
+    <!-- 首帧主题：阻塞式经典脚本（不是 module）。外链而非内联，见文件头注释（CSP） -->
+    <script src="/ui/js/theme-init.js"></script>
   </head>
   <body>
     <a class="skip" href="#main">跳到主内容</a>
@@ -55,6 +62,10 @@
       <header class="app-header" id="app-header"></header>
 
       <main class="main" id="main">
+        <!-- 失联提示：轮询/统计失败时由 main.js 的 setStale 显示，恢复后自动收起。
+             用 role="status" 而不是 alert：它是持续状态，不该在读屏里抢断。 -->
+        <div class="notice notice--warn" id="notice" role="status" hidden></div>
+
         <!-- 统计条：三个真实数字（来自 /ui/api/statistics），由 js/components/stats.js 填充 -->
         <section class="stats" id="stats" aria-label="用量统计"></section>
 
@@ -90,7 +101,7 @@
     <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
     <noscript>
-      <p style="padding: 24px">本页面需要 JavaScript 才能显示剪贴板历史。请从官方客户端访问，或启用 JavaScript。</p>
+      <p class="noscript">本页面需要 JavaScript 才能显示剪贴板历史。请从官方客户端访问，或启用 JavaScript。</p>
     </noscript>
 
     <script type="module" src="/ui/js/main.js"></script>

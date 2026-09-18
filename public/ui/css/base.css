@@ -9,7 +9,8 @@
 
 html {
   -webkit-text-size-adjust: 100%;
-  color-scheme: light dark;
+  /* color-scheme 在 tokens.css 里按**生效主题**声明（light / dark 各一），
+   * 这里不再写 `light dark`——那会跟随系统偏好，与应用内开关打架。 */
   /* 安全网：clip 不像 hidden 那样创建滚动容器（不影响 sticky），
    * 但能兜住「某条超长不可断字符串」这类意外横向滚动 */
   overflow-x: clip;
@@ -124,6 +125,33 @@ textarea {
   letter-spacing: 0.12em;
   color: var(--ink-muted);
   font-weight: 600;
+}
+
+/* 关闭 JavaScript 时的提示：走类而不是内联 style，这样 CSP 可以保持 `style-src 'self'` */
+.noscript {
+  padding: var(--sp-5);
+}
+
+/* 次要说明（登录页与「部署信息」对话框共用）：比正文小一档，颜色最轻。
+ * 它曾经叫 `.auth__note` 且只定义在被 login.html 加载的 auth.css 里，而列表页不加载那张表——
+ * 于是「部署信息」里那段说明在列表页**完全没有样式**（实测计算值 font-size 14px、padding 0）。
+ * 通用说明类不该住在某个页面的命名空间里。 */
+.note {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+/* 需要用户处理的说明（例如时钟差超限、数据缺失）：换色但不放大——它仍是说明，不是警报块 */
+.note--warn {
+  color: var(--danger);
+}
+
+.note code {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  padding: 1px 4px;
+  border-radius: 4px;
 }
 
 /* 滚动条：与调色板一致，避免默认亮色滚动条在深色下刺眼 */

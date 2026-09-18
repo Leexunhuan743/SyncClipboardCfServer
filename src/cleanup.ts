@@ -119,6 +119,60 @@ const META_KEYS_ALL: string[] = [
 // cleanup:lastError 落库长度上限（UI 只展示一行；完整清单在返回值与 [cleanup] 日志里）
 const META_LAST_ERROR_MAX = 300;
 
+// ===== 保留策略（Meta 覆盖 / env 回落，docs/backend-gaps.md §2.5）=====
+
+// 在线可调的覆盖键：存在即覆盖 env。**清除覆盖 = 删键**，不是写空串 ——
+// 空串经 `Number('')` 会解析成 0，而 0 的语义是「关闭该阶段」（见 disabledReason），
+// 与「回落到 env」正好相反（`HistoryDb.deleteMetaValues` 的注释同此）。
+// 键名只在此处定义：src/ui/maintenance.ts（PUT /ui/api/settings）从这里 import，避免两处各写一份字面量。
+export const SETTINGS_META_KEYS = {
+  retentionMinutes: 'settings:retentionMinutes',
+  maxSavedHistoryCount: 'settings:maxSavedHistoryCount',
+} as const;
+
+const SETTINGS_META_KEY_LIST: string[] = Object.values(SETTINGS_META_KEYS);
+
+// env 未提供时的内置默认（与 wrangler.toml [vars] 的取值一致：7 天 / 1000 条）。
+// **不出现在 API 响应里**：接口报的是「配置值」，把引擎默认回填成配置值会让「未设置」这个状态消失。
+const DEFAULT_RETENTION_MINUTES = 10080;
+const DEFAULT_MAX_SAVED_HISTORY_COUNT = 1000;
+
+export interface RetentionSettings {
+  /** 生效的保留期（分钟）。0 = 关闭该阶段；null = 未配置（Meta 与 env 都没给）。 */
+  retentionMinutes: number | null;
+  /** 生效的条数上限。0 = 关闭该阶段；null = 未配置。 */
+  maxSavedHistoryCount: number | null;
+  /** 生效值来自哪里：`meta` = 存在 Meta 覆盖（值非法时视为不存在），`env` = 否则 */
+  retentionSource: 'env' | 'meta';
+  maxCountSource: 'env' | 'meta';
+}
+
+// 解析单个配置值：合法 = 非负安全整数（**0 合法**），非法/缺失 = null（未配置）。
+// 不复用 parsePositiveInt：那个函数的返回值是「总是有值」（回落到 fallback），
+// 而这里必须能表达「未配置」这一状态，且**不能**把 0 当非法值回落默认 ——
+// 那会让「关闭清理」变成「按默认清理」，属于静默改变用户意图。
+function parseSettingValue(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
+// 保留策略的**唯一**读入口：cleanup（runCleanup）、/ui/api/info、/ui/api/settings 三处共用，
+// 杜绝「清理按 Meta、界面显示按 env」的分叉。成本 = 1 次 D1 读（getMetaValues 单条 IN 查询）。
+export async function readRetentionSettings(db: HistoryDb, env: Bindings): Promise<RetentionSettings> {
+  const meta = await db.getMetaValues(SETTINGS_META_KEY_LIST);
+  const fromMeta = {
+    retentionMinutes: parseSettingValue(meta.get(SETTINGS_META_KEYS.retentionMinutes)),
+    maxSavedHistoryCount: parseSettingValue(meta.get(SETTINGS_META_KEYS.maxSavedHistoryCount)),
+  };
+  return {
+    retentionMinutes: fromMeta.retentionMinutes ?? parseSettingValue(env.HISTORY_RETENTION_MINUTES),
+    maxSavedHistoryCount: fromMeta.maxSavedHistoryCount ?? parseSettingValue(env.MAX_SAVED_HISTORY_COUNT),
+    retentionSource: fromMeta.retentionMinutes === null ? 'env' : 'meta',
+    maxCountSource: fromMeta.maxSavedHistoryCount === null ? 'env' : 'meta',
+  };
+}
+
 export interface CleanupResult {
   expired: number;
   trimmed: number;
@@ -379,8 +433,20 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       failures: result.failures,
       nowMs: Date.now(),
     };
-    const retentionMinutes = parsePositiveInt(env.HISTORY_RETENTION_MINUTES, 10080);
-    const maxCount = parsePositiveInt(env.MAX_SAVED_HISTORY_COUNT, 1000);
+    // 保留策略：Meta 覆盖优先、env 回落（§2.5 在线可调）。读失败按「未配置」处理并记一条失败 ——
+    // 与读游标同一条纪律：诊断面出问题不能把清理整体拖停（此时回落 env/内置默认，等价于改动前的行为）。
+    let retentionMinutes: number;
+    let maxCount: number;
+    try {
+      run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);
+      const settings = await readRetentionSettings(run.db, env);
+      retentionMinutes = settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES;
+      maxCount = settings.maxSavedHistoryCount ?? DEFAULT_MAX_SAVED_HISTORY_COUNT;
+    } catch (err) {
+      recordFailure(run.failures, 'meta', err);
+      retentionMinutes = parsePositiveInt(env.HISTORY_RETENTION_MINUTES, DEFAULT_RETENTION_MINUTES);
+      maxCount = parsePositiveInt(env.MAX_SAVED_HISTORY_COUNT, DEFAULT_MAX_SAVED_HISTORY_COUNT);
+    }
     const startedAt = new Date(run.nowMs).toISOString();
 
     // 上一轮的游标：读失败不阻断清理（按 0 处理并照常记账/落库）

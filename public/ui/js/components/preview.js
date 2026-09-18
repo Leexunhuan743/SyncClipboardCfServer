@@ -16,7 +16,7 @@ import { formatAbsolute, formatSize } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
 
-export function createPreview({ onCopy, onCopyImage, onDownload }) {
+export function createPreview({ onCopy, onCopyImage, onDownload, onClose }) {
   const title = el('h2', { class: 'dialog__title', id: 'preview-title' });
   const meta = el('span', { class: 'eyebrow', id: 'preview-meta' });
   const body = el('div', { class: 'dialog__body' });
@@ -36,6 +36,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload }) {
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) dialog.close();
   });
+  // 关闭事件对外播一次（Esc、点背景、按钮关闭都会走到这里）。
+  // 调用方用它收尾：例如清掉 URL 里的深链接 hash——否则刷新页面会突然弹出上一条看过的记录。
+  dialog.addEventListener('close', () => onClose?.());
   document.body.append(dialog);
 
   // 对话框里的操作按钮：与行内按钮同一套反馈（进行中 → 结果留在按钮上）

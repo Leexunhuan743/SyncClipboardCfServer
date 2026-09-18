@@ -78,10 +78,7 @@ export async function negotiateResponse(env: Bindings, request: Request): Promis
   }
   const clientVersion = parsed;
 
-  const connectionToken = randomToken();
-  // 登记失败必须让 negotiate 失败：否则客户端会拿到一个永远无法通过升级校验的 token。
-  // 版本 0 的客户端不带 ?id=，仅靠 Basic 头通过 DO 鉴权；登记它对两种形态都无害。
-  await registerConnectionToken(env, connectionToken);
+  const connectionToken = await issueConnectionToken(env);
 
   const body: Record<string, unknown> = {
     negotiateVersion: clientVersion,
@@ -108,11 +105,24 @@ function negotiateClientVersion(raw: string | null): number | string {
   return Math.min(n, MAX_NEGOTIATE_VERSION);
 }
 
+// 生成随机连接令牌并登记进 DO —— negotiate 与 UI 的实时推送端点（`/ui/api/hub-ticket`）
+// 共用这一条路径。登记失败必须让调用方失败：否则会把一张永远通不过升级校验的票据发出去。
+// 版本 0 的客户端不带 ?id=，仅靠 Basic 头通过 DO 鉴权；登记它对两种形态都无害。
+export async function issueConnectionToken(env: Bindings): Promise<string> {
+  const token = randomToken();
+  await registerConnectionToken(env, token);
+  return token;
+}
+
 async function registerConnectionToken(env: Bindings, token: string): Promise<void> {
-  await hubStub(env).fetch(`https://hub${REGISTER_TOKEN_PATH}`, {
+  const res = await hubStub(env).fetch(`https://hub${REGISTER_TOKEN_PATH}`, {
     method: 'POST',
     body: JSON.stringify({ token }),
   });
+  // 必须看状态码：DO 存储异常时它会返回非 2xx，而调用方（negotiate / UI 票据端点）已经把
+  // 「登记失败」当作可失败路径处理（503）——不看状态码就会把一张**注定连不上**的票据发出去，
+  // 表现为「客户端反复重连、界面显示未连接」这类没有线索的现象。
+  if (!res.ok) throw new Error(`hub register-token failed: ${res.status}`);
 }
 
 function randomToken(): string {

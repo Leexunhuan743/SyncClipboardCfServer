@@ -18,7 +18,7 @@ export function createConfirm() {
 
   const title = el('h2', { class: 'dialog__title', id: 'confirm-title' });
   const message = el('p', { id: 'confirm-message' });
-  const errorBox = el('p', { class: 'dialog__error', role: 'alert', hidden: true });
+  const errorBox = el('p', { class: 'alert--error', role: 'alert', hidden: true });
   const okLabel = el('span', { class: 'btn__label' });
 
   const okButton = el('button', { class: 'btn btn--primary', type: 'button' }, [okLabel]);

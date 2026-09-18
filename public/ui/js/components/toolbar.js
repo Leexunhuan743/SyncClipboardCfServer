@@ -1,4 +1,4 @@
-// 工具栏：类型分段筛选、收藏筛选、搜索、每页条数、刷新。
+// 工具栏：类型分段筛选、收藏筛选、回收站、时间范围、搜索、每页条数、刷新。
 // 筛选状态由 URL 承载（见 filters.js），这里只负责「把状态画出来 + 把用户意图报上去」。
 //
 // 搜索框的三处交互细节（都不是装饰）：
@@ -7,7 +7,7 @@
 //   · 暴露 focusSearch()，让 `/` 这类快捷键不必知道输入框在哪。
 import { el, svg, debounce } from '../dom.js';
 import { iconPaths } from '../icons.js';
-import { PAGE_SIZES } from '../filters.js';
+import { PAGE_SIZES, toDateInput, fromDateInput } from '../filters.js';
 import { setPending } from './toast.js';
 
 const TYPE_OPTIONS = [
@@ -18,7 +18,23 @@ const TYPE_OPTIONS = [
   ['Group', '组合'],
 ];
 
-export function createToolbar({ onTypes, onToggleStarred, onSearch, onPageSize, onRefresh }) {
+const RANGE_OPTIONS = [
+  ['all', '全部时间'],
+  ['today', '今天'],
+  ['7d', '近 7 天'],
+  ['30d', '近 30 天'],
+  ['custom', '自定义…'],
+];
+
+export function createToolbar({
+  onTypes,
+  onToggleStarred,
+  onToggleDeleted,
+  onRange,
+  onSearch,
+  onPageSize,
+  onRefresh,
+}) {
   const typeButtons = new Map();
   const counts = new Map();
 
@@ -50,6 +66,52 @@ export function createToolbar({ onTypes, onToggleStarred, onSearch, onPageSize, 
     },
     [svg(iconPaths('star'), { size: 14 }), el('span', { text: '仅收藏' })],
   );
+
+  // 回收站是**范围**切换（替换整个列表内容），用与类型筛选同一套分段控件表达
+  const recycleButton = el(
+    'button',
+    {
+      class: 'segmented__item',
+      type: 'button',
+      'aria-pressed': 'false',
+      onclick: () => onToggleDeleted(),
+    },
+    [svg(iconPaths('trash'), { size: 14 }), el('span', { text: '回收站' })],
+  );
+
+  // 时间范围：预设走 range，自定义才用两个日期输入。
+  // 日期输入是**本地**日界（用户说「今天」指自己时区），转换见 filters.js 的 fromDateInput。
+  const rangeSelect = el('select', {
+    class: 'select',
+    'aria-label': '时间范围',
+    onchange: () => {
+      const value = rangeSelect.value;
+      // 切回预设时清掉自定义边界，避免 URL 里留着用不上的 after/before
+      onRange(value === 'custom' ? { range: 'custom' } : { range: value, after: null, before: null });
+    },
+  });
+  for (const [value, label] of RANGE_OPTIONS) {
+    rangeSelect.append(el('option', { value, text: label }));
+  }
+
+  const fromInput = el('input', {
+    class: 'input input--date',
+    type: 'date',
+    'aria-label': '起始日期',
+    onchange: () => onRange({ range: 'custom', after: fromDateInput(fromInput.value, 'start') }),
+  });
+  const toInput = el('input', {
+    class: 'input input--date',
+    type: 'date',
+    'aria-label': '结束日期',
+    onchange: () => onRange({ range: 'custom', before: fromDateInput(toInput.value, 'end') }),
+  });
+  const dateRange = el('div', { class: 'date-range', hidden: true }, [
+    el('span', { class: 'date-range__label', text: '从' }),
+    fromInput,
+    el('span', { class: 'date-range__label', text: '到' }),
+    toInput,
+  ]);
 
   const searchInput = el('input', {
     class: 'input input--search',
@@ -132,7 +194,8 @@ export function createToolbar({ onTypes, onToggleStarred, onSearch, onPageSize, 
   );
 
   const node = el('div', { class: 'toolbar' }, [
-    el('div', { class: 'toolbar__group' }, [segmented, starredButton]),
+    el('div', { class: 'toolbar__group' }, [segmented]),
+    el('div', { class: 'toolbar__group' }, [starredButton, recycleButton, rangeSelect]),
     el('span', { class: 'toolbar__spacer' }),
     el('div', { class: 'toolbar__group' }, [
       el('div', { class: 'search' }, [
@@ -143,6 +206,9 @@ export function createToolbar({ onTypes, onToggleStarred, onSearch, onPageSize, 
       pageSizeSelect,
       refreshButton,
     ]),
+    // 日期行单独占一行（CSS 里 flex-basis: 100%）：塞进上面那组会把整条工具栏挤成三行，
+    // 中间那行还会只剩一个被压扁的 spacer。
+    dateRange,
   ]);
 
   return {
@@ -168,6 +234,16 @@ export function createToolbar({ onTypes, onToggleStarred, onSearch, onPageSize, 
         }
       }
       starredButton.setAttribute('aria-pressed', String(filters.starred));
+      recycleButton.setAttribute('aria-pressed', String(filters.deleted));
+
+      if (rangeSelect.value !== filters.range) rangeSelect.value = filters.range;
+      dateRange.hidden = filters.range !== 'custom';
+      // before 是开区间上界（次日 00:00），回显成日期时要减回去，否则「到 9-13」会显示成 9-14
+      const fromValue = toDateInput(filters.after);
+      const toValue = toDateInput(filters.before === null ? null : filters.before - 1);
+      if (document.activeElement !== fromInput && fromInput.value !== fromValue) fromInput.value = fromValue;
+      if (document.activeElement !== toInput && toInput.value !== toValue) toInput.value = toValue;
+
       if (document.activeElement !== searchInput && searchInput.value !== filters.search) {
         searchInput.value = filters.search;
       }

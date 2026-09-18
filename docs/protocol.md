@@ -442,14 +442,14 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 
 | 项 | 官方服务器 | 本实现 | 影响 |
 |---|---|---|---|
-| 请求体上限 | Kestrel 无限制（MaxRequestBodySize=int.MaxValue） | 平台 100MB（Free）/更高，**另有 32MiB 应用层上限**（超限 413，见 `src/requestLimits.ts` 注释：客户端默认 20MB；isolate 仅 128MB，接近 100MB 的体会在解析期 OOM） | **有意偏离**：单请求 >32MiB 失败；客户端默认 20MB 不受影响（下表同项为其历史口径） |
+| 请求体上限 | Kestrel 无限制（MaxRequestBodySize=int.MaxValue） | 平台 100MB（Free）/更高，**另有 32MiB 应用层上限**（超限 413，见 `src/requestLimits.ts` 注释：客户端默认 20MB；isolate 仅 128MB，接近 100MB 的体会在解析期 OOM） | **有意偏离**：单请求 >32MiB 失败；客户端默认 20MB 不受影响 |
 | SignalR 传输 | WebSockets + SSE + LongPolling | 三种均实现，宣告顺序与格式表逐字对齐 | — |
 | 磁盘布局 | 本地文件系统 | R2 对象存储 | 对外不可见，语义等价 |
 | 并发 | 单进程信号量串行 | `(UserId,Type,Hash)` UNIQUE 索引 + 唯一冲突按 ShouldUpdate 合并 + `updateEntityIfVersion` 乐观锁 | 语义等价（多设备并发实测无重复行/丢更新） |
 | `/api/history/statistics.totalFileSizeMB` | 遍历本地目录 | 按 R2 对象 size 求和 | 等价（R2 list 最终一致，存在短暂窗口） |
 | 缓存 | 内存缓存 + 显式失效 | 无缓存（D1/R2 直读） | 等价（更强一致） |
 | 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h） | Cron Trigger 每小时批量执行同类语义 | 等价（周期不同；软删/硬删/孤儿判定一致） |
-| Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | 18 项常见扩展 + `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type |
+| Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | 46 项常见扩展 + `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type |
 | 错误响应体 | `BadRequest()` 空体 / ProblemDetails | 统一文本（状态码一致） | 官方客户端只判状态码 |
 | 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed（带 `Allow` 头） | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |
 | 非 `/file/{name}` 路径上的 `HEAD` | **405**（ASP.NET 路由**不**把 HEAD 映射到 GET —— 见下方依据） | **200**（Hono 为 GET 路由自动处理 HEAD） | 本实现更宽容（超集）：客户端不发这类 HEAD（`WebDavBase.Exist()` 定义了但未被调用），`HEAD /file/{name}` 两边都是 200 |
@@ -465,7 +465,6 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | `profileId` 里的类型枚举大小写 | **大小写敏感**：`Profile.ParseProfileId` 用 `Enum.TryParse<TEnum>(value, out r)`（.NET 源码该重载固定 `ignoreCase: false`），故 `text-HASH` → 400。但 `PATCH /{type}` 走模型绑定（`EnumTypeModelBinder` → `EnumConverter.ConvertFrom` → `Enum.Parse(t, s, ignoreCase: **true**)`），**大小写不敏感** —— 上游自身不一致 | 两处均大小写不敏感 | 宽松超集：官方客户端恒发 `Text`/`File`/`Image`/`Group` 规范名，两种实现等价；第三方客户端更不易踩坑 |
 | 第三方畸形 zip | 隐式目录/重复条目按解压落盘语义 | 隐式目录计入；重复条目首见保留（filter）；`a` 与 `a/` 同名冲突不报错 | 官方客户端恒写显式目录条目且无重复 → 不可达 |
 | zip 条目名的**路径形态** | 越界形态按**平台相关**的方式处理：读取守卫（`GroupProfile.cs:619-624`：`Path.Combine` + `GetFullPath` + `StartsWith(extractPath)`）在 Windows 上会拒掉 rooted 形态（`Path.Combine` 遇 rooted 第二参数直接返回它 ⇒ 不在解压根下），在 Linux/macOS 上则把 `C:/evil.txt` 当**相对路径**落盘（生成名为 `C:` 的目录）；含 **NUL** 的名字没有专门处理，落盘时抛未处理异常（**500**，不是干净拒绝） | 入口**一律拒绝**，不依赖平台：盘符 + 分隔符形态与含 NUL 的名字都拒（POST→422 / PUT→400）；同时**不**拒「第二字符是冒号」的普通名字（`a:b.txt`、`1:30.txt`） | **有意偏离**：拒绝口径跨平台一致，且不让畸形输入变成 500。附注：`a:b.txt` 这类名字在 POSIX 上合法（上游同样落盘成功），在 Windows 上游会被同一个 rooted 守卫拒掉，而本实现一律接受——宽松超集，官方客户端不可达 |
-| 请求体上限 | 无限制 | 平台 100MB（Free/Pro）+ **32MiB 应用层上限**（同上表） | 客户端默认 20MB 上限；>32MiB 返回 413 |
 | 应用层解压上限 | 无 | **有**：Group zip 解压总量 64MiB / 条目 1000 / 单条目压缩比 100:1（比值守卫含 8MiB 绝对下限；见 `src/hash.ts`） | **有意偏离**：合法但超大的文件夹会被拒（POST→422、PUT→400）；上游无此防护（同为全量解压） |
 | PROPFIND 响应 | 200 空体 | 207 标准 multistatus | 客户端两处调用均按 2xx 判定（`DirectoryExist` 只看 404、`GetFolderSubList` 用 `EnsureSuccessStatusCode`），且 207 是 `PreciseDelete` 解析目录列表的前提 |
 | **附件响应头** | 仅 `Content-Type` | 一律 `X-Content-Type-Options: nosniff`；可渲染类型（html/htm/xhtml/svg/xml）额外 `CSP: default-src 'none'; sandbox` + `Content-Disposition: attachment` | **有意加固偏离**：附件与 API 同源、浏览器会自动附带已缓存的 Basic 凭据，直接打开可读取全部历史（存储型 XSS）。桌面客户端不读这些头，已 E2E 验证无回归；代价是浏览器不再内联预览 HTML/SVG 附件 |
@@ -474,7 +473,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Basic 凭据缺冒号 | `credentials[1]` 越界 → **IndexOutOfRangeException（500）** | 401 | 更健壮（上游为未处理异常） |
 | Basic 密码含冒号 | `Split(':')` 截断 → 校验失败（401） | 取首个冒号后全部 → 可用 | 更宽容；从官方服务器迁移的用户不受影响 |
 | `WWW-Authenticate` | `Basic realm="SyncClipboard"` | 逐字一致 | — |
-| MIME 表 | ~370 项 | ~50 项常见类型 + octet-stream 回退 | 可渲染类型必须显式在表内（否则回退后仍不可渲染，安全） |
+| MIME 表 | ~370 项 | 46 项常见类型 + octet-stream 回退 | 可渲染类型必须显式在表内（否则回退后仍不可渲染，安全） |
 
 ## 11. 参考实现对照表
 

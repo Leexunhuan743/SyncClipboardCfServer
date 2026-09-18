@@ -112,6 +112,17 @@ export function shouldUpdate(
   return newLastModified >= oldLastModified;
 }
 
+// `listActiveRecordsWithData` 的行形状：数据完整性自检的输入（只取这 6 列，不是整行）。
+export interface DataRecordRow {
+  type: ProfileType;
+  hash: string;
+  /** DB 里的 TransferDataFile 原文（可能含目录部分，期望的 R2 key 取 basename） */
+  transferDataFile: string;
+  text: string;
+  createTime: number;
+  size: number;
+}
+
 export class HistoryDb {
   constructor(private db: D1Database) {}
 
@@ -276,26 +287,67 @@ export class HistoryDb {
       .filter((e) => e.transferDataFile !== '' && basename(e.transferDataFile) === fileName);
   }
 
-  // 统计（上游 GetStatisticsAsync；totalFileSizeMB 由调用方传入 R2 合计值）
+  // 数据完整性自检（docs/backend-gaps.md §2.4）的候选集：`TransferDataFile != ''` 的**活跃**记录，
+  // 一次查询取回期望 R2 key 的全部组成部分（Type/Hash/文件名 + 汇报用的 Text/CreateTime/Size）。
+  // 两个刻意的取舍：
+  //   · 不走 SELECT * / rowToEntity —— 自检只用这 6 列，而记录数上千（本机总数 2000+ 条），
+  //     逐行解析 FilePaths 的收益为零、成本不为零。
+  //   · **排除软删记录** —— 软删路径会立即删除其数据目录（historyOps），它们的对象不存在是设计如此；
+  //     不排除会把回收站整批（本机 1155 条）算成「缺数据」，清单全是假阳性。
+  async listActiveRecordsWithData(): Promise<DataRecordRow[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT Type, Hash, TransferDataFile, Text, CreateTime, Size FROM HistoryRecords
+         WHERE UserId = ?1 AND IsDeleted = 0 AND TransferDataFile != ''
+         ORDER BY CreateTime DESC, ID DESC`,
+      )
+      .bind(HARD_CODED_USER_ID)
+      .all<{ Type: number; Hash: string; TransferDataFile: string; Text: string; CreateTime: number; Size: number }>();
+    return (res.results ?? []).map((r) => ({
+      type: r.Type as ProfileType,
+      hash: r.Hash,
+      transferDataFile: r.TransferDataFile,
+      text: r.Text,
+      createTime: r.CreateTime,
+      size: r.Size,
+    }));
+  }
+
+  // 硬删全部已删除记录（回收站清空；UI 面专用，协议无此语义），只返回条数。
+  // 刻意**不用** `DELETE ... RETURNING *`：回收站整批行（本机 1318 条，带 FilePaths/Text）会被
+  // 物化进 isolate 内存，而调用方只要一个计数（`meta.changes` 就是 D1 给的行数）。
+  // 数据文件不必处理——软删时已随记录删除（见 historyOps 的删除路径），残留由孤儿阶段兜底。
+  async purgeDeletedRecords(): Promise<number> {
+    const res = await this.db
+      .prepare(`DELETE FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted != 0`)
+      .bind(HARD_CODED_USER_ID)
+      .run();
+    return res.meta.changes ?? 0;
+  }
+
+  // 统计（上游 GetStatisticsAsync；totalFileSizeMB 由调用方传入 R2 合计值）。
+  // 四个计数**一条聚合查询**出齐：旧实现先把全部行的 Stared/IsDeleted 拉回 JS 再循环，
+  // 而统计在每次页面加载、星标、删除、切视图时都会跑（后端能力评估 §3.1）。
+  // 语义与原实现逐条对齐：starred 在**整个结果集**上累加，不区分已删/活跃。
   async statistics(totalFileSizeMB: number): Promise<HistoryStatisticsDto> {
     const res = await this.db
-      .prepare(`SELECT COUNT(*) AS c FROM HistoryRecords WHERE UserId = ?1`)
+      .prepare(
+        `SELECT
+           COUNT(*) AS total,
+           COALESCE(SUM(CASE WHEN Stared != 0 THEN 1 ELSE 0 END), 0) AS starred,
+           COALESCE(SUM(CASE WHEN IsDeleted != 0 THEN 1 ELSE 0 END), 0) AS deleted,
+           COALESCE(SUM(CASE WHEN IsDeleted = 0 THEN 1 ELSE 0 END), 0) AS active
+         FROM HistoryRecords WHERE UserId = ?1`,
+      )
       .bind(HARD_CODED_USER_ID)
-      .first<{ c: number }>();
-    const total = res?.c ?? 0;
-    let starred = 0;
-    let deleted = 0;
-    let active = 0;
-    const rows = await this.db
-      .prepare(`SELECT Stared, IsDeleted FROM HistoryRecords WHERE UserId = ?1`)
-      .bind(HARD_CODED_USER_ID)
-      .all<{ Stared: number; IsDeleted: number }>();
-    for (const r of rows.results ?? []) {
-      if (r.Stared !== 0) starred++;
-      if (r.IsDeleted !== 0) deleted++;
-      else active++;
-    }
-    return { totalCount: total, starredCount: starred, deletedCount: deleted, activeCount: active, totalFileSizeMB };
+      .first<{ total: number; starred: number; deleted: number; active: number }>();
+    return {
+      totalCount: res?.total ?? 0,
+      starredCount: res?.starred ?? 0,
+      deletedCount: res?.deleted ?? 0,
+      activeCount: res?.active ?? 0,
+      totalFileSizeMB,
+    };
   }
 
   // 清空（上游 ClearAllAsync），返回被删除的记录。
@@ -477,6 +529,15 @@ export class HistoryDb {
       )
       .bind(...entries.flat())
       .run();
+  }
+
+  // 批量删键（一条 DELETE，1 次子请求）：PUT /ui/api/settings 传 null 即「清除覆盖」。
+  // 必须是**真删**而不是写空串 —— 空串经 `Number('')` 会解析成 0，而 0 的语义是「关闭该阶段」，
+  // 与「清除覆盖、回落到 env」正好相反（src/cleanup.ts 的 SETTINGS_META_KEYS 注释同此）。
+  async deleteMetaValues(keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
+    const placeholders = keys.map((_, i) => `?${i + 1}`).join(', ');
+    await this.db.prepare(`DELETE FROM Meta WHERE Key IN (${placeholders})`).bind(...keys).run();
   }
 }
 

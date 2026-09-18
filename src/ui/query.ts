@@ -26,6 +26,8 @@ export interface UiHistoryQuery {
   search: string | null;
   starred: boolean | null;
   includeDeleted: boolean;
+  /** 只看回收站（已删除的记录）。为真时 includeDeleted 无意义——范围已限定在已删除行 */
+  deleted: boolean;
   after: number | null; // CreateTime >= after（epoch ms）
   before: number | null; // CreateTime < before（epoch ms）
   sort: UiSortField;
@@ -96,6 +98,12 @@ function parseTimeParam(raw: string | null, field: string): number | null {
   return ms;
 }
 
+// `deleted=true` 的解析规则单独导出：列表（`/ui/api/history`）与类型计数（`/ui/api/statistics`）
+// 都用它，两处各写一遍迟早出现「列表按 A 解释、计数按 B 解释」的分叉。
+export function parseDeletedFlag(params: URLSearchParams): boolean {
+  return parseBoolParam(params.get('deleted'), 'deleted') === true;
+}
+
 export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
   let types: ProfileTypeFilter;
   try {
@@ -116,15 +124,26 @@ export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
     throw new UiQueryError(`Invalid order value: ${params.get('order')}`);
   }
 
-  const search = (params.get('search') ?? '').trim();
+  const searchText = (params.get('search') ?? '').trim();
+  // 搜索串的长度上限由 normalizeSearchText 判定（G6，48 字节）：它抛的是 InvalidQueryValueError，
+  // 必须在这里翻译成 UiQueryError —— 否则会刺穿上层路由的 `instanceof UiQueryError` 映射，
+  // 变成未处理的 500（实测：49 字节的搜索词）。协议侧对同一个错误映射为 400，两边语义必须一致。
+  let search: string | null;
+  try {
+    search = normalizeSearchText(searchText);
+  } catch (err) {
+    if (err instanceof InvalidQueryValueError) throw new UiQueryError(err.message);
+    throw err;
+  }
 
   return {
     page: parseIntParam(params.get('page'), 1, 1, Number.MAX_SAFE_INTEGER, 'page'),
     pageSize: parseIntParam(params.get('pageSize'), UI_DEFAULT_PAGE_SIZE, 1, UI_MAX_PAGE_SIZE, 'pageSize'),
     types,
-    search: normalizeSearchText(search),
+    search,
     starred: parseBoolParam(params.get('starred'), 'starred'),
     includeDeleted: parseBoolParam(params.get('includeDeleted'), 'includeDeleted') === true,
+    deleted: parseDeletedFlag(params),
     after: parseTimeParam(params.get('after'), 'after'),
     before: parseTimeParam(params.get('before'), 'before'),
     sort: sortRaw as UiSortField,
@@ -139,7 +158,9 @@ function buildWhere(q: UiHistoryQuery): { clause: string; params: (string | numb
   const params: (string | number)[] = [USER_ID];
   let idx = 2;
 
-  if (!q.includeDeleted) where.push('IsDeleted = 0');
+  // 回收站视图只看已删除行；普通视图排除已删除行（includeDeleted 允许两者混排，供脚本用）
+  if (q.deleted) where.push('IsDeleted = 1');
+  else if (!q.includeDeleted) where.push('IsDeleted = 0');
   if (q.after !== null) {
     where.push(`CreateTime >= ?${idx++}`);
     params.push(q.after);
@@ -240,21 +261,29 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
   return { total, page: q.page, pageSize: q.pageSize, items: (rows.results ?? []).map(toItem) };
 }
 
-export async function countByType(db: D1Database): Promise<UiTypeCounts> {
+// 按类型计数（活跃 / 回收站两套视图，一次取回）。
+// 为什么一次取两套：`byType` 要随**当前视图**走（回收站里显示活跃数会让列表头与控制条互相矛盾），
+// 而统计条「存储占用」的明细恒用活跃口径——两个消费方各要一套，旧实现为此打两条 `COUNT(*) GROUP BY`
+// 再加一条全表拉取式的统计（后端能力评估 §3.1）。一条 `GROUP BY Type, IsDeleted` 就够。
+export async function countByTypeViews(
+  db: D1Database,
+): Promise<{ byActive: UiTypeCounts; byDeleted: UiTypeCounts }> {
   const rows = await db
     .prepare(
-      `SELECT Type, COUNT(*) AS c FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted = 0 GROUP BY Type`,
+      `SELECT Type, IsDeleted, COUNT(*) AS c FROM HistoryRecords WHERE UserId = ?1 GROUP BY Type, IsDeleted`,
     )
     .bind(USER_ID)
-    .all<{ Type: number; c: number }>();
-  const counts: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
+    .all<{ Type: number; IsDeleted: number; c: number }>();
+  const byActive: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
+  const byDeleted: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
   for (const row of rows.results ?? []) {
-    if (row.Type === ProfileType.Text) counts.Text = row.c;
-    else if (row.Type === ProfileType.Image) counts.Image = row.c;
-    else if (row.Type === ProfileType.File) counts.File = row.c;
-    else if (row.Type === ProfileType.Group) counts.Group = row.c;
+    const bucket = row.IsDeleted !== 0 ? byDeleted : byActive;
+    if (row.Type === ProfileType.Text) bucket.Text = row.c;
+    else if (row.Type === ProfileType.Image) bucket.Image = row.c;
+    else if (row.Type === ProfileType.File) bucket.File = row.c;
+    else if (row.Type === ProfileType.Group) bucket.Group = row.c;
   }
-  return counts;
+  return { byActive, byDeleted };
 }
 
 // 变更信号：前端的自动刷新用它判断「要不要重新拉列表」。

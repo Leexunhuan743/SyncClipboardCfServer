@@ -165,9 +165,12 @@ function measure(label: string, files: string[]): SizeStat {
 // 任何数字式样（阿拉伯或中文）都可能绕过计数守卫，而成员比对绕开数字直接比集合。
 const WRITE_GUARD_ANCHOR = '**写库套件默认只允许指向本机**';
 
-// 去掉块注释与行注释后再判定：检查器自己的散文里往往就含被判定的形状。
+// 剥注释：**先剥行注释，再剥块注释**。顺序不能反——行注释里会出现 `/*`（本仓库第一行就写着
+// `/ui/api/*`），先剥块注释会让它一路吃到后面任意一个 `*/`（例如测试名里的 `bytes */size`），
+// 把中间整段真实代码一起吞掉：实测 `test/ui.test.ts` 的 `import ... from './support/target-guard'`
+// 因此被判为「不存在」，写库套件清单随之少一项。
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  return source.replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
 // 写库套件的判据：**导入**了目标守卫模块（相对路径形式，与本仓库既有写法一致）

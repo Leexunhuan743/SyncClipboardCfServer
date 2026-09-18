@@ -29,22 +29,12 @@
     <link rel="stylesheet" href="/ui/css/components.css" />
     <link rel="stylesheet" href="/ui/css/motion.css" />
     <link rel="stylesheet" href="/ui/css/auth.css" />
-    <script>
-      (function () {
-        try {
-          var saved = localStorage.getItem('sb-ui-theme');
-          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var theme = saved === 'dark' || saved === 'light' ? saved : prefersDark ? 'dark' : 'light';
-          document.documentElement.dataset.theme = theme;
-          // 让浏览器 UI（移动端顶栏/状态栏）跟随生效主题，而不是只跟随系统
-          var meta = document.querySelector('meta[name="theme-color"]');
-          var bg = meta && getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
-          if (meta && bg) meta.setAttribute('content', bg);
-        } catch (err) {
-          document.documentElement.dataset.theme = 'light';
-        }
-      })();
-    </script>
+    <!-- 模块预载：与 index.html 同一理由，清单按该页的 import 闭包（login → api → format / next-target） -->
+    <link rel="modulepreload" href="/ui/js/api.js" />
+    <link rel="modulepreload" href="/ui/js/format.js" />
+    <link rel="modulepreload" href="/ui/js/next-target.js" />
+    <!-- 首帧主题：阻塞式经典脚本（不是 module）。与列表页同一份实现，见文件头注释 -->
+    <script src="/ui/js/theme-init.js"></script>
   </head>
   <body>
     <main class="auth">
@@ -62,7 +52,7 @@
         </div>
 
         <form class="auth__form" id="login-form" novalidate>
-          <p class="auth__error" id="login-error" role="alert" hidden></p>
+          <p class="alert--error" id="login-error" role="alert" hidden></p>
 
           <div class="field">
             <label for="username">用户名</label>
@@ -95,7 +85,7 @@
           </button>
         </form>
 
-        <p class="auth__note">
+        <p class="note">
           凭据与 SyncClipboard 客户端使用的一致（HTTP Basic 的 <code>USERNAME</code> /
           <code>PASSWORD</code>）。登录状态保存在本机 Cookie 中，24 小时后过期。
         </p>

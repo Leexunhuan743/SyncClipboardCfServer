@@ -56,35 +56,7 @@
   box-shadow: var(--shadow-pop);
 }
 
-.auth__error {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--danger-soft);
-  color: var(--danger);
-  font-size: var(--fs-sm);
-}
-
-.auth__error[hidden] {
-  display: none;
-}
-
 .auth__submit {
   min-height: 40px;
   width: 100%;
-}
-
-.auth__note {
-  font-size: var(--fs-xs);
-  color: var(--ink-faint);
-  line-height: 1.6;
-}
-
-.auth__note code {
-  font-family: var(--font-mono);
-  background: var(--surface-2);
-  padding: 1px 4px;
-  border-radius: 4px;
 }
