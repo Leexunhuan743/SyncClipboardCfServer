@@ -4,6 +4,7 @@
 // （ASP.NET 默认按数字序列化枚举），而前端只认类型名。把这一次转换收在 API 边界上，
 // 组件就不必各自记得转换 —— 忘一处就是一处显示错。
 import { typeName } from './format.js';
+import { dataPath } from './paths.js';
 
 export class ApiError extends Error {
   constructor(status, message, payload = null, retryAfterSeconds = null) {
@@ -223,11 +224,12 @@ export const api = {
   /** 换一张 Hub 连接票据（`{token, path}`）：推送通道用它建立 WebSocket。 */
   hubTicket: () => request('/ui/api/hub-ticket', { method: 'POST' }),
 
-  /** 数据文件地址（图片预览用 `<img src>`、下载用 `<a href>`，两者都自动带同源 Cookie）。 */
-  dataUrl: (item, { download = false } = {}) =>
-    `/ui/api/history/${encodeURIComponent(item.type)}/${encodeURIComponent(item.hash)}/data${
-      download ? '?download=1' : ''
-    }`,
+  /**
+   * 数据文件地址（图片预览用 `<img src>`、下载用 `<a href>`，两者都自动带同源 Cookie）。
+   * 串本身由 `./paths.js` 的纯函数构造 —— 同一个地址还有第二个消费者（`ui/row.js` 的缩略图），
+   * 两处各写一份模板就会在改接口前缀时漏掉一处。这里只做转发，不再保留第二份拼法。
+   */
+  dataUrl: (item, { download = false } = {}) => dataPath(item, { download }),
 };
 
 /** 会话过期时统一回登录页（保留当前位置，登录后跳回）。 */

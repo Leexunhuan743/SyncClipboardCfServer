@@ -9,6 +9,10 @@ import { el, svg } from '../dom.js';
 import { iconPaths, iconForKind } from '../icons.js';
 import { typeLabel, formatSize, formatRelative, formatAbsolute, previewText, previewIsEmpty } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
+// 数据文件地址来自 `../paths.js` 的纯函数（**不是**在这里再拼一遍模板串，也不是去 import `api.js`）：
+// 这条路径 `api.js` 与这里都要用，两处各写一份就会在改接口前缀时漏掉一处 —— 而缩略图 404
+// 只会表现为"图片都没了"，与请求本身成功与否无关。理由见该模块的文件头。
+import { dataPath } from '../paths.js';
 import { renderRowOps } from './rowops.js';
 
 // 缩略图的体积上限：超过它就不拉原图。
@@ -225,7 +229,7 @@ function renderThumb(item) {
 
   const alt = item.dataName ? `${item.dataName} 的缩略图` : '记录缩略图';
   const img = el('img', {
-    src: `/ui/api/history/${encodeURIComponent(item.type)}/${encodeURIComponent(item.hash)}/data`,
+    src: dataPath(item),
     alt,
     loading: 'lazy',
     decoding: 'async',
