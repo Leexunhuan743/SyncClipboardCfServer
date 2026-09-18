@@ -6,10 +6,8 @@ import {
   textProfileHash,
   fileProfileHash,
   groupHashFromEntries,
-  EMPTY_GROUP_HASH,
   parseGroupZip,
   InvalidGroupDataError,
-  EmptyGroupDataError,
 } from '../src/hash';
 
 // 独立参考实现（node crypto，与上游公式一致的计算基准）
@@ -77,8 +75,10 @@ describe('groupHashFromEntries', () => {
     expect(forward).toBe(reverse);
   });
 
-  it('空集合 = SHA256(空串)', async () => {
-    expect(EMPTY_GROUP_HASH).toBe('E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855');
+  it('空集合 = SHA256(空串)（上游 CaclHashAndSize 的空分支）', async () => {
+    // 断言行为而非复述常量：空输入应得到 SHA256(空串) 的十六进制大写
+    expect(await groupHashFromEntries([])).toBe('E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855');
+    expect(await groupHashFromEntries([])).toBe(sha256(Buffer.alloc(0)));
   });
 });
 
@@ -114,7 +114,4 @@ describe('parseGroupZip', () => {
     expect(() => parseGroupZip(zipSync({ 'a\\b.txt': strToU8('x') }))).toThrow(InvalidGroupDataError);
   });
 
-  it('EmptyGroupDataError 继承 InvalidGroupDataError', () => {
-    expect(new EmptyGroupDataError()).toBeInstanceOf(InvalidGroupDataError);
-  });
 });

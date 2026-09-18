@@ -5,6 +5,9 @@ export const HUB_INSTANCE = 'hub';
 export const HUB_PATH = '/SyncClipboardHub';
 // token 登记路径（DO 侧同此常量）
 export const REGISTER_TOKEN_PATH = '/register-token';
+// 服务端支持的最大 negotiate 版本（上游 `HttpConnectionDispatcher._protocolVersion = 1`）；
+// 客户端请求更高版本时被钳制到该值
+const MAX_NEGOTIATE_VERSION = 1;
 
 // 逐字对齐上游：ASP.NET Core SignalR 对 WebSockets 传输**硬编码**宣告 ["Text","Binary"]，
 // 与服务端实际注册了哪些协议无关（上游 Web.cs:38 只 AddSignalR() = 仅 JSON）。
@@ -51,31 +54,56 @@ export function forwardToHub(env: Bindings, request: Request): Promise<Response>
 }
 
 // negotiate 响应（.NET SignalR JSON 协议）
-// - 按上游顺序宣告三种传输（WebSockets → ServerSentEvents → LongPolling），客户端取首个可用的
-// - negotiateVersion >= 1 时返回 connectionToken（v1 token 模式，WS/SSE/长轮询 URL 用 ?id=connectionToken）
-// - 老客户端（无 negotiateVersion）用 connectionId 作为连接 id
-// - 无论哪种模式都把 token 登记到 Hub：WS 升级时 DO 会校验它（F1）
+// 逐字对齐 ASP.NET Core 的 `HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`：
+//   - 版本判定（源码依据见 docs/protocol.md §6）：
+//       缺参数 → 版本 0；非整数 → `{"error":"The client requested a non-integer protocol version."}`；
+//       负数（< MinimumProtocolVersion=0）→ `{"error":"The client requested version '<v>', but the server does not support this version."}`；
+//       > 1 → 钳为服务端最大值 1
+//   - 出错时**仍返回 HTTP 200**，响应体只有 `error` 字段（dispatcher 不设置非 200 状态码）
+//   - `negotiateVersion` **恒出现**（版本 0 也会写成 `"negotiateVersion":0`）
+//   - `connectionToken` 仅在版本 > 0 时出现；`connectionId` 恒出现
+//   - `availableTransports` 恒出现（数组），顺序即客户端尝试顺序
+// 无论哪种版本都把 token 登记到 Hub：v1 客户端用它作 `?id=`；版本 0 客户端用 connectionId 作 `?id=`
+// （本实现刻意让二者同值，使两种形态都能通过 DO 的连接鉴权，F1）。
 export async function negotiateResponse(env: Bindings, request: Request): Promise<Response> {
   const url = new URL(request.url);
-  const negotiateVersion = url.searchParams.get('negotiateVersion');
-  const connectionToken = randomToken();
+  const rawVersion = url.searchParams.get('negotiateVersion');
 
-  // 登记失败必须让 negotiate 失败：否则客户端会拿到一个永远无法通过升级校验的 token
+  const parsed = negotiateClientVersion(rawVersion);
+  if (typeof parsed === 'string') {
+    // 上游此路径不创建连接、不签发 token，响应体只有 error
+    return Response.json({ error: parsed });
+  }
+  const clientVersion = parsed;
+
+  const connectionToken = randomToken();
+  // 登记失败必须让 negotiate 失败：否则客户端会拿到一个永远无法通过升级校验的 token。
+  // 版本 0 的客户端不带 ?id=，仅靠 Basic 头通过 DO 鉴权；登记它对两种形态都无害。
   await registerConnectionToken(env, connectionToken);
 
-  if (negotiateVersion !== null) {
-    return Response.json({
-      negotiateVersion: 1,
-      connectionId: connectionToken,
-      connectionToken,
-      availableTransports: AVAILABLE_TRANSPORTS,
-    });
-  }
-
-  return Response.json({
+  const body: Record<string, unknown> = {
+    negotiateVersion: clientVersion,
     connectionId: connectionToken,
-    availableTransports: AVAILABLE_TRANSPORTS,
-  });
+  };
+  if (clientVersion > 0) {
+    body.connectionToken = connectionToken;
+  }
+  body.availableTransports = AVAILABLE_TRANSPORTS;
+  return Response.json(body);
+}
+
+// 返回钳制后的版本号，或上游语义下的错误消息字符串
+function negotiateClientVersion(raw: string | null): number | string {
+  if (raw === null) return 0; // 未携带 → 版本 0（MinimumProtocolVersion 为 0，故不是错误）
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    return 'The client requested a non-integer protocol version.';
+  }
+  const n = Number(raw.trim());
+  if (!Number.isSafeInteger(n) || n < 0) {
+    // 上游：clientProtocolVersion < MinimumProtocolVersion(0) → 版本不支持
+    return `The client requested version '${raw.trim()}', but the server does not support this version.`;
+  }
+  return Math.min(n, MAX_NEGOTIATE_VERSION);
 }
 
 async function registerConnectionToken(env: Bindings, token: string): Promise<void> {

@@ -284,6 +284,13 @@ CREATE TABLE IF NOT EXISTS Meta (
 - 每次删除同步清理 R2 工作目录，并广播 `RemoteHistoryChanged`（与上游逐条通知一致）
 - 实现：`src/cleanup.ts`（`runCleanup`）+ `src/index.ts` 的 `scheduled` handler + `db.ts`/`storage.ts` 数据层方法
 
+> **孤儿判定的键形式契约（曾因此出一小时清空一次的生产事故）**：
+> `R2Storage.listHistoryWorkingDirs()` 返回**带尾斜杠**的目录名（由 R2 key 截取，形如 `File_ABC/`），
+> 因此 `HistoryDb.listActiveWorkingDirs()` 必须返回**同一形式**，否则集合比较恒不命中 →
+> 把所有历史数据目录当孤儿删除。尾斜杠同时是 `deletePrefix` 的正确性所需
+> （`history/File_AB` 会误匹配 `history/File_ABC/…`）。
+> 回归守卫：`test/fixes.test.ts` 的 F33（内存 bucket 驱动**真实** `R2Storage` + 真实 `runCleanup`）。
+
 ## 9.1 输入校验策略（对齐上游模型绑定）
 
 「能绑定就接受、绑定失败即 400」是 ASP.NET `[ApiController]` 的默认行为，也是本实现刻意复刻的部分——
@@ -337,6 +344,46 @@ npm run deploy
 | 集成（黑盒） | `wrangler dev` 起本地服务，vitest 发真实 HTTP | 全部端点行为、错误码、上传/下载/历史全流程 |
 | SignalR | `@microsoft/signalr`（与 .NET 客户端同协议）连本地 hub | negotiate、握手、ping、广播接收 |
 | E2E | 本机官方客户端（WinUI3/Avalonia）连接 `wrangler dev` / 部署 URL | 真实客户端全流程（含历史同步） |
+
+**套件清单**（`npm test` = 8 套件 / 143 用例）：`hash`、`fixes`（数据层，用 node:sqlite 建真实 SQLite）、
+`protocol`、`fix-regressions`、`cleanup`、`query-filters`、`signalr`、`transports`。除 `hash` 与
+`fixes` 外的六套是 HTTP/SignalR 黑盒，需服务器。
+
+`query-filters` 专门覆盖 `/api/history/query` 的**过滤与排序语义**（SearchText / Starred / Types /
+SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历史 UI 与增量同步直接依赖它们，
+而此前只测了「非法值 → 400」。
+
+**写库套件必须自我收尾**：黑盒套件会向目标库写记录。`cleanup` 与 `query-filters` 均在 `afterAll`
+删除自己创建的记录，**清理失败即判套件失败**（静默残留会让共享/线上实例积累垃圾）。
+两条与时间戳有关的约束：
+
+| 字段 | 选择 | 原因 |
+|---|---|---|
+| `CreateTime` / `LastAccessed` | **未来**值 | 两种排序都是 DESC，只有比库里既有记录都新才保证落在首页（页大小固定 50） |
+| `LastModified` | **过去**值 | 它不参与排序，却决定清理能力：未来值会让 `softDeleteExpiredRecords`（`< cutoff`）与 `hardDeleteOldDeletedRecords`（`< now-30d`）永不命中；**且 afterAll 也删不掉** —— `ShouldUpdate` 在时间差 > 5 分钟时要求 `newLastModified >= oldLastModified`，用 now 收尾会被判 409 |
+
+> 其它早期黑盒套件（`protocol`、`fix-regressions`）也会写记录，但它们用的是「当前时间」时间戳，
+> 会被保留期（7 天）与条数裁剪自然回收，属有界残留。
+
+**目标守卫（防误指线上）**：六个写库套件在文件顶层调用
+`assertWritableTarget(BASE)`（`test/support/target-guard.ts`）—— `BASE` 非本机
+（`127.0.0.1`/`localhost`/`::1`/`0.0.0.0`）且未设 `ALLOW_REMOTE_TARGET=1` 时**抛错终止**，
+连 `beforeAll` 都不会执行。这是对「误把黑盒套件指向线上」这一事故类别的硬防护：本仓库曾因此
+在线上留下数十条记录与已删数据目录（其中 `lastModified` 落在未来的一批连 PATCH 都删不掉）。
+
+`cleanup` 套件经 `GET /__scheduled` 触发**真实的 scheduled handler**，因此 dev server 必须以
+`--test-scheduled` 启动（`npm run dev` 已含该参数，CI 的 quality job 同）。未启用时该套件会
+**跳过并明确报告原因**，而不是假装通过 —— 该套件是为「清理任务」这类后台副作用专门加的回归守卫
+（曾发生「孤儿判定键形式不一致 → 每小时清空 history/」的生产事故，而当时只有数据层单测）。
+
+**CI 执行策略**（`.github/workflows/deploy.yml` 的 `quality` job）：
+`typecheck` + **全部 6 个套件**。黑盒套件由 CI 自行起 `wrangler dev --local`（miniflare）——
+D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需要 Cloudflare 凭据、也不接触线上资源**；
+`deploy` job 通过 `needs: quality` 依赖它，质量门失败即不部署。
+
+**测试的凭据与地址来源**：`SYNC_USER` / `SYNC_PASS` / `BASE`（默认 `admin`/`admin` + `127.0.0.1:8787`）。
+刻意**不读** `USER` / `USERNAME`：Windows 有 `USERNAME`（当前用户名）、Ubuntu CI runner 有 `USER=runner`，
+读它们会静默拿到错凭据 → 401 假失败。
 
 ## 13. 风险登记
 

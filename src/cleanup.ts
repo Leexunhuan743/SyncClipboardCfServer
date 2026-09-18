@@ -78,7 +78,10 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
   }
   result.hardDeleted = hardDeleted.length;
 
-  // 4) 孤儿对象清理：history/ 下存在目录但 DB 无活记录引用
+  // 4) 孤儿对象清理：history/ 下存在目录但 DB 无活记录引用。
+  // 比较双方**必须同为带尾斜杠的目录名**（本函数从 R2 key 截取得 `Text_ABC/`，
+  // `db.listActiveWorkingDirs` 也返回带斜杠形式）。形式不一致会让 `active.has(dir)` 恒为 false，
+  // 从而把**所有**历史数据目录当成孤儿删除 —— 曾因此每小时清空一次 history/（见 F33）。
   const workingDirs = await storage.listHistoryWorkingDirs();
   if (workingDirs.length > 0) {
     const active = await db.listActiveWorkingDirs();

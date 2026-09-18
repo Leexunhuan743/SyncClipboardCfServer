@@ -83,7 +83,7 @@ const INSERT_SQL = `INSERT INTO HistoryRecords
 // 仅识别 (UserId,Type,Hash) 唯一约束冲突，避免把其它 INSERT 失败误判成「并发冲突」后静默吞掉（F5 回归）。
 // D1 会把底层 SQLite 错误包一层（message 形如 "D1_ERROR: UNIQUE constraint failed: ..."），
 // 细节也可能挂在 cause 上，故沿 cause 链取若干层文本再判定。
-export function isUniqueConstraintError(err: unknown): boolean {
+function isUniqueConstraintError(err: unknown): boolean {
   const parts: string[] = [];
   let cur: unknown = err;
   for (let depth = 0; depth < 4 && cur; depth++) {
@@ -416,13 +416,18 @@ export class HistoryDb {
     return (res.results ?? []).map(rowToEntity);
   }
 
-  // 活记录的工作目录集合（{Type}_{hash}），用于孤儿对象判定
+  // 活记录的工作目录集合，用于孤儿对象判定。
+  // **必须带尾斜杠**：调用方（cleanup.ts）把它与 `R2Storage.listHistoryWorkingDirs()` 的结果比较，
+  // 而后者由 R2 key 截取得来、形如 `Text_ABC/`（尾斜杠是 deletePrefix 的语义所需 —— 少了它，
+  // `history/Text_AB` 会误匹配 `history/Text_ABC/…`）。
+  // 此前这里返回的是不带斜杠的 `Text_ABC`，导致 cleanup 的 `active.has(dir)` **恒为 false**：
+  // 每小时 Cron 把 history/ 下**所有**工作目录（含活跃记录的数据文件）全部删除。
   async listActiveWorkingDirs(): Promise<Set<string>> {
     const res = await this.db
       .prepare(`SELECT Type, Hash FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted = 0`)
       .bind(HARD_CODED_USER_ID)
       .all<{ Type: number; Hash: string }>();
-    return new Set((res.results ?? []).map((r) => `${ProfileType[r.Type as ProfileType]}_${r.Hash}`));
+    return new Set((res.results ?? []).map((r) => `${ProfileType[r.Type as ProfileType]}_${r.Hash}/`));
   }
 
   // ===== Meta（当前剪贴板 Profile）=====

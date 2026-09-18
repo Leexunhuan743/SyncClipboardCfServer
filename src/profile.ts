@@ -1,7 +1,7 @@
 // 服务层：Profile 校验/持久化与历史记录编排（行为对照上游 HistoryService / SyncClipboardController）
 import { HistoryDb, shouldUpdate } from './db';
 import { R2Storage, tempKey } from './storage';
-import { sha256Hex, textProfileHash, fileProfileHash, groupHashFromEntries, parseGroupZip, InvalidGroupDataError, EmptyGroupDataError } from './hash';
+import { sha256Hex, textProfileHash, fileProfileHash, groupHashFromEntries, parseGroupZip } from './hash';
 import { ProfileType, HistoryRecordEntity, HistoryRecordDto, ProfileDto, HARD_CODED_USER_ID } from './types';
 import { profileDtoToJson, profileDtoToWire, entityToDto, entityToDtoWire } from './serialization';
 

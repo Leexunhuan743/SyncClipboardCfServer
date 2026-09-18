@@ -2,13 +2,20 @@
 // 每个用例都写成「旧实现会失败、修复后通过」的形态，作为回归守卫。
 import { describe, expect, it, beforeAll } from 'vitest';
 import { createHash } from 'node:crypto';
+import { assertWritableTarget } from './support/target-guard';
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787';
+
+// 本套件会写目标库：默认只允许指向本机 dev server，指向远端需显式 ALLOW_REMOTE_TARGET=1
+assertWritableTarget(BASE);
 // WS 探测必须跟随 BASE：此文件也会以线上 BASE 运行，硬编码 localhost 会让「真实 token 可通过升级」
 // 用例拿到线上 token 却去连本地服务（本地必拒）——测试自身的缺陷，不是服务端行为。
 const WS_BASE = BASE.replace(/^http/, 'ws');
-const USER = process.env.USER ?? 'admin';
-const PASS = process.env.PASS ?? 'admin';
+// 凭据变量名专用化：`USER`/`USERNAME` 在宿主环境里恒被占用
+// （Windows 有 USERNAME，Ubuntu CI runner 有 USER=runner），用它们会让测试
+// 拿错凭据→401 假失败。只认 SYNC_USER / SYNC_PASS，默认与 .dev.vars 示例一致。
+const USER = process.env.SYNC_USER ?? 'admin';
+const PASS = process.env.SYNC_PASS ?? 'admin';
 const AUTH = 'Basic ' + Buffer.from(`${USER}:${PASS}`).toString('base64');
 
 const sha256 = (data: Buffer | string) => createHash('sha256').update(data).digest('hex').toUpperCase();
@@ -739,6 +746,72 @@ describe('F15 · 既有缺口行为的判别用例', () => {
       body: JSON.stringify({ type: 'Text', hash: sha256(text), text, hasData: false, size: text.length }),
     });
     expect(res.status).toBe(200);
+  });
+
+  it('F32 · negotiate 版本协商与错误路径逐字对齐上游', { timeout: 60_000 }, async () => {
+    // 依据：ASP.NET Core `HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`
+    //   - 未携带 negotiateVersion → 版本 0（MinimumProtocolVersion=0，不算错误）
+    //   - 非整数 → error "The client requested a non-integer protocol version."
+    //   - 负数 → error "The client requested version '<v>', but the server does not support this version."
+    //   - > 1 → 钳制到服务端最大值 1
+    //   - `negotiateVersion` 恒出现；`connectionToken` 仅在版本 > 0 时出现
+    //   - 出错时仍返回 HTTP 200，响应体只有 error
+    type Neog = {
+      negotiateVersion?: number;
+      connectionId?: string;
+      connectionToken?: string;
+      error?: string;
+      availableTransports?: { transport: string; transferFormats: string[] }[];
+    };
+    const nego = async (query: string): Promise<{ status: number; body: Neog }> => {
+      const res = await req(`/SyncClipboardHub/negotiate${query}`, { method: 'POST' });
+      return { status: res.status, body: (await res.json()) as Neog };
+    };
+
+    // ① 版本 1（官方客户端实际发送的形态）
+    const v1 = await nego('?negotiateVersion=1');
+    expect(v1.status).toBe(200);
+    expect(v1.body.negotiateVersion).toBe(1);
+    expect(v1.body.connectionToken).toBeTruthy();
+    expect(v1.body.connectionId).toBeTruthy();
+    expect(v1.body.error).toBeUndefined();
+
+    // ② 未携带参数 → 版本 0，**无** connectionToken，但 negotiateVersion 键必须存在
+    const v0 = await nego('');
+    expect(v0.status).toBe(200);
+    expect(v0.body.negotiateVersion).toBe(0);
+    expect(v0.body.connectionId).toBeTruthy();
+    expect(v0.body.connectionToken).toBeUndefined();
+    expect(v0.body.availableTransports).toHaveLength(3);
+
+    // ③ 显式 0 → 同 ②
+    const v0b = await nego('?negotiateVersion=0');
+    expect(v0b.body.negotiateVersion).toBe(0);
+    expect(v0b.body.connectionToken).toBeUndefined();
+
+    // ④ 高于服务端最大值 → 钳制为 1（不是错误）
+    const v2 = await nego('?negotiateVersion=2');
+    expect(v2.status).toBe(200);
+    expect(v2.body.negotiateVersion).toBe(1);
+    expect(v2.body.connectionToken).toBeTruthy();
+
+    // ⑤ 非整数 → 200 + error（上游不设置非 200 状态）
+    const bad = await nego('?negotiateVersion=abc');
+    expect(bad.status).toBe(200);
+    expect(bad.body.error).toBe('The client requested a non-integer protocol version.');
+    expect(bad.body.availableTransports).toBeUndefined();
+
+    // ⑥ 负数 → 200 + error
+    const neg = await nego('?negotiateVersion=-1');
+    expect(neg.status).toBe(200);
+    expect(neg.body.error).toBe(
+      "The client requested version '-1', but the server does not support this version.",
+    );
+
+    // 报错路径不签发 token：用返回体里的任何值都不应通过连接鉴权
+    const forgedRes = await req('/SyncClipboardHub/negotiate?negotiateVersion=abc', { method: 'POST' });
+    const forged = (await forgedRes.json()) as Neog;
+    expect(forged.connectionId).toBeUndefined();
   });
 
   it('F26 · File/Image/Group 缺传输数据时拒绝（上游 Persist 抛异常拒绝，本实现 400）', async () => {

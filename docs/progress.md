@@ -526,15 +526,357 @@ if (hash.Contains(Path.DirectorySeparatorChar) || hash.Contains(Path.AltDirector
 - 线上数据清理：删除探针注入的 2 条坏记录（`instr(Hash,'/')>0 OR instr(Hash,char(92))>0` 现为 0 条）
   —— 它们会让 cleanup 的删除路径触发断言，必须清除。
 
-## 17. 待办与已知问题
 
-- [ ] **线上 secrets 仍为 admin/admin，需用户修改**（`wrangler secret put USERNAME/PASSWORD`）
+## 17. 第十二轮：CI 质量门升为真实协议回归 + 测试凭据变量专用化（2026-09-12）
+
+通读 `deploy.yml` 与 `test/live-signalr.mjs` 后发现两处真实缺陷：
+
+| # | 缺陷 | 影响 | 修复 |
+|---|---|---|---|
+| C1 | CI 质量门只跑 `test/fixes.test.ts test/hash.test.ts`（2 个数据层套件），注释称「CI 不启动 dev server」 | **协议回归（fix-regressions 36 / protocol 16 / signalr 4 / transports 8）完全不被 CI 拦住** —— 而本项目最有价值的正是协议兼容性 | 新增独立 `quality` job：`typecheck` + 全部 6 个套件；黑盒套件由 CI 自起 `wrangler dev --local` 跑。`deploy` 改为 `needs: quality` |
+| C2 | 测试读 `process.env.USER` / `USERNAME` 取凭据 | Windows 上 `USERNAME` **恒为当前用户名**（实测 `leeexx`）→ `live-signalr.mjs` 必然 401；Ubuntu CI runner 上 `USER=runner` → 把黑盒套件加进 CI 后必然全部假失败 | 统一改为 `SYNC_USER` / `SYNC_PASS`（5 个文件：4 个测试 + `live-signalr.mjs`），默认 `admin`/`admin` 与 `.dev.vars` 示例一致 |
+
+**CI 路径的本地等价验证**（在提交前证明该设计可行）：用空 `WRANGLER_HOME` + 空 `CLOUDFLARE_*`
++ 独立 `--persist-to` 状态目录 + `--var` 注入非默认凭据（`ci-user`/`ci-pass`）+ 独立端口 8788
+起了一个与 CI 等价的实例（`:8788`），确认：
+
+- `d1 execute --local --file=./schema.sql` 在**无登录态**下成功（证明 CI 无需 Cloudflare 凭据）
+- 无凭据 → 401、`--var` 注入的凭据 → 200、`/api/history/statistics` 可用（证明 schema 生效）
+- **全部 6 个套件 129/129 通过**（`BASE=http://127.0.0.1:8788 SYNC_USER=ci-user SYNC_PASS=ci-pass`）
+
+CI 单次成本：新增一个 job（多一次 checkout + `npm ci`），`quality` 约 4–6 分钟（其中心跳用例固定 35s、
+长轮询用例 ~16s）。`timeout-minutes: 20` 留足余量；失败时上传 `wrangler-dev.log` 便于定位。
+
+**文档同步**：README（套件数 105→129、测试凭据变量说明、CI 流程改为两 job 描述）、
+design.md §12（套件清单 + CI 执行策略 + 凭据来源及其原因）。
+
+### 重大发现：自动部署从未成功（CI 一直 failure）
+
+改完 CI 后查 `gh run list` 才发现：**此前所有 CI 运行都是 failure**（每次 18–39s 即在
+`deploy` job 的 `Apply D1 schema` 步骤失败）。根因：仓库**未配置** `CLOUDFLARE_API_TOKEN` /
+`CLOUDFLARE_ACCOUNT_ID`。也就是说：
+
+- 线上每一次部署都是**手动 `npx wrangler deploy`**，GitHub Actions 自动部署从未生效。
+- `deploy` job 的 `Deploy Worker` 步骤因前序失败而**从未运行过**（显示为 `-` 跳过）。
+- wrangler 的报错是「In a non-interactive environment, it's necessary to set a
+  CLOUDFLARE_API_TOKEN environment variable…」，它不提示「去仓库 Settings 配置」，首次使用容易卡住。
+
+处置：在 `deploy` job 的**第一步**（checkout 之后）加显式 secrets 检查 —— 缺哪个列哪个，
+并给出配置路径与所需权限；同时说明 `quality` job 不需要这些凭据、其协议回归结果仍然有效。
+**保持失败语义**（不跳过）：部署是本 workflow 的目的，静默跳过会把「未部署」伪装成绿色。
+
+**真实 CI 实测（本轮唯一一次跑到线上的验证）**：
+
+| run | quality | deploy | 说明 |
+|---|---|---|---|
+| `34703844630` | ✓ 1m19s，**6 套件 129 用例全通过** | X 18s（Apply D1 schema） | 质量门升级生效 |
+| `34703970484` | ✓ 1m11s | X 6s（Check required secrets） | 诊断信息按预期输出 |
+
+即：**协议回归已真正进入 CI 门禁**；自动部署当时仍缺凭据。
+
+### 自动部署恢复（用户配置 secrets 后实测）
+
+用户配置 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` 后，重新推送触发 run `34704548797`：
+
+```
+✓ quality in 1m0s+   （typecheck + 自起服务器 + 全部套件）
+✓ deploy   in 24s
+    ✓ Check required secrets        ← 本次通过（此前在此失败）
+    ✓ Apply D1 schema (idempotent)
+    ✓ Deploy Worker                 ← **首次真正执行**
+    - Sync Basic Auth credentials   （未设 SYNC_AUTH_CREDENTIALS，按设计跳过）
+    - Smoke check                   （未设 DEPLOY_URL，按设计跳过）
+```
+
+这是本项目**第一次通过 GitHub Actions 成功自动部署**（此前 100% 依赖手动 `npx wrangler deploy`）。
+
+**CI 对线上 D1 的影响核对**（`Apply D1 schema --remote` 会执行 `schema.sql`，其中含一条去重 `DELETE`）：
+执行后 `COUNT(*) = 301`、重复行 `(UserId,Type,Hash)` 计数 = **0** → 去重语句未删除任何行，
+**无数据丢失**（唯一索引保证不可能出现重复）。
+
+**CI 部署后的线上校验**：`/api/version` = 3.2.1、`/SyncClipboard.json` 200、
+negotiate 三形态（`v=1` 有 token / 无参数 `v=0` 无 token / `abc` 仅 error）均与修复后一致。
+
+**本轮线上套件产生的 56 条测试记录已软删清理**（`.audits/live-cleanup.mjs`，0 失败）。
+
+
+
+## 18. 第十三轮：negotiate 响应的逐字契约（读 ASP.NET Core 源码核对）（2026-09-13）
+
+方法：直接读 `dotnet/aspnetcore` **v9.0.9**（与上游 `Directory.Packages.props` 锁定的
+`Microsoft.AspNetCore.SignalR.Client` 版本一致）的 negotiate 实现，而不是只靠客户端行为反推：
+
+- `src/SignalR/common/Http.Connections/src/Internal/HttpConnectionDispatcher.cs`
+- `src/SignalR/common/Http.Connections.Common/src/NegotiateProtocol.cs`
+- `src/SignalR/common/Http.Connections.Common/src/NegotiationResponse.cs`
+
+**已逐字确认无误的部分**（此前只是"声称对齐"）：
+
+| 项 | 上游源码 | 本实现 |
+|---|---|---|
+| WebSockets 传输格式 | 硬编码 `["Text","Binary"]`（`_webSocketAvailableTransport`） | 同 |
+| SSE | `["Text"]` | 同 |
+| LongPolling | `["Text","Binary"]` | 同 |
+| 宣告顺序 | 代码顺序 WebSockets → SSE → LongPolling | 同 |
+| 字段名 | `connectionId` / `connectionToken` / `availableTransports` / `negotiateVersion` / `transport` / `transferFormats` / `error` | 同（逐字） |
+
+**发现并修复的两处真实差异**：
+
+| # | 差异 | 上游 | 修复前本实现 | 修复 |
+|---|---|---|---|---|
+| F32a | 无 `negotiateVersion` 参数时的响应 | 仍输出 `"negotiateVersion":0`（`WriteResponse` 用 `WriteNumber` **无条件**写该字段） | **省略该键**（形状不符） | 恒输出（版本 0 也写） |
+| F32b | 版本参数非法 | 非整数 → `error: "The client requested a non-integer protocol version."`；负数 → `error: "The client requested version '<v>', but the server does not support this version."`；**均返回 HTTP 200**，响应体只有 error、不签发连接 | 静默忽略、按版本 1 正常签发 | 逐字复刻三条错误消息与 200 状态 |
+| F32c | `> 1` 的版本 | 钳制到 `_protocolVersion`（1），**不报错** | 恒回 `negotiateVersion:1`（结果同，但未表达钳制语义） | 显式 `Math.min(n, 1)` |
+
+**修复后的六种形态**（本地与线上均实测，逐字一致）：
+
+```
+negotiateVersion=1     200 version=1 token=有
+negotiateVersion=0     200 version=0 token=无
+negotiateVersion=2     200 version=1 token=有        ← 钳制
+negotiateVersion=abc   200 error="The client requested a non-integer protocol version."
+negotiateVersion=-1    200 error="The client requested version '-1', but the server does not support this version."
+（无参数）               200 version=0 token=无
+```
+
+**为什么 F32b 值得修**：版本 0 的客户端（无 `connectionToken`）用 `connectionId` 作 `?id=`，本实现
+让两者同值故仍能通过 DO 鉴权；但非法版本原本被**静默当成版本 1**，等于向一个协议不兼容的客户端
+宣告可用 —— 上游会明确报错让它尽早失败。错误路径现在也不签发 token（不会留下 10 分钟 TTL 的孤儿 token）。
+
+**验证**：本地 130/130；线上全套 **130/130**（含 6 种 negotiate 形态的判别用例）；
+部署 `ffabed4d`。文档：protocol.md 新增 §6.1「negotiate 响应的逐字契约」（版本协商表 + 字段出现规则表）。
+
+
+## 19. 第十四轮：生产事故 — 孤儿目录清理每小时清空全部历史数据（2026-09-13）
+
+**用户要求清理云端残留时暴露的严重缺陷。**
+
+### 现象
+
+清理残留后做完整性检查（对每条活跃记录取 `/api/history/{id}/data`）发现：
+**仍活跃、且声明有数据的记录，其数据文件同样 404**。`statistics.totalFileSizeMB` = **0**（R2 的
+`history/` 前缀已空）。量化结果：
+
+| 项 | 数量 |
+|---|---|
+| 活跃记录 | 111 |
+| 其中声明有数据（`hasData=true`） | 28 |
+| 数据可取回 | **1**（当时刚放置的验证数据） |
+| 数据缺失（404） | **27**（File 13 / Text 14） |
+
+### 根因（两处键形式不一致）
+
+```ts
+// src/storage.ts —— 由 R2 key 截取，**带尾斜杠**
+dirs.add(rest.slice(0, slash + 1));        // "File_ABC/"
+
+// src/db.ts —— 曾经**不带**尾斜杠
+`${ProfileType[r.Type]}_${r.Hash}`          // "File_ABC"
+
+// src/cleanup.ts —— 集合比较
+for (const dir of workingDirs) {
+  if (!active.has(dir)) {                   // "File_ABC/" 永远不在集合里 → 恒为 true
+    await storage.deleteHistoryPrefix(dir);  // → 删除该目录
+```
+
+于是**每一个**历史工作目录都被判为孤儿 → 每小时 Cron（`17 * * * *`）把 `history/` 下全部对象删光
+（含所有活跃 File/Image/Group 的数据与带传输数据的大文本）。这解释了现象与 `totalFileSizeMB=0`。
+
+**为何长期未被发现**：既有单测只断言 `listActiveWorkingDirs` 自身的返回值（`dirs.has('Text_KEEP')`），
+从未与 R2 列出的目录名形式**交叉核对**；也没有测试调用真实的 `runCleanup` 路径。
+
+### 修复
+
+`src/db.ts` 的 `listActiveWorkingDirs` 改为返回带尾斜杠的目录名（与 `R2Storage.listHistoryWorkingDirs()`
+同形；尾斜杠同时是 `deletePrefix` 的正确性所需——`history/File_AB` 会误匹配 `history/File_ABC/…`）。
+两处都加了注释说明「比较双方必须同形」这一契约。
+
+### 判别性验证
+
+- 新增 `test/fixes.test.ts` 的 **F33**：内存 `FakeBucket` 驱动**真实** `R2Storage` + 真实 `HistoryDb`
+  + 真实 `runCleanup`，用真实 R2 语义（list/delete 前缀）覆盖到 key 构造与前缀截取这一层
+  （替换 `R2Storage` 的 stub 无法发现此缺陷）。
+  断言：活跃记录的数据**必须保留**、真孤儿与已软删记录的目录被清、`orphans === 2`。
+- **PRE-fix 判别**：临时把 `db.ts` 改回旧形式 → F33 失败并给出
+  `活跃记录的数据被误删: expected false to be true`；恢复修复后通过。
+- **真实 scheduled handler 端到端**（本地 `wrangler dev --local --test-scheduled` + `GET /__scheduled`）：
+  入库 → 取数据 200 → 触发 Cron → 取数据仍 **200**、`totalFileSizeMB=0.01`。
+- 全量 **131/131** 通过；已部署 `3cea8d7c`（16:22 UTC，早于当小时 17:17 的 Cron）。
+
+### 已损失的数据无法由服务端恢复（如实说明）
+
+被误删的 R2 对象（27 条的 File/Text 数据）**不可恢复**。DB 元数据仍在，故记录显示 `hasData=true`
+但取数据 404。恢复路径（需用户操作，涉及删除记录，未擅自执行）：
+
+1. 客户端本地仍持有这些文件（`IsLocalFileReady` 在客户端侧为 true）；
+2. 但服务端的 PUT/POST 复用分支在记录未删除时**不会**重写数据（与上游一致），
+   所以直接重新复制同一内容也不会补回数据；
+3. 可行做法：把受影响记录在服务端**硬删** → 客户端 `DetectOrphanDataAsync` 会将其标记为 `LocalOnly`
+   → `SyncPendingUploadsAsync` 随即带数据重传 → 服务端重建记录与数据。
+
+### 事后反思（流程层面）与补齐
+
+此前 13 轮的验证都集中在 HTTP 端点契约与哈希语义，**清理这类"后台任务"只做了单测而未端到端跑
+真实 scheduled handler** —— 这正是事故能长期潜伏的原因。已补上并纳入常态化验证：
+
+**新增 `test/cleanup.test.ts`（4 例，经 `GET /__scheduled` 触发真实 scheduled handler）**：
+
+| 用例 | 断言 | 作用 |
+|---|---|---|
+| 保留期清理确实执行 | 构造 8 天前的记录 → Cron 后 `isDeleted` 变为 true | **防空转**：若 `/__scheduled` 是 no-op，「数据存活」断言会假通过 |
+| 活跃记录的数据不被删 | 活跃记录 → Cron 后 `/data` 仍 200（修复前为 404）、`totalFileSizeMB > 0` | 生产事故的直接回归守卫 |
+| 已软删记录的数据不可取回 | PATCH isDelete → Cron 后 `/data` 404 | 清理确实生效 |
+| 软删时广播 `RemoteHistoryChanged` | SignalR 客户端在 Cron 后收到该 hash 且 **`isDeleted === true`** 的事件 | 覆盖清理的**通知副作用**（上游 `OnRecordDeletedAsync` → hub）；只看库不看通知会让其它设备一直显示过期记录 |
+
+第 4 例的断言刻意要求 `isDeleted === true`：`POST /api/history` 建记录时**也会**广播
+（`isDeleted=false`），若只按 hash 匹配则无论 Cron 是否广播都会通过。已用「临时移除 cleanup 的
+`broadcast` 调用」验证判别力 —— 用例以
+`Cron 软删后未广播 RemoteHistoryChanged: expected false to be true` 失败。
+
+- **PRE-fix 判别**：临时改回旧键形式 → 该套件失败并给出
+  `活跃记录的数据被 Cron 误删: expected 404 to be 200`（在 HTTP 层复现了生产事故）。
+- **防空转设计**：断言 `/__scheduled` 可用（未启用 `--test-scheduled` 时**跳过并报告原因**，
+  不假装通过）；且用「保留期清理」证明 Cron 真的执行，避免「Cron 没跑」也被判为通过。
+- `npm run dev` 与 CI 的 quality job 均改为 `--test-scheduled`。
+
+**全量 135/135（7 套件）通过。**
+
+### 顺带核对：`HEAD` 的方法映射（发现并记录一处超集差异）
+
+本轮探测各端点的 HTTP 方法语义时发现：上游 `HEAD /`、`HEAD /api/version` 等返回 **405**，
+而本实现返回 **200**（Hono 为 GET 路由自动处理 HEAD）。依据：
+
+- 上游为`/file/{name}` 同一 action **显式**写了 `[HttpHead]` + `[HttpGet]` —— 若会自动映射，
+  这个 `[HttpHead]` 就是多余的；
+- 路由层 `HttpMethodMatcherPolicy`（aspnetcore v9.0.9）按 `metadata.HttpMethods` 逐个比较，
+  **无任何 HEAD 特例**（全文不含 `HEAD`/`IsHead`）。
+
+影响：官方客户端不发这类 HEAD（`WebDavBase.Exist()` 定义了但无处调用），`HEAD /file/{name}`
+两边都是 200。故记录为**宽松超集**而不改动（要"修"反而要写代码去更不兼容，且无人可观测）。
+
+
+## 20. 第十五轮：查询过滤/排序语义的端到端覆盖（客户端 UI 与增量同步依赖）（2026-09-13）
+
+审计测试覆盖时发现一个真实缺口：`/api/history/query` 的**过滤与排序本身**从未端到端断言，
+只覆盖了「非法值 → 400」（F9 的 Page 边界、F27 的 Types/Starred/SortByLastAccessed 绑定失败）。
+而这些语义被官方客户端直接依赖：
+
+| 参数 | 客户端用途 |
+|---|---|
+| `SearchText` | 历史搜索框 |
+| `Starred` | 星标筛选 |
+| `Types` | 类型筛选（此前只测了「返回数组形状」） |
+| `SortByLastAccessed` | 排序切换 |
+| `Before` / `After` | 时间范围分页（`HistorySyncer.FetchRemoteRangeAsync`） |
+| `ModifiedAfter` | **增量同步**：`SyncAllAsync(_lastSyncTime)` 只拉 `LastModified >= 上次同步时间`，若它失效则会漏拉或全量重拉 |
+
+**新增 `test/query-filters.test.ts`（8 例）**，逐条断言正反两向：
+
+| 用例 | 关键断言 |
+|---|---|
+| SearchText | 命中子串；不匹配 → **空**；部分匹配（`gam`）也命中（上游 `LIKE %…%`） |
+| Types | `Text` 命中三条；`File` → 空；组合 `Text,File` 同样命中 |
+| Starred | `true` 只有星标那条；`false` 只有非星标两条 |
+| 排序 | 默认 `CreateTime DESC` → gamma/beta/alpha；`SortByLastAccessed=True` → **beta/gamma/alpha**（顺序确实不同，故能区分） |
+| Before/After | `Before=T2` 排除 gamma（`<`）；`After=T2` **包含** gamma（`>=`）；`SortByLastAccessed=True` 下同样参数语义随排序字段改变 |
+| ModifiedAfter | `>= T1` 保留 beta/gamma；`>= T3` 只有 gamma；远未来 → 空 |
+| 组合 | SearchText + Starred + ModifiedAfter 同时生效 |
+| 边界 | `after >= before` → 400 且消息为上游的 `after must be less than before` |
+
+**设计要点（避免假通过）**：
+- 隔离用 text 里的唯一 `qf-<RUN>` 标记，**不用 SearchText 做隔离** —— 否则 SearchText 一旦失效会
+  连带掩盖其它过滤器的断言。
+- 时间戳用**未来**值（+1/+2/+3 天），确保这些记录在两种排序下都落在首页（页大小固定 50），
+  不会被库里既有数据挤到第 2 页。
+- 每条用例都断言「不该出现的记录必须不出现」，因此过滤器被忽略时会必然失败。
+- **判别力实测**：临时禁用 `db.ts` 里的 `starred` 过滤 → 2 例失败
+  （`expected [ 'gamma', 'beta', 'alpha' ] to deeply equal [ 'beta' ]`）；恢复后通过。
+
+**全量 143/143（8 套件）通过。**
+
+### 顺带实测：大文件路径的能力边界
+
+`PUT /SyncClipboard.json` 上游用 `File.Move`（不读数据），本实现因 R2 无 move/rename 必须读入内存
+再重传；`POST /api/history` 上游是 `MultipartReader` 流式，本实现整体读入请求体。本地实测
+（内容哈希逐字节校验）：WebDAV 路径 **20MB / 60MB 通过**，multipart POST **20MB 通过**。
+已记入 README「已知限制」与 protocol.md 差异表（并区分「已实测」与「未实测」——生产内存表现未测）。
+
+
+## 21. 收尾：写库套件的自我收尾（避免污染目标库）（2026-09-13）
+
+外部复核指出 `query-filters` 会向目标库留下记录且**永不回收**，复查后确认，并发现比指出的更深一层：
+
+**问题**：该套件用未来时间戳（必要——两种排序都是 DESC，只有比既有记录都新才落在首页，页大小固定 50）。
+但 `LastModified` 也被设成未来值，于是：
+
+| 回收路径 | 谓词 | 未来 `LastModified` 的结果 |
+|---|---|---|
+| `softDeleteExpiredRecords`（保留期软删） | `LastModified < cutoff AND LastAccessed < cutoff` | 永不命中 |
+| `trimToMaxCount`（条数裁剪） | 按 `MAX(LastModified, LastAccessed)` **升序**取最旧 | 排最后，实际不会先被裁 |
+| `hardDeleteOldDeletedRecords`（30 天硬删） | `LastModified < now-30d` | 永不命中 |
+
+**并且 afterAll 也删不掉**：`ShouldUpdate` 在时间差 > 5 分钟时要求 `newLastModified >= oldLastModified`，
+用 `now` 收尾的 PATCH 会被判 **409**。已实证：对旧版遗留记录 PATCH `isDelete=true, lastModified=now`
+→ **409**（该记录的 `lastModified` 是 2026-09-16）。
+
+**修复**：
+
+1. `LastModified` 改为**过去**值（`now-3d/-2d/-1d`，`M0/M1/M2`），`CreateTime`/`LastAccessed` 仍用未来值。
+   这样 afterAll 以 `now` 收尾能正常软删，30 天后由 Cron 硬删，生命周期闭环。
+2. 新增 `afterAll`：对 3 条 PATCH `isDelete=true`；**清理失败即判套件失败**（静默残留正是要避免的）。
+3. 同类问题一并修：`cleanup.test.ts` 每次运行会留下一条**活跃**对照记录（`cron-keep-*`，其余记录已被
+   Cron 软删），补 `afterAll` 删除它（其 `LastModified` 是当前时间，可正常删）。
+4. 清理本会话在**本地开发库**积累的历史遗留：`qf-*` 15 条（API 删不掉，用 D1 收尾）、
+   `cron-keep-*` 11 条（API 正常删除，11/11 成功），两者现均为 0 活跃。
+5. 清理**线上**一条本会话放置的验证记录 `f33-proof.bin`（`File-D4B1E2E2…`，16:23 UTC 放置，
+   不在 16:16 那轮名单里；PATCH `isDelete=true` → 200，数据端点转 404）。
+
+**验证**：`total=18 / deleted=3`（本次运行产生的 3 条已被 afterAll 软删）、`active_keep=0`；
+全量 **142/142**（8 套件）。
+
+**已记录的约束**（design.md §12）：写库套件必须自我收尾且清理失败要判失败；
+时间戳选择的两条约束（排序字段取未来值、`LastModified` 取过去值）。早期套件（`protocol`、
+`fix-regressions`）写的是当前时间戳，会被保留期与条数裁剪自然回收，属**有界残留**。
+
+
+## 22. 收尾：写库套件的目标守卫（防误指线上）（2026-09-13）
+
+复核指出：只有 `cleanup`/`query-filters` 有 `afterAll`，而 `protocol`、`fix-regressions`、
+`transports`、`signalr` 四个写库套件既无收尾也无「只可指向一次性实例」的守卫 —— 且
+`fix-regressions.test.ts` 顶部还明确写着「此文件也会以线上 BASE 运行」。这正是本会话三次手工清理
+（56 条 + 26 条）与 27 条永久孤儿记录的成因。
+
+**采纳其建议并实施更根本的防护**（比逐个套件补 afterAll 更便宜、且防复发）：
+
+新增 `test/support/target-guard.ts` 的 `assertWritableTarget(BASE)`，在六个写库套件
+（`protocol`/`fix-regressions`/`transports`/`signalr`/`cleanup`/`query-filters`）的文件顶层调用：
+
+- `BASE` 主机为本机（`127.0.0.1`/`localhost`/`::1`/`0.0.0.0`）→ 放行（本地与 CI 的 miniflare 均如此）；
+- 否则要求 `ALLOW_REMOTE_TARGET=1`，**未设即抛错终止**（模块顶层抛错 → 连 `beforeAll` 都不执行，
+  不会产生任何写入），错误信息里直接给出放行命令。
+
+**双向验证**：
+
+| 场景 | 结果 |
+|---|---|
+| `BASE=https://…workers.dev`（无放行） | 文件级 FAIL，报「拒绝把写库套件指向非本机目标」并附 `ALLOW_REMOTE_TARGET=1` 用法；**零写入** |
+| 同上 + `ALLOW_REMOTE_TARGET=1` | 正常运行（实测 1 用例通过） |
+| 本地默认 `npm test` | **142/142** 通过（守卫不干扰本机与 CI） |
+
+**设计取舍**：不在四个旧套件里逐个补 `afterAll` —— 它们的残留时间戳是「当前时间」、会被保留期与
+条数裁剪自然回收（有界残留），而「误指线上」才是真正会造成不可回收残留的路径；用一处守卫堵住
+入口比在六处补收尾更小更稳。
+
+## 23. 待办与已知问题
+
+- [ ] **线上 27 条活跃记录的数据文件已被（已修复的）孤儿清理误删，需从客户端重传**（见 §19 的恢复路径）
+- [ ] **线上 secrets 仍为 admin/admin，需用户修改**（`wrangler secret put USERNAME/PASSWORD`；或配 `SYNC_AUTH_CREDENTIALS` 由 CI 管理）
 - [ ] 可选：官方真实客户端连接线上 URL 完成一次完整同步（协议栈已由本地真客户端 + 线上 @microsoft/signalr 双重验证）
 - [ ] 可选：绑定自定义域名（wrangler.toml routes 或 Cloudflare 控制台）
 
 已知限制（详见 README）：免费版单请求 100MB；畸形 zip 的隐式目录/重复条目语义与上游在第三方畸形输入上存在 minor 差异（官方客户端不可达）。
 
-## 18. 版本记录
+## 24. 版本记录
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
@@ -554,3 +896,11 @@ if (hash.Contains(Path.DirectorySeparatorChar) || hash.Contains(Path.AltDirector
 | 1.9.0 | 2026-09-12 | 第九轮：输入校验（JSON body/Types 数字/布尔/整数 TryParse）+ size 口径 + File→Image 提升 + data 端点 404（123 测试全绿） |
 | 1.10.0 | 2026-09-12 | 第十轮：逐条核对两个控制器的每个返回点（状态码全一致）+ 补 `GET /SyncClipboard.json` 损坏值降级（125 测试全绿） |
 | 1.11.0 | 2026-09-12 | 第十一轮：hash 路径字符约束（写路径 400 / 读取降级 / key 断言三层，对齐上游 GetWorkingDirName，129 测试全绿） |
+| 1.12.0 | 2026-09-12 | 第十二轮：CI 质量门升为全 6 套件协议回归（独立 quality job + 自起本地服务器）+ 测试凭据变量专用化（修 Windows USERNAME / CI USER 冲突） |
+| 1.13.0 | 2026-09-13 | 第十三轮：读 ASP.NET Core 源码核对 negotiate 逐字契约（补 `negotiateVersion` 恒输出、版本错误路径与钳制语义，130 测试全绿） |
+| 1.14.0 | 2026-09-13 | **生产事故修复**：孤儿目录清理的键形式不一致导致每小时清空全部历史数据（F33，131 测试全绿） |
+| 1.14.1 | 2026-09-13 | 补 `test/cleanup.test.ts`：经 `GET /__scheduled` 触发真实 Cron 的端到端回归守卫（含防空转设计） |
+| 1.14.2 | 2026-09-13 | 补清理的**广播副作用**用例（4 例）+ 记录 `HEAD` 映射的证据与超集差异（135 测试全绿） |
+| 1.15.0 | 2026-09-13 | 第十五轮：查询过滤/排序语义端到端覆盖（8 例，客户端 UI 与增量同步依赖）+ 大文件路径实测（143 测试全绿） |
+| 1.15.1 | 2026-09-13 | 写库套件自我收尾：`query-filters`/`cleanup` 补 afterAll（清理失败即判失败）+ 时间戳约束（排序取未来、LastModified 取过去） |
+| 1.15.2 | 2026-09-13 | 六个写库套件加**目标守卫**：`BASE` 非本机且未设 `ALLOW_REMOTE_TARGET=1` 即抛错（防误指线上） |

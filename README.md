@@ -104,12 +104,38 @@ cp .dev.vars.example .dev.vars     # 填入 USERNAME / PASSWORD
 npm run dev                        # → http://127.0.0.1:8787
 ```
 
-运行测试（需要 dev server 在运行）：
+运行测试（8 个套件、143 个用例）：
 
 ```bash
 npm run typecheck                  # tsc --noEmit
-npm test                           # 5 个套件，105 个用例
+
+# 单元/数据层套件（无需服务器）
+npx vitest run test/hash.test.ts test/fixes.test.ts
+
+# 全部套件（含 HTTP/SignalR 黑盒）——需 dev server 已启动
+npm test
 ```
+
+> `npm run dev` 以 `--test-scheduled` 启动，使 `cleanup` 套件能经 `GET /__scheduled`
+> 触发真实 Cron 处理器；若你自己用 `wrangler dev` 不带该参数启动，该套件会跳过并提示原因。
+
+**写库套件默认只允许指向本机**：六个 HTTP/SignalR 套件（`protocol`、`fix-regressions`、
+`transports`、`signalr`、`cleanup`、`query-filters`）会创建/删除历史记录与 R2 对象，
+因此 `BASE` 非 `127.0.0.1`/`localhost` 时会**直接拒绝运行**。确实要指向一次性实例时显式放行：
+
+```bash
+ALLOW_REMOTE_TARGET=1 BASE=https://your-worker.workers.dev npm test
+```
+
+黑盒套件默认以 `http://127.0.0.1:8787` + `admin/admin` 连接本地 dev server。
+若你改了 `.dev.vars` 里的凭据或端口，用 `SYNC_USER` / `SYNC_PASS` / `BASE` 覆盖：
+
+```bash
+BASE=http://127.0.0.1:8788 SYNC_USER=me SYNC_PASS='***' npm test
+```
+
+> 变量名不用 `USER` / `USERNAME`：Windows 有 `USERNAME`、Ubuntu CI runner 有 `USER`，
+> 都被宿主环境占用，读它们会拿到错的凭据而 401。
 
 ## 部署
 
@@ -142,7 +168,14 @@ npm run deploy
 仓库内置 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)：
 
 - **触发**：push 到 `master`，或 Actions 页面手动运行（`workflow_dispatch`）
-- **流程**：`npm ci` → 质量门（`typecheck` + 单元测试）→ D1 schema 幂等执行 → `wrangler deploy` → 凭据同步（可选）→ 冒烟检查
+- **注意**：`deploy` job 需要下方两个 Secret，**未配置时该 job 会失败并列出缺少的名称**
+  （`quality` job 不需要凭据，其 129 个协议/单元用例仍会照常运行并通过）
+- **流程**：两个 job
+  1. **`quality`**：`typecheck` + **全部 6 个套件**（129 用例）。黑盒套件由 CI 自行用
+     `wrangler dev`（miniflare）起一个本地实例来跑 —— **不接触线上资源，也不需要 Cloudflare 凭据**，
+     D1 用 `--local` 初始化，凭据用 `--var` 临时注入。
+  2. **`deploy`**（`needs: quality`，质量门失败则不部署）：
+     D1 schema 幂等执行 → `wrangler deploy` → 凭据同步（可选）→ 冒烟检查
 - **需配置**（Settings → Secrets and variables → Actions）：
 
   | 名称 | 类型 | 必填 | 说明 |
@@ -197,6 +230,11 @@ npm run deploy
   ——官方客户端恒写显式目录条目且无重复，该路径不可达
 - `Content-Type` 映射表小于 .NET 的 `FileExtensionContentTypeProvider`（客户端按文件名落盘，不校验该头）
 - 无应用层解压上限（与上游一致，受平台内存约束）
+- **大文件的内存占用高于上游**：上游 `PUT /SyncClipboard.json` 用 `File.Move`（不读数据），
+  本实现因 R2 无 move/rename 必须把暂存对象**读入内存**再重传到 `history/`；`POST /api/history`
+  则整体读入请求体后解析（上游是 `MultipartReader` 流式）。峰值内存 ≈ 文件大小。
+  客户端默认单文件上限 20MB，本地实测 20MB / 60MB 均正常；若把客户端上限提到 ~50MB 以上，
+  需留意 Workers 128MB 内存上限
 - **单账号单空间**：一个部署 = 一套凭据 = 一个剪贴板空间（与上游语义一致，非多租户）
 
 ## 项目结构

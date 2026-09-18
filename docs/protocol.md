@@ -180,6 +180,23 @@
 | GET | `/api/history/statistics` | HistoryStatisticsDto |
 | DELETE | `/api/history/clear` | 删除全部记录及其数据文件，返回 `{"deleted": n}` |
 
+### 4.3 HEAD 的映射依据（为何上游只对 `/file/{name}` 支持 HEAD）
+
+上游 `SyncClipboardController` 为同一 action **显式**写了两个特性：
+
+```csharp
+[HttpHead("file/{fileName}")]
+[HttpGet("file/{fileName}")]
+public async Task<IActionResult> GetFileFromFolder(string fileName, CancellationToken token)
+```
+
+若 ASP.NET Core 会自动把 HEAD 映射到 GET，这行 `[HttpHead]` 就是多余的 —— 它存在本身即证明**不会**。
+另可在路由层源码确认：`HttpMethodMatcherPolicy`（v9.0.9）按 `metadata.HttpMethods` 逐个
+`HttpMethods.Equals` 比较，**没有任何 HEAD 特例**（全文不含 `HEAD`/`IsHead`）。
+
+因此上游 `HEAD /`、`HEAD /api/version` 等一律 **405**，而 Hono 会为 GET 路由自动处理 HEAD → 本实现返回 200。
+这是宽松超集，客户端不可达（见 §10 差异表）。
+
 ### 5.0 hash 的字符约束（`上游:Shared/Profiles/Profile.cs:GetWorkingDirName`）
 
 上游在 key 构造处校验并抛异常：
@@ -272,8 +289,9 @@ public static string GetWorkingDirName(ProfileType type, string hash)
 ```
 1. POST /SyncClipboardHub/negotiate?negotiateVersion=1   （带 Basic 头）
    响应 200: {"negotiateVersion":1,"connectionId":"<cid>","connectionToken":"<tok>",
-              "availableTransports":[{"transport":"WebSockets","transferFormats":["Text","Binary"]}]}
-   —— 只列 WebSockets，强制客户端走 WS。
+              "availableTransports":[{"transport":"WebSockets","transferFormats":["Text","Binary"]},
+                                     {"transport":"ServerSentEvents","transferFormats":["Text"]},
+                                     {"transport":"LongPolling","transferFormats":["Text","Binary"]}]}
 2. WebSocket 升级: /SyncClipboardHub?id=<tok>   （v1 token 模式；老客户端无 negotiateVersion 时用 connectionId）
 3. 客户端 → 服务端: {"protocol":"json","version":1}
    服务端 → 客户端: {}   （空对象 = 握手成功；不支持则 {"error":"…"} 并关闭）
@@ -293,6 +311,42 @@ public static string GetWorkingDirName(ProfileType type, string hash)
   | `LongPolling` | `["Text","Binary"]` | 挂起 GET（首个轮询立即返回、无消息挂起 ≤25s）+ POST 上报 + DELETE 关闭（204/200） |
 - 连接建立后的 HTTP 路径：`GET`（SSE 与长轮询按 `Accept: text/event-stream` 区分）、`POST`（上报消息）、
   `DELETE`（关闭）。三种传输共用同一套消息语义与心跳。
+
+#### 6.1 negotiate 响应的逐字契约
+
+依据 ASP.NET Core 源码（`HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`
++ `NegotiationResponse.cs`，版本 v9.0.9）：
+
+**版本协商**（请求参数 `negotiateVersion`，服务端最大值 `_protocolVersion = 1`、最小值 0）：
+
+| 请求 | 上游行为 | 响应 |
+|---|---|---|
+| `negotiateVersion=1` | 正常 | 版本 1 |
+| 未携带该参数 | 视为版本 0（最小值 0，**不是错误**） | 版本 0 |
+| `negotiateVersion=0` | 正常 | 版本 0 |
+| `negotiateVersion=2` | `> _protocolVersion` → **钳制**（不报错） | 版本 **1** |
+| `negotiateVersion=abc` | `int.TryParse` 失败 | `{"error":"The client requested a non-integer protocol version."}` |
+| `negotiateVersion=-1` | `< MinimumProtocolVersion(0)` | `{"error":"The client requested version '-1', but the server does not support this version."}` |
+
+**报错时仍返回 HTTP 200**（dispatcher 不设置非 200 状态码），响应体**只有** `error` 一个字段，
+不签发 `connectionId`/`connectionToken`（客户端收到 error 即抛错，见 `HttpConnection.js` 的
+`if (negotiateResponse.error) throw new Error(...)`）。
+
+**字段出现规则**（`WriteResponse` 的条件写入）：
+
+| 字段 | 条件 |
+|---|---|
+| `negotiateVersion` | **恒出现**（版本 0 也序列化为 `"negotiateVersion":0`；上游用 `WriteNumber` 无条件写） |
+| `connectionId` | 非空即写 → 正常路径恒出现 |
+| `connectionToken` | **仅当版本 > 0**（`response.Version > 0 && !string.IsNullOrEmpty(...)`） |
+| `availableTransports` | **恒出现**（数组；顺序即客户端尝试顺序） |
+| `useStatefulReconnect` | 仅当为 true → 恒不出现（默认 false） |
+| `url` / `accessToken` | 非空即写 → 恒不出现（本实现不做 negotiate 重定向） |
+| `error` | 仅出错时，且此时**其他字段全部不出现** |
+
+> 注意 `NegotiationResponse.Version` 序列化为 `negotiateVersion`（不是 `version`）—— 上游序列化器由
+> `NegotiateProtocol` 手写 JSON 完成，名称逐字即上表。客户端按 `availableTransports` /
+> `connectionToken` / `connectionId` 读取（`_resolveTransportOrError`）。
 - 连接 token：negotiate（Basic Auth 保护）时签发并**登记到 DO**（`/register-token`，TTL 10 分钟），
   连接建立时校验；未登记/过期/token 缺失时回落校验请求携带的 Basic 凭据，两者皆无 → **401**。
   `/register-token` 仅 Worker 内部可达（外部路径不匹配任何路由）。
@@ -384,9 +438,12 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h） | Cron Trigger 每小时批量执行同类语义 | 等价（周期不同；软删/硬删/孤儿判定一致） |
 | Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | 18 项常见扩展 + `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type |
 | 错误响应体 | `BadRequest()` 空体 / ProblemDetails | 统一文本（状态码一致） | 官方客户端只判状态码 |
-| 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |
+| 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed（带 `Allow` 头） | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |
+| 非 `/file/{name}` 路径上的 `HEAD` | **405**（ASP.NET 路由**不**把 HEAD 映射到 GET —— 见下方依据） | **200**（Hono 为 GET 路由自动处理 HEAD） | 本实现更宽容（超集）：客户端不发这类 HEAD（`WebDavBase.Exist()` 定义了但未被调用），`HEAD /file/{name}` 两边都是 200 |
 | `/api/history/{id}/data` 的 Content-Type | `FileExtensionContentTypeProvider`（按数据文件扩展名） | 恒 `application/octet-stream` + `nosniff` + `attachment` | 安全加固；客户端按字节落盘，不读该头 |
 | `Profile.Create` 的 File→Image 提升 | 有（`.jpg/.jpeg/.gif/.bmp/.png`） | 同左 | — |
+| `PUT /SyncClipboard.json` 的数据落盘方式 | `File.Move`（**不读数据**，常数内存、瞬时完成） | 读入内存（`arrayBuffer()`）→ 重传到 `history/` 新 key（R2 **无 move/rename**） | 峰值内存 ≈ 文件大小，且多一次 R2 读+写。客户端默认上限 20MB，实测 20/60MB 通过；若把客户端上限提到 ~50MB 以上需留意 Workers 128MB 内存 |
+| `POST /api/history` 的 body 处理 | `MultipartReader` **流式**（`[DisableFormValueModelBinding]` + `[RequestFormLimits]`），data 段直接抄到磁盘 | 整体读入内存后解析（`c.req.arrayBuffer()`） | 同上：峰值内存 ≈ 请求体大小。实测 20MB 通过 |
 | POST 路径 `size` 口径 | Text=声明值、File/Image=实际字节、Group=条目和 | 同左 | — |
 | query 的时间字段无法解析（如 `Before=not-a-date`） | 表单绑定失败 → 400 | **忽略该过滤条件**（等价于上游 POST 元数据路径的 `TryParse` 失败回退） | 有意偏离：客户端时间串带偏移（`DateTimeOffsetPattern = 短日期 + 长时间 + zzz`，见 .NET `DateTimeFormatInfo.DateTimeOffsetPattern`），`Date.parse` 可覆盖 zh-CN/en-US/de-DE 等；若某文化串两边都解析不了，返 400 会让客户端历史同步**整轮失败**，而忽略只会让增量过滤退化为「多取一页」 |
 | `GET /file/{name}` 内部异常（非「文件名非法」） | `catch (Exception)` → **400** + 异常消息（`GetFileFromFolder`） | 500（异常上抛到运行时） | 客户端对两者都只走 `EnsureSuccessStatusCode` 的失败分支；把内部故障报成 400 会误导排障，故有意保留 500 |

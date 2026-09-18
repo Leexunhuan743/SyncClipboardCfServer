@@ -11,9 +11,11 @@ if (!BASE) {
   console.error('或设置 BASE 环境变量。');
   process.exit(2);
 }
-// 凭据由环境变量提供（默认值与本地 dev server 的 .dev.vars 一致）
-const USER = process.env.USERNAME ?? 'admin';
-const PASS = process.env.PASSWORD ?? 'admin';
+// 凭据由环境变量提供（默认值与本地 dev server 的 .dev.vars 一致）。
+// 注意：不能读 process.env.USERNAME —— Windows 上它是系统变量（当前用户名），
+// 会静默覆盖默认值导致 401。统一用 SYNC_USER / SYNC_PASS。
+const USER = process.env.SYNC_USER ?? 'admin';
+const PASS = process.env.SYNC_PASS ?? 'admin';
 const AUTH = 'Basic ' + Buffer.from(`${USER}:${PASS}`).toString('base64');
 
 const conn = new signalR.HubConnectionBuilder()

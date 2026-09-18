@@ -3,10 +3,17 @@
 import { describe, expect, it, beforeAll } from 'vitest';
 import * as signalR from '@microsoft/signalr';
 import { createHash } from 'node:crypto';
+import { assertWritableTarget } from './support/target-guard';
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787';
-const USER = process.env.USER ?? 'admin';
-const PASS = process.env.PASS ?? 'admin';
+
+// 本套件会写目标库：默认只允许指向本机 dev server，指向远端需显式 ALLOW_REMOTE_TARGET=1
+assertWritableTarget(BASE);
+// 凭据变量名专用化：`USER`/`USERNAME` 在宿主环境里恒被占用
+// （Windows 有 USERNAME，Ubuntu CI runner 有 USER=runner），用它们会让测试
+// 拿错凭据→401 假失败。只认 SYNC_USER / SYNC_PASS，默认与 .dev.vars 示例一致。
+const USER = process.env.SYNC_USER ?? 'admin';
+const PASS = process.env.SYNC_PASS ?? 'admin';
 const AUTH = 'Basic ' + Buffer.from(`${USER}:${PASS}`).toString('base64');
 
 const sha256 = (data: string) => createHash('sha256').update(data).digest('hex').toUpperCase();

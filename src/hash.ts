@@ -78,9 +78,6 @@ export async function groupHashFromEntries(entries: GroupEntrySpec[]): Promise<s
   return sha256Hex(joined);
 }
 
-// 空条目集合的哈希（上游 CaclHashAndSize 空分支）：SHA256hex(空串)
-export const EMPTY_GROUP_HASH = 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855';
-
 // 从 zip 字节解析条目集合并计算哈希（服务端校验路径，等价"解压后遍历文件系统"）
 // - 目录条目：显式（name 以 '/' 结尾）+ 从文件路径推导的隐式父目录（C# 解压会创建目录并计入）
 // - 防穿越：条目名不得解析到解压根之外（上游 ExtractArchiveEntriesAsync 校验）
@@ -155,18 +152,13 @@ function assertSafeEntryName(name: string): void {
   }
 }
 
-// 服务端 Group 数据校验失败（上游 InvalidDataException / InvalidOperationException → 422 或 400）
+// 服务端 Group 数据校验失败（上游 InvalidDataException / InvalidOperationException → 422 或 400）。
+// 「顶层条目为空」由调用方在 parseGroupZip 之后检查 topLevel 并抛 ProfileDataInvalidError
+// （对齐上游 ExtractAndVerifyTransferData 的 "Group transfer data contains no entries."），
+// 故此处不再另设子类。
 export class InvalidGroupDataError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidGroupDataError';
-  }
-}
-
-// 顶层条目为空（上游 "Group transfer data contains no entries." → InvalidDataException）
-export class EmptyGroupDataError extends InvalidGroupDataError {
-  constructor() {
-    super('Group transfer data contains no entries.');
-    this.name = 'EmptyGroupDataError';
   }
 }

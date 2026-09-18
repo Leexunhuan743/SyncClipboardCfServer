@@ -1,12 +1,12 @@
 {
   "name": "syncclipboard-cf-server",
-  "version": "1.11.0",
+  "version": "1.15.2",
   "private": true,
   "license": "MIT",
   "description": "SyncClipboard 官方服务器的 Cloudflare Workers 复刻版（TypeScript），协议兼容官方客户端",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --no-file-parallelism",

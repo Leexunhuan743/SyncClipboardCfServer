@@ -19,6 +19,9 @@ import { HistoryDb } from '../src/db';
 import { ProfileType } from '../src/types';
 import type { HistoryRecordEntity, ProfileDto } from '../src/types';
 import type { R2Storage } from '../src/storage';
+import { R2Storage as RealR2Storage } from '../src/storage';
+import { runCleanup } from '../src/cleanup';
+import type { Bindings } from '../src/env';
 
 const sha256 = (data: Uint8Array | string) =>
   createHash('sha256').update(data).digest('hex').toUpperCase();
@@ -810,16 +813,94 @@ describe('F18 · 历史保留与清理（对齐上游 HistoryCleaner）', () => 
     expect(hard.map((r) => r.hash)).toEqual(['DELOLD']);
   });
 
-  it('listActiveWorkingDirs 仅返回未删除记录的工作目录', async () => {
+  it('listActiveWorkingDirs 仅返回未删除记录的工作目录，且**带尾斜杠**（与 R2 列出的目录名同形）', async () => {
     const { db } = makeDb();
     await db.insert(make('KEEP'));
     await db.insert(make('GONE', { isDeleted: true }));
     const dirs = await db.listActiveWorkingDirs();
-    expect(dirs.has('Text_KEEP')).toBe(true);
-    expect(dirs.has('Text_GONE')).toBe(false);
+    // 尾斜杠不是风格问题：cleanup 用它和 R2Storage.listHistoryWorkingDirs()（由 R2 key 截取，
+    // 形如 `Text_KEEP/`）做集合比较。形式不一致 → active.has() 恒 false → 全部历史数据被当孤儿删除。
+    expect(dirs.has('Text_KEEP/')).toBe(true);
+    expect(dirs.has('Text_GONE/')).toBe(false);
   });
 
 // F19 独立顶层套件（不嵌在 F18 内）
+});
+
+// 内存 R2Bucket：只需 R2Storage 用到的那部分（put/get/delete/list），用于驱动**真实** R2Storage，
+// 从而覆盖 key 构造与前缀截取（本次缺陷正在这一层，替换 R2Storage 的 stub 无法发现）。
+class FakeBucket {
+  objects = new Map<string, number>();
+
+  async put(key: string, body: unknown): Promise<void> {
+    const size =
+      body instanceof Uint8Array ? body.length : body instanceof ArrayBuffer ? body.byteLength : 0;
+    this.objects.set(key, size);
+  }
+  async get(key: string) {
+    return this.objects.has(key) ? { size: this.objects.get(key) ?? 0 } : null;
+  }
+  async delete(keyOrKeys: string | string[]): Promise<void> {
+    for (const k of Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]) this.objects.delete(k);
+  }
+  async list(opts: { prefix?: string; cursor?: string } = {}) {
+    const keys = [...this.objects.keys()].filter((k) => k.startsWith(opts.prefix ?? '')).sort();
+    const start = opts.cursor ? Number(opts.cursor) : 0;
+    const slice = keys.slice(start, start + 1000);
+    const next = start + slice.length;
+    return {
+      objects: slice.map((k) => ({ key: k, size: this.objects.get(k) ?? 0 })),
+      truncated: next < keys.length,
+      cursor: String(next),
+    };
+  }
+}
+
+// 广播用的 HUB stub（runCleanup 会对软删记录广播；失败被吞，但需可调用）
+const hubStub = () => ({
+  idFromName: () => 'hub',
+  get: () => ({ fetch: async () => new Response(null, { status: 200 }) }),
+});
+
+describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式必须同构）', () => {
+  it('runCleanup：活跃记录的数据保留；真孤儿与已软删记录的目录被清', async () => {
+    const d1 = new FakeD1(schemaSql);
+    const db = new HistoryDb(d1 as unknown as D1Database);
+    const bucket = new FakeBucket();
+    const storage = new RealR2Storage(bucket as unknown as R2Bucket);
+    const now = Date.now();
+    const rec = (hash: string, over: Partial<HistoryRecordEntity> = {}): HistoryRecordEntity => ({
+      userId: 'default_user', type: ProfileType.File, text: `${hash}.bin`, size: 3,
+      transferDataFile: `${hash}.bin`, filePaths: [`${hash}.bin`], hash,
+      createTime: now, lastAccessed: now, lastModified: now,
+      stared: false, pinned: false, version: 0, isDeleted: false, ...over,
+    });
+
+    // ① 活跃记录 + 其数据（必须保留）
+    await db.insert(rec('KEEP1'));
+    await storage.putHistory(ProfileType.File, 'KEEP1', 'KEEP1.bin', new Uint8Array([1, 2, 3]));
+    // ② 真孤儿目录（无任何记录引用）
+    await storage.putHistory(ProfileType.File, 'ORPHAN9', 'gone.bin', new Uint8Array([9]));
+    // ③ 已软删记录的目录（上游 CleanOrphanedFolders 语义：同样按孤儿清理）
+    await db.insert(rec('DEL1', { isDeleted: true }));
+    await storage.putHistory(ProfileType.File, 'DEL1', 'DEL1.bin', new Uint8Array([8]));
+
+    const env = {
+      DB: d1, R2: bucket, HUB: hubStub(),
+      MAX_SAVED_HISTORY_COUNT: '1000', HISTORY_RETENTION_MINUTES: '10080',
+    } as unknown as Bindings;
+
+    const result = await runCleanup(env);
+
+    // 关键断言：活跃记录的数据**必须还在**（修复前被当成孤儿删除 → 每小时清空一次 history/）
+    expect(bucket.objects.has('history/File_KEEP1/KEEP1.bin'), '活跃记录的数据被误删').toBe(true);
+    expect(await storage.getHistory(ProfileType.File, 'KEEP1', 'KEEP1.bin')).toBeTruthy();
+
+    // 真孤儿与已删记录的目录应被清掉
+    expect(bucket.objects.has('history/File_ORPHAN9/gone.bin')).toBe(false);
+    expect(bucket.objects.has('history/File_DEL1/DEL1.bin')).toBe(false);
+    expect(result.orphans).toBe(2);
+  });
 });
 
 
