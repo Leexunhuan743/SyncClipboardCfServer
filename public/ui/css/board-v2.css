@@ -1,0 +1,794 @@
+button.entry {
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+
+button.entry:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.entry:hover .entry__text {
+    color: var(--accent);
+  }
+}
+
+/* ============================================================================
+ * 列表层 — V2：列表头、数据表、时间分组、行、内容预览、行操作、空状态、骨架、分页。
+ *
+ * 两条设计决定（docs/ui-v2-design.md §3.1）：
+ *   ① 表格从 V1 的 7 列收到 **4 列**（选择 / 类型条 / 内容 / 操作），
+ *      「大小·创建·修改·访问」四列合并进内容的**第二行**次要文本 —— 让正文拿回宽度。
+ *   ② 行不用边框围，用 hover 整行染色 + 极淡的分隔线；读成一整块而不是格子。
+ * ========================================================================== */
+
+.board-area {
+  /* 结果区相对列表头的层叠上下文：让 sticky 的列表头压住行内容 */
+  position: relative;
+}
+
+/* ── 列表头：计数 + 排序 + 每页条数 ── */
+.board-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  min-height: 32px;
+  padding: 0 var(--sp-1);
+}
+
+.board-head__count {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+}
+
+.board-head__count strong {
+  color: var(--ink);
+  font-weight: var(--fw-semi);
+}
+
+.board-head__spacer {
+  flex: 1 1 auto;
+}
+
+.board-head__select {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--hit-min);
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* 列表头里的紧凑模式开关：与相邻的 `<select>` 有相同的视觉重量（34px 命中区、同样的圆角），
+ * 但用 `aria-pressed` 表达状态 —— 与筛选 chips 同一套态表达（`states.mjs` 有断言）。
+ * 图标是「三条横线」，它同时表达"列表"与"更紧凑"，正好是这个按钮的两个说法。 */
+.board-head .icon-btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.board-head .icon-btn[aria-pressed="true"]:hover {
+  background: var(--accent-line);
+}
+
+/* ── 表格容器 ── */
+.board {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  overflow: clip;
+  /* 翻页/改筛选后把结果区滚回视野时，别让它钻到吸顶的顶栏与筛选条底下 */
+  scroll-margin-top: calc(var(--appbar-h) + var(--filters-h) + var(--sp-3));
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+/* 加载中：整块轻微降对比，**不做位移**（位移会让表格看起来在跳） */
+.board[data-busy] {
+  opacity: 0.6;
+}
+
+.board__table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+/* 列宽：只有操作列是固定的，内容列吃掉剩下的全部 —— 这是"正文优先"的机械保证，
+ * 不靠百分比去猜（百分比在多档视口下总要重调）。 */
+.board__head-cell--check,
+.board__cell--check {
+  width: var(--col-check);
+  padding-left: var(--sp-4);
+}
+
+.board__head-cell--ops,
+.board__cell--ops {
+  width: var(--col-ops);
+}
+
+.board__head-cell {
+  position: sticky;
+  /* 吸顶时压在筛选条之下，两者不重叠（appbar 56 + filters 46） */
+  top: calc(var(--appbar-h) + var(--filters-h));
+  z-index: 2;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semi);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.board__head-cell--check {
+  border-top-left-radius: var(--r-lg);
+}
+
+.board__head-cell--ops {
+  border-top-right-radius: var(--r-lg);
+  text-align: right;
+}
+
+/* 排序按钮：表头里唯一可点的东西。用 `aria-pressed` 表达当前排序字段，
+ * 箭头由 `data-dir` 决定 —— 两个属性各自只表达一件事。 */
+.sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 var(--sp-1);
+  margin-left: -4px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sort-btn:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+  }
+}
+
+.sort-btn[aria-pressed="true"] {
+  color: var(--ink);
+}
+
+.sort-btn__arrow {
+  opacity: 0;
+  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+
+.sort-btn[aria-pressed="true"] .sort-btn__arrow {
+  opacity: 1;
+}
+
+.sort-btn[data-dir="asc"] .sort-btn__arrow {
+  transform: rotate(180deg);
+}
+
+/* ── 时间分组头：跨行的小标题，让"今天 / 更早"一眼可见（V1 完全没有时间结构）──
+ * `position: sticky` 必须落在 `<td>` 上：HTML 表格里 `position` 对 `<tr>` 无效
+ * （`display: table-row` 不建立粘性定位的包含块），写在行上会静默不生效。 */
+.daymark td {
+  position: sticky;
+  top: calc(var(--appbar-h) + var(--filters-h));
+  z-index: 1;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semi);
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.daymark__count {
+  margin-left: var(--sp-2);
+  font-weight: var(--fw-normal);
+  letter-spacing: 0;
+  color: var(--ink-faint);
+  text-transform: none;
+}
+
+/* ── 行 ── */
+.item {
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.item:last-child {
+  border-bottom: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .item:hover {
+    background: var(--surface-2);
+  }
+}
+
+/* 选中态：整行淡青底 + 左侧 2px 强调条。
+ * 只改背景不行——色觉障碍下淡青与浅灰几乎同色，多一条几何线索才稳。 */
+.item[data-selected] {
+  background: var(--accent-soft);
+}
+
+.item[data-selected] .board__cell--content {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* 内容变化的闪一次（别的设备改了这条记录，或轮询发现有新行）。
+ * 单次播放、落在最终态 —— 不用 animation-iteration-count: infinite。 */
+.item[data-flashing] {
+  animation: row-flash var(--dur-flash) var(--ease-out) 1;
+}
+
+/* 删除成功后就地淡出。只淡出不位移：表格行位移会让整列错位。 */
+.item[data-leaving] {
+  animation: row-out var(--dur-base) var(--ease-standard) 1 forwards;
+  pointer-events: none;
+}
+
+.board__cell {
+  padding: var(--sp-3);
+  vertical-align: middle;
+  height: var(--row-h);
+}
+
+.board__cell--check {
+  text-align: left;
+}
+
+.board__cell--ops {
+  text-align: right;
+  padding-right: var(--sp-4);
+}
+
+/* ── 行内容：两行结构。第一行是"是什么"，第二行是"多大、什么时候"。
+ *    这是把 V1 的四个元数据列收进来的地方（见文件头决定 ①）。 ── */
+.entry {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+/* 缩略图：固定 40×40，避免行高随图片比例抖动（`object-fit: cover` 裁切） */
+.entry__thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-inset);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--ink-faint);
+}
+
+.entry__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 缩略图加载失败（对象已被清理）：降级成占位，不是裂图 ——
+ * 线上真有这种记录（数据被已修复的孤儿清理事故误删），必须与"记录不存在"分清。 */
+.entry__thumb[data-missing] img {
+  display: none;
+}
+
+.entry__thumb[data-missing]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent 0 4px,
+    color-mix(in srgb, var(--ink-faint) 22%, transparent) 4px 5px
+  );
+}
+
+.entry__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* 首行：类型词 + 预览。类型词用 `data-kind` 上色，与左侧色条同源。 */
+.entry__line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.entry__kind {
+  flex: 0 0 auto;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semi);
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+}
+
+.entry__kind[data-kind="Text"] {
+  color: var(--kind-text);
+}
+
+.entry__kind[data-kind="Image"] {
+  color: var(--kind-image);
+}
+
+.entry__kind[data-kind="File"] {
+  color: var(--kind-file);
+}
+
+.entry__kind[data-kind="Group"] {
+  color: var(--kind-group);
+}
+
+/* 预览正文：两行截断。`-webkit-line-clamp` 是唯一在所有目标浏览器都成立的方案
+ * （`line-clamp` 标准属性仍未普遍可用，且它需要 `display: -webkit-box` 配合）。 */
+.entry__text {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: var(--fs-body);
+  line-height: var(--lh-tight);
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* 空文本/无文件名：用最轻的色，不假装有内容 */
+.entry__text[data-empty] {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+/* 单行模式（紧凑/短内容）：只画一行，省 18px 行高 */
+.entry__text[data-lines="1"] {
+  -webkit-line-clamp: 1;
+}
+
+/* 第二行元数据：等宽数字、最轻的色、`·` 分隔 */
+.entry__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--ink-faint);
+  min-width: 0;
+}
+
+.entry__meta > span {
+  white-space: nowrap;
+}
+
+/* 文件名/哈希：等宽但**不换行**，超长用省略号（等宽字体下换行会撑破行高） */
+.entry__meta .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28ch;
+}
+
+/* ── 行的类型色条：表格最左的 4px。
+ * 它取代 V1 的色点徽标 —— 色条承担"扫视识别"，文字承担"确认"。 ── */
+.item__kind {
+  display: block;
+  width: var(--col-kind);
+  height: calc(var(--row-h) - var(--sp-3));
+  border-radius: var(--r-pill);
+  background: var(--ink-faint);
+}
+
+.item__kind[data-type="Text"] {
+  background: var(--kind-text);
+}
+
+.item__kind[data-type="Image"] {
+  background: var(--kind-image);
+}
+
+.item__kind[data-type="File"] {
+  background: var(--kind-file);
+}
+
+.item__kind[data-type="Group"] {
+  background: var(--kind-group);
+}
+
+/* ── 行操作：rest 态就可见（V1 的 5 个灰色图标几乎只能靠 hover 发现）──
+ * 但**未 hover 时降低不透明度**：既要可发现，也不能让 50 行 × 3 个按钮抢走注意力。
+ * 0.55 是折中值 —— 实测在这个不透明度下图标仍可辨认（对比度 ≥ 3:1）。 */
+.rowops {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* 0.7 而不是 0.55（2026-09-16 审计）：0.55 下的 `--ink-muted` 在白底上只有 2.48:1、
+   * 深色底 3.00:1，低于非文本对比度要求的 3:1 —— 而图标是识别这些控件的唯一手段。
+   * 0.7 约 3.4:1，过线但依然明显比正文弱（原注释写"实测 ≥ 3:1"，实测并不成立）。 */
+  opacity: 0.7;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.item:hover .rowops,
+.item:focus-within .rowops,
+.item[data-selected] .rowops {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  /* 触屏没有 hover：不透明度不能作为"发现机制"，一律全亮 */
+  .rowops {
+    opacity: 1;
+    /* 触屏上按钮的**命中区**被 `::before` 撑到 44px（见下面的 `.icon-btn::before`），
+     * 而按钮本身只有 34px、彼此只隔 2px —— 于是相邻两个 44px 命中区**重叠 8px**，
+     * 点在缝上时"复制"与"收藏"各有一半机会被触发（实测几何：圆心间距 36px、命中区 44px）。
+     * 缝里点的后果不可接受：这一排里有删除类操作。把间距拉到 10px 让命中区互不重叠。 */
+    gap: 10px;
+  }
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-h);
+  height: var(--control-h);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  position: relative;
+  transition: background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+  }
+}
+
+.icon-btn:active {
+  transform: scale(0.94);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 触屏：把命中区扩到 44px 而**不改视觉尺寸**（图标仍是 34px 的视觉大小）。
+ * 做法是伪元素铺满一个居中的 44px 方块 —— 比改 width/height 好，后者会让操作列变宽。 */
+@media (pointer: coarse) {
+  .icon-btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* 星标：选中时换琥珀色，并用 `data-pop` 播一次过冲动画。
+ *
+ * 选择器用 `[data-icon="star"]` 而**不是** `[data-star]`：`rowops.js` 建按钮时写的是
+ * `dataset: { icon: 'star' }`，落到 DOM 上就是 `data-icon="star"`。
+ * 契约测试会拦住这类不一致（「CSS 在等一个从来没人写的属性」），
+ * 但真正让它显形的是实测：写成 `[data-star]` 时那条规则**永远不命中** —— 星标选中后不变色。
+ * `data-pop` 由 JS 在状态**改变**时写入（重放前先删属性 + 强制回流），
+ * 因为同一个属性值不会重启动画。 */
+.icon-btn[data-icon="star"][aria-pressed="true"] {
+  color: var(--star);
+}
+
+.icon-btn[data-pop="star"] svg {
+  animation: pop-once 320ms var(--ease-pop) 1;
+}
+
+/* 置顶：选中时填实并换色。它与收藏是**两个独立维度**，故用两个不同的视觉通道：
+ * 收藏 = 颜色（琥珀），置顶 = 填充（实心图标）+ 强调色。
+ * 颜色是单通道信息，色觉障碍下"填充 vs 描边"仍可区分，而"琥珀 vs 灰"可能不可区分。 */
+.icon-btn[data-icon="pin"][aria-pressed="true"] {
+  color: var(--accent);
+}
+
+/* 就地成功态：按钮变成对勾 + 结果文案（V1 的状态机，V2 沿用并把时长收紧）。
+ * `data-state="ok"` 与 `data-loading` 互斥，由 JS 保证。 */
+.icon-btn[data-state="ok"] {
+  color: var(--accent);
+}
+
+.icon-btn[data-state="ok"] svg {
+  animation: pop-once 160ms var(--ease-pop) 1;
+}
+
+/* 进行中：转圈取代图标，**保留宽度**所以不抖 */
+.icon-btn[data-loading] svg {
+  opacity: 0;
+}
+
+.icon-btn[data-loading]::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, currentcolor 25%, transparent);
+  border-top-color: currentcolor;
+  border-radius: 50%;
+  animation: spin 640ms linear infinite;
+}
+
+/* ── 空状态：设计过的状态，不是一块空白。三种语境三套文案与出口 ── */
+.blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-8) var(--sp-5);
+  text-align: center;
+}
+
+.blank__icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--r-md);
+  background: var(--surface-inset);
+  color: var(--ink-faint);
+}
+
+.blank__title {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semi);
+  color: var(--ink);
+}
+
+.blank__text {
+  max-width: 46ch;
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+  line-height: var(--lh-loose);
+}
+
+.blank__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: center;
+  margin-top: var(--sp-1);
+}
+
+/* ── 骨架屏：保留布局的加载占位（不是转圈）。
+ * 呼吸动画对应"还在等数据"这个真实状态；reduced-motion 下由 base-v2.css 归零。 ── */
+.ghost {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: var(--row-h);
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+}
+
+.ghost__bar {
+  height: 11px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  animation: breathe 1.5s var(--ease-in-out) infinite;
+}
+
+.ghost__bar--kind {
+  width: var(--col-kind);
+  height: 26px;
+  flex: 0 0 auto;
+}
+
+.ghost__bar--wide {
+  flex: 1 1 auto;
+  max-width: 46%;
+}
+
+.ghost__bar--short {
+  width: 88px;
+  flex: 0 0 auto;
+}
+
+/* ── 分页 ── */
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-1) var(--sp-1) 0;
+}
+
+.pager__spacer {
+  flex: 1 1 auto;
+}
+
+.pager__status {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+}
+
+.pager__jump {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+}
+
+.pager__input {
+  width: 60px;
+  height: var(--control-h);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .board-head > select {
+    display: none;
+  }
+
+  .board-head__count {
+    flex: 1 1 80px;
+    overflow-wrap: anywhere;
+  }
+
+  /* 窄屏：分页按钮全宽铺开，跳页收掉（移动端跳页几乎没人用，而它占地最宽） */
+  .pager__jump {
+    display: none;
+  }
+
+  .pager__spacer {
+    display: none;
+  }
+
+  .board-head {
+    padding-inline: 0;
+  }
+
+  /* 表格头在卡片流下没有意义（卡片自带标签），但它**不能** `display: none`：
+   * 这一行里有三个列名（类型/内容/操作）与**全选复选框**，把它移出无障碍树等于：
+   *   · 读屏用户听到的是一串没有列上下文的单元格值；
+   *   · 手机上永远无法"选中本页全部"（那是批量操作唯一的多选入口）。
+   * 用标题行自己的"仅读屏"处理：视觉上仍然不占地方，但仍在无障碍树里。 */
+  .board__head-row {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .board__table,
+  .board__table tbody,
+  .item,
+  .board__cell {
+    display: block;
+    width: auto;
+  }
+
+  .board {
+    border: 0;
+    background: none;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  /* 卡片流：每条记录一张卡片。用 grid 让"预览占满整行、操作靠右"两件事同时成立 */
+  .board__table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--sp-1) var(--sp-3);
+    padding: var(--sp-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-xs);
+  }
+
+  .item__kind {
+    position: absolute;
+    left: 0;
+    top: var(--sp-3);
+    bottom: var(--sp-3);
+    height: auto;
+  }
+
+  .board__cell {
+    height: auto;
+    padding: 0;
+  }
+
+  /* 选择框与内容同一行；操作列换到第二行右侧 */
+  .board__cell--check {
+    position: absolute;
+    top: var(--sp-2);
+    right: var(--sp-2);
+    width: auto;
+  }
+
+  .board__cell--content {
+    grid-column: 1 / -1;
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-5);
+  }
+
+  .board__cell--ops {
+    grid-column: 1 / -1;
+    width: auto;
+    display: flex;
+    justify-content: flex-end;
+    padding-top: var(--sp-2);
+    border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+  }
+
+  /* 卡片里预览放到 3 行：屏幕窄、每行字数少，两行读不出内容 */
+  .entry__text {
+    -webkit-line-clamp: 3;
+  }
+
+  /* 封面图：图片类型的缩略图在卡片里放大到全宽，否则 40px 看不出是什么 */
+  .entry__thumb {
+    width: 48px;
+    height: 48px;
+  }
+
+  .daymark {
+    position: static;
+    padding-inline: 0;
+    background: none;
+    border-bottom: 0;
+  }
+}

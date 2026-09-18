@@ -110,10 +110,29 @@ Worker
 
 ### 3.2 前端（`public/ui/`，真文件 + 原生 ES 模块，无构建步骤）
 
-共 37 个资源：`public/ui/` 下 35 个（2 个 HTML + 6 张样式表 + 23 个 JS 模块（13 个顶层 + 10 个组件）
-+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest`），
-外加站点根的 `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`
-（Cloudflare 静态资源的响应头：CSP/安全头 + 缓存策略——这批文件不经过 Worker，只能在那里声明）。
+> **⚠️ 本节描述的是 V1。** 2026-09-15 起界面已由 V2 接管（`/ui/app/`），V1 迁到
+> `public/ui_old/`（挂载点 `/ui_old/`，见该目录的 `README.md`）。
+> V2 的设计与实现见 [`docs/ui-v2-design.md`](ui-v2-design.md)；
+> 本文件从 §3.2 到 §11 的内容描述的是 V1 的实现，**默认界面是 V2**。
+>
+> **2026-09-17 状态更新**：`public/ui_old/` 不再冻结 —— 它以**备用界面**的身份重新纳入维护
+> （接口前缀故障修复、密度与移动端重做、运行时可重复验证，逐条见 `docs/progress.md` §53）。
+> 因此本节描述的实现是"在维护、可验证"的，只是不承担默认入口。
+>
+> 挂载点分工：**页面与静态资源在 `/ui_old/...`，服务端接口在 `/ui/api/...`**（与 V2 共用同一套），
+> 接口前缀只写在 `public/ui_old/js/api.js` 的 `API_BASE` 一处。
+> 保留这份实现的三个理由：① 与 V2 互为对照基线；② V2 在某个环境不可用时可改 `src/index.ts`
+> 的默认跳转切回；③ 它与协议端点（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）零关系。
+
+`public/` 下共 86 个资源，分三部分：
+
+| 部分 | 文件数 | 说明 |
+|---|---|---|
+| **V2**（`public/ui/`，当前线上） | 47 | 3 个 HTML（`app/index.html`、`app/login.html`、只做跳转的 `index.html`）+ 5 张样式表 + 35 个 JS 模块（19 顶层 + 16 组件）+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest` |
+| **V1**（`public/ui_old/`，备用界面，维护中） | 37 | 旧实现；2026-09-17 修复接口前缀、重做密度与移动端，见该目录 `README.md` |
+| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP/安全头 + 缓存策略——这批文件不经过 Worker，只能在那里声明） |
+
+下表是 **V1** 的文件清单（供对照）：
 
 | 文件 | 职责 |
 |---|---|
@@ -134,14 +153,14 @@ Worker
 | `js/clipboard.js` | 剪贴板写入（文本 / 图片）：安全上下文探测、非 PNG 转码、失败降级与**带原因的判别结果**（`{status, reason}`：`unsupported` 与 `failed` 分别对应「换环境」和「权限/激活问题」，并把底层原因带进提示，不混成一句「不支持」） |
 | `js/format.js` | 类型/体积/时间/摘要的展示格式化 |
 | `js/components/header.js` | 顶栏（标识、版本、**部署信息入口**、主题切换、会话操作）；入口是右上角动作区的**第一个图标按钮**（ⓘ，`aria-label`/`title` =「部署信息」，无可见文字标签——找它别找文字） |
-| `js/components/stats.js` | 统计条（三个真实数字） |
-| `js/components/toolbar.js` | 类型分段筛选、收藏筛选、搜索（含清空按钮、`Esc` 清空、`focusSearch()` 供快捷键调用）、每页条数、刷新（按钮自带进行中态） |
+| `js/components/stats.js` | 统计条（三个真实数字：记录 / 已收藏 / 存储占用，**数字在上、标签在下**）；明细行只留「全库 N 条」与近 14 天活动趋势（回收站入口已按用户要求删除，见 `progress.md` §54.3） |
+| `js/components/toolbar.js` | 类型分段筛选、收藏筛选、搜索（含清空按钮、`Esc` 清空、`focusSearch()` 供快捷键调用、`/` 键帽提示）、每页条数、刷新（按钮自带进行中态） |
 | `js/components/list.js` | 结果区：表格、行、行内操作按钮、排序表头、选择条（Shift 范围选择）、空状态；**同一视图内的刷新按行对账**（内容未变的行不重建，见 §3.3） |
 | `js/components/row-content.js` | 结果行的行内内容：缩略图（含降级与 512 KiB 阈值）、状态徽标、收藏/置顶开关的字段与文案；从 `list.js` 拆出——对账、选择与焦点仍在那份文件里 |
 | `js/components/pagination.js` | 范围文本、上一页/下一页、跳页（聚焦全选、回车后清空并交还焦点；只有一页时隐藏跳页） |
 | `js/components/preview.js` | 预览对话框（文本全文 / 图片原图 / 不可用态）；点背景关闭、打开时焦点落在主操作、长文本先给加载态 |
 | `js/components/confirm.js` | 确认对话框（销毁性操作前问一句）：请求进行中留在对话框内、失败就地显示原因可重试；**结算不依赖 `close` 事件**（见 §3.3） |
-| `js/components/info.js` | 部署信息对话框；服务器地址一键复制用原地成功态 |
+| `js/components/info.js` | 部署信息对话框（分**客户端配置 / 服务器 / 存储 / 保留策略 / 清理任务 / 数据完整性 / 危险操作**七段，键值两列、窄屏上下排布，页脚有「关闭」）；服务器地址一键复制用原地成功态；保留策略表单带服务端同值的上界校验 |
 | `js/components/toast.js` | 反馈层：瞬时提示（离场动画、最多 4 条）+ **原地状态** `setPending` / `flashSuccess`（行内按钮与对话框按钮共用，见 §3.3） |
 | `js/main.js` | 装配点：唯一知道「谁是谁」的地方；`actions` 返回「是否做成」供组件呈现，另承载 `/` 快捷键与翻页/改筛选后的滚动定位 |
 | `js/login.js` | 登录页逻辑 |
@@ -483,7 +502,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 项 | 结果 |
 |---|---|
 | `npx tsc --noEmit` | 干净（含 `test/**`） |
-| `npm test` | **全部 20 套件通过**（用例数见命令输出；`test/ui.test.ts` 覆盖 `/ui/api/*` 的鉴权、列表语义、回收站视图与写操作；`test/ui-logic.test.ts` 覆盖筛选/格式化/归一化等纯逻辑；`test/next-target.test.ts` 覆盖登录跳转的判定） |
+| `npm test` | **全部 22 套件通过**（用例数见命令输出；`test/ui.test.ts` 覆盖 `/ui/api/*` 的鉴权、列表语义、回收站视图与写操作；`test/ui-activity.test.ts` 覆盖活动趋势的按天分桶；`test/ui-logic.test.ts` 覆盖筛选/格式化/归一化等纯逻辑；`test/next-target.test.ts` 覆盖登录跳转的判定） |
 | 横向溢出（320/375/414/768/1024/1440） | **全部 0px**（修复了工具栏与分页在 320px 下溢出 185px） |
 | 对比度（浅/深，9 类文本） | 全部 ≥ 4.5:1（修复了三级文本 2.92 / 4.05 两处不达标） |
 | 区块重叠 / 非预期裁切 | 0（几何断言） |

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN" data-app="history">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>剪贴板历史 · SyncClipboard</title>
+    <meta name="color-scheme" content="light dark" />
+    <!-- 私有实例，不该被搜索引擎收录 -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta
+      name="description"
+      content="自托管 SyncClipboard 服务器的 Web 界面：查看、搜索、预览与下载跨设备同步的剪贴板历史。"
+    />
+    <!-- 链接预览（Slack / iMessage / 微信 / 飞书都读这些）。
+         刻意不含 og:image：图片必须是绝对 URL，而本项目的部署域名由使用者决定、构建时未知，
+         写死一个错的绝对 URL 比不写更糟（会显示空白预览）。 -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="剪贴板历史 · SyncClipboard" />
+    <meta property="og:description" content="自托管 SyncClipboard 服务器的 Web 界面。" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" href="/ui_old/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/ui_old/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/ui_old/apple-touch-icon.png" />
+    <link rel="manifest" href="/ui_old/manifest.webmanifest" />
+    <!-- theme-color 只有一条：由下面的内联脚本按**生效**主题（含应用内开关）写入。
+         media 门控的两条只跟随系统，用户在应用里切到深色时顶栏会仍是浅色。 -->
+    <meta name="theme-color" content="#faf8f5" />
+    <link rel="stylesheet" href="/ui_old/css/tokens.css" />
+    <link rel="stylesheet" href="/ui_old/css/base.css" />
+    <link rel="stylesheet" href="/ui_old/css/layout.css" />
+    <link rel="stylesheet" href="/ui_old/css/components.css" />
+    <link rel="stylesheet" href="/ui_old/css/motion.css" />
+    <link rel="stylesheet" href="/ui_old/css/archive.css" />
+    <!-- 模块预载：零构建的代价是依赖要按层发现——实测瀑布是 main(20ms) → 第二层(39ms) → icons/format(50-60ms)，
+         到最后一层要花两个额外往返，而 icons.js 是首屏渲染必需的。入口之外的模块全部列在这里，
+         浏览器在解析 main.js 之前就能并行拉取，瀑布压成一层。
+         清单必须与该页的 import 闭包**完全一致**（多了浪费一个请求、少了留一段瀑布），守卫见 test/ui-contract.test.ts。 -->
+    <link rel="modulepreload" href="/ui_old/js/api.js" />
+    <link rel="modulepreload" href="/ui_old/js/store.js" />
+    <link rel="modulepreload" href="/ui_old/js/filters.js" />
+    <link rel="modulepreload" href="/ui_old/js/clipboard.js" />
+    <link rel="modulepreload" href="/ui_old/js/dom.js" />
+    <link rel="modulepreload" href="/ui_old/js/latest.js" />
+    <link rel="modulepreload" href="/ui_old/js/signalr.js" />
+    <link rel="modulepreload" href="/ui_old/js/format.js" />
+    <link rel="modulepreload" href="/ui_old/js/icons.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/header.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/stats.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/toolbar.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/list.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/row-content.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/pagination.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/preview.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/confirm.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/toast.js" />
+    <link rel="modulepreload" href="/ui_old/js/components/info.js" />
+    <!-- 首帧主题：阻塞式经典脚本（不是 module）。外链而非内联，见文件头注释（CSP） -->
+    <script src="/ui_old/js/theme-init.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">跳到主内容</a>
+
+    <!-- 界面提示条：说明这里是备用界面，并给出默认界面的入口。
+         2026-09-17 起本界面**重新纳入维护**（此前是冻结存档），文案也随之改掉：
+         "已停止维护" 在现在是不实陈述，而提示条本身仍然有用 —— 它告诉从旧链接进来的人
+         默认界面在哪。可关闭，选择存在 localStorage（见 js/main.js 的 initNoticeBar）。
+         放在跳转链接之后、页面骨架之前：读屏顺序里它仍然是被读到的第一条内容。 -->
+    <div class="notice-bar" role="note" id="notice-bar">
+      <svg class="notice-bar__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.4" stroke="currentColor" stroke-width="1.6" />
+        <path d="M12 8.2h.01M12 11.2v4.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      </svg>
+      <span class="notice-bar__text">
+        备用界面（V1）。默认界面在 <a href="/ui/">/ui/</a>。
+      </span>
+      <button class="notice-bar__close" type="button" id="notice-bar-close" aria-label="关闭提示">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+      </button>
+    </div>
+
+    <div class="page">
+      <header class="app-header" id="app-header"></header>
+
+      <main class="main" id="main">
+        <!-- 失联提示：轮询/统计失败时由 main.js 的 setStale 显示，恢复后自动收起。
+             用 role="status" 而不是 alert：它是持续状态，不该在读屏里抢断。 -->
+        <div class="notice notice--warn" id="notice" role="status" hidden></div>
+
+        <!-- 统计条：三个真实数字（来自 /ui/api/statistics），由 js/components/stats.js 填充 -->
+        <section class="stats" id="stats" aria-label="用量统计"></section>
+
+        <!-- 工具栏：筛选、搜索、每页条数 -->
+        <div class="toolbar" id="toolbar"></div>
+
+        <!-- 结果区挂载点：js/components/list.js 会把它替换成真正的表格/空状态 -->
+        <div id="results-mount">
+          <section class="results" aria-label="剪贴板历史">
+            <div class="skeleton" id="skeleton">
+              <div class="skeleton__row"></div>
+              <div class="skeleton__row"></div>
+              <div class="skeleton__row"></div>
+            </div>
+          </section>
+        </div>
+
+        <nav class="pagination" id="pagination" aria-label="分页"></nav>
+      </main>
+
+      <footer class="app-footer">
+        <div class="app-footer__inner">
+          <span>剪贴板数据只保存在你自己的 Cloudflare 账户（D1 记录 + R2 文件），不经过任何第三方。</span>
+          <span class="toolbar__spacer"></span>
+          <a href="https://github.com/Jeric-X/SyncClipboard" rel="noreferrer noopener" target="_blank"
+            >SyncClipboard 客户端</a
+          >
+        </div>
+      </footer>
+    </div>
+
+    <!-- 提示条：复制成功/失败等瞬时反馈；成功态主要靠按钮自身标签持久表达 -->
+    <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+    <noscript>
+      <p class="noscript">本页面需要 JavaScript 才能显示剪贴板历史。请从官方客户端访问，或启用 JavaScript。</p>
+    </noscript>
+
+    <script type="module" src="/ui_old/js/main.js"></script>
+  </body>
+</html>

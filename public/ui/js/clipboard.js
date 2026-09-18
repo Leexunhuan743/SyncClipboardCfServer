@@ -1,16 +1,16 @@
-// 剪贴板写入：文本与图片，含各环境的降级。
+// 剪贴板写入：文本与图片，含各环境的降级。从 V1 原样保留。
 //
-// 单独成模块的原因：这条链上有三处环境差异必须逐一处理，散在调用点必然各写一份、漏一份——
+// 单独成模块的原因：这条链上有三处**环境差异**必须逐一处理，散在调用点必然各写一份、漏一份——
 //   1. 安全上下文：`navigator.clipboard` 只在 https 或 localhost 存在（局域网 http 部署时没有）；
 //   2. 格式：异步剪贴板对写入格式的支持因浏览器而异，PNG 是最稳的，其它格式需先转码；
 //   3. 失败必须可降级：写不进去时要把内容以可手动复制的方式呈现，而不是静默失败。
 
-// 可当作图片复制/预览的扩展名（含 svg 之外的常见位图格式）
+// 可当作图片复制/预览的扩展名。
+// 刻意**不含 svg**：SVG 属于"可渲染内容"，附件链路里已被强制降级为下载
+// （`src/contentTypes.ts` 的 RENDERABLE_TYPES），剪贴板这条路径不为它开口子。
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'jpe', 'gif', 'webp', 'bmp', 'avif', 'ico']);
 
-// 文件名是否像一张位图。
-// 刻意不含 svg：SVG 属于「可渲染内容」，附件链路里已被强制降级为下载，
-// 剪贴板这条路径不为它开口子。
+/** 文件名是否像一张位图。 */
 export function isImageName(name) {
   if (!name) return false;
   const dot = name.lastIndexOf('.');
@@ -22,13 +22,12 @@ export function canWriteText() {
   return Boolean(window.isSecureContext && navigator.clipboard?.writeText);
 }
 
-// 一条记录是否可按图片复制：Image 类型，或文件名带图片扩展名的 File/Group。
-// （clipserver 的行内复制就是按这个规则分发的：类型是图片、或文件名是图片扩展名。）
+/** 一条记录是否可按图片处理：Image 类型，或文件名带图片扩展名的 File/Group。 */
 export function itemIsImage(item) {
   return item.type === 'Image' || isImageName(item.dataName);
 }
 
-// 写文本：现代 API 优先，失败退到 execCommand，再失败返回 false 由调用方呈现内容
+/** 写文本：现代 API 优先，失败退到 `execCommand`，再失败返回 false 由调用方呈现内容。 */
 export async function writeText(text) {
   if (canWriteText()) {
     try {
@@ -42,6 +41,7 @@ export async function writeText(text) {
     const area = document.createElement('textarea');
     area.value = text;
     area.setAttribute('readonly', '');
+    // 用 fixed + 负偏移藏起来，而不是 `display: none` —— 后者会让 `select()` 失效
     area.style.position = 'fixed';
     area.style.top = '-1000px';
     document.body.append(area);
@@ -60,11 +60,11 @@ export function canWriteImage() {
   );
 }
 
-// 写图片的结果必须可判别，且失败时要带上底层原因：
-// 把「环境不支持」「权限被拒」「失去焦点」混成一句「不支持」，会把用户引到错误的排查方向。
-// 返回 { status: 'ok' | 'unsupported' | 'failed', reason: string | null }。
-//
-// 非 PNG 先转码（异步剪贴板对非 PNG 的支持不稳定；转码失败或写入被拒都归为 failed）。
+/**
+ * 写图片。结果必须**可判别**，且失败时要带上底层原因：
+ * 把「环境不支持」「权限被拒」「失去焦点」混成一句「不支持」，会把用户引到错误的排查方向。
+ * @returns {Promise<{status: 'ok'|'unsupported'|'failed', reason: string|null}>}
+ */
 export async function writeImage(blob) {
   if (!canWriteImage()) return { status: 'unsupported', reason: null };
   try {

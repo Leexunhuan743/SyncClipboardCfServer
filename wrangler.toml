@@ -78,6 +78,13 @@ enabled = true
 # **之前**就被托管掉了，界面开关无从生效（要关就只能改仓库/删资源）。
 # 代价：界面请求多经过一层 Worker；协议面与根路径不受影响（只有这两个模式进 Worker）。
 # binding = "ASSETS" 是上面 run_worker_first 的前提：没有它，Worker 里拿不到静态资源绑定。
+#
+# ui_old（2026-09-15 新增）：`public/ui_old/` 是 V1 界面（2026-09-17 起以**备用界面**的身份
+# 重新纳入维护，见该目录 README）。
+# 刻意**不**把它加进 run_worker_first —— 它的页面只有一个静态资源面、没有服务端路由
+# （接口走的是与 V2 共用的 `/ui/api/*`），由边缘直接托管最省一层往返。
+# 界面开关对它仍然生效：`src/index.ts` 在分派前判定 isArchivePath 并据此 404
+# （未被边缘命中的 /ui_old 请求本来就会回落给 Worker）。
 [assets]
 directory = "./public"
 binding = "ASSETS"

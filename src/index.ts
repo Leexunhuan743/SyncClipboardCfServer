@@ -213,6 +213,11 @@ export default {
     //     的兜底 404 会先于 `app.get('/ui')` 命中，见 docs/ui.md 的记录）。
     const isUiPath = url.pathname === '/ui' || url.pathname.startsWith('/ui/');
     const isUiApi = url.pathname.startsWith('/ui/api/');
+    // V1（`public/ui_old/`，备用界面，2026-09-17 起重新纳入维护，见该目录 README）。
+    // 它与 V2 共用同一个界面开关：
+    // 关掉界面时**两个**挂载点都必须 404 —— 否则"关掉界面"会留下一个仍可访问的旧界面，
+    // 那正是这个开关要消除的东西。
+    const isArchivePath = url.pathname === '/ui_old' || url.pathname.startsWith('/ui_old/');
     if (isUiPath && !isUiApi) {
       if (!isUiEnabled(env)) return uiDisabledResponse(false);
       // 先把请求转给静态资源；**未命中资源（404）时回落到 Hono**，与"静态资源直接托管"时
@@ -222,6 +227,14 @@ export default {
       if (asset.status !== 404) return asset;
     } else if (isUiApi && !isUiEnabled(env)) {
       return uiDisabledResponse(true);
+    } else if (isArchivePath) {
+      // 存档面**不由 Hono 参与**：它只有静态资源、没有服务端路由，故 404 就该是 404
+      // （不像 /ui/* 那样回落到 Hono 出 404 页 —— 那页属于 V2 的命名空间）。
+      // 这里**必须**显式再判一次开关：`/ui_old/*` 不在 run_worker_first 里，正常情况下
+      // 由边缘直接托管、根本走不到 Worker；走得到 Worker 的只有"资源未命中"的请求，
+      // 而那一条也必须在界面关掉时 404。
+      if (!isUiEnabled(env)) return uiDisabledResponse(false);
+      return env.ASSETS.fetch(request);
     }
 
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）

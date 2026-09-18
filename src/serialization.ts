@@ -79,7 +79,7 @@ export function parseProfileType(s: string | null | undefined): ProfileType | un
   if (/^\d+$/.test(trimmed)) {
     const n = Number(trimmed);
     // Enum.TryParse 接受任意整数；这里限制在 int32 内避免 Number 精度问题
-    if (Number.isSafeInteger(n) && n >= 0 && n <= 2147483647) return n as ProfileType;
+    if (Number.isSafeInteger(n) && n >= 0 && n <= INT32_MAX) return n as ProfileType;
     return undefined;
   }
   return PROFILE_TYPE_NAMES[trimmed.toUpperCase()];

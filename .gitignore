@@ -12,3 +12,6 @@ dev.vars
 
 # 审计工作区（含本地绝对路径与调查报告），仅本地保留
 .audits/
+
+# 视觉回归截图输出（test/manual/shoot.mjs）
+.shots/

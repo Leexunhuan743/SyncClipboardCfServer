@@ -1,0 +1,224 @@
+/* ============================================================================
+ * 底线层 — V2：重置、排版、焦点、可访问性、工具类。
+ * 这里的东西对两页（列表页 / 登录页）都成立，不含任何组件语义。
+ * ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* color-scheme 在 tokens-v2.css 里按**生效主题**声明（light / dark 各一次）。
+   * 这里不写 `light dark`——那会跟随系统偏好，与应用内开关打架。 */
+  /* clip 不像 hidden 那样创建滚动容器（不影响 sticky），但能兜住超长不可断字符串带来的横向滚动 */
+  overflow-x: clip;
+  /* 原生控件（下拉、滚动条、光标）跟随主题色，而不是浏览器默认蓝 */
+  accent-color: var(--accent);
+  caret-color: var(--accent);
+}
+
+:where(a, button, [role="button"], input, select, textarea, summary, label) {
+  /* 去掉移动端点击高亮：**必须**与真实 :active 态成对出现，否则页面在触屏上像死的。
+   * V2 的所有可点元素都有 :active 反馈（见各组件规则），这条前提成立。 */
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: clip;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  /* 等宽数字：时间/大小/计数一列一列地跳动是最廉价的"未打磨"信号 */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+p,
+figure,
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+}
+
+h1 {
+  font-size: var(--fs-title);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semi);
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: var(--fs-h2);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semi);
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* 焦点环：用 :focus-visible 而非 :focus —— 后者会给鼠标点击也套环，最终被人删掉。
+ * 键盘用户与辅助技术才需要它，所以它可以很响（2px + 2px 偏移）。 */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ── `[hidden]` 必须真的隐藏 ──
+ *
+ * 浏览器 UA 样式表里的 `[hidden] { display: none }` 是**最弱**的规则之一：任何一条
+ * 类选择器上的 `display`（本站到处都是 `display: flex` / `grid`）都会把它盖掉，
+ * 于是元素带着 `hidden` 属性照样占位、照样被看见 —— 而 `element.hidden === true`
+ * 让代码看起来一切正常。
+ *
+ * 实测踩到（2026-09-15）：抽屉里的「自定义时间范围」在非 `custom` 时间范围下带着
+ * `hidden` 却仍渲染出 155px 的空表单，抽屉因此白长 155px。同一类隐患在
+ * `.notice` / `.batchbar` / `.overview__spark` 上都存在（它们各自补了 `&[hidden]` 规则，
+ * 那是逐处补丁；这条是**兜底**，让漏掉的人不会静默出错）。
+ *
+ * 用 `!important` 是刻意的：这条规则的唯一职责就是压过所有 `display` 声明，
+ * 而它表达的是"作者明确要求隐藏"这个语义 —— 不该被样式优先级意外推翻。
+ * 需要"隐藏但保留占位"时用 `visibility: hidden`，不要用 `hidden` 属性。 */
+[hidden] {
+  display: none !important;
+}
+
+/* 跳转链接：键盘用户不必每次 Tab 穿过整条顶栏与筛选条 */
+.skip {
+  position: absolute;
+  left: var(--sp-4);
+  top: -80px;
+  z-index: var(--z-skip);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  transition: top var(--dur-fast) var(--ease-out);
+}
+
+.skip:focus-visible {
+  top: var(--sp-4);
+}
+
+/* 视觉隐藏但保留给屏幕阅读器 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 等宽：哈希、文件名、协议地址 */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  letter-spacing: -0.01em;
+}
+
+/* 说明文字：比正文小一档、颜色最轻。V1 的教训是这类通用类不该住在某个页面的命名空间里
+ * （`.auth__note` 曾只定义在登录页的样式表里，导致列表页用到它时**完全没有样式**）。 */
+.note {
+  font-size: var(--fs-meta);
+  color: var(--ink-faint);
+  line-height: var(--lh-loose);
+}
+
+.note--warn {
+  color: var(--danger);
+}
+
+.note code {
+  font-family: var(--font-mono);
+  background: var(--surface-inset);
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+}
+
+/* 滚动条与调色板一致：默认亮色滚动条在深色主题下最刺眼 */
+* {
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+/* 关闭 JavaScript 时的提示：走类而不是内联 style，这样 CSP 可以保持 `style-src 'self'` */
+.noscript {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--sp-5);
+}
+
+/* ── 减少动效：**功能必须完全保留**（V1 实测过这一条，V2 沿用同样的要求）──
+ * 归零而不是缩短：缩短后的 1ms 动画仍会触发合成层与重排。
+ * 行的"离场"在 reduced-motion 下靠 JS 的兜底定时器收掉（见 board.js）。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── 打印：只想把内容打出来，控件与装饰都不需要 ── */
+@media print {
+  .appbar,
+  .filters,
+  .batchbar,
+  .pager,
+  .overview__spark,
+  .rowops,
+  .toasts {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+  }
+}

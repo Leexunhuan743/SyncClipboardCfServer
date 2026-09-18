@@ -55,9 +55,12 @@ const EXPECTED_API_ROUTES: readonly string[] = [
   'GET /ui/api/history/:type/:hash/data',
   'PATCH /ui/api/history/:type/:hash',
   'POST /ui/api/history/batch-update',
+  'POST /ui/api/history/batch-meta',
   'POST /ui/api/history/clear',
   'POST /ui/api/hub-ticket',
   'GET /ui/api/statistics',
+  'GET /ui/api/overview',
+  'GET /ui/api/activity',
   'GET /ui/api/info',
   'GET /ui/api/poll',
   'GET /ui/api/integrity',
@@ -167,7 +170,9 @@ describe('UI 部署开关（UI_ENABLED）', () => {
       ['/ui', 'page'],
       ['/ui/', 'page'],
       ['/ui/index.html', 'page'],
-      ['/ui/js/main.js', 'page'],
+      ['/ui/app/', 'page'],
+      ['/ui/app/index.html', 'page'],
+      ['/ui/js/boot.js', 'page'],
       ['/ui/api/session', 'api'],
       ['/ui/api/login', 'api'],
       ['/ui/api/history', 'api'],
@@ -210,7 +215,7 @@ describe('UI 部署开关（UI_ENABLED）', () => {
 
   it('开启态：/ui/* 先转静态资源；资源未命中(404)时回落给 Hono 的 404 页', async () => {
     // 命中资源 → 原样返回（含 /ui 的 307 跳转，由静态资源自己产生）
-    const hit = await at('/ui/js/main.js');
+    const hit = await at('/ui/js/boot.js');
     expect(hit.status).toBe(200);
     expect(await hit.text()).toBe('asset-body');
 
@@ -219,11 +224,30 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     const missing = await worker.fetch(new Request('https://sync.example.com/ui/__missing__'), env, CTX);
     expect(seen, '未命中也先问过静态资源').toEqual(['/ui/__missing__']);
     expect(missing.status).toBe(404);
-    expect(await missing.text(), '应回落到 Hono 的 404 页而不是一张空 404').toContain('页面不存在');
+    expect(await missing.text(), '应回落到 Hono 的 404 页而不是一张空 404').toContain('这个地址没有页面');
 
     // /ui/api/* 不走静态资源（它一直是 Worker 路由）
     const api = await worker.fetch(new Request('https://sync.example.com/ui/api/__nope__'), env, CTX);
     expect(api.status).toBe(401); // 未带凭据 ⇒ 先被守卫拦下
     expect(seen, '/ui/api/* 不该去问静态资源').toEqual(['/ui/__missing__']);
+  });
+
+  // V1 存档（`public/ui_old/`，冻结不再维护，见该目录 README）与 V2 共用同一个界面开关。
+  // 这条守卫拦的是"关掉界面却留下一个仍可访问的旧界面"——那正是这个开关要消除的东西。
+  it('V1 存档同样受界面开关约束：关闭态 404，开启态转静态资源', async () => {
+    const off = makeEnv('false', 200);
+    for (const path of ['/ui_old', '/ui_old/', '/ui_old/index.html', '/ui_old/js/main.js']) {
+      const res = await worker.fetch(new Request(`https://sync.example.com${path}`), off.env, CTX);
+      expect(res.status, `${path} 在关闭态必须 404`).toBe(404);
+    }
+    // 关闭态**一次都不该**去读静态资源（与 /ui/* 同一条纪律：关得干净）
+    expect(off.seen, '关闭态的存档请求不该去读静态资源').toEqual([]);
+
+    // 开启态：存档面没有服务端路由，故直接转静态资源
+    const on = makeEnv('true', 200);
+    const res = await worker.fetch(new Request('https://sync.example.com/ui_old/index.html'), on.env, CTX);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('asset-body');
+    expect(on.seen).toEqual(['/ui_old/index.html']);
   });
 });

@@ -1,58 +1,104 @@
-// /ui/api 的调用封装：只负责「发请求 / 解析 / 归一化 / 抛出可判别错误」。
+// `/ui/api` 的调用封装：只负责「发请求 / 解析 / 归一化 / 抛出可判别错误」。
 //
-// 归一化在这里做（不在组件里）：服务端按上游惯例把 type 序列化成数字，
-// 前端只认类型名——把这一次转换收在 API 边界上，组件就不必各自记得转换。
+// 归一化在这里做（不在组件里）：服务端按上游惯例把 `type` 序列化成**数字**
+// （ASP.NET 默认按数字序列化枚举），而前端只认类型名。把这一次转换收在 API 边界上，
+// 组件就不必各自记得转换 —— 忘一处就是一处显示错。
 import { typeName } from './format.js';
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, payload = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.payload = payload;
   }
 }
 
-async function request(path, { method = 'GET', body, signal } = {}) {
-  const response = await fetch(path, {
+async function request(path, { method = 'GET', body, signal, textResponse = false } = {}) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort(signal?.reason);
+  if (signal?.aborted) cancel();
+  signal?.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(() => controller.abort(new Error('请求超时，请检查连接后重试。')), 20_000);
+  try {
+    const response = await fetch(path, {
     method,
     credentials: 'same-origin',
     headers: body === undefined ? undefined : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
+    signal: controller.signal,
   });
 
-  const text = await response.text();
+  const text = textResponse && response.ok ? await readTextBody(response) : await response.text();
+  if (textResponse && response.ok) return text;
   let payload = null;
   if (text) {
     try {
       payload = JSON.parse(text);
     } catch {
+      if (response.ok) throw new ApiError(502, '服务器返回了无法读取的数据，请刷新后重试。');
       payload = {};
     }
   }
 
   if (!response.ok) {
     const message = (payload && (payload.detail || payload.error)) || response.statusText || '请求失败';
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, payload);
   }
   return payload;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
-// 导出给测试（test/ui-logic.test.ts）：归一化与查询串构造是「界面显示错了」的两个源头，
-// 它们不需要 DOM 也不需要网络，属于纯逻辑——放在这里被直接覆盖，而不是只能靠浏览器端到端。
+/** 只为交互读取有限正文；大文本仍可通过下载取回完整原件。 */
+async function readTextBody(response) {
+  const limit = 8 * 1024 * 1024;
+  const tooLarge = () => new ApiError(413, '正文超过 8 MiB，请下载文件后查看完整内容。');
+  if (Number(response.headers.get('content-length')) > limit) {
+    await response.body?.cancel();
+    throw tooLarge();
+  }
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        throw tooLarge();
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    return chunks.join('');
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** 导出给测试（test/ui-logic.test.ts）：归一化是「界面显示错了」的一个源头，且它不需要 DOM 与网络。 */
 export function normalizeItem(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const type = typeName(raw.type);
   return {
     ...raw,
     type,
+    // `key` 是记录的身份：**type + hash**（不是行 ID —— ID 是 D1 自增的，跨设备无意义）
     key: `${type}-${raw.hash}`,
     // 服务端在列表里截断正文（一页几百条长文本会有几十 MB）。
-    // 需要完整内容时必须先取单条——复制走截断值就是把剪贴板内容砍一半给用户。
+    // 需要完整内容时必须先取单条 —— 复制走截断值就是把剪贴板内容砍一半给用户。
     textTruncated: raw.textTruncated === true,
   };
 }
 
+/** 查询参数序列化：跳过空值（空串/false/null/undefined 都不该出现在 URL 里）。 */
 export function buildQuery(params) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -62,6 +108,11 @@ export function buildQuery(params) {
   return query.toString();
 }
 
+/** 本机时区相对 UTC 的偏移（分钟，与 `Date.prototype.getTimezoneOffset` 同号）。 */
+export function tzOffset() {
+  return new Date().getTimezoneOffset();
+}
+
 export const api = {
   session: () => request('/ui/api/session'),
 
@@ -69,6 +120,7 @@ export const api = {
 
   logout: () => request('/ui/api/logout', { method: 'POST' }),
 
+  /** 列表。服务端把正文截到 500 字符并置 `textTruncated`。 */
   async list(filters, signal) {
     const raw = await request(`/ui/api/history?${buildQuery(filters)}`, { signal });
     return {
@@ -77,6 +129,7 @@ export const api = {
     };
   },
 
+  /** 单条元数据（正文**完整**）。列表里 `textTruncated` 的记录必须先走这里。 */
   async get(item, signal) {
     const raw = await request(
       `/ui/api/history/${encodeURIComponent(item.type)}/${encodeURIComponent(item.hash)}`,
@@ -84,6 +137,8 @@ export const api = {
     );
     return normalizeItem(raw);
   },
+
+  textData: (item, signal) => request(api.dataUrl(item), { signal, textResponse: true }),
 
   async patch(item, fields) {
     const raw = await request(
@@ -93,10 +148,12 @@ export const api = {
     return normalizeItem(raw);
   },
 
-  // 批量写：`update` 是要应用到每一条的字段集合（收藏/置顶/删除/恢复共用这一条路径）。
-  // 服务端逐条走与单条 PATCH 相同的实现（各自广播、各自清数据目录），单次 100 条封顶 ——
-  // 每条 ≈5 次子请求，200 条正好顶到单次调用的 1000 次内部子请求上限，故这里按 100 **分片串行**发，
-  // 调用方只管传整批，结果合并成一个合计（分片之间若某片失败，前几片已生效，由调用方刷新对账）。
+  /**
+   * 批量写：`update` 是要应用到每一条的字段集合（收藏/置顶/删除/恢复共用这一条路径）。
+   * 服务端逐条走与单条 PATCH **相同的实现**（各自广播、各自清数据目录），单次 100 条封顶 ——
+   * 每条 ≈5 次子请求，200 条正好顶到单次调用的 1000 次内部子请求上限，故这里按 100 **分片串行**发。
+   * 调用方只管传整批，结果合并成一个合计（分片之间若某片失败，前几片已生效，由调用方刷新对账）。
+   */
   async batchUpdate(items, update) {
     const CHUNK = 100;
     let updated = 0;
@@ -115,42 +172,66 @@ export const api = {
     return { updated, failed };
   },
 
-  // 清空历史：scope='trash' 只清回收站、'all' 清全部。
-  // 服务端各用一条批量语句（不是逐条删除），也不逐条广播——见 src/ui/routes.ts 里该路由的注释。
+  /**
+   * 批量取元数据（含**完整正文**）。用于"选中多条 → 一起复制"这类聚合动作；
+   * 目前界面没有这个入口，故**不导出**（需要时再加回来，服务端端点一直在）。
+   * 单次 ≤100 条；更多由调用方分片。
+   */
+  async batchMeta(items) {
+    const raw = await request('/ui/api/history/batch-meta', {
+      method: 'POST',
+      body: { items: items.map((item) => ({ type: item.type, hash: item.hash })) },
+    });
+    return (raw?.items ?? []).map(normalizeItem).filter(Boolean);
+  },
+
+  /** 清空历史：`scope='trash'` 只清回收站、`'all'` 清全部。服务端各用一条批量语句，不逐条广播。 */
   clear: (scope) => request('/ui/api/history/clear', { method: 'POST', body: { scope } }),
 
-  // 数据完整性自检：只在用户点「检查」时调用（服务端要列举一遍 R2，不属于每次加载都该付的成本）
+  /** 数据完整性自检：只在用户点「检查」时调用（服务端要列举一遍 R2，不属于每次加载都该付的成本）。 */
   integrity: () => request('/ui/api/integrity'),
 
-  // 保留策略的写入（服务端 Meta 覆盖，0 = 关闭该阶段，null = 回落到部署时的环境变量）。
-  // 读侧没有单独接口：生效值与来源都随 `/ui/api/info` 返回（同一份 readRetentionSettings）。
+  /** 保留策略写入（Meta 覆盖；`0` = 关闭该阶段，`null` = 回落到部署环境变量）。 */
   updateSettings: (patch) => request('/ui/api/settings', { method: 'PUT', body: patch }),
 
-  statistics: (signal, { deleted = false } = {}) => {
-    // 类型计数随视图走：回收站视图要的是「已删除里各类型多少」，不是活跃记录的数
-    const query = buildQuery({ deleted: deleted ? 'true' : '' });
-    return request(`/ui/api/statistics${query ? `?${query}` : ''}`, { signal });
-  },
   info: () => request('/ui/api/info'),
+
+  /**
+   * 首屏总览（**合并端点**）：统计 + 部署信息 + 变更标记 + 服务端时间。
+   *
+   * 为什么要有它：V1 的首屏打三次请求（`history` + `statistics` + `info`），而 `statistics`
+   * 内部还要跑三条查询（`docs/backend-gaps.md` §3.1）。V2 的概览带需要的是它们**合并后的
+   * 一个快照**，且概览带与列表必须在同一次往返里对齐（否则数字与列表可能来自两个瞬间）。
+   */
+  overview: (signal, { tz = tzOffset() } = {}) =>
+    request(`/ui/api/overview?${buildQuery({ tz })}`, { signal }),
+
+  /**
+   * 活动趋势：每天有多少条记录（按**客户端时区**切分「一天」）。
+   * `day` 的边界错位是这类图表最常见的错 —— UTC+8 的用户在早上 8 点前看到的"今天"会是昨天。
+   */
+  activity: (signal, { days = 14, tz = tzOffset() } = {}) =>
+    request(`/ui/api/activity?${buildQuery({ days, tz })}`, { signal }),
+
   poll: (signal) => request('/ui/api/poll', { signal }),
 
-  // 换一张 Hub 连接票据（`{ token, path }`）：推送通道用它建立 WebSocket。
-  // DO 不可达时服务端返回 503，调用方据此继续用轮询。
+  /** 换一张 Hub 连接票据（`{token, path}`）：推送通道用它建立 WebSocket。 */
   hubTicket: () => request('/ui/api/hub-ticket', { method: 'POST' }),
 
-  // 数据文件地址（图片预览用 <img src>、下载用 <a href>，两者都自动带同源 Cookie）
+  /** 数据文件地址（图片预览用 `<img src>`、下载用 `<a href>`，两者都自动带同源 Cookie）。 */
   dataUrl: (item, { download = false } = {}) =>
     `/ui/api/history/${encodeURIComponent(item.type)}/${encodeURIComponent(item.hash)}/data${
       download ? '?download=1' : ''
     }`,
 };
 
-// 会话过期时统一回登录页（保留当前位置，登录后跳回）
+/** 会话过期时统一回登录页（保留当前位置，登录后跳回）。 */
 export function redirectToLogin() {
   const next = encodeURIComponent(`${location.pathname}${location.search}`);
-  location.replace(`/ui/login.html?next=${next}`);
+  location.replace(`/ui/app/login.html?next=${next}`);
 }
 
+/** 401 统一处理。返回 true 表示"已经处理掉了"（调用方应直接 return，不要再弹提示）。 */
 export function handleAuthError(error) {
   if (error instanceof ApiError && error.status === 401) {
     redirectToLogin();

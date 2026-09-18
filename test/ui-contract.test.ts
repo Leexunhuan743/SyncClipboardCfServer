@@ -1,4 +1,6 @@
-// `public/ui/**` 的跨文件契约守卫。
+// 前端（零构建的原生 ES 模块）的跨文件契约守卫。
+// 扫描目标是 **V2**（`public/ui/**`）；V1 已冻结到 `public/ui_old/**`，不再受本套件约束
+// （理由见下方「模块图」一节与 `public/ui_old/README.md`）。
 //
 // 零构建的前端没有编译器帮忙，而它的三类契约都**只存在于两处文本之间**，任何一处改了另一处
 // 不会报错——只会静默失效。这个套件把那三类契约变成可复跑的检查：
@@ -27,7 +29,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
-// @ts-expect-error TS7016：`public/ui/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 clipboard.test.ts）
+// @ts-expect-error TS7016：`public/ui_old/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 clipboard.test.ts）
 import { createLatestGate } from '../public/ui/js/latest.js';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
@@ -51,11 +53,33 @@ function listFiles(relative: string, ext: string): string[] {
 
 // 剥注释：块注释全剥；行注释只剥「行首或空白后的 `//`」——不能裸替 `//`，
 // 否则 `'http://www.w3.org/2000/svg'`（dom.js）这类字符串会被截断。
+//
+// ⚠️ 2026-09-15 修掉一个**真缺陷**（V2 落地时暴露）：原先的块注释判据是
+// `/\/\*[\s\S]*?\*\//g`，即「任何位置的一对 `/*` … `*/`」。而注释里出现**通配写法**
+// （`/ui/*`、`public/ui/js/*.js` —— 这个仓库的注释里到处都是）时，那个 `/` 后面的 `*`
+// 会被当成块注释的开始，于是它到**下一个** `*/` 之间的全部内容被删掉。
+// 后果不是"少剥了一段注释"，而是把**整整一屏的正代码吃掉**：`boot.js` 的 import 全段
+// 落在那个区间里，`importClosure` 于是只读到入口自己（1 个模块），
+// 「modulepreload == import 闭包」这条断言把 24 条正确清单报成多余。
+//
+// 修法：块注释的 `/*` 只认**行首**（允许前导空白）。这不是权宜之计 ——
+// 合法 JS 里块注释确实几乎总在行首或行尾独立成段，而"文本中间的 `/*`"在注释里
+// 恰恰就是通配写法。判据因此从「形状」收紧成「位置」，误判面从"注释内容"缩到"无"。
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/[^\n]*/g, '$1');
+  return source
+    .replace(/(^|\n)([ \t]*)\/\*[\s\S]*?\*\//g, '$1')
+    .replace(/(^|\s)\/\/[^\n]*/g, '$1');
 }
 
 // ===== 模块图 =====
+// 扫描目标 = **当前实际发布的那一份界面**。
+// 2026-09-15 的 V1→V2 交接：V1 冻结存档到 `public/ui_old/`（挂载点 `/ui_old/`，见该目录的
+// README.md），V2 落在 `public/ui/`。本套件现在守 V2 —— 存档目录**不再受约束**（它是冻结的，
+// 对它报死规则只会逼人动一份刻意不动的代码）。
+//
+// V2 的布局与 V1 有两处不同，读下面的常量时要记得：
+//   · 两页在 `public/ui/app/` 下（`/ui/` 这个路径留给目录索引，应用本体在 `/ui/app/`）；
+//   · 资源（`css/`、`js/`）在 `public/ui/` 下，两页共享。
 const JS_FILES = listFiles('public/ui/js', '.js');
 const CSS_FILES = listFiles('public/ui/css', '.css');
 
@@ -111,7 +135,7 @@ type Page = {
   modules: string[];
 };
 
-const PAGES: Page[] = ['public/ui/index.html', 'public/ui/login.html'].map((html) => {
+const PAGES: Page[] = ['public/ui/app/index.html', 'public/ui/app/login.html'].map((html) => {
   const source = read(html);
   const attr = (rel: string): string[] =>
     [...source.matchAll(new RegExp(`<link[^>]+rel="${rel}"[^>]+href="([^"]+)"`, 'g'))].map(
@@ -155,9 +179,9 @@ function normalizeJs(source: string): string {
 
 const JS_SOURCES = new Map(JS_FILES.map((file) => [file, normalizeJs(read(file))] as const));
 const HTML_SOURCES = new Map(
-  ['public/ui/index.html', 'public/ui/login.html'].map((file) => [file, stripComments(read(file))] as const),
+  PAGES.map((page) => [page.html, stripComments(read(page.html))] as const),
 );
-// base.css 在每页都加载，其中的工具类不进 BEM 检查（见上面的形态说明），但 tokens.css 里的
+// base-v2.css 在每页都加载，其中的工具类不进 BEM 检查（见上面的形态说明），但 tokens.css 里的
 // 自定义属性名、其它层的类名都会被抽到——这正是想要的范围。
 const CSS_TOKENS = new Map(CSS_FILES.map((file) => [file, bemTokens(read(file))] as const));
 
@@ -198,7 +222,7 @@ describe('public/ui 的模块图契约', () => {
 
   it('检查器对自己不命中：被扫描的集合里没有 test/** 的文件', () => {
     expect([...JS_FILES, ...CSS_FILES].some((file) => file.includes('test/'))).toBe(false);
-    expect(importClosure('public/ui/js/main.js').some((file) => file.includes('test/'))).toBe(false);
+    expect(importClosure('public/ui/js/boot.js').some((file) => file.includes('test/'))).toBe(false);
   });
 });
 

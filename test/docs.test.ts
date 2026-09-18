@@ -95,6 +95,9 @@ describe('文档口径与仓库实际一致', () => {
     }
   });
 
+  // `public/` 下现在有三部分：V2（`public/ui/`，线上）、V1 存档（`public/ui_old/`，冻结）、
+  // 站点根的两个文件。docs/ui.md 的「共 N 个资源」声明的是**这个总数** ——
+  // 判据不变（数字必须能从文件系统数出来），只是分母的含义随 V1→V2 交接变大了一次。
   it('docs/ui.md 里声明的资源数与 public/ 下实际文件数一致', () => {
     const claims = assetClaims(read('docs/ui.md'));
     expect(claims.length, 'docs/ui.md 未声明资源数').toBeGreaterThan(0);

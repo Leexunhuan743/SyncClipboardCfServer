@@ -102,7 +102,10 @@ export const HARD_CODED_USER_ID = 'default_user';
 export const PAGE_SIZE = 50;
 export const HISTORY_UPDATE_THRESHOLD_MS = 5 * 60 * 1000; // ShouldUpdate 5 分钟阈值
 
-// C# int 的范围：用于复刻 `int.TryParse` / `Enum.TryParse` 的绑定语义（超界即绑定失败）
+// C# int 的范围：用于复刻 `int.TryParse` / `Enum.TryParse` 的绑定语义（超界即绑定失败）。
+// **唯一定义处**：此前 src/hub.ts 另有一份私有副本、src/serialization.ts 还有一处裸字面量，
+// 三处同值不同源（O1）。消费者一律从这里 import：serialization.ts（DTO 绑定校验）、
+// routes/history.ts（`int.TryParse` 复刻）、hub.ts（negotiate 版本解析）。
 export const INT32_MIN = -2147483648;
 export const INT32_MAX = 2147483647;
 

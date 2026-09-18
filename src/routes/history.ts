@@ -1,9 +1,9 @@
 // 官方历史 API（docs/protocol.md §5；行为对照 HistoryController + HistoryService）
 import { Hono } from 'hono';
 import { Bindings } from '../env';
-import { HistoryDb, basename, BadRequestError as DbBadRequestError } from '../db';
+import { HistoryDb, basename, BadRequestError } from '../db';
 import { R2Storage } from '../storage';
-import { addRecordDto, BadRequestError, NotFoundError, ProfileDataInvalidError, IncomingRecord } from '../profile';
+import { addRecordDto, NotFoundError, ProfileDataInvalidError, IncomingRecord } from '../profile';
 import {
   entityToDto,
   entityToUpdateDto,
@@ -303,7 +303,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
         headers: { 'content-type': 'application/json; charset=utf-8' },
       });
     } catch (err) {
-      if (err instanceof DbBadRequestError) return c.text(err.message, 400);
+      if (err instanceof BadRequestError) return c.text(err.message, 400);
       throw err;
     }
   });

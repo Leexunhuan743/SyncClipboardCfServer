@@ -1,9 +1,9 @@
 // WebDAV 兼容端点（docs/protocol.md §4；行为对照 SyncClipboardController）
 import { Hono } from 'hono';
 import { Bindings } from '../env';
-import { HistoryDb, basename, BadRequestError as DbBadRequestError } from '../db';
+import { HistoryDb, basename, BadRequestError } from '../db';
 import { R2Storage } from '../storage';
-import { putSyncProfile, BadRequestError, NotFoundError, PayloadTooLargeError } from '../profile';
+import { putSyncProfile, NotFoundError, PayloadTooLargeError } from '../profile';
 import { parseProfileDto, profileDtoToJson, classifyStoredProfile } from '../serialization';
 import type { StoredProfileHealth } from '../serialization';
 import { textProfileHash } from '../hash';
@@ -30,9 +30,12 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // 官方客户端从不 GET 根路径：Test() 与 GetFolderSubList() 都是 PROPFIND（WebDavBase.cs:271/321），
   // 这里的 Accept 判断只是让任何按文本协议探活的脚本行为完全不变。
   // 界面被关闭时（GitHub 变量 UI_ENABLED=false）不再把人引到不存在的 /ui/，直接返回探活响应。
+  //
+  // 跳转目标是 **`/ui/app/`**（V2 的应用本体），不是 `/ui/`：后者是静态资源的目录索引，
+  // 而它唯一做的事就是再跳一次到 `/ui/app/`。少一跳，浏览器历史里也少一条记录。
   app.get('/', (c) => {
     const accept = c.req.header('accept') ?? '';
-    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui/', 302);
+    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui/app/', 302);
     return c.text('Server is running.');
   });
 
@@ -131,7 +134,6 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
       if (err instanceof PayloadTooLargeError) return c.text('Payload Too Large', 413);
       if (err instanceof BadRequestError) return c.text(err.message, 400);
       if (err instanceof NotFoundError) return c.text(err.message, 404);
-      if (err instanceof DbBadRequestError) return c.text(err.message, 400);
       throw err;
     }
   });

@@ -1,0 +1,471 @@
+// 抽屉：低频控件 + 维护信息 + 部署信息。
+//
+// 为什么是抽屉而不是又一个对话框：抽屉容纳"可以边看边改"的设置与只读信息，
+// 对话框适合"必须做出决定才能继续"的内容。混用会让用户猜每个入口的后果。
+//
+// 这里同时落地了 `docs/backend-gaps.md` §1 的几条"已建未接"能力：
+//   §1.1 清理状态（`/ui/api/info` 一直在返回 `cleanup`，此前**无人消费**）
+//   §1.5 页大小档位补齐到 500（服务端白名单的上限）
+//   §1.6 `PATCH` 响应体的版本/时间戳被采纳（不在这里，在 boot.js 的 adoptPatch）
+//   §1.8 服务端时钟与本机的差值（官方客户端在 |差| > 5 分钟时**中止历史同步**）
+import { el, clear } from '../dom.js';
+import { PAGE_SIZES, SORT_FIELDS, toDateInput, fromDateInput } from '../filters.js';
+import { formatAbsolute, describeClockSkew } from '../format.js';
+import { iconButton, labelButton } from './button.js';
+import { flashOk, setPending } from './toast.js';
+
+/**
+ * @param {{ onSetPageSize: (n: number) => void,
+ *           onSort: (field: string, order: string) => void, onCustomRange: (after: number|null, before: number|null) => void,
+ *           onSaveSettings: (patch: object) => Promise<boolean>,
+ *           onCheckIntegrity: () => Promise<object|null>,
+ *           onClear: (scope: string) => Promise<boolean> }} handlers
+ */
+export function createDrawer(handlers) {
+  const body = el('div', { class: 'drawer__body' });
+  // 标题带 id：`<dialog>` 需要 `aria-labelledby` 才有可访问名，否则读屏只说"对话框"
+  const title = el('h2', { class: 'drawer__title', id: 'drawer-title', text: '概览与设置' });
+  const closeBtn = iconButton({ icon: 'close', label: '关闭', onClick: () => dialog.close(null) });
+
+  /** 最近一次收到的数据：抽屉关着时只存不画（见 `update`），打开时用它补画一次。 */
+  let lastSpec = null;
+
+  const dialog = el('dialog', { class: 'drawer', 'aria-labelledby': 'drawer-title' }, [
+    el('div', { class: 'drawer__inner' }, [
+      el('div', { class: 'drawer__head' }, [title, closeBtn]),
+      body,
+    ]),
+  ]);
+  document.body.append(dialog);
+
+  // ---- 各区块（只建一次，数据用 update 填）----
+  // 顺序见文件末尾的 `body.append(...)`，那里写了"为什么是这个顺序"。
+
+  // 活动趋势（明细）：概览带上的图是缩略，这里是能读出数字的那一份。
+  //
+  // 折成一行摘要 + `<details>`：它的信息（"最近有没有在用"）一句话就够，
+  // 而十四根柱子要 333px —— 在一个总高 1536px、视口只有 833px 的抽屉里，
+  // 把最占地方又最不常看的一块默认展开是不合理的。用原生 `<details>` 而不是自己做折叠：
+  // 键盘可达、`aria-expanded` 语义、打印时的展开行为都由平台负责。
+  const barsBox = el('div', { class: 'bars' });
+  const activitySummary = el('summary', { class: 'details__summary' });
+  const activitySection = el('details', { class: 'details' }, [activitySummary, barsBox]);
+
+  // ② 视图偏好：每页条数 / 排序。
+  //
+  // **紧凑模式原先在这里，已移到列表头**（用户 2026-09-15 的要求）：
+  // 它是"这一屏看起来什么样"的视图开关，而人们是在**看着列表**时产生"行太疏"的念头的。
+  // 抽屉里只留一句指向它的说明 —— 不能两处都能改同一个设置：
+  // 两处控件各自显示自己的状态，改了一处另一处不刷新，用户会以为设置没生效。
+  const densityHint = el('span', { class: 'row__hint', text: '' });
+  const pageSizeSelect = el('select', {
+    class: 'control control--select',
+    'aria-label': '每页条数',
+    onchange: (event) => handlers.onSetPageSize(Number(event.target.value)),
+  });
+  for (const size of PAGE_SIZES) {
+    pageSizeSelect.append(el('option', { value: String(size), text: `${size} 条` }));
+  }
+
+  const sortSelect = el('select', {
+    class: 'control control--select',
+    // 三个下拉都必须自己带可访问名：它们的"标签"是左侧的 `<span class="row__label">`，
+    // 而 span 不是 `<label for>`，读屏只会念"组合框，创建时间"，用户不知道它在选什么。
+    // （同文件的日期输入框都写了 `aria-label`，这三处此前漏了 —— 属于不一致而非有意。）
+    'aria-label': '排序字段',
+    onchange: (event) => handlers.onSort(event.target.value, orderSelect.value),
+  });
+  for (const field of SORT_FIELDS) {
+    sortSelect.append(el('option', { value: field.value, text: field.label }));
+  }
+  const orderSelect = el('select', {
+    class: 'control control--select',
+    'aria-label': '排序方向',
+    onchange: (event) => handlers.onSort(sortSelect.value, event.target.value),
+  });
+  orderSelect.append(
+    el('option', { value: 'desc', text: '降序' }),
+    el('option', { value: 'asc', text: '升序' }),
+  );
+
+  const viewSection = section('视图偏好', [
+    row('每页条数', null, pageSizeSelect),
+    row('排序', null, el('div', { class: 'row__control' }, [sortSelect, orderSelect])),
+    row('行高', null, densityHint),
+  ]);
+
+  // ③ 自定义时间范围：只在选了「自定义…」时才有意义，故放在抽屉里而不是筛选条上
+  const afterInput = el('input', { class: 'input', type: 'date', 'aria-label': '起始日期' });
+  const beforeInput = el('input', { class: 'input', type: 'date', 'aria-label': '截止日期' });
+  const applyRange = labelButton({
+    label: '应用',
+    className: 'btn btn--sm',
+    onClick: () => {
+      // `start` 边含当天 00:00、`end` 边到次日 00:00（不含）—— 与服务端 `CreateTime < before` 对齐。
+      // 用 `end` 语义直接给「截止到今天」的话，今天 00:00 之后的记录会被整体漏掉。
+      const after = fromDateInput(afterInput.value, 'start');
+      const before = fromDateInput(beforeInput.value, 'end');
+      handlers.onCustomRange(after, before);
+      dialog.close(null);
+    },
+  });
+  const rangeSection = section('自定义时间范围', [
+    row('从', null, afterInput),
+    row('到', null, beforeInput),
+    row(null, '「到」包含当天整日（服务端的上界是开区间）', applyRange),
+  ]);
+
+  // ④ 保留策略：在线可调（Meta 覆盖优先、env 回落）。
+  //    这里必须显示**来源** —— 否则用户改了这里却在想"为什么没生效"（值可能来自部署变量）。
+  const retentionInput = el('input', { class: 'input', type: 'number', min: '0', 'aria-label': '保留天数' });
+  const maxCountInput = el('input', { class: 'input', type: 'number', min: '0', 'aria-label': '最多保留条数' });
+  const retentionSource = el('span', { class: 'row__hint' });
+  // ⚠️ 这个按钮**必须自己带文字**（2026-09-16 修的缺陷）：它原来是一个
+  // `<button class="btn btn--sm btn--primary" data-icon="check"></button>` ——
+  // 既没有文字、也没有图标子节点、还没有 `aria-label`，而 CSS 里也没有任何
+  // `[data-icon]` 规则替它画一个图标。于是它在界面上只是一个 **26×28px 的蓝色小方块**，
+  // 读屏则只会念"按钮"。而它是**唯一**能保存保留策略的入口：
+  // 用户填完"保留天数"却找不到保存，只会认为这个设置根本改不了（实测截图确认）。
+  // 教训：`.btn` 的图标不是靠 `data-icon` 属性画出来的，必须真的放进子节点。
+  const saveRetention = labelButton({
+    label: '保存保留策略',
+    icon: 'check',
+    className: 'btn btn--sm btn--primary',
+    async onClick(button) {
+      if (button.hasAttribute('data-loading')) return;
+      setPending(button, true);
+      try {
+        const days = Number.parseInt(retentionInput.value, 10);
+        const count = Number.parseInt(maxCountInput.value, 10);
+        // 空输入 = 清除覆盖（回落部署环境变量）；**0 是合法值**，含义是"关闭该阶段"。
+        // 把空串当 0 会让"清除覆盖"变成"关掉清理" —— 语义正好相反（V1 的注释记过这个坑）。
+        await handlers.onSaveSettings({
+          retentionMinutes: retentionInput.value === '' ? null : days * 1440,
+          maxSavedHistoryCount: maxCountInput.value === '' ? null : count,
+        });
+      } finally {
+        setPending(button, false);
+      }
+    },
+  });
+  const retentionSection = section('保留策略', [
+    row('保留天数', '超过这个天数的未收藏、未置顶记录会被软删', retentionInput),
+    row('最多条数', '超过后从最旧的开始软删', maxCountInput),
+    row(null, null, saveRetention),
+    retentionSource,
+  ]);
+
+  // ⑤ 清理状态（backend-gaps §1.1：这个可观测面此前无人消费）
+  const cleanupFacts = el('div', { class: 'facts' });
+  const cleanupSection = section('清理任务', cleanupFacts);
+
+  // ⑥ 部署信息
+  const deployFacts = el('div', { class: 'facts' });
+  const copyLine = el('div', { class: 'copyline' });
+  const deploySection = section('部署信息', [deployFacts, copyLine]);
+
+  // ⑦ 维护
+  const integrityBox = el('div', { class: 'facts' });
+  const checkBtn = labelButton({
+    label: '检查数据完整性',
+    icon: 'check',
+    className: 'btn btn--sm',
+    async onClick(button) {
+      if (button.hasAttribute('data-loading')) return;
+      setPending(button, true);
+      integrityBox.replaceChildren(el('p', { class: 'note', text: '正在检查…' }));
+      try {
+        const result = await handlers.onCheckIntegrity();
+        paintIntegrity(result);
+      } finally {
+        setPending(button, false);
+      }
+    },
+  });
+
+  const clearTrashBtn = labelButton({
+    label: '清空回收站',
+    icon: 'trash',
+    className: 'btn btn--sm',
+    onClick: () => handlers.onClear('trash'),
+  });
+
+  const maintenanceSection = section('维护', [checkBtn, clearTrashBtn, integrityBox]);
+
+  // 区块顺序 = **用户多久用一次**（2026-09-15 重排）。
+  //
+  // 原来把「活动趋势」放在第一位，而它占了整整 333px（视口只有 833px）—— 点开抽屉先看到
+  // 一片图表，要滚很久才够到"每页条数""保留策略"这些真正会动手改的东西。实测各块高度：
+  // 活动趋势 333 / 视图偏好 160 / 自定义时间范围 155 / 保留策略 232 / 清理任务 107 /
+  // 部署信息 248 / 维护 109 = 总计 1536px。
+  //
+  // 现在的取舍：
+  //   · **会动手改的在前**（视图偏好 → 自定义范围 → 保留策略），
+  //   · **只看的在后**（活动趋势 → 清理任务 → 部署信息 → 维护），
+  //   · 活动趋势折成一行摘要（`.details` + `<details>`），点开才展开图表 ——
+  //     它的信息（"最近有没有在用"）一句话就够，而十四根柱子要 333px。
+  body.append(
+    viewSection,
+    rangeSection,
+    retentionSection,
+    activitySection,
+    cleanupSection,
+    deploySection,
+    maintenanceSection,
+  );
+
+  // 默认收起"自定义时间范围"（只有 range === 'custom' 时才展开）
+  rangeSection.hidden = true;
+
+  function paintIntegrity(result) {
+    clear(integrityBox);
+    if (!result) {
+      integrityBox.append(el('p', { class: 'note note--warn', text: '检查失败（服务端未返回结果）。' }));
+      return;
+    }
+    integrityBox.append(
+      fact('检查时间', formatAbsolute(result.checkedAt)),
+      fact('有数据的记录', String(result.recordsWithData)),
+      fact('R2 对象数', String(result.historyObjects)),
+      result.missingCount > 0
+        ? fact('缺失数据', `${result.missingCount} 条`, 'warn')
+        : fact('缺失数据', '无'),
+    );
+    if (result.missingCount > 0) {
+      integrityBox.append(
+        el('p', {
+          class: 'note note--warn',
+          text: `有 ${result.missingCount} 条记录的元数据声明有数据，但 R2 里找不到对应对象。列表里这些行会显示"数据缺失"。`,
+        }),
+      );
+    }
+  }
+
+  function paint(spec) {
+  const { info, activity, filters, density, clockOffsetMs } = spec;
+
+  // ---- 活动趋势 ----
+  clear(barsBox);
+  const days = Array.isArray(activity) ? activity : [];
+  // 摘要行：把"最近有没有在用"一句话说完，图表要展开才看（理由见上面区块声明处）
+  const activeDays = days.filter((d) => Number(d.total) > 0).length;
+  const sum = days.reduce((n, d) => n + (Number(d.total) || 0), 0);
+  activitySummary.replaceChildren(
+    el('span', { class: 'section__title', text: '活动趋势' }),
+    el('span', {
+      class: 'details__value',
+      text: days.length === 0 ? '还没有数据' : `近 ${days.length} 天 ${sum} 条 · ${activeDays} 天有记录`,
+    }),
+  );
+  if (days.length === 0) {
+    barsBox.append(el('p', { class: 'note', text: '还没有活动数据。' }));
+  } else {
+    const max = Math.max(1, ...days.map((d) => Number(d.total) || 0));
+    // 只展示最近 14 天：抽屉里再长就读不完，完整曲线由概览带的缩略图承担
+    for (const day of days.slice(-14)) {
+      const value = Number(day.total) || 0;
+      barsBox.append(
+        el('div', { class: 'bar' }, [
+          // `String(day.day ?? '')`：`day.day` 是服务端字段，格式异常时 `.slice` 会抛 TypeError，
+          // 而它抛在 `paint()` 里 —— 整个抽屉的内容都画不出来。一个字段坏掉不该让整块面板空白
+          // （`spark.js` / `overview.js` 对同一个字段都做了同样的防护）。
+          el('span', { class: 'bar__label', text: String(day.day ?? '').slice(5) }),
+          el('span', { class: 'bar__track' }, [
+            el('span', {
+              class: 'bar__fill',
+              style: { width: `${Math.round((value / max) * 100)}%` },
+            }),
+          ]),
+          el('span', { class: 'bar__num', text: String(value) }),
+        ]),
+      );
+    }
+  }
+
+  // ---- 视图偏好 ----
+  // 行高**不在这里改**（开关在列表头），这里只如实报告当前状态并指出开关在哪。
+  densityHint.textContent =
+    density === 'compact'
+      ? '紧凑（在列表右上角的 ☰ 按钮切换）'
+      : '宽松（在列表右上角的 ☰ 按钮切换）';
+  if (pageSizeSelect.value !== String(filters.pageSize)) pageSizeSelect.value = String(filters.pageSize);
+  if (sortSelect.value !== filters.sort) sortSelect.value = filters.sort;
+  if (orderSelect.value !== filters.order) orderSelect.value = filters.order;
+
+  // ---- 自定义范围 ----
+  if (filters.range === 'custom') {
+    rangeSection.hidden = false;
+    afterInput.value = toDateInput(filters.after);
+    beforeInput.value = toDateInput(filters.before);
+  } else {
+    rangeSection.hidden = true;
+  }
+
+  // ---- 保留策略 ----
+  const retention = info?.retention;
+  if (retention) {
+    // 分钟 → 天。**只在能被整天整除时**显示成整数天，否则给出小数（8641 分钟是 6.0007 天，
+    // 四舍五入成 6 再保存回去会**改变用户的配置**）。
+    const minutes = retention.retentionMinutes;
+    retentionInput.value = minutes === null || minutes === undefined ? '' : String(round(minutes / 1440, 3));
+    maxCountInput.value =
+      retention.maxSavedHistoryCount === null || retention.maxSavedHistoryCount === undefined
+        ? ''
+        : String(retention.maxSavedHistoryCount);
+    retentionInput.placeholder = '跟随部署变量';
+    maxCountInput.placeholder = '跟随部署变量';
+
+    const sourceText = [
+      `保留期来源：${sourceLabel(retention.retentionSource)}`,
+      `条数上限来源：${sourceLabel(retention.maxCountSource)}`,
+      '留空 = 清除这里的设置、回落到部署变量；填 0 = 关闭对应的清理阶段。',
+    ].join(' · ');
+    retentionSource.textContent = sourceText;
+  }
+
+  // ---- 清理状态 ----
+  clear(cleanupFacts);
+  const cleanup = info?.cleanup;
+  if (!cleanup || !cleanup.lastRunAt) {
+    cleanupFacts.append(
+      el('p', {
+        class: 'note',
+        text: '清理任务还没有运行过。它由 Cron 每 20 分钟触发一次，部署后一般很快就会有记录。',
+      }),
+    );
+  } else {
+    cleanupFacts.append(
+      fact('上次运行', formatAbsolute(cleanup.lastRunAt)),
+      cleanup.lastError
+        ? fact('上次错误', cleanup.lastError, 'warn')
+        : fact('上次错误', '无'),
+    );
+    const pending = Object.entries(cleanup.cursors ?? {}).filter(([, value]) => Number(value) > 0);
+    cleanupFacts.append(
+      pending.length > 0
+        ? fact('未跑完', pending.map(([phase, value]) => `${phase} ${value}`).join(' · '))
+        : fact('未跑完', '无'),
+    );
+  }
+
+  // ---- 部署信息 ----
+  //
+  // **只放别处没有的**（2026-09-15 精简）。原先这里有五行：版本 / 存储占用 / 记录数 /
+  // 时钟差 / 实时传输 —— 而前三个概览带上**已经**各有一个更大的数字，第四个顶栏的
+  // 同步状态区也报了。同一份数据说两遍不会更清楚，只会让这一块多占 248px，
+  // 把真正的设置挤到看不见的地方。
+  // 保留：**服务器地址**（只有这里有，且可复制 —— 它是客户端配置要填的东西）、
+  // 实时传输（排查"客户端连不上推送"时要看的）、以及**时钟差超限时**的那条警告
+  // （它是"同步不动"最常见的根因，值得在设置面板里再说一次）。
+  clear(deployFacts);
+  const skew = describeClockSkew(clockOffsetMs);
+  if (info) {
+    const transports = (info.hubTransports ?? []).map((t) => t.transport).join(' / ');
+    if (transports) deployFacts.append(fact('实时传输', transports));
+    if (skew?.tone === 'warn') {
+      deployFacts.append(fact('时钟差', skew.text, 'warn'));
+      deployFacts.append(
+        el('p', {
+          class: 'note note--warn',
+          text: '官方客户端在服务端与本机时钟差超过 5 分钟时会中止历史同步。请校准其中一侧的时钟。',
+        }),
+      );
+    }
+  }
+
+  // 服务器地址：一键复制。客户端配置里填的就是这个。
+  clear(copyLine);
+  const url = info?.serverUrl ?? `${location.origin}/`;
+  copyLine.append(
+    el('span', { class: 'copyline__text', text: url }),
+    iconButton({
+      icon: 'copy',
+      label: '复制服务器地址',
+      // 复制成功的原地反馈交给 `flashOk`（对勾 → 1.6 秒后还原成本来的图标）
+      onClick: async (button) => {
+        if (await handlers.onCopyServerUrl(url)) flashOk(button);
+      },
+    }),
+  );
+  }
+
+  return {
+    el: dialog,
+
+    /**
+     * 收下最新状态。
+     *
+     * **抽屉没打开时只记住、不画**（2026-09-16 审计）：
+     * `boot.js` 的 `renderChrome()` 每 10 秒的轮询都会调到这里，而它会 `clear()` + 重建
+     * 活动趋势的 14 根柱子、清理任务与部署信息的两组 fact —— 实测**每轮刷新 88 次 DOM 变更**，
+     * 全部发生在一个用户看不见的（`<dialog>` 未打开）子树上。值不值得省不是问题：
+     * 那是纯粹的浪费，而且它让"每次刷新到底动了什么"变得难以判断。
+     * 打开时（`open()`）用最后一份 spec 补画一次，因此不会看到过期内容。
+     *
+     * @param {{ info, activity, filters, density, clockOffsetMs }} spec
+     */
+    update(spec) {
+      lastSpec = spec;
+      if (!dialog.open) return;
+      paint(spec);
+    },
+
+    open() {
+      // 双击概览带会连发两次 `showModal()`：实测不会抛错，但会白建一次 Promise 与监听
+      if (dialog.open) return Promise.resolve(null);
+      if (lastSpec) paint(lastSpec);
+      dialog.showModal();
+      return new Promise((resolve) => {
+        dialog.addEventListener('close', () => resolve(null), { once: true });
+      });
+    },
+
+    /** 让「自定义时间范围」区块可见并把焦点送进第一个日期框（筛选条选了「自定义…」时调用）。 */
+    focusRange() {
+      rangeSection.hidden = false;
+      afterInput.focus();
+    },
+
+    close: () => dialog.close(null),
+  };
+
+  /**
+   * 真正把这批数据画上去。只在抽屉打开时调用（见 `update`）。
+   */
+}
+
+// ===== 小构造器 =====
+
+function section(titleText, content) {
+  const node = el('div', { class: 'section' }, [el('h3', { class: 'section__title', text: titleText })]);
+  for (const child of Array.isArray(content) ? content : [content]) node.append(child);
+  return node;
+}
+
+function row(labelText, hintText, control) {
+  const label = labelText
+    ? el('span', { class: 'row__label' }, [
+        el('span', { text: labelText }),
+        hintText ? el('span', { class: 'row__hint', text: hintText }) : null,
+      ])
+    : hintText
+      ? el('span', { class: 'row__label' }, [el('span', { class: 'row__hint', text: hintText })])
+      : el('span', { class: 'row__label' });
+  return el('div', { class: 'row' }, [label, control ?? el('span')]);
+}
+
+function fact(key, value, tone) {
+  return el('div', { class: 'fact' }, [
+    el('span', { class: 'fact__key', text: key }),
+    el('span', { class: 'fact__value', text: value, 'data-tone': tone ?? null }),
+  ]);
+}
+
+function sourceLabel(source) {
+  return source === 'meta' ? '此处设置' : '部署环境变量';
+}
+
+function round(value, digits) {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}

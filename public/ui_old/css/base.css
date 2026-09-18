@@ -1,0 +1,181 @@
+/* 底线层：重置、排版、焦点、可访问性。
+ * 这里的东西对所有页面都成立，不含任何组件语义。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* `[hidden]` 的兜底。
+ *
+ * 为什么必须有这一条：UA 样式表里的 `[hidden] { display: none }` 特异性只有 (0,1,0)，
+ * 任何带 `display` 的类规则都会把它盖掉，而**元素看起来仍然被"隐藏"了**（属性是真的），
+ * 于是这类缺陷在 DOM 检查里读不出来，只有量计算值才能发现。2026-09-17 在 V1 上量到两处：
+ *   · `.empty`（display:flex）—— 列表有数据时它照样占 128px（上下各 64px 内边距）；
+ *   · `.results__selection`（display:flex）—— 取消选择后「已选 N 条 + 批量按钮」留在页面上。
+ * 两处都不是新写的代码，而是从 V1 冻结前一路带过来的：只靠"逐处补 [hidden]"永远会漏下一个，
+ * 故这里给一条全局兜底（V2 的 tokens/overlay 层已经有同样的一条，理由相同）。
+ *
+ * 下面各处的 `.xxx[hidden]` 局部规则**保留**：它们是"这个组件有开合状态"的显式声明，
+ * 读代码时不必回头确认兜底规则还在。与这条全局规则同时成立，不冲突。 */
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* color-scheme 在 tokens.css 里按**生效主题**声明（light / dark 各一），
+   * 这里不再写 `light dark`——那会跟随系统偏好，与应用内开关打架。 */
+  /* 安全网：clip 不像 hidden 那样创建滚动容器（不影响 sticky），
+   * 但能兜住「某条超长不可断字符串」这类意外横向滚动 */
+  overflow-x: clip;
+  /* 原生控件（下拉、滚动条、文本光标）跟随主题色，而不是浏览器默认蓝 */
+  accent-color: var(--accent);
+  caret-color: var(--accent);
+}
+
+:where(a, button, [role="button"], input, select, textarea, summary, label) {
+  /* 去掉移动端点击高亮：**必须**与真实 :active 态成对出现，否则页面在触屏上像死的一样
+   * （本项目所有可点元素都有 :active 缩放或变色，见 components.css） */
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: clip;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  /* 行内数字对齐：时间/大小/计数一列一列地跳动是最廉价的“未打磨”信号 */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p,
+figure {
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--fs-h1);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: var(--fs-h2);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* 焦点：用 :focus-visible 而非 :focus —— 后者会给鼠标点击也套环，最终被人删掉。
+ * 键盘用户与辅助技术才需要它，所以它可以很响。 */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* 跳转链接：键盘用户不必每次 Tab 穿过整个工具栏 */
+.skip {
+  position: absolute;
+  left: var(--sp-4);
+  top: -100px;
+  z-index: 60;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-ink);
+  text-decoration: none;
+  transition: top var(--dur-fast) var(--ease-out-circ);
+}
+
+.skip:focus-visible {
+  top: var(--sp-4);
+}
+
+/* 视觉隐藏但保留给屏幕阅读器 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 等宽数字/散列 */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  letter-spacing: -0.01em;
+}
+
+/* 微标签（eyebrow）：12px + 字距，给区块身份而不额外加一级标题 */
+.eyebrow {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+/* 关闭 JavaScript 时的提示：走类而不是内联 style，这样 CSP 可以保持 `style-src 'self'` */
+.noscript {
+  padding: var(--sp-5);
+}
+
+/* 次要说明（登录页与「部署信息」对话框共用）：比正文小一档，颜色最轻。
+ * 它曾经叫 `.auth__note` 且只定义在被 login.html 加载的 auth.css 里，而列表页不加载那张表——
+ * 于是「部署信息」里那段说明在列表页**完全没有样式**（实测计算值 font-size 14px、padding 0）。
+ * 通用说明类不该住在某个页面的命名空间里。 */
+.note {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+/* 需要用户处理的说明（例如时钟差超限、数据缺失）：换色但不放大——它仍是说明，不是警报块 */
+.note--warn {
+  color: var(--danger);
+}
+
+.note code {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+/* 滚动条：与调色板一致，避免默认亮色滚动条在深色下刺眼 */
+* {
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}

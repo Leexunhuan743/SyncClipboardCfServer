@@ -1,20 +1,24 @@
-// 登录后「下一跳」的解析：把 `?next=` 的值判成**同源**站内路径，否则回落。
+// 登录后「下一跳」的判定（纯函数，无 DOM、无网络 —— 因此可以被测试直接覆盖）。
 //
-// 为什么不靠前缀比较：浏览器（WHATWG URL）对 http/https 这类 special scheme 把 `\` 视同 `/`，
-// 于是 `/\evil.example` 与 `//evil.example` 一样是协议相对 URL。只挡 `//` 会漏掉前者，
-// 登录后的 location.replace() 就成了开放重定向。故按 **origin 相等**判定；
-// 返回值只含 pathname + search + hash（不带 origin），跨源字符串没有任何漏出的路径。
+// 从 V1 原样保留：这是**安全边界**，不是显示逻辑，重写没有收益只有风险。
+// V1 的教训写在 docs/ui.md §7：`?next=` 只接受**同源**目标，前缀比较不够 ——
+// 浏览器的 WHATWG URL 对 http/https 这类 special scheme 把 `\` 视同 `/`，
+// 于是 `?next=/\evil.example` 与 `//evil.example` 一样是协议相对 URL 而跳到站外。
 //
-// 抽成独立模块的理由：这条判定是纯函数，且是登录页唯一的跳转来源（两处 location.replace），
-// 判错一次即安全缺陷——独立成文件才能被测试直接覆盖，而不是只能靠浏览器端到端。
-export function resolveNext(raw, origin) {
-  if (!raw) return null;
-  let u;
+// 判据：用 `new URL(raw, origin)` 解析后的 `origin` 必须与当前页相等，
+// 且只返回 `pathname + search + hash`（不带 origin，跨源字符串没有漏出的路径）。
+// 回归用例见 test/next-target.test.ts。
+export function resolveNext(raw, origin, fallback = '/ui/app/') {
+  if (typeof raw !== 'string' || raw === '') return fallback;
+  let url;
   try {
-    u = new URL(raw, origin);
+    url = new URL(raw, origin);
   } catch {
-    return null;
+    return fallback;
   }
-  if (u.origin !== origin) return null;
-  return u.pathname + u.search + u.hash;
+  if (url.origin !== origin) return fallback;
+  const path = `${url.pathname}${url.search}${url.hash}`;
+  // 解析成功但指向本站**登录页自身**时也要回落：否则登录成功后会再次落到登录页（死循环）
+  if (url.pathname === '/ui/login.html' || url.pathname === '/ui/app/login.html') return fallback;
+  return path;
 }

@@ -15,7 +15,11 @@ import { DEFAULT_FILTERS, rangeBounds, toDateInput, fromDateInput, filtersFromUr
 // @ts-expect-error TS7016：同上
 import { typeName, typeLabel, formatSize, formatRelative, previewText } from '../public/ui/js/format.js';
 // @ts-expect-error TS7016：同上
-import { parseFrames, classifyMessage, createPushChannel } from '../public/ui/js/signalr.js';
+import { parseFrames, classifyMessage, createPushChannel } from '../public/ui/js/push.js';
+// @ts-expect-error TS7016：同上
+import { deleteConfirmSpec, batchDeleteConfirmSpec, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui/js/messages.js';
+// @ts-expect-error TS7016：同上
+import { rowMenuItems, sortMenuItems } from '../public/ui/js/menus.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const DAY = 86_400_000;
@@ -310,3 +314,147 @@ describe('api · 边界归一化', () => {
     );
   });
 });
+
+// 2026-09-16 审计（A-38）把"面向用户的文案"与"菜单项构造"从 `boot.js` 里提了出来：
+// 它们不是装饰 —— 句子逐字对齐了服务端语义（能不能恢复、数据文件会不会没），
+// 项的禁用与语气决定了用户能不能做出正确选择。提到纯模块之后就可以直接断言了。
+describe('messages · 用户文案对齐服务端语义', () => {
+  it('删除**带数据文件**的记录：必须说"立即清除、不可恢复"，不能说"30 天后才清"', () => {
+    const spec = deleteConfirmSpec({
+      type: 'Image',
+      dataName: 'photo.png',
+      hasData: true,
+    });
+    expect(spec.message).toContain('立即清除数据文件（不可恢复）');
+    expect(spec.message).not.toContain('还能从回收站恢复');
+    expect(spec.message).toContain('photo.png');
+    expect(spec.confirmLabel).toBe('删除');
+  });
+
+  it('删除**内联文本**：必须说"30 天内还能恢复"（否则用户会白白放弃一次可用的恢复）', () => {
+    const spec = deleteConfirmSpec({ type: 'Text', text: 'a'.repeat(80), hasData: false });
+    expect(spec.message).toContain('30 天内还能从回收站恢复');
+    expect(spec.message).not.toContain('不可恢复');
+    // 长正文只取开头，避免把一行对话框撑成正文
+    expect(spec.message).toContain(`「${'a'.repeat(40)}…」`);
+  });
+
+  it('批量删除：两种后果都要说，且标题带上条数', () => {
+    const spec = batchDeleteConfirmSpec(7);
+    expect(spec.title).toBe('删除选中的 7 条记录？');
+    expect(spec.message).toContain('不可恢复');
+    expect(spec.message).toContain('内联文本 30 天内可从回收站恢复');
+    expect(spec.confirmLabel).toBe('删除 7 条');
+  });
+
+  it('清空历史的两种作用域：回收站不含"当前剪贴板"，全部历史要说明它不受影响', () => {
+    const trash = clearHistorySpec('trash');
+    expect(trash.label).toBe('清空回收站');
+    expect(trash.message).toContain('不可撤销');
+    const all = clearHistorySpec('all');
+    expect(all.label).toBe('清空全部历史');
+    expect(all.message).toContain('当前剪贴板内容不受影响');
+  });
+
+  it('列表错误翻译：400 且搜索词非空 → 说"搜索词过长"，而不是把服务端原文抛给用户', () => {
+    expect(describeListError({ status: 400, message: 'SearchText must be at most 48 bytes' }, 'abcd')).toBe(
+      '搜索词过长：服务端上限 48 字节（约 16 个汉字），缩短后再试',
+    );
+    // 同样的 400，但搜索词为空 → 那是别的筛选条件问题，文案不能提"搜索词"
+    expect(describeListError({ status: 400, message: 'after must be less than before' }, '')).toContain(
+      '筛选条件不被服务端接受',
+    );
+    expect(describeListError({ status: 500, message: 'boom' }, '')).toBe('无法读取历史记录：boom');
+    expect(describeListError(null, '')).toContain('未知错误');
+  });
+
+  it('剪贴板失败：http 站点要点名"不是 https"，安全上下文才说"权限"', () => {
+    expect(clipboardFailureHint(false, '请手动复制。')).toContain('不是 https');
+    expect(clipboardFailureHint(true, '请手动复制。')).toContain('剪贴板权限');
+    // 退路文案必须原样带上：只说原因不给出路，用户只会反复点
+    expect(clipboardFailureHint(false, '服务器地址在抽屉里。')).toContain('服务器地址在抽屉里。');
+  });
+});
+
+describe('menus · 菜单项构造（判据是产品决定，不是实现细节）', () => {
+  // 被导入的是**无类型**的零构建模块，TS 无法推断回调参数，故这里显式给出形状
+  // （`tsc --noEmit` 会因 `noImplicitAny` 报 TS7006，而 `npm run check` 包含 typecheck）。
+  type MenuItem = {
+    label?: string;
+    icon?: string | null;
+    tone?: string;
+    disabled?: boolean;
+    separator?: boolean;
+    run?: () => void;
+  };
+  type SortPatch = { sort: string; order: string; page: number };
+
+  const noop = () => {};
+  const handlers = {
+    onPreview: noop,
+    onCopy: noop,
+    onDownload: noop,
+    onRestore: noop,
+    onTogglePin: noop,
+    onDelete: noop,
+  };
+  const labelOf = (items: MenuItem[]): string[] =>
+    items.filter((i: MenuItem) => !i.separator).map((i: MenuItem) => i.label!);
+
+  it('活跃的文本记录：预览 + 复制内容 + 置顶 + 分隔线 + 删除', () => {
+    const items = rowMenuItems({ type: 'Text', text: 'hi', starred: false, pinned: false }, handlers) as MenuItem[];
+    expect(labelOf(items)).toEqual(['预览', '复制内容', '置顶', '删除']);
+    expect(items.some((i: MenuItem) => i.separator)).toBe(true);
+    // 删除永远在最后、且带 danger 语气（与"取消/确认"的视觉分级对应）
+    expect(items.at(-1)).toMatchObject({ label: '删除', tone: 'danger', icon: 'trash' });
+  });
+
+  it('非文本记录给"下载"而不是"复制内容"', () => {
+    const items = rowMenuItems({ type: 'Image', dataName: 'a.png', hasData: true }, handlers) as MenuItem[];
+    expect(labelOf(items)).toEqual(['预览', '下载', '置顶', '删除']);
+  });
+
+  it('已置顶 → "取消置顶"（文案随状态描述**下一个**动作）', () => {
+    const items = rowMenuItems({ type: 'Text', text: 'x', pinned: true }, handlers) as MenuItem[];
+    expect(labelOf(items)).toContain('取消置顶');
+  });
+
+  it('回收站：主操作是"恢复"，且带数据文件的记录**禁用并说明原因**', () => {
+    const restorable = rowMenuItems(
+      { type: 'Text', text: 'x', isDeleted: true, hasData: false },
+      handlers,
+    ) as MenuItem[];
+    expect(labelOf(restorable)).toEqual(['预览', '复制内容', '恢复到历史记录', '彻底删除']);
+    expect(restorable.find((i: MenuItem) => i.label === '恢复到历史记录')).toMatchObject({ disabled: false });
+
+    const lost = rowMenuItems(
+      { type: 'Image', dataName: 'a.png', isDeleted: true, hasData: true },
+      handlers,
+    ) as MenuItem[];
+    expect(lost.find((i: MenuItem) => i.icon === 'undo')).toMatchObject({
+      label: '不可恢复（数据已清除）',
+      disabled: true,
+    });
+    expect(labelOf(lost)).not.toContain('置顶'); // 回收站里不提供置顶
+  });
+
+  it('排序菜单：当前字段打勾；点同一字段翻转方向，换字段保留方向', () => {
+    const fields = [
+      { value: 'createTime', label: '创建时间' },
+      { value: 'lastAccessed', label: '访问时间' },
+    ];
+    const picked: SortPatch[] = [];
+    const items = sortMenuItems({ sort: 'createTime', order: 'desc' }, fields, (patch: SortPatch) =>
+      picked.push(patch),
+    ) as MenuItem[];
+    expect(items.map((i: MenuItem) => i.icon)).toEqual(['check', null]);
+
+    items[0]!.run!(); // 点当前字段 → 翻转
+    items[1]!.run!(); // 换字段 → 保留方向
+    expect(picked).toEqual([
+      { sort: 'createTime', order: 'asc', page: 1 },
+      { sort: 'lastAccessed', order: 'desc', page: 1 },
+    ]);
+  });
+});
+

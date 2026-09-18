@@ -1,0 +1,507 @@
+/* 页面骨架：只在 layout 层出现的东西——容器、头部、统计条、工具栏、结果区、页脚。
+ * 组件自身的样式在 components.css，动效在 motion.css。
+ *
+ * 2026-09-17 重做的三处判据（改之前先量，见 test/manual/probe-ui-old.mjs）：
+ *
+ *   ① **首屏的"内容起点"太高**：旧版 1440×900 下表格首行落在 y=357，也就是 39% 的视口
+ *      被"提示条 + 顶栏 + 111px 统计条 + 工具栏"占掉。数据表类界面的主角是行，
+ *      所以统计条从三张 100px 的卡片压成一条 78px 的紧凑条（数字小一档、明细并到一行）。
+ *
+ *   ② **工具栏 8 个控件同权**：搜索框被挤在右侧、与「50 条/页」「刷新」并列。
+ *      重排为「搜索（可伸展，最常见的动作）→ 类型 → 视图筛选 → 分页/刷新」，
+ *      顺序即主次，不再靠用户自己找。
+ *
+ *   ③ **内容列不是主角**：--content-max 1180px 减去 8 个固定列后只剩 342px 给正文
+ *      （实测 contentColWidth=342）。容器放宽到 1280px，同时把三个时间列从 132/104/104
+ *      收到 108/96/96，正文列拿回 ~150px。
+ *
+ * 这三处都不是审美偏好：前两条各有一个可测的数字，第三条直接决定"一行能读到多少字"。 */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- 顶部：窄栏、吸顶、一条边框分隔。product 方言 = 不做悬停变形 ---- */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--header-h);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  height: 100%;
+  padding: 0 var(--sp-5);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+/* 品牌图标按主题色走：它此前是继承色（--ink），在一片暖灰里并不比文字更"是标识" */
+.brand > svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.brand__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand__meta {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  line-height: 1.2;
+}
+
+.app-header__spacer {
+  flex: 1 1 auto;
+}
+
+.app-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* 顶栏里的分组分隔线：把「状态」「动作」「会话」三段分开。
+ * 用 1px 的竖线而不是加大间距——间距在视觉上只表现为"松散"，竖线才是分组。 */
+.app-header__divider {
+  width: 1px;
+  height: 20px;
+  flex: none;
+  background: var(--border);
+  margin: 0 var(--sp-1);
+}
+
+/* ---- 实时通道状态（顶栏）----
+ * 三态靠「点 + 词」同时表意：色点是快速识别（live 青 / connecting 琥珀 / offline 灰），
+ * 词是准确识别（同时是色觉障碍用户与读屏用户的唯一线索）。 */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h-sm);
+  padding: 0 var(--sp-3) 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+
+.status__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--ink-faint);
+}
+
+.status[data-tone="live"] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.status[data-tone="live"] .status__dot {
+  background: var(--accent);
+  /* 芯外一圈同色低透明：7px 的实心块在小尺寸下偏弱 */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.status[data-tone="connecting"] .status__dot {
+  background: var(--star);
+  animation: status-pulse 1.4s var(--ease-standard) infinite;
+}
+
+.status[data-tone="offline"] {
+  background: var(--surface-2);
+}
+
+@keyframes status-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .status:hover {
+    border-color: var(--border-strong);
+    color: var(--ink);
+  }
+}
+
+/* ---- 会话区（用户名 + 登出）---- */
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding-left: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+}
+
+.user-chip .who {
+  padding-left: var(--sp-1);
+}
+
+.who {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 主体 ---- */
+.main {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  /* 上边距从 24 收到 16：统计条已经压过一档，这里再吃掉 8px 没有收益 */
+  padding: var(--sp-4) var(--sp-5) var(--sp-7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* ---- 统计条 ----
+ * 三个数字一条边框分隔，明细并到第二行。不做三张浮动卡片（那是生成式页面最典型的形状），
+ * 也不给数字 30px 的字号——用户是来看记录的，这排数字只是"当前状态"的一句话。 */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  /* 数字与标签两行，但**总高与旧版的一行持平**：这一段是首屏最贵的像素
+   * （它下面紧接着列表首行）。1px 行距 + 8px 上下内边距，
+   * 把 20px 的数字行与 14px 的标签行收进 53px 一格。 */
+  gap: 1px;
+  padding: var(--sp-2) var(--sp-4);
+  border-left: 1px solid var(--border);
+  min-width: 0;
+}
+
+.stat:first-child {
+  border-left: 0;
+}
+
+.stat__label {
+  font-size: var(--fs-xs);
+  color: var(--ink-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.stat__value {
+  font-size: 1.25rem;
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.stat__unit {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--ink-muted);
+  letter-spacing: 0;
+}
+
+/* 第二行：全库条数 + 活动趋势。整条横跨三格，靠一条上边框与数字区隔开。
+ * 2026-09-17：此前这里还列着「回收站 N 条（30 天后清除）」——它与工具栏的「回收站」
+ * 按钮是同一个入口的两份（数字已挪到那个按钮上），故整条删掉。 */
+.stats__meta {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-4);
+  padding: 7px var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  min-width: 0;
+}
+
+/* 明细行里的文字（全库条数）：放不下时省略，而不是把统计条撑成两行文字墙 */
+.stats__total {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 活动趋势：近 N 天每天一根柱，高度按当日新增条数（像素值由 js/components/stats.js 写）。
+ * 为什么它值这一行高度：统计条另外三个数字都是"此刻的存量"，而"最近是怎么涨上来的"只有
+ * 这一条能回答（连续一周的空白 vs 昨天突然灌了 200 条，是完全不同的两件事）。
+ * `margin-left: auto` 把它推到最右，与左侧两段文字拉开，避免读成同一句话。 */
+.stats__spark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  /* 与 js/components/stats.js 的 SPARK_HEIGHT 必须同值（那里按像素算柱高） */
+  height: 18px;
+  flex: none;
+}
+
+/* 柱状图 + 它的说明文字：两者必须挨在一起读，故合在一个 flex 项里。
+ * `margin-left: auto` 在这一层（而不是 .stats__spark 上）——把整组推到行尾，
+ * 组内则保持"字在左、柱在右"的紧密关系。 */
+.stats__spark-wrap {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
+.stats__spark-label {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.spark__bar {
+  width: 4px;
+  border-radius: 1px 1px 0 0;
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+/* 今天那一根用满不透明度：否则 14 根同色柱读不出"哪一根是现在" */
+.spark__bar[data-today="true"] {
+  opacity: 1;
+}
+
+/* 零活动的日子：保留 2px 的灰色柱，而不是 0 高度（0 高度在视觉上等于"这天不存在"） */
+.spark__bar[data-zero="true"] {
+  background: var(--border-strong);
+  opacity: 0.8;
+}
+
+/* ---- 工具栏：搜索在前（可伸展），筛选居中，分页/刷新靠右 ---- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  min-width: 0;
+}
+
+.toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 搜索组：桌面吃掉剩余宽度，窄屏整行独占（见文件末尾的窄屏块） */
+.toolbar__group--search {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.toolbar__spacer {
+  flex: 1 1 auto;
+}
+
+/* ---- 结果区 ---- */
+.results {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  /* `overflow: clip` 而不是 `hidden` —— 这是**表头吸顶**能否成立的关键，不是等价写法。
+   *
+   * `overflow: hidden` 会建立**滚动容器**，于是 `th { position: sticky; top: var(--header-h) }`
+   * 的滚动参照变成这张卡片本身；而卡片永远不会滚动，`top: 56px` 就退化成"把表头往下推 56px"。
+   * 表头在卡片里的自然位置只有 `.results__head` 那 42px，所以它被**下移 14px**、压在
+   * 第一行数据的上半部分：灰底高亮位置看着不对、第一行看着比别的行矮（实测
+   * `theadInfo.top=302` 而格子 `top=316`，差正好 14 = 56 − 42）。它只改绘制、不改布局，
+   * 所以"量行高"永远量不出来。
+   *
+   * `clip` 同样裁圆角，但不建立滚动容器（`base.css` 里 html/body 用的也是它），
+   * 吸顶的参照回到视口：静止时表头在自然位置，滚动时钉在顶栏下方（56px）。 */
+  overflow: clip;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  /* 翻页/改筛选后把结果区滚回视野时，别让它钻到吸顶的表头底下 */
+  scroll-margin-top: calc(var(--header-h) + var(--sp-3));
+}
+
+/* 加载中：整块轻微降低对比，不做位移（位移会让表格看起来在跳） */
+.results[data-busy] {
+  opacity: 0.62;
+}
+
+/* 结果区头部：平时是「共 N 条记录」，选中后变成操作条。
+ * 两种形态共用一条带子（不新增一层），选中态换底色 —— 否则「整条变成了按钮条」
+ * 这件事只能靠逐字读文案才发现。 */
+.results__head {
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 42px;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+
+.results__head:has(.results__selection:not([hidden])) {
+  background: var(--accent-soft);
+}
+
+.results__count {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+}
+
+.results__selection {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  padding: 4px 0;
+}
+
+/* ---- 页脚 ---- */
+.app-footer {
+  border-top: 1px solid var(--border);
+  padding: var(--sp-4) var(--sp-5);
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+}
+
+.app-footer__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  /* 与 .app-header__inner / .main 的水平内边距一致：少了这一句，页脚内容会比
+   * 头部与表格内容左移 24px（窄屏 16px）—— 看不到像素时这类错位只能靠量。 */
+  padding: 0 var(--sp-5);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  align-items: center;
+}
+
+/* ---- 窄屏 ----
+ * 统计条**不再竖排成三格**：那样它一个人就吃掉 270px（实测），而它承载的只是三个数字。
+ * 三格横排 + 明细换行在 390px 下是 78–92px，且每个数字仍然完整可读。 */
+@media (max-width: 720px) {
+  .app-header__inner,
+  .main,
+  .app-footer__inner {
+    padding-inline: var(--sp-4);
+  }
+
+  .stat {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: var(--sp-2) var(--sp-3);
+  }
+
+  .stat__value {
+    font-size: 1.125rem;
+  }
+
+  .stats__meta {
+    padding: 6px var(--sp-3);
+  }
+
+  /* 搜索组整行独占：窄屏上它是最常用的控件，不该和筛选挤在一行 */
+  .toolbar__group--search {
+    flex-basis: 100%;
+  }
+
+  /* 弹性占位在窄屏上只会制造半行空白：换行本身会把最后一组推到右边 */
+  .toolbar__spacer {
+    display: none;
+  }
+
+  /* 明细行收成一行：全库条数用省略号收尾，趋势图钉在行尾。
+   * 两行变一行值 30px —— 它下面就是列表，那 30px 能多放半张卡片。 */
+  .stats__meta {
+    flex-wrap: nowrap;
+  }
+
+  .who {
+    display: none;
+  }
+
+  /* 用户名让位后，会话 chip 里只剩登出按钮：那层描边与内边距就成了"装着单个按钮的框"，
+   * 收掉它，登出回到与其他图标按钮一致的形状。 */
+  .user-chip {
+    border: 0;
+    background: none;
+    padding-left: 0;
+  }
+}
+
+/* 更窄时顶栏只留图标动作：390px 下「部署信息」的文字会与品牌挤在一起 */
+@media (max-width: 560px) {
+  .app-header__actions .btn__label {
+    display: none;
+  }
+
+  /* 状态点收成只有圆点：文字说明在 aria-label 与 title 里，读屏与悬停都还在。
+   * 390px 的顶栏放不下「实时推送」四个字 + 三个图标 + 品牌。 */
+  .status__label {
+    display: none;
+  }
+
+  .status {
+    padding: 0;
+    width: var(--control-h-sm);
+    justify-content: center;
+  }
+
+  .app-header__divider {
+    display: none;
+  }
+
+  /* 每页条数在窄屏让位：底部分页条仍然写着「第 1–50 条，共 N 条」，页大小也还能改 URL。
+   * 用它换掉一整行（36px + 12px 间距）是划算的 —— 在 390px 上，五个控件不可能并排。 */
+  .toolbar .select[aria-label="每页条数"] {
+    display: none;
+  }
+}

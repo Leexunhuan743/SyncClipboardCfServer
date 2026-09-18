@@ -6,7 +6,7 @@
 // 但仍读写同一张表、复用同一套行映射（db.ts 的 rowToEntity）与 DTO 序列化。
 import { DbRow, rowToEntity, basename } from '../db';
 import { entityToDto, normalizeSearchText, parseProfileTypeFilter, InvalidQueryValueError } from '../serialization';
-import { HistoryRecordDto, HistoryRecordEntity, ProfileType, ProfileTypeFilter } from '../types';
+import { HistoryRecordDto, HistoryRecordEntity, ProfileType, ProfileTypeFilter, HARD_CODED_USER_ID } from '../types';
 
 export type UiSortField = 'id' | 'type' | 'size' | 'createTime' | 'lastModified' | 'lastAccessed';
 export type UiSortOrder = 'asc' | 'desc';
@@ -151,7 +151,8 @@ export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
   };
 }
 
-const USER_ID = 'default_user'; // 与 db.ts 的 HARD_CODED_USER_ID 同义（单用户部署）
+// 单用户部署：与协议面共用同一个 UserId 常量（此前这里另写一份字面量 'default_user'，O1）
+const USER_ID = HARD_CODED_USER_ID;
 
 function buildWhere(q: UiHistoryQuery): { clause: string; params: (string | number)[] } {
   const where: string[] = ['UserId = ?1'];
@@ -300,4 +301,142 @@ export async function readChangeMarker(db: D1Database): Promise<UiChangeMarker> 
     .bind(USER_ID)
     .first<{ c: number; m: number }>();
   return { count: res?.c ?? 0, lastModified: res?.m ?? 0 };
+}
+
+// ===== 活动趋势（docs/ui-v2-design.md §6.2 的 N2）=====
+
+export interface ActivityDay {
+  /** `YYYY-MM-DD`，按**调用方给的时区**切分 */
+  day: string;
+  total: number;
+  Text: number;
+  Image: number;
+  File: number;
+  Group: number;
+}
+
+export const ACTIVITY_MAX_DAYS = 90;
+export const ACTIVITY_DEFAULT_DAYS = 14;
+
+const TYPE_BUCKET: Record<number, 'Text' | 'Image' | 'File' | 'Group' | undefined> = {
+  [ProfileType.Text]: 'Text',
+  [ProfileType.Image]: 'Image',
+  [ProfileType.File]: 'File',
+  [ProfileType.Group]: 'Group',
+};
+
+/**
+ * 「每天有多少条记录」——概览带的趋势图与抽屉里的明细都读它。
+ *
+ * **时区**：`day` 的边界必须按**客户端**的时区切分。服务端只知道 UTC，而 `CreateTime` 存的是
+ * epoch 毫秒；直接按 UTC 切会让 UTC+8 的用户在早上 8 点前看到的"今天"其实是昨天
+ * （`2026-09-15T20:00Z` 对用户已经是 09-16 04:00，按 UTC 会被算进 09-15）。
+ *
+ * 做法：先把每个时间戳按 `-tz` 分钟**平移**，再按平移后的 UTC 日期分组。
+ * `tz` 的符号与 `Date.prototype.getTimezoneOffset()` 一致（UTC+8 ⇒ `-480`）。
+ *
+ * **成本**：1 条聚合查询（`GROUP BY`，不是把行拉进 JS 循环 —— 后者是
+ * `docs/backend-gaps.md` §3.1 记的效率欠账，而统计在每次页面加载都会跑）。
+ * 代价是 `CreateTime` 上的索引用不上（表达式不是索引列），但候选集先被
+ * `CreateTime >= ?` 的范围条件筛过，实际扫描量只与**窗口内的记录数**成正比，与库总量无关。
+ *
+ * ⚠️ **时间单位**：`strftime(..., 'unixepoch')` 的第二个参数必须是**秒**，而本库的
+ * `CreateTime` 存的是**毫秒**（schema.sql 与 types.ts 都写着 epoch ms）。所以 SQL 里必须有
+ * `CreateTime / 1000` 这一步。少了它，`strftime` 拿到 13 位数字会返回 **NULL** ——
+ * 而下面 `if (!row.day) continue` 会把这些行静静丢掉，于是每一天都是"没有活动"，
+ * 接口恒返回 14 个 0（2026-09-17 实测；判别性用例见 test/ui-activity.test.ts）。
+ */
+export async function readActivity(
+  db: D1Database,
+  { days = ACTIVITY_DEFAULT_DAYS, tzOffsetMinutes = 0 } = {},
+): Promise<{ days: ActivityDay[]; max: number }> {
+  const span = Math.min(Math.max(Math.trunc(days) || ACTIVITY_DEFAULT_DAYS, 1), ACTIVITY_MAX_DAYS);
+  const tz = Number.isFinite(tzOffsetMinutes) ? Math.trunc(tzOffsetMinutes) : 0;
+
+  // 窗口起点按**客户端本地日界**算：本地今天 00:00 对应 UTC 的 `本地时刻 + tz 分钟`。
+  // 先把 `now` 平移到本地，再取当天 00:00，最后平移回 UTC —— 这样"今天"这一格
+  // 与用户在界面上看到的日期一致。
+  const nowLocalMs = Date.now() - tz * 60_000;
+  const startLocalDayMs = Math.floor(nowLocalMs / 86_400_000) * 86_400_000;
+  const sinceMs = startLocalDayMs - (span - 1) * 86_400_000 + tz * 60_000;
+
+  const res = await db
+    .prepare(
+      `SELECT
+         strftime('%Y-%m-%d', CreateTime / 1000 + ?2, 'unixepoch') AS day,
+         Type AS type,
+         COUNT(*) AS c
+       FROM HistoryRecords
+       WHERE UserId = ?1 AND CreateTime >= ?3
+       GROUP BY day, Type`,
+    )
+    // `?2` 是"按 tz 平移"的**秒**数（`-tz 分钟 × 60`）：与 `unixepoch` 的单位一致，
+    // 让本地日界落在 UTC 的整日边界上。`?3` 仍是毫秒 —— 它直接和 `CreateTime` 比大小。
+    .bind(USER_ID, -tz * 60, sinceMs)
+    .all<{ day: string | null; type: number; c: number }>();
+
+  const byDay = new Map<string, ActivityDay>();
+  for (const row of res.results ?? []) {
+    // `day` 为 null 只可能来自非法 CreateTime（不该发生）；丢掉而不是编一个日期出来
+    if (!row.day) continue;
+    let entry = byDay.get(row.day);
+    if (!entry) {
+      entry = { day: row.day, total: 0, Text: 0, Image: 0, File: 0, Group: 0 };
+      byDay.set(row.day, entry);
+    }
+    const bucket = TYPE_BUCKET[row.type];
+    if (bucket) entry[bucket] += row.c;
+    entry.total += row.c;
+  }
+
+  // 补全空白天：**零活动的那天也必须在序列里**，否则趋势图会把两段分开的日子画成相邻，
+  // 看起来像"每天都在用"。
+  const out: ActivityDay[] = [];
+  for (let i = 0; i < span; i += 1) {
+    const dayMs = startLocalDayMs - (span - 1 - i) * 86_400_000;
+    const label = new Date(dayMs).toISOString().slice(0, 10);
+    out.push(byDay.get(label) ?? { day: label, total: 0, Text: 0, Image: 0, File: 0, Group: 0 });
+  }
+
+  return { days: out, max: Math.max(0, ...out.map((d) => d.total)) };
+}
+
+// ===== 批量取元数据（docs/ui-v2-design.md §6.2 的 N3）=====
+
+export interface BatchMetaItem {
+  type: ProfileType;
+  hash: string;
+}
+
+export const BATCH_META_MAX_ITEMS = 100;
+
+/**
+ * 按 `(type, hash)` 批量取记录。用于「选中多条 → 一起复制/下载」这类需要**完整正文**的场景：
+ * 列表里的正文被截断到 500 字符（`UI_LIST_TEXT_LIMIT`），而逐条走单条端点是 O(N) 次请求
+ * （`docs/backend-gaps.md` §2.8 记的口径）。
+ *
+ * 实现是**一条** `IN` 查询而不是 N 条：每次 D1 往返都计入平台的子请求配额，
+ * 100 条逐条查就是 100 次 —— 那正是这个端点存在的理由。
+ */
+export async function readBatchMeta(
+  db: D1Database,
+  items: BatchMetaItem[],
+): Promise<HistoryRecordEntity[]> {
+  if (items.length === 0) return [];
+
+  // 只对 hash 做一次 IN，type 在应用层过滤：`(type, hash)` 元组 IN 要拼两倍的参数列表，
+  // 而这里的候选集本来就极小（≤100 条记录、去重后更少），多筛一次是免费的。
+  const hashes = [...new Set(items.map((i) => i.hash))];
+  const placeholders = hashes.map((_, i) => `?${i + 2}`).join(',');
+  const res = await db
+    .prepare(`SELECT * FROM HistoryRecords WHERE UserId = ?1 AND Hash IN (${placeholders})`)
+    .bind(USER_ID, ...hashes)
+    .all<DbRow>();
+
+  const wanted = new Set(items.map((i) => `${i.type}\u0000${i.hash.toUpperCase()}`));
+  return (res.results ?? [])
+    .map(rowToEntity)
+    // 哈希比较**大小写不敏感**（与 `getByTypeAndHash` 的 `LOWER(Hash) = LOWER(?3)` 同义：
+    // 库里存的是大写，但调用方可能发小写）
+    .filter((entity) => wanted.has(`${entity.type}\u0000${entity.hash.toUpperCase()}`));
 }

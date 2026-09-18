@@ -268,6 +268,12 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 
 ## 7. 验证证据与上线结论
 
+> **2026-09-15 追加（专项对照）**：本轮又做了一次「上游缺陷/怪癖在本实现里怎么处置」的对照，
+> 产物是 **[`upstream-defects.md`](upstream-defects.md)**（16 条已复刻 + 5 条未复刻，逐条给 `文件:行` 证据与处置决定）。
+> 结论：本文件 §4 的差异清单**没有新增** —— 专项对照确认本实现的每一处复刻都能指回上游具体行，
+> 需要动作的只有 3 处文档补强（`src/db.ts` 的 `LIKE` 注释、`protocol.md` §10 的「并发」与「缓存」两行）
+> 与 1 条新 issue（`upstream-issues.md` Issue 14）。本节下述结论不受影响。
+
 **验证方式**：`wrangler dev --test-scheduled`（本地 miniflare，128MB isolate、D1/R2/DO 全部模拟）
 + 全量套件（含 HTTP 黑盒、真 SignalR 客户端三传输、清理 Cron 真触发、界面 API 与契约守卫）。
 + **真上游 A/B**（`tools/ab-upstream-probe.ps1` × 官方 v3.2.0 服务端发布件，34 例状态码级 + 18 例文本级）

@@ -1,5 +1,5 @@
 // 服务层：Profile 校验/持久化与历史记录编排（行为对照上游 HistoryService / SyncClipboardController）
-import { HistoryDb, shouldUpdate } from './db';
+import { HistoryDb, shouldUpdate, basename, BadRequestError } from './db';
 import { R2Storage, tempKey } from './storage';
 import { MAX_REQUEST_BODY_BYTES } from './requestLimits';
 import {
@@ -15,12 +15,10 @@ import { profileDtoToJson, profileDtoToWire, entityToDto, entityToDtoWire } from
 
 // ===== 异常 =====
 
-export class BadRequestError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'BadRequestError';
-  }
-}
+// 400 语义与 `basename` 都在 src/db.ts（唯一定义处，O1）。此处**转出**而不是转发：
+// 本模块的调用方（两个路由 + test/limits.test.ts）一直是从 './profile' 取 `BadRequestError`，
+// 保留同一个导入面可以不改动它们，同时保证与 db 侧 `instanceof` 同源。
+export { BadRequestError, basename };
 
 export class NotFoundError extends Error {
   constructor(message: string) {
@@ -196,14 +194,9 @@ export function entityToProfileDto(e: HistoryRecordEntity): ProfileDto {
   const dto: ProfileDto = { type: e.type, hash: e.hash, text: e.text, hasData: false, size: e.size };
   if (e.transferDataFile !== '') {
     dto.hasData = true;
-    dto.dataName = basenameOf(e.transferDataFile);
+    dto.dataName = basename(e.transferDataFile);
   }
   return dto;
-}
-
-function basenameOf(p: string): string {
-  const idx = p.lastIndexOf('/');
-  return idx < 0 ? p : p.slice(idx + 1);
 }
 
 async function saveAndNotifyCurrentProfile(
@@ -252,7 +245,7 @@ export async function putSyncProfile(
     if (!dto.dataName) {
       throw new BadRequestError('DataName cannot be null or empty when HasData is true');
     }
-    const fileName = basenameOf(dto.dataName);
+    const fileName = basename(dto.dataName);
     const temp = await storage.getTemp(fileName);
     if (!temp) {
       throw new NotFoundError('Transfer data file not found');
@@ -485,12 +478,12 @@ async function saveTransferData(
   //         否则已删除记录带 data 重传时会写到新随机名，记录仍指向旧名 → /data 404 且留下孤儿对象
   let fileName: string;
   if (entity.type === ProfileType.Group) {
-    fileName = entity.transferDataFile ? basenameOf(entity.transferDataFile) : createNewGroupDataFileName();
+    fileName = entity.transferDataFile ? basename(entity.transferDataFile) : createNewGroupDataFileName();
   } else {
     if (!entity.text) {
       throw new ProfileDataInvalidError('Profile does not support transfer data.');
     }
-    fileName = basenameOf(entity.text);
+    fileName = basename(entity.text);
   }
 
   try {
@@ -535,7 +528,7 @@ async function saveTextTransferData(
   // 文件名复用实体已有名（上游 `_transferDataName ?? $"{Type}_{CreateTimeBasedFileName()}.txt"`）：
   // 否则已删除记录带 data 重传会写新随机名、记录仍指向旧名 → /data 404 + 孤儿对象（同 B1/Group）
   const fileName = entity.transferDataFile
-    ? basenameOf(entity.transferDataFile)
+    ? basename(entity.transferDataFile)
     : createNewTextDataFileName();
   await storage.putHistory(entity.type, hash, fileName, content, 'text/plain');
   return {
@@ -606,10 +599,10 @@ async function isLocalDataValid(
     const hasTransferData = entity.transferDataFile !== '' || entity.size > entity.text.length;
     if (!hasTransferData) return true;
     if (entity.transferDataFile === '') return false;
-    return !!(await storage.getHistory(entity.type, entity.hash, basenameOf(entity.transferDataFile)));
+    return !!(await storage.getHistory(entity.type, entity.hash, basename(entity.transferDataFile)));
   }
   if (entity.transferDataFile === '') return false;
-  const obj = await storage.getHistory(entity.type, entity.hash, basenameOf(entity.transferDataFile));
+  const obj = await storage.getHistory(entity.type, entity.hash, basename(entity.transferDataFile));
   if (!obj) return false;
   if (entity.type === ProfileType.Group && entity.filePaths.length === 0) return false;
   return true;

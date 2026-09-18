@@ -20,10 +20,14 @@ import {
   listUiHistory,
   countByTypeViews,
   readChangeMarker,
+  readActivity,
+  readBatchMeta,
+  BATCH_META_MAX_ITEMS,
   parseDeletedFlag,
   parseUiHistoryQuery,
   toUiItem,
 } from './query';
+import type { BatchMetaItem } from './query';
 import { fileHeaders } from '../contentTypes';
 import { AVAILABLE_TRANSPORTS, HUB_PATH, issueConnectionToken } from '../hub';
 import { notFoundPage } from './notFound';
@@ -42,6 +46,79 @@ const CLEANUP_META_KEY_LIST: string[] = [
 // lastError 的展示上限：这是**展示侧**自己的边界（不依赖上游自觉）——产出侧 cleanup.ts 已截到
 // 300 且压成单行，这里再夹一道，保证响应体永远不会带出成段的内部错误串（表名/约束/对象键）。
 const CLEANUP_ERROR_MAX_CHARS = 300;
+
+/**
+ * 取整数值的查询参数。
+ *
+ * 与 `parseUiHistoryQuery` 的 `parseIntParam`（它会**钳制**到范围内）不同，这里
+ * **越界即非法**（返回 `null`）——因为这两个参数（`days` / `tz`）的单位是"天"与"分钟"，
+ * 把一个 `days=100000` 悄悄钳成 90、或把一个离谱的 `tz=99999` 钳成 14 小时，
+ * 都会让调用方拿到一份**与请求不符**的数据却看不出问题。宁可 400。
+ */
+function readIntParam(raw: string | null, fallback: number, min: number, max: number): number | null {
+  if (raw === null || raw.trim() === '') return fallback;
+  if (!/^[+-]?\d+$/.test(raw.trim())) return null;
+  const n = Number(raw.trim());
+  if (!Number.isSafeInteger(n) || n < min || n > max) return null;
+  return n;
+}
+
+/**
+ * 部署信息的**唯一**实现：`/ui/api/info` 与 `/ui/api/overview` 共用。
+ *
+ * 抽出来的理由不只是少写一遍：两处各写一份时，「清理状态」「保留策略来源」这类字段
+ * 迟早只在其中一处更新，于是概览带与部署信息对话框会显示两个不同的值。
+ */
+async function deploymentInfo(env: Bindings, origin: string) {
+  const db = new HistoryDb(env.DB);
+  const storage = new R2Storage(env.R2);
+  const bytes = await storage.totalHistorySize();
+  const [stats, views, meta, retention] = await Promise.all([
+    db.statistics(historySizeMB(bytes)),
+    countByTypeViews(env.DB),
+    db.getMetaValues(CLEANUP_META_KEY_LIST),
+    readRetentionSettings(db, env),
+  ]);
+  // 清理侧：键在「从未跑过清理」时不存在，故全部容忍缺省（D1 报错与上面几个查询同样向上抛，
+  // 不在这里特殊化——诊断面整体失败比"部分字段静默为默认值"更容易被发现）。
+  const lastError = meta.get(CLEANUP_META_KEYS.lastError) ?? '';
+  return {
+    version: env.VERSION,
+    // 客户端「服务器地址」填这个（本实现把 WebDAV 兼容端点放在站点根）
+    serverUrl: `${origin}/`,
+    hubTransports: AVAILABLE_TRANSPORTS,
+    // 保留策略：与清理任务读**同一份生效值**（readRetentionSettings：Meta 覆盖优先、env 回落）——
+    // 此前这里直接读 env，于是「清理按 Meta 跑、界面显示按 env」会当场分叉（后端能力评估 §2.5）。
+    // 连**来源**一起报：界面要用它显示「此处的设置 / 部署环境变量」，而 /ui/api/settings 是另一个
+    // 端点、界面并不调用它——来源只报在那边就等于永远显示「部署环境变量」（复核发现的接线缺口）。
+    retention: {
+      maxSavedHistoryCount: retention.maxSavedHistoryCount,
+      retentionMinutes: retention.retentionMinutes,
+      maxCountSource: retention.maxCountSource,
+      retentionSource: retention.retentionSource,
+    },
+    storage: { totalBytes: bytes, totalFileSizeMB: stats.totalFileSizeMB },
+    counts: {
+      total: stats.totalCount,
+      active: stats.activeCount,
+      starred: stats.starredCount,
+      deleted: stats.deletedCount,
+      byType: views.byActive,
+    },
+    // 清理可观测性（F11）：lastRunAt=null 说明从来没跑过；lastError=null 说明上轮无失败
+    // （cleanup 正常时写空串，这里归一化）；游标非 0 = 该阶段本轮没跑完、下轮续跑。
+    cleanup: {
+      lastRunAt: meta.get(CLEANUP_META_KEYS.lastRunAt) ?? null,
+      lastError: lastError === '' ? null : lastError.slice(0, CLEANUP_ERROR_MAX_CHARS),
+      cursors: Object.fromEntries(
+        CLEANUP_PHASES.map((phase) => [
+          phase,
+          Number.parseInt(meta.get(CLEANUP_META_KEYS.cursors[phase]) ?? '', 10) || 0,
+        ]),
+      ),
+    },
+  };
+}
 
 interface UiCredentials {
   username: string;
@@ -475,53 +552,52 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
 
   // GET /ui/api/info —— 部署信息（把「服务器地址该填什么」直接给出来）
   guarded.get('/ui/api/info', async (c) => {
+    return Response.json(await deploymentInfo(c.env, new URL(c.req.url).origin));
+  });
+
+  // GET /ui/api/activity —— 每天有多少条记录（概览带的趋势图 + 抽屉里的明细）
+  //
+  // 「一天」按**调用方给的时区**切分（`tz` = `Date.prototype.getTimezoneOffset()`，
+  // UTC+8 ⇒ `-480`）。服务端只知道 UTC，而直接按 UTC 切会让 UTC+8 的用户在早上 8 点前
+  // 看到的"今天"其实是昨天（详见 `src/ui/query.ts` 的 `readActivity`）。
+  guarded.get('/ui/api/activity', async (c) => {
+    const params = new URL(c.req.url).searchParams;
+    const days = readIntParam(params.get('days'), 14, 1, 90);
+    const tz = readIntParam(params.get('tz'), 0, -14 * 60, 14 * 60);
+    if (days === null || tz === null) {
+      return Response.json({ error: 'invalid_range' }, { status: 400 });
+    }
+    const result = await readActivity(c.env.DB, { days, tzOffsetMinutes: tz });
+    return Response.json(result);
+  });
+
+  // GET /ui/api/overview —— 首屏总览（**合并端点**）
+  //
+  // 为什么要有它：V1 的首屏打三次请求（`history` + `statistics` + `info`），而 `statistics`
+  // 内部还要跑三条查询（`docs/backend-gaps.md` §3.1）。V2 的概览带需要的是它们**合并后的
+  // 一个快照** —— 更重要的是，概览带与列表必须在**同一次往返**里对齐，
+  // 否则用户会看到"数字说 1009 条、列表说 1008 条"这种两个瞬间的差异。
+  //
+  // 只读、无副作用。`activity` 不在这里返回：它是独立的一天粒度查询，
+  // 首屏让它阻塞列表可见不值得（前端在列表落地后单独拉，见 boot.js）。
+  guarded.get('/ui/api/overview', async (c) => {
     const { db, storage } = stores(c);
-    const origin = new URL(c.req.url).origin;
+    const deleted = parseDeletedFlag(new URL(c.req.url).searchParams);
     const bytes = await storage.totalHistorySize();
-    const [stats, views, meta, retention] = await Promise.all([
+    const [stats, views, marker, info] = await Promise.all([
       db.statistics(historySizeMB(bytes)),
       countByTypeViews(c.env.DB),
-      db.getMetaValues(CLEANUP_META_KEY_LIST),
-      readRetentionSettings(db, c.env),
+      readChangeMarker(c.env.DB),
+      deploymentInfo(c.env, new URL(c.req.url).origin),
     ]);
-    // 清理侧：键在「从未跑过清理」时不存在，故全部容忍缺省（D1 报错与上面几个查询同样向上抛，
-    // 不在这里特殊化——诊断面整体失败比"部分字段静默为默认值"更容易被发现）。
-    const lastError = meta.get(CLEANUP_META_KEYS.lastError) ?? '';
     return Response.json({
-      version: c.env.VERSION,
-      // 客户端「服务器地址」填这个（本实现把 WebDAV 兼容端点放在站点根）
-      serverUrl: `${origin}/`,
-      hubTransports: AVAILABLE_TRANSPORTS,
-      // 保留策略：与清理任务读**同一份生效值**（readRetentionSettings：Meta 覆盖优先、env 回落）——
-      // 此前这里直接读 env，于是「清理按 Meta 跑、界面显示按 env」会当场分叉（后端能力评估 §2.5）。
-      // 连**来源**一起报：界面要用它显示「此处的设置 / 部署环境变量」，而 /ui/api/settings 是另一个
-      // 端点、界面并不调用它——来源只报在那边就等于永远显示「部署环境变量」（复核发现的接线缺口）。
-      retention: {
-        maxSavedHistoryCount: retention.maxSavedHistoryCount,
-        retentionMinutes: retention.retentionMinutes,
-        maxCountSource: retention.maxCountSource,
-        retentionSource: retention.retentionSource,
-      },
-      storage: { totalBytes: bytes, totalFileSizeMB: stats.totalFileSizeMB },
-      counts: {
-        total: stats.totalCount,
-        active: stats.activeCount,
-        starred: stats.starredCount,
-        deleted: stats.deletedCount,
-        byType: views.byActive,
-      },
-      // 清理可观测性（F11）：lastRunAt=null 说明从来没跑过；lastError=null 说明上轮无失败
-      // （cleanup 正常时写空串，这里归一化）；游标非 0 = 该阶段本轮没跑完、下轮续跑。
-      cleanup: {
-        lastRunAt: meta.get(CLEANUP_META_KEYS.lastRunAt) ?? null,
-        lastError: lastError === '' ? null : lastError.slice(0, CLEANUP_ERROR_MAX_CHARS),
-        cursors: Object.fromEntries(
-          CLEANUP_PHASES.map((phase) => [
-            phase,
-            Number.parseInt(meta.get(CLEANUP_META_KEYS.cursors[phase]) ?? '', 10) || 0,
-          ]),
-        ),
-      },
+      stats,
+      // 两个计数口径不同（理由与 /ui/api/statistics 一致）：`byType` 随视图走，`byTypeActive` 恒活跃
+      byType: deleted ? views.byDeleted : views.byActive,
+      byTypeActive: views.byActive,
+      marker,
+      info,
+      serverTime: new Date().toISOString(),
     });
   });
 
@@ -533,6 +609,47 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   guarded.get('/ui/api/poll', async (c) =>
     Response.json({ ...(await readChangeMarker(c.env.DB)), serverTime: new Date().toISOString() }),
   );
+
+  // POST /ui/api/history/batch-meta —— 按 (type,hash) 批量取记录（含**完整正文**）
+  //
+  // 用途：列表里的正文被截断到 500 字符，「选中多条 → 一起复制/下载」需要全文，
+  // 而逐条走单条端点是 O(N) 次请求（`docs/backend-gaps.md` §2.8 记的口径）。
+  guarded.post('/ui/api/history/batch-meta', async (c) => {
+    // 只接受 application/json：与 batch-update / clear 同一条理由 ——
+    // 跨站**表单**能直接发出 POST 且不经过 CORS 预检，而 JSON 必须由脚本构造（那类请求被来源校验挡下）。
+    if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/json')) {
+      await drainRequestBody(c.req.raw);
+      return Response.json({ error: 'unsupported_media_type' }, { status: 415 });
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return Response.json({ error: 'invalid_request' }, { status: 400 });
+    }
+    const raw = (body ?? {}) as { items?: unknown };
+    if (!Array.isArray(raw.items) || raw.items.length === 0) {
+      return Response.json({ error: 'items_required' }, { status: 400 });
+    }
+    if (raw.items.length > BATCH_META_MAX_ITEMS) {
+      return Response.json({ error: 'too_many_items' }, { status: 400 });
+    }
+
+    const items: BatchMetaItem[] = [];
+    for (const entry of raw.items) {
+      const item = (entry ?? {}) as { type?: unknown; hash?: unknown };
+      const type = typeof item.type === 'string' ? parseProfileType(item.type) : undefined;
+      if (type === undefined || typeof item.hash !== 'string' || item.hash === '') {
+        return Response.json({ error: 'invalid_item' }, { status: 400 });
+      }
+      items.push({ type, hash: item.hash });
+    }
+
+    const entities = await readBatchMeta(c.env.DB, items);
+    // 用 `toUiItem`（与列表同一份映射）而不是 `entityToDto`：调用方拿到的东西必须与
+    // 列表项**同形**，否则前端要维护两条归一化路径。
+    return Response.json({ items: entities.map(toUiItem) });
+  });
 
   app.route('/', guarded);
 

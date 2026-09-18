@@ -31,26 +31,32 @@ const MARK = `qf-${RUN}`;
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex').toUpperCase();
 
 const DAY = 24 * 60 * 60 * 1000;
-// 夹具锚点放在**远期**：协议查询固定 50 条/页，且按上游语义**不过滤软删行**，
-// 而本套件的 afterAll 只做软删 ⇒ 历次本地运行的夹具都会留在排序窗口里，把本轮最老的一条挤出第 1 页
-// （CI 用全新库所以不会遇到）。取远期锚点后，本轮夹具必然压过所有历史残留，断言无需放宽。
-const NOW = Date.now() + 3000 * 24 * 60 * 60 * 1000;
 
-// 排序用的两个字段取**未来**值：这两种排序都是 DESC，只有比库里既有记录都新，
-// 本次的 3 条才保证落在首页（页大小固定 50），否则断言会被挤到第 2 页。
-const T0 = new Date(NOW + 1 * DAY).toISOString();
-const T1 = new Date(NOW + 2 * DAY).toISOString();
-const T2 = new Date(NOW + 3 * DAY).toISOString();
-
-// LastModified 刻意取**过去**值。它不参与排序，却决定记录能否被清理：
+// ── 夹具时间戳：为什么锚点必须**锚到库里最新的那条之上**，而不是"现在之上" ──────────
+// 协议查询固定 **50 条/页**、默认按 CreateTime DESC，且按上游语义**不过滤软删行**
+// （本套件 afterAll 只做软删）⇒ 每跑一次就在排序窗口顶部留下 3 行，且**永不清除**。
+// 历史夹具的 CreateTime 是"它那次运行的 now + 4..6 天"，本批是"本次 now + 4..6 天"：本批的
+// **gamma** 只比历次的 gamma 新几十分钟，但本批的 **beta/alpha** 比历次的 gamma **旧**。
+// 排序是全库混排，于是名次是：
+//     本批 gamma → 历次 gamma（每次 1 条）→ 本批 beta → 历次 beta → … → 本批 alpha
+// 累积约 25 次运行后，首页 50 条被历次的 gamma/beta 占满，**本批最老的 alpha 被挤出首页**。
+// 2026-09-15 在本机复现：首页 50 条 = 26 条 qf-*-gamma + 20 条 qf-*-beta，qf-*-alpha 0 条；
+// 表现为「排序 / Types / Before」三个用例失败，而 SearchText=alpha 又能查到它（记录本身没问题）。
+// 取"远期锚点"只保证了**新于现在**，保证不了**新于历史**。
+// 修法：锚点 = 库里现有最大 CreateTime（+4 天）⇒ 本批永远占据前三名，与运行次数无关。
+let NOW = Date.now() + 3000 * DAY; // 夹具纪元：仅供"远未来"断言（NOW + 30 天）使用
+let T0 = ''; // CreateTime == LastAccessed 的基准值：它们是**排序键**，必须高于全库
+let T1 = '';
+let T2 = '';
+// LastModified 刻意取**真过去值**（相对系统时间，而不是相对夹具纪元）。它不参与排序，却决定清理：
 //   - 写成未来值 → `softDeleteExpiredRecords`（LastModified < cutoff）永不命中；
-//   - 更关键的是 afterAll 也删不掉：`ShouldUpdate` 在时间差 > 5 分钟时要求
-//     `newLastModified >= oldLastModified`，未来的旧值会让「以 now 收尾」的 PATCH 变成 409；
-//   - 且 `hardDeleteOldDeletedRecords`（LastModified < now-30d）同样永不命中 → 行永久残留。
-// 取过去值后：afterAll 能以 now 正常软删，30 天后由 Cron 硬删，生命周期闭环。
-const M0 = new Date(NOW - 3 * DAY).toISOString();
-const M1 = new Date(NOW - 2 * DAY).toISOString();
-const M2 = new Date(NOW - 1 * DAY).toISOString();
+//   - 且 `hardDeleteOldDeletedRecords`（LastModified < now-30d）同样永不命中 → 测试残留**永久**留在库里
+//     （这正是上面那 46 条历史夹具的来历）；
+//   - 更关键：afterAll 也删不掉 —— `ShouldUpdate` 在时间差 > 5 分钟时要求
+//     `newLastModified >= oldLastModified`，未来的旧值会让「以 now 收尾」的 PATCH 变成 409。
+let M0 = '';
+let M1 = '';
+let M2 = '';
 
 async function req(path: string, init: RequestInit = {}) {
   return fetch(`${BASE}${path}`, { ...init, headers: { Authorization: AUTH, ...(init.headers ?? {}) } });
@@ -111,6 +117,22 @@ const mine = (list: { text: string }[]) =>
 beforeAll(async () => {
   const root = await fetch(`${BASE}/`, { headers: { Authorization: AUTH } });
   if (!root.ok) throw new Error(`dev server 不可用 (${BASE}): ${root.status}`);
+
+  // 先把锚点定在**库里现有的最大 CreateTime 之上**（详见文件头的时间戳说明）。
+  // 第 1 页就是按 CreateTime DESC 排的，故首条即最新；库为空（CI）时回退到系统时间。
+  const newest = (await query({}))[0] as { createTime?: string } | undefined;
+  const existing = newest?.createTime ? Date.parse(newest.createTime) : Number.NaN;
+  const anchor = Math.max(Number.isFinite(existing) ? existing : 0, Date.now());
+
+  NOW = anchor + 3 * DAY;
+  T0 = new Date(anchor + 1 * DAY).toISOString();
+  T1 = new Date(anchor + 2 * DAY).toISOString();
+  T2 = new Date(anchor + 3 * DAY).toISOString();
+  const real = Date.now();
+  M0 = new Date(real - 3 * DAY).toISOString();
+  M1 = new Date(real - 2 * DAY).toISOString();
+  M2 = new Date(real - 1 * DAY).toISOString();
+
   // alpha: 最早创建、最久未访问、最久未修改
   await createRecord('alpha', { createTime: T0, lastAccessed: T0, lastModified: M0 });
   // beta: 中间创建、**最近访问**、中间修改、已星标
@@ -209,9 +231,10 @@ afterAll(async () => {
       res = await req(`/api/history/Text/${hash}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        // lastModified 必须 **≥ 记录现值**：ShouldUpdate 在时间差超阈值时要求新值不倒退（否则 409、删不掉）。
-        // 夹具锚点 NOW 是远期值，故这里取 NOW + 1s 而不是 new Date()（见文件头对时间戳的说明）。
-        body: JSON.stringify({ isDelete: true, version: 10_000, lastModified: new Date(NOW + 1000).toISOString() }),
+        // lastModified 必须 **≥ 记录现值**：`ShouldUpdate` 在时间差超阈值时要求新值不倒退（否则 409、删不掉）。
+        // 夹具的 M* 是真过去值（now-1..3 天），故这里用**系统 now** 即可 —— 并因此让
+        // `hardDeleteOldDeletedRecords`（LastModified < now-30d）在 30 天后能真正收掉这几行残留。
+        body: JSON.stringify({ isDelete: true, version: 10_000, lastModified: new Date().toISOString() }),
       });
     } catch (err) {
       failed.push(`${suffix}: ${(err as Error).message}`);

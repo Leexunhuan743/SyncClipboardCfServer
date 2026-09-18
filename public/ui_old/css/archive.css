@@ -1,0 +1,90 @@
+/* 顶部提示条（V1 专用）
+ *
+ * 为什么单独一个文件：两张页面共用它，而 `components.css` 是「所有页面都成立」的组件层；
+ * 提示条只在 V1 的两张页面里出现，塞进公共层会让那份文件多一个没有跨页消费者的条目。
+ *
+ * 文件名仍是 archive.css（历史名）：它只被这两张 HTML 引用，改名的收益是零，
+ * 代价是多一次「路径改写漏一个」的机会——2026-09-15 的改名事故已经付过一次学费。
+ *
+ * 形态：一条**细、居中、安静**的提示，不是一整条警告带。2026-09-17 起本界面重新纳入
+ * 维护，它的作用从「宣告已冻结」变成「说明这是备用界面、默认界面在哪」，因此不该占据
+ * 视觉重心：32px 高、12px 字、次要色，可关闭（localStorage，见 js/main.js 与 js/login.js）。 */
+
+.notice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  min-height: 32px;
+  /* 左右各留一份同样的内边距：关闭按钮**在流内**（见下），故不需要再为它预留宽度；
+   * 两侧对称的内边距让居中的那句话在窄屏折行时也不会贴边。 */
+  padding: 5px var(--sp-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* 关闭态：`hidden` 的 UA 样式是 display:none，但上面写了 display:flex —— 特异性更高，
+ * 会把 [hidden] 盖掉（这个仓库在 `.notice` / `.date-range` 上各自踩过一次）。 */
+.notice-bar[hidden] {
+  display: none;
+}
+
+.notice-bar__icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--ink-faint);
+}
+
+.notice-bar__text a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.notice-bar__close {
+  /* 2026-09-17：从绝对定位改回**流内**。此前它固定在条的最右端（right: 8px），
+   * 而文字是整条居中的 —— 1440px 下两者相距 500px 以上，那颗 × 看起来像页面级的
+   * "关闭窗口"而不是"关掉这条提示"（截图走查时被点出来）。跟着文字走之后，
+   * 它属于这句话，位置也不再随视口宽度漂移。 */
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+
+.notice-bar__close svg {
+  width: 13px;
+  height: 13px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .notice-bar__close:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+  }
+}
+
+/* 触屏：22px 的命中区太小（--hit-min 是 44px）。只放大按钮本身，条的高度不变 ——
+ * 用负外边距把多出来的高度吃掉，否则整条提示会长到 44px 以上。 */
+@media (pointer: coarse) {
+  .notice-bar__close {
+    margin-block: -11px;
+    width: var(--hit-min);
+    height: var(--hit-min);
+  }
+}

@@ -1,0 +1,275 @@
+/* ============================================================================
+ * 设计令牌 — V2（`docs/ui-v2-design.md` §4）
+ *
+ * 三层结构，改动时必须按层改，不要跨层：
+ *   ① 原始值（primitive）：颜色标尺、字号、间距、时长 —— 只有名字和值，无语义
+ *   ② 语义令牌（semantic）：`--surface-*` / `--ink-*` / `--accent` 等 —— 主题在这里切换
+ *   ③ 组件令牌（component）：`--row-h` / `--col-ops` 等 —— 布局契约，JS 会读这些名字
+ *
+ * 规则：**组件层只消费 ②③，绝不直接写原始色值**。深色主题只重映射 ②，
+ * 组件层一行不用改（V1 已验证这条纪律，V2 沿用）。
+ * ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* ── ① 颜色标尺：暖中性（低饱和）+ 青（强调）+ 琥珀（星标）──
+   * 暖中性而不是纯灰：纯灰在 LED 屏上偏冷、读起来"发蓝"。
+   * 刻意避开紫→靛渐变（AI 生成页最可靠的识别特征，记于 docs/ui.md §8）。
+   *
+   * 这是一条**完整的色阶**：`--c-warm-400/500/700` 目前没有直接消费者（语义层用 100/150/
+   * 200/300/550/600/900），但台阶要连着 —— 删掉中间几级，下一个人要取"比 300 深、比 600 浅"
+   * 的颜色时就得重新调。判断依据见下面类型色处的说明。 */
+  --c-warm-0: #ffffff;
+  --c-warm-50: #fbf9f7;
+  --c-warm-100: #f5f2ee;
+  --c-warm-150: #efeae3;
+  --c-warm-200: #e6e0d7;
+  --c-warm-300: #d5cdc1;
+  --c-warm-400: #b0a79a;
+  --c-warm-500: #827a6e;
+  /* warm-550 是 2026-09-16 审计补的一档，专供 `--ink-faint`：
+   * warm-500 (#827a6e) 在白底上只有 **4.24:1**、在页面底色 `--bg` 上 **3.80:1**、
+   * 在 `--surface-3` 上 **3.54:1** —— 三处都不满足 WCAG AA 正文所需的 4.5:1，
+   * 而它承担的恰恰是**唯一**显示记录时间与体积的那行元数据（11–12px）。
+   * 直接跳到 warm-600 会让"次要/更次要"两级塌成一级，故取中间值：
+   * #6f675c = surface 5.57 / bg 4.99 / surface-3 4.65，全部过线且与 --ink-muted 仍有层次。 */
+  --c-warm-550: #6f675c;
+  --c-warm-600: #605a51;
+  --c-warm-700: #443f39;
+  --c-warm-900: #1c1a17;
+
+  --c-teal-50: #e6f4f2;
+  --c-teal-100: #c9e9e5;
+  --c-teal-400: #2eb3a6;
+  --c-teal-600: #0f766e;
+  --c-teal-700: #115e59;
+
+  --c-amber-100: #fdf0dc;
+  --c-amber-700: #b45309;
+
+  --c-red-100: #fdeaea;
+  --c-red-600: #b91c1c;
+
+  /* ── ② 语义令牌（浅色）──
+   * surface 阶梯从 V1 的 3 级扩到 4 级：V2 用**层级差**而不是满屏边框来分层
+   * （"框感重、层级平"是 V1 截图里最明显的观感问题之一）。 */
+  --bg: var(--c-warm-100);
+  --surface: var(--c-warm-0);
+  --surface-2: var(--c-warm-50);
+  --surface-3: var(--c-warm-150);
+  --surface-inset: var(--c-warm-100);
+
+  --ink: var(--c-warm-900);
+  --ink-muted: var(--c-warm-600);
+  /* warm-550 而不是 warm-500：见标尺处的对比度说明（warm-500 三处底色都不达 AA） */
+  --ink-faint: var(--c-warm-550);
+
+  --line: var(--c-warm-200); /* 分隔线：比 V1 的 --border 更淡，V2 靠层次不靠线 */
+  --line-strong: var(--c-warm-300); /* 输入框等需要明确边界的控件 */
+
+  --accent: var(--c-teal-600);
+  --accent-hover: var(--c-teal-700);
+  --accent-soft: var(--c-teal-50);
+  --accent-line: var(--c-teal-100);
+  --accent-ink: var(--c-warm-0);
+
+  --star: var(--c-amber-700);
+  --star-soft: var(--c-amber-100);
+
+  --danger: var(--c-red-600);
+  --danger-soft: var(--c-red-100);
+  --danger-ink: var(--c-warm-0);
+
+  --focus: var(--c-teal-600);
+
+  /* 类型色：条（强）与底（弱）成对。四种类型各一色相，均低饱和以免彩虹感。
+   * 色条承担"扫视识别"、文字承担"确认"，所以条要够强、底要够弱。
+   *
+   * ⚠️ 四个 `-soft` 目前**没有消费者**（颜色条只用 `--kind-*`）。它们**有意保留**：
+   * 这是一组"配对色"，删掉一半会让下一个人以为"类型色只有强色一种"，
+   * 而需要一层淡底（例如给类型徽标上底色）时就得重新调一遍色相。
+   * 同理，下面色阶里 `--c-warm-400/500/700` 也没有消费者，但它们是把
+   * 300 与 600 之间的层次连起来的台阶 —— 缺一级就是缺一级，不是"没用的变量"。
+   * 判断依据：**成对的、成阶的令牌按整组保留；孤立的单点令牌（没有同族兄弟）才删**。
+   * （`--r-xl` / `--z-dialog` / `--dur-instant` / `--ink-inverse` 就是后者，已删。） */
+  --kind-text: #4d7c0f;
+  --kind-text-soft: #f0f6e4;
+  --kind-image: #be185d;
+  --kind-image-soft: #fceef4;
+  --kind-file: #1d4ed8;
+  --kind-file-soft: #ecf1fd;
+  --kind-group: #9a3412;
+  --kind-group-soft: #fdefe8;
+
+  /* 浮层遮罩：浅深主题共用（"变暗"语义相同，各配一个值只会漂移） */
+  --scrim: rgb(24 22 20 / 42%);
+
+  --shadow-xs: 0 1px 1px rgb(28 26 23 / 4%);
+  --shadow-sm: 0 1px 2px rgb(28 26 23 / 5%), 0 1px 1px rgb(28 26 23 / 4%);
+  --shadow-md: 0 2px 4px rgb(28 26 23 / 6%), 0 8px 20px -8px rgb(28 26 23 / 14%);
+  --shadow-lg: 0 4px 8px rgb(28 26 23 / 8%), 0 28px 64px -20px rgb(28 26 23 / 26%);
+  --shadow-pop: 0 6px 16px -4px rgb(28 26 23 / 16%), 0 2px 4px rgb(28 26 23 / 6%);
+  /* 输入控件的"内凹"影（搜索框）：一条贴着顶边的细阴影 = 凹进去。
+   * 为什么单独一个令牌而不是复用 `--shadow-xs`（那是"浮起来"）：方向相反，
+   * 两件事混用一个名字之后，改其中一个必然误伤另一个。 */
+  --shadow-inset: inset 0 1px 2px rgb(28 26 23 / 5%);
+
+  /* ── 字体 ──
+   * 系统栈而非 Web 字体：本项目面向国内网络自托管，外部字体 CDN 大概率加载失败，
+   * 会退化成"先无字后有字"的闪烁，比系统栈更糟（docs/ui.md §6 已定，不重新讨论）。 */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI",
+    Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* 字号阶梯：V1 的 12/13/14/18/30 在 1440px 下"没有层级可读"（截图里所有文字看起来一样大）。
+   * V2 拉开两端：micro 11 → display 30，并显式定义四档行高（V1 只有两档）。
+   *
+   * `--fs-display` 的上限**从 2.25rem 收到 1.875rem**（实测调整，2026-09-15 第二轮）：
+   * 36px 的主数字把整页的视觉重心抢到了概览带上 —— 截图里最大的三个字是"1009 / 刚刚 / 17 KB"，
+   * 而这是个**剪贴板历史**应用，正文才是主角。30px 仍然明显大于正文（14px），
+   * 层级照旧成立，但它不再和列表争"谁更重要"。 */
+  --fs-display: clamp(1.5rem, 1.32rem + 0.5vw, 1.875rem); /* 24 → 30px */
+  --fs-title: 1.0625rem; /* 17px 页面标题 */
+  --fs-h2: 0.9375rem; /* 15px 区块标题 */
+  --fs-body: 0.875rem; /* 14px 正文 */
+  --fs-sm: 0.8125rem; /* 13px 次要 */
+  --fs-meta: 0.75rem; /* 12px 行元数据 */
+  --fs-micro: 0.6875rem; /* 11px 标签/徽标 */
+
+  --lh-display: 1.05;
+  --lh-tight: 1.3;
+  --lh-body: 1.55;
+  --lh-loose: 1.7;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semi: 600;
+
+  /* ── 间距：8pt 网格（V1 是 4pt，步长太小是"什么都挨着"的一半来源）── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
+
+  /* ── ③ 组件/布局令牌（布局契约：JS 与测试会读这些名字，改名要同步改）── */
+  --appbar-h: 56px;
+  --overview-h: 60px;
+  --search-h: 44px;
+  --filters-h: 46px;
+  --row-h: 64px; /* 两行内容的行高（V1 的 56px 只够一行） */
+  --row-h-dense: 52px;
+  --control-h: 34px;
+  --control-h-sm: 28px;
+  --hit-min: 44px; /* 触屏最小命中区，不可下调 */
+  --col-check: 40px;
+  --col-kind: 4px; /* 类型色条宽度 */
+  --col-ops: 148px;
+  --col-ops-coarse: 200px; /* 触屏下按 44px 命中区重算 */
+  --content-max: 1240px;
+  --z-sticky: 20;
+  --z-appbar: 30;
+  --z-batchbar: 40;
+  --z-drawer: 50;
+  --z-toast: 70;
+  --z-skip: 80;
+
+  /* ── 动效令牌 ──
+   * 唯一准入规则（沿用 V1）：每个动效对应一个真实内容事件，关掉它信息不丢。
+   * 时长刻度比 V1 更短：UI 反馈在 90–220ms 区间最"跟手"，300ms 以上会被读成迟滞。 */
+  --dur-fast: 140ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --dur-flash: 1200ms; /* 行高亮持续多久（这是"状态持续"，不是过渡） */
+  --dur-toast: 300ms;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1); /* 主缓动：快出慢收 */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  /* 轻微过冲：cubic-bezier 表达不了过冲，用 linear() 采样（V1 同款做法） */
+  --ease-pop: linear(0, 0.32 8%, 0.79 20%, 1.03 30%, 1.01 46%, 1);
+}
+
+/* ── ② 深色主题：只重映射语义令牌，组件层一行不改 ──
+ * 不是把浅色反相：暖中性在深色下要保留一点暖（纯黑上的 #111 会读成灰蓝）。
+ * 强调色在深底上要**提亮**（teal-600 → teal-400 一级），否则会糊在背景里。 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #15191a;
+  --surface: #1e2425;
+  --surface-2: #252c2d;
+  --surface-3: #2d3536;
+  --surface-inset: #191e1f;
+
+  --ink: #f1f5f4;
+  --ink-muted: #b5bfbc;
+  --ink-faint: #a0aba7;
+
+  --line: #35403e;
+  --line-strong: #4b5a56;
+
+  --accent: var(--c-teal-400);
+  --accent-hover: #5ccfc3;
+  --accent-soft: #0f2c2a;
+  --accent-line: #1c4542;
+  --accent-ink: #08211f;
+
+  --star: #f0b357;
+  --star-soft: #38290e;
+
+  --danger: #f87171;
+  --danger-soft: #3b1e1e;
+  --danger-ink: #3b1d1d; /* 亮红底上用深字：白字在 #f87171 上只有 2.77:1，不达标 */
+
+  --focus: var(--c-teal-400);
+
+  --kind-text: #a9cc70;
+  --kind-text-soft: #232c17;
+  --kind-image: #f2a3c4;
+  --kind-image-soft: #34202a;
+  --kind-file: #93b8f5;
+  --kind-file-soft: #1d2536;
+  --kind-group: #e5ab8c;
+  --kind-group-soft: #34231a;
+
+  --scrim: rgb(0 0 0 / 60%);
+
+  /* 深色下阴影的可见度天然更低，故加大不透明度并保留扩散 */
+  --shadow-xs: 0 1px 1px rgb(0 0 0 / 40%);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 45%), 0 1px 1px rgb(0 0 0 / 35%);
+  --shadow-md: 0 2px 4px rgb(0 0 0 / 45%), 0 8px 20px -8px rgb(0 0 0 / 60%);
+  --shadow-lg: 0 4px 8px rgb(0 0 0 / 50%), 0 28px 64px -20px rgb(0 0 0 / 75%);
+  --shadow-pop: 0 6px 16px -4px rgb(0 0 0 / 60%), 0 2px 4px rgb(0 0 0 / 45%);
+  /* 深色下"内凹"靠**亮**不起来，只能靠加深：不透明度比浅色高一些，否则完全看不见 */
+  --shadow-inset: inset 0 1px 3px rgb(0 0 0 / 28%);
+}
+
+/* ── 紧凑模式（用户在抽屉里开启）：只压行高与内边距，**不动字号** ──
+ * 不动字号是刻意的：把字号也压一档会让"紧凑"变成"更难读"，而用户要的是"同屏更多行"。 */
+:root[data-density="compact"] {
+  --row-h: var(--row-h-dense);
+  --overview-h: 50px;
+}
+
+/* ── 触屏：操作列按 44px 命中区重算 ──
+ * 用 `(pointer: coarse)` 而不是宽度断点：平板横屏很宽但仍需 44px 命中区，
+ * 窄窗口的桌面却可以保持紧凑。这两件事的正交维度是"指针精度"，不是"视口宽度"。 */
+@media (pointer: coarse) {
+  :root {
+    --col-ops: var(--col-ops-coarse);
+    --control-h: 40px;
+  }
+}

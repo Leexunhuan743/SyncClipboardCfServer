@@ -12,7 +12,12 @@ import globals from 'globals';
 
 export default [
   {
-    files: ['public/ui/js/**/*.js'],
+    // 覆盖 V2（`public/ui/`，重写中）与存档的 V1（`public/ui_old/`，挂载点 `/ui_old/`）。
+    // 顺带修掉一个过渡期的**真缺陷**：脚本此前写死 `public/ui/js`，V1 一被改名，`npm run lint`
+    // 就报 `No files matching the pattern` 并以退出码 1 结束（= `npm run check` 与 CI quality 步骤
+    // 全红）——而那是"配置引用了不存在的路径"，不是"代码有问题"。glob 式写法对两个目录都成立，
+    // 将来 V2 落地或再改名也不会重演。
+    files: ['public/ui/js/**/*.js', 'public/ui_old/js/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
@@ -36,7 +41,7 @@ export default [
   {
     // 首帧主题脚本是**经典脚本**（不是模块，见文件头）：它要在 <head> 里阻塞执行，
     // 故保留 var 写法（不经过任何转换，最小依赖的语言特性）。
-    files: ['public/ui/js/theme-init.js'],
+    files: ['public/ui/js/theme-init.js', 'public/ui_old/js/theme-init.js'],
     languageOptions: { sourceType: 'script' },
     rules: { 'no-var': 'off' },
   },

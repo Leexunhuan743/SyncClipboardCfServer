@@ -12,6 +12,26 @@ import {
 import { toIso, entityToDto, entityToUpdateDto, fromIso } from './serialization';
 import { HistoryRecordUpdateDto } from './types';
 
+// ===== 本模块负责的共享原语 =====
+// （`INT32_MIN/MAX` 不是其中之一：它们留在 src/types.ts，与其它领域常量同处 —— 见那里的注。）
+
+// 取路径末段。**协议面所有"从 dto 里取文件名"的地方都必须走它**：
+// 上游 `Path.GetFileName(dataName)` 在 PUT 与 PATCH 两条路径上都这么做，两处若各写一份，
+// 迟早对"含 `/` 的 dataName"给出不同解释（此前 src/profile.ts 就有一份逐字复制品 basenameOf，O1）。
+export function basename(p: string): string {
+  const idx = p.lastIndexOf('/');
+  return idx < 0 ? p : p.slice(idx + 1);
+}
+
+// 400 语义的**唯一**错误类型。此前 src/profile.ts 另有一份同名类，逼得两个路由要写
+// `BadRequestError as DbBadRequestError` 再分别 catch 两次（O1）。合并后两边 `instanceof` 同源。
+export class BadRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BadRequestError';
+  }
+}
+
 // D1 行形状与映射对 UI 查询层开放：UI 需要按自己的排序/分页读同一张表，
 // 若另写一份映射，两处对 NULL / 布尔列的解释迟早分叉。
 export interface DbRow {
@@ -126,7 +146,11 @@ export interface DataRecordRow {
 export class HistoryDb {
   constructor(private db: D1Database) {}
 
-  // Type + Hash 查询（大小写不敏感，等价 EF.Functions.Like）
+  // Type + Hash 查询。**大小写不敏感**（对齐上游 EF.Functions.Like 对 ASCII 的大小写行为），
+  // 但**只对齐这一半**：上游 `HistoryService.cs:255` 把 hash 当 LIKE 的**模式**，`%` 与 `_` 在那里是
+  // 通配符（`GET /api/history/Text-<前 8 位>%` 会在上游命中该记录，本实现返回 404）。这里用等值比较，
+  // 既更严格、也能走 ux_h_user_type_hash 的索引。完整对照与 A/B 实测见 docs/protocol.md §10
+  // 「hash 的匹配方式」，处置决定见 docs/upstream-defects.md 的 D1。
   async getByTypeAndHash(type: ProfileType, hash: string): Promise<HistoryRecordEntity | null> {
     const res = await this.db
       .prepare(
@@ -248,6 +272,13 @@ export class HistoryDb {
       idx += included.length;
     }
     if (q.searchText) {
+      // **有意不转义 LIKE 元字符**：`%` 与 `_` 在这里是通配符，即搜索 `100%` 等价于"匹配任意"。
+      // 这是**对齐上游**（`HistoryService.cs:153` 同样 `EF.Functions.Like(r.Text, $"%{searchText}%")`），
+      // 属协议面行为，不能单方面收紧——改了会让"上游能搜到、这里搜不到"。
+      // 对照实现：UI 面**转义**（src/ui/query.ts 的 `LIKE … ESCAPE '\'`），那是本站自己的面，
+      // 用户搜 `100%` 不该退化成匹配任意。两侧的差异见 docs/protocol.md §10「查询搜索」。
+      // 上限另有约束：超长搜索串会让 D1 的 LIKE 直接报错，故入口按 48 字节校验
+      // （src/serialization.ts 的 normalizeSearchText）。
       where.push(`Text LIKE ?${idx++}`);
       params.push(`%${q.searchText}%`);
     }
@@ -538,18 +569,6 @@ export class HistoryDb {
     if (keys.length === 0) return;
     const placeholders = keys.map((_, i) => `?${i + 1}`).join(', ');
     await this.db.prepare(`DELETE FROM Meta WHERE Key IN (${placeholders})`).bind(...keys).run();
-  }
-}
-
-export function basename(p: string): string {
-  const idx = p.lastIndexOf('/');
-  return idx < 0 ? p : p.slice(idx + 1);
-}
-
-export class BadRequestError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'BadRequestError';
   }
 }
 

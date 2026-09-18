@@ -1,5 +1,6 @@
 // 广播触发与 negotiate 辅助（docs/protocol.md §6）
 import { Bindings } from './env';
+import { INT32_MIN, INT32_MAX } from './types';
 
 export const HUB_INSTANCE = 'hub';
 export const HUB_PATH = '/SyncClipboardHub';
@@ -99,8 +100,6 @@ export async function negotiateResponse(env: Bindings, request: Request): Promis
 // 与官方服务端 v3.2.0 的 A/B 实测结果实现（见 docs/progress.md §44）：
 //   - 解析失败（含**超出 Int32**）→ 错误串里回显**原样未 trim** 的入参
 //   - 解析成功但 < 0        → 错误串里回显**解析后的整数**（`' -1 '` → `'-1'`）
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
 const NEGOTIATE_MIN_VERSION = 0;
 function negotiateClientVersion(raw: string | null): number | string {
   if (raw === null) return 0; // 未携带 → 版本 0（MinimumProtocolVersion 为 0，故不是错误）

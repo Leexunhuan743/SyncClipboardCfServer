@@ -1,0 +1,172 @@
+/* 设计令牌：颜色 / 字号 / 间距 / 圆角 / 阴影 / 时长与缓动。
+ *
+ * 方言选择：**product**（数据表 + 筛选 + 对话框）。据此定：圆角 8/10/6、边框优先于阴影、
+ * 按钮句子式标签（不全大写）、表格是 <table>。
+ *
+ * 调色板：暖中性底 + 单一强调色（深青）+ 星标琥珀。共两个色相 + 一套中性色。
+ * 刻意避开紫→靛渐变（AI 生成页最可靠的识别特征）。
+ *
+ * 字体：用系统栈而非 Web 字体。这不是偷懒——本项目自托管在 Worker 上、面向国内使用，
+ * 外部字体 CDN（fonts.googleapis.com）在目标网络下大概率加载失败，届时会出现「先无字后有字」
+ * 的闪烁，比系统栈更糟。字号阶梯与 tabular-nums 承担层级，见 base.css。 */
+
+:root {
+  color-scheme: light;
+
+  /* ---- 颜色：浅色（暖纸底）---- */
+  --bg: #faf8f5;
+  --surface: #ffffff;
+  --surface-2: #f4f1ec;
+  --surface-3: #ece7df;
+  --ink: #1b1a18;
+  --ink-muted: #6d6a64;
+  /* 三级文本也要过 4.5:1：原先 #97928a 在暖白底上只有 2.9，版本号一类的小字几乎读不清 */
+  --ink-faint: #74706a;
+  --border: #e5e0d8;
+  --border-strong: #d3ccc0;
+
+  --accent: #0f766e;
+  --accent-hover: #115e59;
+  --accent-soft: #e3f1ef;
+  --accent-ink: #ffffff;
+
+  --star: #b45309;
+  --star-soft: #fdf1e0;
+
+  --danger: #b91c1c;
+  --danger-soft: #fdecec;
+  /* 画在 --danger 上的前景色：填色按钮与错误提示共用。
+   * 深色主题必须换值——那里的 --danger 是亮红，白字只有 2.77:1（实测）。 */
+  --danger-ink: #ffffff;
+
+  --focus: #0f766e;
+
+  /* 原生控件的取色（select 下拉、滚动条、数字输入 spinner、表单默认色）必须跟随**生效主题**，
+   * 而不是系统偏好：否则浅色系统 + 应用内切深色时，深色界面上会混进浅色原生控件。
+   * 具体值在下面两个主题块里各声明一次（`color-scheme` 不是颜色、不能用变量传）。 */
+
+  /* 类型色：四种类型各一色，均为低饱和，避免彩虹感 */
+  --type-text: #3f6212;
+  --type-text-bg: #eef4e3;
+  --type-image: #9d174d;
+  --type-image-bg: #fbeaf1;
+  --type-file: #1e40af;
+  --type-file-bg: #e8eefb;
+  --type-group: #7c2d12;
+  --type-group-bg: #fbeee7;
+
+  /* ---- 字体 ---- */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+
+  /* 字号阶梯：正文 14 → 微标签 12 → 标题 20 → 数字 30，跨度足够撑起层级 */
+  --fs-stat: clamp(1.5rem, 1.25rem + 0.9vw, 1.875rem);
+  --fs-h1: 1.125rem;
+  --fs-h2: 1rem;
+  --fs-body: 0.875rem;
+  --fs-sm: 0.8125rem;
+  --fs-xs: 0.75rem;
+  --lh-tight: 1.25;
+  --lh-body: 1.55;
+
+  /* ---- 间距（base-4 网格）---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* ---- 圆角：product 方言（多种半径，控件小、容器大）---- */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+
+  /* ---- 阴影：克制使用（表格/行不用阴影，只有浮层用）---- */
+  --shadow-pop: 0 1px 2px rgb(27 26 24 / 6%), 0 8px 24px -8px rgb(27 26 24 / 18%);
+  --shadow-dialog: 0 2px 4px rgb(27 26 24 / 8%), 0 24px 64px -16px rgb(27 26 24 / 28%);
+  /* 选中态的一层细影（分段控件）。深色下必须换值：黑色 6% 压在深底上等于不存在 */
+  --shadow-keyline: 0 1px 1px rgb(27 26 24 / 6%);
+
+  /* ---- 尺寸：控件高与命中区是两件事 ----
+   * 桌面控件可以紧凑（数据表要密），触屏命中区不能低于 44px。分开命名，改一处不会误伤另一处。
+   * 之前这两类值直接写在规则里（36px 三处、44px 十几处、列宽一处），是 §32 记的「令牌缺口」。 */
+  --control-h: 36px;
+  --control-h-sm: 30px;
+  --hit-min: 44px;
+  /* 触屏下操作列宽：4 个 44px 按钮 + 3×4 间距 + 单元格 24px 内边距（量的是 Image 行的 4 按钮行） */
+  --col-actions-coarse: 212px;
+
+  /* ---- 遮罩：浅深主题共用（两边的“变暗”语义相同，各自配一个值只会漂移）---- */
+  --overlay: rgb(20 19 18 / 45%);
+
+  /* ---- 长时长：它们不是过渡，而是「状态持续多久」（骨架呼吸、新行高亮），
+   *      故与 --dur-* 的动效阶梯分开，避免有人把它们当过渡时长去调。 ---- */
+  --dur-skeleton: 1.4s;
+  --dur-flash: 1600ms;
+
+  /* ---- 动效令牌（见 motion.css 的使用约定）---- */
+  --dur-instant: 90ms; /* 指针反馈、tooltip */
+  --dur-fast: 160ms; /* hover、按下、标签切换 */
+  --dur-standard: 300ms; /* 浮层进出、行入场 */
+  --dur-medium: 460ms; /* 列表整体替换、视图过渡 */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-circ: cubic-bezier(0, 0.55, 0.45, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  /* 轻微回弹：cubic-bezier 表达不了过冲，用 linear() 采样 */
+  --ease-pop: linear(0, 0.32 8%, 0.79 20%, 1.03 30%, 1.01 46%, 1);
+
+  /* 顶栏 60 → 56：它每条页面都在，4px 是把「首屏能多看到半行」换成"看起来没差"的地方。
+   * 内容宽度 1180 → 1280：数据表的正文列实测只有 342px（八个固定列吃掉其余宽度），
+   * 放宽容器是唯一不动列宽就能把正文还给用户的做法。 */
+  --header-h: 56px;
+  --content-max: 1280px;
+}
+
+/* ---- 颜色：深色（同一套语义，换值不换名）---- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #191817;
+  --surface: #201f1d;
+  --surface-2: #272522;
+  --surface-3: #302d29;
+  --ink: #f0ede7;
+  --ink-muted: #a9a49b;
+  /* 深色下同样要过 4.5：#7d7871 与深底只有 4.05 */
+  --ink-faint: #918b83;
+  --border: #322f2b;
+  --border-strong: #45413b;
+
+  --accent: #14b8a6;
+  --accent-hover: #2dd4bf;
+  --accent-soft: #12312e;
+  --accent-ink: #08211f;
+
+  --star: #f0b357;
+  --star-soft: #35290f;
+
+  --danger: #f87171;
+  --danger-soft: #3a1f1f;
+  /* 亮红底上的深色字：对比 ≈5.5:1（白字只有 2.77:1，不达标） */
+  --danger-ink: #3b1d1d;
+
+  --focus: #2dd4bf;
+
+  --type-text: #a3c46a;
+  --type-text-bg: #222a18;
+  --type-image: #f0a0c0;
+  --type-image-bg: #331f28;
+  --type-file: #8fb4f0;
+  --type-file-bg: #1d2433;
+  --type-group: #e0a88a;
+  --type-group-bg: #33231b;
+
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px -8px rgb(0 0 0 / 60%);
+  --shadow-dialog: 0 2px 4px rgb(0 0 0 / 40%), 0 24px 64px -16px rgb(0 0 0 / 70%);
+  --shadow-keyline: 0 1px 1px rgb(0 0 0 / 45%);
+}

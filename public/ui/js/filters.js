@@ -4,31 +4,59 @@
 // 也是「筛选看起来能用但一刷新就回到初始页」这类不完善感的来源。
 //
 // 时间范围有三种形态，URL 里都以**用户可读**的形式保存：
-//   range=all|today|7d|30d   —— 预设，边界在每次请求时按“现在”重算（页面开一整天也不会停在旧窗口）
-//   range=custom&after=&before= —— 自定义，毫秒时间戳；before 是**开区间上界**（对齐服务的 CreateTime < before）
-// 预设不写死边界进 URL：否则分享出去的链接会随着对方打开的时间而语义漂移。
+//   range=all|today|7d|30d   —— 预设，边界在每次请求时按"现在"重算（页面开一整天也不会停在旧窗口）
+//   range=custom&after=&before= —— 自定义，毫秒时间戳；before 是**开区间上界**（对齐服务端 `CreateTime < before`）
+// 预设不写死边界进 URL：否则分享出去的链接会随对方打开的时间而语义漂移。
+
+// 本地日界：用户说「今天」指的是自己时区里的今天。实现与 `format.js` 的 `startOfDay` 同一条，
+// 这里**转出**它而不是自己再实现一遍：它是"时间范围"这个概念的组成部分，
+// 读 `filters.js` 的人不该为了理解范围边界再去翻另一个模块；
+// 同时它保持 V1 的导出面（`test/ui-logic.test.ts` 直接测它，测的是边界语义，
+// 与它在哪个模块里无关）。
+export { startOfDay } from './format.js';
+import { startOfDay } from './format.js';
 
 export const DEFAULT_FILTERS = {
   page: 1,
   pageSize: 50,
-  types: 'All', // All | Text | Image | File | Group | 逗号组合
+  types: 'All', // All | Text | Image | File | Group | 逗号组合（服务端收位掩码名或数字）
   starred: false,
   search: '',
-  range: 'all', // all | today | 7d | 30d | custom
+  range: 'all',
   after: null, // epoch ms；仅 range === 'custom' 时使用
   before: null, // epoch ms（开区间上界）
   deleted: false, // 回收站视图：只看已删除的记录
-  sort: 'createTime', // createTime | lastModified | lastAccessed | size | type | id
+  sort: 'createTime',
   order: 'desc',
 };
 
-// 页大小档位。上限 500 来自服务端白名单（`src/ui/query.ts` 的 UI_MAX_PAGE_SIZE）：
-// 档位里必须包含它，否则 URL 写 `pageSize=500` 时下拉会落到空选——读起来像缺陷。
+// 页大小档位。**上限 500 必须出现在档位里** —— 它来自服务端白名单
+// （`src/ui/query.ts` 的 `UI_MAX_PAGE_SIZE`），URL 手写 `pageSize=500` 时
+// 下拉若能落到空选，读起来就像缺陷（V1 的 backend-gaps §1.5 记过这个坑）。
 export const PAGE_SIZES = [20, 50, 100, 200, 500];
 
+// 六个可排序字段与服务端 `SORT_COLUMNS` 白名单一一对应。V1 只把其中三个做成了可点表头，
+// 另外三个只能手改 URL（backend-gaps §1.4）；V2 把它们全放进排序菜单。
+export const SORT_FIELDS = [
+  { value: 'createTime', label: '创建时间' },
+  { value: 'lastModified', label: '修改时间' },
+  { value: 'lastAccessed', label: '访问时间' },
+  { value: 'size', label: '大小' },
+  { value: 'type', label: '类型' },
+  { value: 'id', label: '记录序号' },
+];
+
+export const RANGE_PRESETS = [
+  { value: 'all', label: '全部时间' },
+  { value: 'today', label: '今天' },
+  { value: '7d', label: '近 7 天' },
+  { value: '30d', label: '近 30 天' },
+  { value: 'custom', label: '自定义…' },
+];
+
 const TYPES = new Set(['All', 'Text', 'Image', 'File', 'Group']);
-const SORTS = new Set(['createTime', 'lastModified', 'lastAccessed', 'size', 'type', 'id']);
-const RANGES = new Set(['all', 'today', '7d', '30d', 'custom']);
+const SORTS = new Set(SORT_FIELDS.map((f) => f.value));
+const RANGES = new Set(RANGE_PRESETS.map((r) => r.value));
 const DAY_MS = 86_400_000;
 
 function clampInt(raw, fallback, min, max) {
@@ -38,14 +66,7 @@ function clampInt(raw, fallback, min, max) {
   return Math.min(Math.max(n, min), max);
 }
 
-// 本地日界：用户说「今天」指的是自己时区里的今天，不是 UTC 的今天。
-export function startOfDay(ms) {
-  const date = new Date(ms);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
-}
-
-/** 预设范围 → [after, before) 的毫秒边界；null 表示该侧不设限。 */
+/** 预设范围 → `[after, before)` 的毫秒边界；`null` 表示该侧不设限。 */
 export function rangeBounds(filters, now = Date.now()) {
   switch (filters.range) {
     case 'today':
@@ -61,7 +82,7 @@ export function rangeBounds(filters, now = Date.now()) {
   }
 }
 
-/** epoch ms → `<input type="date">` 的本地日期串。 */
+/** epoch ms → `<input type="date">` 的**本地**日期串。 */
 export function toDateInput(ms) {
   if (ms === null || ms === undefined) return '';
   const date = new Date(ms);
@@ -71,8 +92,8 @@ export function toDateInput(ms) {
 
 /**
  * `<input type="date">` 的值 → 毫秒边界。
- * edge='start'：该日 00:00（含）；edge='end'：次日 00:00（不含）——与服务端 `CreateTime < before` 对齐，
- * 否则「截止到今天」会把今天 00:00 之后的记录全部漏掉。
+ * `edge='start'`：该日 00:00（含）；`edge='end'`：次日 00:00（不含）—— 与服务端
+ * `CreateTime < before` 对齐，否则「截止到今天」会把今天 00:00 之后的记录全部漏掉。
  */
 export function fromDateInput(value, edge) {
   if (!value) return null;
@@ -89,7 +110,6 @@ export function fromDateInput(value, edge) {
 export function filtersFromUrl(search = location.search) {
   const params = new URLSearchParams(search);
   const typesRaw = params.get('types') ?? '';
-  const types = TYPES.has(typesRaw) ? typesRaw : DEFAULT_FILTERS.types;
   const sortRaw = params.get('sort') ?? '';
   const rangeRaw = params.get('range') ?? '';
   const after = clampInt(params.get('after'), null, 0, Number.MAX_SAFE_INTEGER);
@@ -100,11 +120,15 @@ export function filtersFromUrl(search = location.search) {
     : after !== null || before !== null
       ? 'custom'
       : DEFAULT_FILTERS.range;
+  const pageSizeRaw = clampInt(params.get('pageSize'), DEFAULT_FILTERS.pageSize, 1, 500);
   return {
     page: clampInt(params.get('page'), 1, 1, 1_000_000),
-    pageSize: clampInt(params.get('pageSize'), DEFAULT_FILTERS.pageSize, 1, 500),
-    types,
+    // 页大小吸附到最近的档位：URL 里手写的 37 会让下拉落到空选，看起来像缺陷。
+    pageSize: nearest(PAGE_SIZES, pageSizeRaw),
+    types: TYPES.has(typesRaw) ? typesRaw : DEFAULT_FILTERS.types,
     starred: params.get('starred') === '1',
+    // 搜索串本地也截一下（服务端上限是 48 字节，那里会给出 400 的明确错误）。
+    // 本地截到 200 字符是为了不让一条畸形 URL 把输入框撑爆。
     search: (params.get('search') ?? '').slice(0, 200),
     range,
     after,
@@ -115,7 +139,12 @@ export function filtersFromUrl(search = location.search) {
   };
 }
 
-// 传给 /ui/api/history 的查询参数（只放非默认值，便于阅读日志）
+function nearest(list, value) {
+  if (list.includes(value)) return value;
+  return list.reduce((best, item) => (Math.abs(item - value) < Math.abs(best - value) ? item : best), list[0]);
+}
+
+/** 传给 `/ui/api/history` 的查询参数（只放非默认值，便于读日志）。 */
 export function filtersToApi(filters, now = Date.now()) {
   const query = {
     page: filters.page,
@@ -172,4 +201,9 @@ export function isDefaultFilters(filters) {
     filters.sort === DEFAULT_FILTERS.sort &&
     filters.order === DEFAULT_FILTERS.order
   );
+}
+
+/** 视图是"回收站"还是"活跃列表"——类型计数与统计都要按它分流，故单独暴露一个判据。 */
+export function viewOf(filters) {
+  return filters.deleted ? 'trash' : 'active';
 }

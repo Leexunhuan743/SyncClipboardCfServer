@@ -1,0 +1,75 @@
+/* 登录页自己的样式。列表页不加载这张表。
+ *
+ * 形制：不是“居中卡片 + 大标题 + 两个按钮”的落地页套路，而是一个窄的、
+ * 偏左的凭据面板——上方一行产品标识，下面是真实字段与错误位。 */
+
+/* 登录页的骨架：提示条在上、表单区占满**余下**的一屏。
+ *
+ * 为什么需要这两条：`.auth` 原本自带 `min-height: 100vh`，而顶部提示条是 32px ——
+ * 两者相加恒定超出视口 32px，页面因此常驻一条滚动条（实测截图右下角可见）。
+ * 交给 `body` 做列向 flex、`.auth` 取 `flex: 1`，则"一屏"的定义自动跟着提示条的有无走
+ * （提示条被关掉时也一样成立）。 */
+html[data-app="login"] body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.auth {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  padding: var(--sp-5);
+  background:
+    radial-gradient(120% 80% at 12% 0%, var(--accent-soft), transparent 60%),
+    var(--bg);
+}
+
+.auth__panel {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.auth__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.auth__mark {
+  width: 30px;
+  height: 30px;
+  color: var(--accent);
+}
+
+.auth__title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.auth__sub {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+}
+
+.auth__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+}
+
+.auth__submit {
+  min-height: 40px;
+  width: 100%;
+}

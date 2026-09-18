@@ -1,8 +1,20 @@
-# 上游 SyncClipboard 安全问题 · Issue 稿（7 条）
+# 上游 SyncClipboard 安全问题 · Issue 稿（15 条）
 
-> **2026-09-15 追加**：以 `28c7e596` 为基准做了一次逐文件对照（报告见 [`upstream-parity.md`](upstream-parity.md)），
+> **2026-09-15 追加（一）**：以 `28c7e596` 为基准做了一次逐文件对照（报告见 [`upstream-parity.md`](upstream-parity.md)），
 > 新增 **Issue 8–12**（缓存键失效、孤儿清理中断、条数上限不收敛、全表拉取、静默吞异常）与一节
 > **「复核记录：被驳回的候选」**。原有 7 条未改动。
+>
+> **2026-09-15 追加（二）**：又做了一轮「上游缺陷在本实现里怎么处置」的逐条对照
+> （报告见 **[`upstream-defects.md`](upstream-defects.md)**：16 条已复刻 + 5 条未复刻，含 A/B/契约三分类）。
+> 该轮的结论：**原有 13 条全部成立，无一条需要撤回**；新增 **Issue 14**（服务端无唯一索引，
+> 是 Issue 8 同一族的数据完整性问题），并把两条**此前只写在代码注释里**的偏离理由
+> （LIKE 通配符、乐观锁针对的故障类型）补进了 `protocol.md` §10。
+>
+> **2026-09-15 追加（三）**：客户端侧专项对照（对照范围从"服务端"扩到 `SyncClipboard.Core` 的
+> 历史/清理链路），新增 **Issue 15**（软删记录的本地数据被"只删行不删文件"，且两个清理 Job 的候选集互斥
+> 使抢救它的那个**通常抢不到**）。本条属**客户端**问题，标签建议 `Area-Client` + `privacy`。
+> 本文件与 `upstream-defects.md` 的分工：**本文件只收录"给上游提 issue"的条目**；
+> `upstream-defects.md` 回答"上游的问题在本实现里如何处理"（含**有意复刻**的契约类行为——那些**不是** issue）。
 
 - **对象**：`SyncClipboard`（C# / ASP.NET Core 服务端，仓库本地路径 `C:/Users/leeexx/Documents/NewProject/SyncClipboard`）
 - **核实方式**：本轮**只读**通读上游源码（下列每条都给出 `文件:行` 与逐字代码），未运行上游服务；因此"影响"部分是按代码语义的推断，凡未实测处均已标注。
@@ -314,6 +326,160 @@ identification from authentication/claims` + `HistoryService.HARD_CODED_USER_ID`
 
 ---
 
+## Issue 14 · 并发更新会被静默覆盖，且数据库层没有任何唯一约束兜底
+
+**严重度**：Medium（多副本/多进程共享同一 `history.db` 时丢更新与产生重复行；单进程部署不受影响，但两个缺陷都只靠进程内状态遮掩）
+**位置**：`src/SyncClipboard.Server.Core/Services/History/HistoryService.cs:19`（`_processSem`）、`:33-83`（`Update`）、`:182-209`（`AddProfile`）；
+`src/SyncClipboard.Server.Core/Utilities/History/HistoryDbContext.cs:38-55`；`src/SyncClipboard.Server.Core/Migrations/20251105014242_Init.cs:40-58`
+
+**代码（逐字）**：
+
+```csharp
+// HistoryService.cs:19 —— 进程内静态信号量：同一进程的多个 scope 共享，但跨进程/跨副本无效
+private static readonly SemaphoreSlim _processSem = new(1, 1);
+
+// HistoryService.cs:43-82 —— Update：读 → 判定 → 改字段 → SaveChanges，全程只被上面那把锁保护
+var existing = await Query(userId, type, hash, token);
+...
+if (!shouldUpdate) { return (false, HistoryRecordDto.FromEntity(existing)); }
+...
+existing.LastModified = dto.LastModified.Value.UtcDateTime;
+existing.Version = dto.Version.Value;
+await _dbContext.SaveChangesAsync(token);      // ← 无条件覆盖，不检查期间是否已被他人修改
+
+// HistoryService.cs:192-207 —— AddProfile 的「查无 → 插入」，同样只有进程内锁
+var existing = await Query(userId, type, hash, token);
+if (existing is not null) { ... return; }
+await _dbContext.HistoryRecords.AddAsync(entity, token);   // ← 无 DB 层唯一约束
+```
+
+数据库侧只有主键，**没有**任何针对 `(UserId, Type, Hash)` 的约束（`Migrations/…_Init.cs:40-43` 只有
+`table.PrimaryKey("PK_HistoryRecords", x => x.ID)`；`HistoryDbContext.cs:38-55` 的三个索引都不含 `Hash`）。
+
+**影响**：
+
+1. **丢更新**：`Update` 把乐观并发判定完全交给客户端提交的 `Version`/`LastModified`，服务端**不做**
+   「我读到的版本是否仍未被改动」的检查。两个并发 PATCH（两个副本，或同一实例上的两轮竞态）可各自通过
+   `ShouldUpdate` 再各自 `SaveChanges`，后写者静默覆盖前写者——**客户端 `OfficialAdapter.cs:323-337` 依赖 409 来发现冲突并重试，
+   这条路径在多副本下不会触发**。
+2. **重复行**：`AddProfile` 是典型的 check-then-act。进程内锁让它单进程安全，但一旦两个进程/副本
+   共享同一个 `history.db`（容器编排把 SQLite 放在共享卷上是这类单文件部署最常见的误用），
+   同一 hash 会被插入两行。此后 `Query` 用 `FirstOrDefaultAsync` **不保证取到哪一行**，
+   而 `GetRecentTransferFile` 又按 `File.Exists` 逐条回退 ⇒ 客户端可能反复取到"另一行"的数据文件，
+   形成反复下载/反复上传。**上游自己已有一次同主题修复**（提交 `e79a18d6`「修复：数据库并发问题」，
+   在 `28c7e596` 之前），但那次只在客户端侧处理，服务端仍未加约束。
+
+**复现（未实测，按代码语义推断）**：把 `server/data/history.db` 放在两个服务端实例共享的卷上，
+并发对同一 hash 发两个 `PUT /SyncClipboard.json`，或对同一条记录发两个 `PATCH` → 前者产生重复行
+（`SELECT COUNT(*) … GROUP BY UserId, Type, Hash` 出现 2），后者其中一个更新被静默丢弃。
+
+**建议修复**：
+
+1. **加唯一索引** `(UserId, Type, Hash)`（迁移），并把 `AddProfile` 的 check-then-act 改成
+   「插入 → 捕获唯一冲突 → 转入已存在分支」（与上游 `UpdateExistingRecordDto` 的语义一致）。
+2. **把乐观并发下推到 SQL**：`UPDATE … WHERE ID = @id AND Version = @readVersion`，按受影响行数判定冲突并返回 409
+   ——这正是客户端已经在等的那条分支（`OfficialAdapter.cs:329` 读 `HistoryRecordUpdateDto` 抛
+   `RemoteHistoryConflictException`），服务端目前却几乎不会触发它。
+3. 若确定只支持**单实例**部署，则在文档中显式声明该前提（并说明共享 `history.db` 不受支持），
+   而不是把正确性寄托在一把 `static` 信号量上。
+
+**参考实现**：SyncClipboardCfServer 已落地上述 1 与 2
+（`schema.sql:35` 的 `ux_h_user_type_hash`；`src/db.ts:151-182` 的唯一冲突合并、`:199-210` 的
+`updateEntityIfVersion`），可作为 PR 的最小实现形态参考。
+
+**与 Issue 8 的关系**：Issue 8 是"外部改动不可见"（缓存层），本条是"并发改动互相覆盖"（存储层）；
+两者都是**服务端状态一致性**问题，但触发条件不同，建议分别提交。
+
+---
+
+## Issue 15 · 已删记录的本地数据在 30 天后被"只删行不删文件"，而负责删文件的那个 Job **通常抢不到**（客户端）
+
+**严重度**：Medium-High（`EnableSyncHistory = true` 时敏感内容在盘上至少多留 7 天；关掉清理后可能永久遗留）
+**位置**：`src/SyncClipboard.Core/Utilities/History/HistoryManager.cs:408-424`（`RemoveSoftDeletedOutOfDateRecords`）、
+`:453-466`（`CleanupExpiredHistory` 的分派）、`:426-451`（`ClearDeletedHistoryData`，**会**删目录的那个）、
+`:88-105`（`DeleteWorkingDirAsync`）、`:492-541`（`CleanupOrphanedHistoryFolders`）；
+调度周期在 `src/SyncClipboard.Core/Utilities/Job/Job.cs:14-16`
+
+**代码（逐字）**：
+
+```csharp
+// HistoryManager.cs:408-424 —— 30 天后硬删：只 RemoveRange，**没有** DeleteWorkingDirAsync
+private async Task RemoveSoftDeletedOutOfDateRecords(CancellationToken token = default)
+{
+    ...
+    var cutoffTime = DateTime.UtcNow.AddDays(-30);
+    var toDeletes = _dbContext.HistoryRecords.Where(r => r.IsDeleted && r.LastModified < cutoffTime);
+    if (!toDeletes.Any()) { return; }
+    _dbContext.HistoryRecords.RemoveRange(toDeletes);
+    await _dbContext.SaveChangesAsync(token);      // ← 行没了，工作目录还在
+}
+
+// :453-466 —— 历史同步开启时走上面那条分支，其余分支同理
+public async Task CleanupExpiredHistory(CancellationToken token = default)
+{
+    if (!EnableCleanup) { return; }
+    if (_runtimeHistoryConfig.EnableSyncHistory)
+    {
+        await RemoveSoftDeletedOutOfDateRecords(token);
+        return;                                     // ← 到此为止
+    }
+    ...
+}
+
+// :426-451 —— 唯一"成对删除"的入口：删目录 + 删行。它的候选集比上面窄
+public async Task ClearDeletedHistoryData(CancellationToken token = default)
+{
+    var deletedRecords = _dbContext.HistoryRecords
+        .Where(r => r.IsDeleted && r.FilePath.Length > 0 && r.IsLocalFileReady)   // ← 额外两个条件
+        .ToList();
+    ...
+    foreach (var record in deletedRecords) { ...; await DeleteWorkingDirAsync(record, token); }
+    _dbContext.HistoryRecords.RemoveRange(deletedRecords);
+    await _dbContext.SaveChangesAsync(token);
+}
+```
+
+调度（`Job.cs:14-16`）：
+
+```csharp
+scheduler.AddJob<HistoryCleanupJob>(TimeSpan.FromMinutes(1));            // → CleanupExpiredHistory（硬删 30 天前的行）
+scheduler.AddJob<DeletedHistoryDataCleanupJob>(TimeSpan.FromMinutes(5)); // → ClearDeletedHistoryData（删行 + 删目录）
+scheduler.AddJob<OrphanedHistoryCleanupJob>(TimeSpan.FromHours(6));      // → CleanupOrphanedHistoryFolders（按目录名差集）
+```
+
+**影响**：两条硬删路径的候选集**互斥**——`ClearDeletedHistoryData` 要求 `IsDeleted && FilePath.Length > 0
+&& IsLocalFileReady`，而 `RemoveSoftDeletedOutOfDateRecords` 只要 `IsDeleted && LastModified < now-30d`。
+后者**每 1 分钟**跑一次、前者**每 5 分钟**一次 ⇒ 一条软删记录活到第 30 天时，几乎总是被**前者**先删行；
+行一没，`ClearDeletedHistoryData` 的查询就再也命中不到它，**`DeleteWorkingDirAsync` 从未对它执行过**。
+
+留下的目录只能靠 `CleanupOrphanedHistoryFolders` 回收，而它带两个额外条件（`:510` 的
+`cutoffTime = now-7d`、`:521` 比 `dirInfo.CreationTime`）：
+① 目录创建不足 **7 天**则不删 ⇒ 即使 30 天前建的目录早已过 7 天，"文件真正消失"也**至少被推迟到第 7 天之后**；
+② `EnableCleanup` 为假时 `CleanupExpiredHistory` 直接早退（`:457-460`），该 Job 的 6 小时轮询仍在跑，
+但用户以为"已经关了清理、也删干净了"；③ 目录被句柄占住（Windows 常见）时两处删除都只留一行日志。
+
+净效果：**用户已经删掉（含"删除并想让它消失"的敏感剪贴板）的文件内容，在磁盘上比 UI 与文档所暗示的时间多留 7 天以上**。
+注意本条的触发前提是"软删后满 30 天"——对**历史同步开启**（= 官方服务器用户）的路径，这是默认分支。
+
+**复现（未实测，按代码语义推断）**：开历史同步 → 删除一条带数据文件的记录 →
+把该记录的 `LastModified` 手工改到 31 天前（或直接用 `-30d` 构造数据）→ 触发 `HistoryCleanupJob` →
+观察 DB 行已消失，而 `Env.HistoryFileFolder` 下对应工作目录**仍在**，直到 7 天窗口过后由 6 小时 Job 回收。
+
+**建议修复**：
+
+1. `RemoveSoftDeletedOutOfDateRecords` 改为**先删目录、再删行**（或直接复用 `RemoveHistoryNoLock` 的成对语义）
+   ——这是最小且语义正确的修法。
+2. 若要保持两个 Job 分工，则把它们之间的**时序依赖写成断言或注释**：`DeletedHistoryDataCleanupJob` 的周期
+   必须**短于** `HistoryCleanupJob` 的硬删判定窗口，否则前者对本分支**永久不可达**。当前这条依赖没有任何守护。
+3. `CleanupOrphanedHistoryFolders` 的 `CreationTime` 判据值得复核：用**目录创建时间**而非"记录删除时间"
+   表达保留期，会让"删除后想尽快清除"的诉求落空；且 `CreationTime` 在部分平台/复制场景下的语义不稳。
+
+**边界**：本机无 .NET SDK，**未运行**客户端，故为源码级推断。但"两个 Job 的候选集互斥"与"1min < 5min"
+均可直接从上文代码读出，不依赖运行观察；`CleanupOrphanedHistoryFolders` 的兜底路径也已在文中给出，
+故本条不是"文件必然永久残留"，而是"**兜底路径比预期晚 ≥7 天，且可被配置彻底切断**"。
+
+---
+
 ## 复核记录：两个**被驳回**的候选（不要提 issue）
 
 | 候选 | 为什么不成立 |
@@ -323,6 +489,20 @@ identification from authentication/claims` + `HistoryService.HARD_CODED_USER_ID`
 与 `BasicAuthenticationHandler` 手写 401 的行为一致，**不存在**"401 变 500"。此前按「不主张」处理的原因是
 本机无可用的上游服务端（该判断本身也已纠正：本机缺的只是 SDK，运行时与官方发布件都在）；`docs/protocol.md` §1/§10 对 401 的描述维持不变。若将来要做实证，用一条未认证的 `GET /api/version` 看状态码即可判定。 |
 | 「`README_DOCKER.md:54` 让用户把配置挂到 `/app/appsettings.json`，而 `Dockerfile:17` 的 `--contentRoot` 是 `/app/data`，所以按文档挂载不生效、改密码无效」 | **驳回**。`Program.cs:48-74` 的 `EnsureAppSettingsExists` 在 `/app/data/appsettings.json` 不存在时，会从 `AppContext.BaseDirectory`（= `/app`，正是文档里的挂载点）**复制**该文件到 `/app/data/` 并 `configurationManager.AddJsonFile(...)` 显式加载 ⇒ 文档给的挂载路径恰好落在复制来源上，配置能生效。附带结论：镜像内的 `/app/appsettings.json`（占位口令）会被复制成运行时配置——这是 Issue 1 的另一条触发路径，而不是「文档无效」。 |
+
+---
+
+## 待实测，暂不主张的候选（可提，但先要有证据）
+
+与上面「被驳回」不同：这些候选**可能成立**，但本环境**无法在不运行上游服务端的情况下判定**，
+按本仓纪律（ADR D10：「凡属推断的行为都必须有一次真上游实测」）暂不进 issue 稿。
+拿得到上游实例时，按下表的判定方式各测一次即可定性。
+
+| 候选 | 为什么现在不能主张 | 可判定的实测方式 |
+|---|---|---|
+| `SyncClipboardController.cs:87-103` 的 `GetFileFromFolder` **没有**调用 `InvalidFileName`（`:22-25`），而 `PutFileToFolder`（`:108`）调用了 | 编码后的路径形态是否真能绕过守卫，取决于 ASP.NET Core 对路由值的路径归一化与 `File.Exists` 的组合行为；纯读代码无法确定 `%2e%2e`（解码为 `..`）能否落到 `Path.Combine(folder, fileName)` 之外的路径上 | 对上游发 `GET /file/%2e%2e%2fSyncClipboard.json`（及其变体 `%252e`、`..%5c`），看是否 200 且返回内容；同时对照 `GET /file/..%2f..%2fSyncClipboard.json` |
+| `SyncClipboardController.cs:99-102` 把内部异常（磁盘/权限）映射成 **400** 且回显 `ex.Message` | 属"错误语义不精确 + 信息泄露"，是否算 issue 取决于上游的接收口径；需要先确认异常消息里是否真的带路径 | 把 `server/history` 目录 `chmod 000`（或占用目标文件句柄）后请求 `GET /file/<真实文件名>`，看状态码与响应体 |
+| `HistoryController.cs:66` 的 `File(stream, contentType, fileName)` 是否会把含 CR/LF 的 `fileName` 写进 `Content-Disposition` 而抛错 | ASP.NET 的 `FileResult`/`ContentDispositionHeaderValue` 未必像 Workers 的 `new Response(...)` 那样严格；本仓 `protocol.md` 的"不属于上游问题"表已把这条记为**未验证** | 以 `POST /api/history` 上传一个 `text`（= 文件名）含 `%0d%0a` 的记录，再 `GET /api/history/{id}/data`，看是否 500 |
 
 ---
 
