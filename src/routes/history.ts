@@ -22,6 +22,7 @@ import { ProfileType, HistoryQueryDto, INT32_MIN, INT32_MAX, isValidProfileHash 
 import { broadcast } from '../hub';
 import { applyHistoryUpdate, clearAllHistory } from '../historyOps';
 import { parseBoundary, parseMultipart, MultipartResult } from '../multipart';
+import { drainRequestBody } from '../auth';
 
 const UNPROCESSABLE_ENTITY = 422;
 
@@ -153,11 +154,60 @@ function parseIncomingForm(form: MultipartResult): IncomingRecord {
   };
 }
 
-// 解析 multipart 请求：检查 Content-Type + boundary，读取 body，返回 MultipartResult 或 400 响应
-async function parseRequestMultipart(c: { req: { header(name: string): string | undefined; arrayBuffer(): Promise<ArrayBuffer> } }): Promise<MultipartResult | Response> {
+// 表单请求体的媒体类型判定（对齐上游的模型绑定，差异表见 docs/protocol.md §10）：
+//   POST /api/history        —— 上游显式标注 `[Consumes("multipart/form-data")]`：其他媒体类型在
+//                               模型绑定**之前**就被拒 → 415（不是 400）。客户端按状态码分支，故必须一致。
+//   POST /api/history/query  —— 上游只有 `[FromForm]`、没有 Consumes 约束：ASP.NET 的
+//                               FormValueProviderFactory 同时接受 multipart/form-data 与
+//                               application/x-www-form-urlencoded，故两者都要能解析。
+const UNSUPPORTED_MEDIA_TYPE = 415;
+
+function mediaType(contentType: string): string {
+  const semi = contentType.indexOf(';');
+  return (semi < 0 ? contentType : contentType.slice(0, semi)).trim().toLowerCase();
+}
+
+// urlencoded 表单 → MultipartResult 形状（字段名大小写不敏感，与 multipart 侧同一套取值语义）
+function urlEncodedResult(params: URLSearchParams): MultipartResult {
+  const values = new Map<string, string>();
+  for (const [key, value] of params) {
+    const lower = key.toLowerCase();
+    if (!values.has(lower)) values.set(lower, value);
+  }
+  return {
+    parts: [],
+    get: (name: string) => values.get(name.toLowerCase()) ?? null,
+    data: null,
+    dataPresent: false,
+  };
+}
+
+interface FormRequest {
+  req: {
+    header(name: string): string | undefined;
+    text(): Promise<string>;
+    arrayBuffer(): Promise<ArrayBuffer>;
+    raw: Request;
+  };
+}
+
+// 解析表单请求体；失败时返回可直接回给客户端的 Response（400/415）
+async function parseFormBody(c: FormRequest, allowUrlEncoded: boolean): Promise<MultipartResult | Response> {
   const contentType = c.req.header('content-type') ?? '';
+  const type = mediaType(contentType);
+
+  if (allowUrlEncoded && type === 'application/x-www-form-urlencoded') {
+    return urlEncodedResult(new URLSearchParams(await c.req.text()));
+  }
+  if (!allowUrlEncoded && type !== 'multipart/form-data') {
+    // 提前返回前先排空请求体：否则本 isolate 的后续请求会以 503 结束（见 src/auth.ts 同名说明）
+    await drainRequestBody(c.req.raw);
+    return new Response('Unsupported Media Type', { status: UNSUPPORTED_MEDIA_TYPE });
+  }
+
   const boundary = parseBoundary(contentType);
   if (!boundary) {
+    await drainRequestBody(c.req.raw);
     return new Response('Invalid or missing multipart/form-data boundary', { status: 400 });
   }
   try {
@@ -235,7 +285,8 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   // POST /api/history/query —— 分页查询（multipart 表单）
   app.post('/api/history/query', async (c) => {
     const { db } = handlers(c);
-    const parsed = await parseRequestMultipart(c);
+    // 上游此端点只有 [FromForm]：multipart 与 urlencoded 都接受
+    const parsed = await parseFormBody(c, true);
     if (parsed instanceof Response) return parsed;
     let q: HistoryQueryDto;
     try {
@@ -260,7 +311,8 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   // POST /api/history —— 历史上传（multipart；data 文件部分）
   app.post('/api/history', async (c) => {
     const { db, storage } = handlers(c);
-    const parsed = await parseRequestMultipart(c);
+    // 上游此端点有显式 [Consumes("multipart/form-data")]：非 multipart 一律 415
+    const parsed = await parseFormBody(c, false);
     if (parsed instanceof Response) return parsed;
 
     let incoming: IncomingRecord;

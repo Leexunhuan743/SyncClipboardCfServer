@@ -105,11 +105,6 @@ export class R2Storage {
     await this.deletePrefix(workingDirPrefix(type, hash));
   }
 
-  // 删除全部历史数据（ClearAllAsync 语义）
-  async clearHistoryData(): Promise<void> {
-    await this.deletePrefix(HISTORY_PREFIX);
-  }
-
 
   // 列出 history/ 下的工作目录前缀（{Type}_{hash}/），用于孤儿对象清理
   async listHistoryWorkingDirs(): Promise<string[]> {
@@ -140,6 +135,32 @@ export class R2Storage {
       cursor = listed.truncated ? listed.cursor : undefined;
     } while (cursor);
     return keys;
+  }
+
+  // 只删**给定集合**里的工作目录（传入 `workingDirPrefix()` 的产物，即 `history/Type_hash/`）：
+  // 一次列举 + 每个匹配页一次批量删，成本与整棵前缀清理同量级（约 3 次子请求/1000 对象）。
+  //
+  // 为什么不直接按整棵 `history/` 前缀清理：清空与并发上传之间有一个窗口，
+  // 前缀清理会把窗口里**新写入**那条记录的数据目录一起抹掉，而它的行还在 —— 那是数据损坏
+  // （表现为 hasData 但对象缺失，正是 /ui/api/integrity 能查出来的形态）。按集合删则只漏删
+  // （新记录不在集合里，其数据保留），最坏留下孤儿目录，由清理任务的孤儿阶段兜底。
+  // 注意不能反过来「先清前缀再删行」：那样 DELETE 一旦失败就是整库悬空。
+  async deleteHistoryDirs(dirs: string[]): Promise<void> {
+    if (dirs.length === 0) return;
+    const wanted = new Set(dirs.map((dir) => dir.slice(HISTORY_PREFIX.length)));
+    let cursor: string | undefined;
+    do {
+      const listed = await this.bucket.list({ prefix: HISTORY_PREFIX, cursor });
+      const keys = listed.objects
+        .map((object) => object.key)
+        .filter((key) => {
+          const rest = key.slice(HISTORY_PREFIX.length);
+          const slash = rest.indexOf('/');
+          return slash > 0 && wanted.has(rest.slice(0, slash + 1));
+        });
+      if (keys.length > 0) await this.bucket.delete(keys);
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
   }
 
   // 删除指定工作目录前缀（传入 "Type_hash/" 形式）

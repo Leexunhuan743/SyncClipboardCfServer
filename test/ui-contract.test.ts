@@ -227,6 +227,18 @@ describe('public/ui 的类名双向契约', () => {
   });
 });
 
+// 性能约定：**列表刷新路径不得使用同文档视图过渡**（`document.startViewTransition`）。
+// 依据是一次实测（6× CPU 降速、3 次取中位）：一次「什么都没变」的切换，仅过渡本身就要 ~60ms 主线程
+// ——它要对整个结果区做布局/样式快照，成本随页大小上升，而列表现在是一帧落地，没有「换面」需要掩饰。
+// 跨文档过渡（登录页 → 列表页）由 `motion.css` 的 `@view-transition { navigation: auto }` 声明，
+// 不在这条判据里。判据用形态（是否出现该 API）且先剥注释：注释里的引用不算违规。
+describe('public/ui 的性能约定', () => {
+  it('列表路径不得引入同文档视图过渡（实测成本 ~60ms/次，见 docs/ui.md 的性能预算）', () => {
+    const offenders = [...JS_SOURCES].filter(([, source]) => /startViewTransition/.test(source)).map(([file]) => file);
+    expect(offenders, `这些模块用了 document.startViewTransition：${offenders.join(', ')}`).toEqual([]);
+  });
+});
+
 describe('public/ui 的属性契约', () => {
   it('CSS 消费的 data-*/aria-* 都要有生产者（JS 或 HTML）', () => {
     expect(CSS_ATTRS.size, '抽取到的属性选择器数量').toBeGreaterThan(3);

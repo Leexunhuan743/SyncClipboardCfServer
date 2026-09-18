@@ -1,6 +1,6 @@
 {
   "name": "syncclipboard-cf-server",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "private": true,
   "license": "MIT",
   "description": "SyncClipboard 官方服务器的 Cloudflare Workers 复刻版（TypeScript），协议兼容官方客户端",

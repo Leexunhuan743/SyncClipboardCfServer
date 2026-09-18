@@ -30,7 +30,7 @@ export function el(tag, props = {}, children = []) {
 }
 
 // 用常量路径数据构造 SVG（路径来自 icons.js 的静态表，不含用户输入）
-export function svg(pathData, { size = 16, filled = false, class: classNames = '' } = {}) {
+export function svg(pathData, { size = 16, class: classNames = '' } = {}) {
   const node = document.createElementNS(SVG_NS, 'svg');
   node.setAttribute('viewBox', '0 0 24 24');
   node.setAttribute('width', String(size));
@@ -38,8 +38,8 @@ export function svg(pathData, { size = 16, filled = false, class: classNames = '
   if (classNames) node.setAttribute('class', classNames);
   node.setAttribute('aria-hidden', 'true');
   node.setAttribute('focusable', 'false');
-  node.setAttribute('fill', filled ? 'currentColor' : 'none');
-  node.setAttribute('stroke', filled ? 'none' : 'currentColor');
+  node.setAttribute('fill', 'none');
+  node.setAttribute('stroke', 'currentColor');
   node.setAttribute('stroke-width', '1.7');
   node.setAttribute('stroke-linecap', 'round');
   node.setAttribute('stroke-linejoin', 'round');
@@ -52,17 +52,6 @@ export function svg(pathData, { size = 16, filled = false, class: classNames = '
   return node;
 }
 
-export function clear(node) {
-  while (node.firstChild) node.removeChild(node.firstChild);
-}
-
-export function replace(node, children) {
-  clear(node);
-  for (const child of Array.isArray(children) ? children : [children]) {
-    if (child) node.append(child);
-  }
-}
-
 export function debounce(fn, wait) {
   let timer = 0;
   return (...args) => {
@@ -71,20 +60,3 @@ export function debounce(fn, wait) {
   };
 }
 
-// 视图过渡包装：浏览器不支持或用户要求减少动效时，直接执行。
-// 返回是否真的走了过渡（当前无需使用，保留以便将来观测）。
-export function withViewTransition(mutate) {
-  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (prefersReduced || typeof document.startViewTransition !== 'function') {
-    mutate();
-    return false;
-  }
-  const transition = document.startViewTransition(mutate);
-  // 过渡被**中止**是正常路径，不是错误：文档不可见（后台标签页）或下一次过渡抢在前面时，
-  // 浏览器会 reject `ready` / `finished`。不接住它就是一个 unhandled rejection
-  // （实测：文档隐藏时每次过渡必现 InvalidStateError）。中止只影响过渡动画本身——
-  // DOM 已由 `mutate` 更新完毕，数据与交互不受影响。
-  transition.ready.catch(() => {});
-  transition.finished.catch(() => {});
-  return true;
-}

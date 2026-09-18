@@ -109,11 +109,11 @@ export function createConfirm() {
   document.body.append(dialog);
 
   return {
-    ask({ title: heading, message: body, confirmLabel = '删除', danger = true, action: onConfirm = null }) {
+    ask({ title: heading, message: body, confirmLabel = '删除', action: onConfirm = null }) {
       title.textContent = heading;
       message.textContent = body;
       okLabel.textContent = confirmLabel;
-      okButton.className = danger ? 'btn btn--danger-solid' : 'btn btn--primary';
+      okButton.className = 'btn btn--danger-solid';
       action = onConfirm;
       return new Promise((resolve) => {
         resolveCurrent = resolve;

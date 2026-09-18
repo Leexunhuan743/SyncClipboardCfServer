@@ -12,20 +12,12 @@
 //    （列表刷新不会把它冲掉，因为按钮属于行的状态，不属于一次渲染）。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../icons.js';
-import { formatRelative, formatAbsolute, formatSize, previewText, typeLabel, typeChipClass } from '../format.js';
+import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty, typeLabel, typeChipClass } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
+import { buildThumb, buildFlags, TOGGLES, applyToggleState, playPop } from './row-content.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
 
 const ENTER_STAGGER_LIMIT = 12; // 超过 12 行就不再错峰：延迟累积会让第 50 行等两秒
-
-// 缩略图只对「小图」直接取原图。数据端点不做缩放（R2 透传），所以一条 32 MiB 的图片记录
-// 就是一整张 32 MiB 的下载——`loading="lazy"` 只推迟它，不减少它。超过阈值改用占位，
-// 要看原图走行内「预览」（那是一次**用户主动**的请求）。
-const THUMB_MAX_BYTES = 512 * 1024;
-
-function thumbPlaceholder(className, title, icon) {
-  return el('div', { class: `cell-content__thumb ${className}`, title }, [svg(iconPaths(icon), { size: 16 })]);
-}
 
 // 行的「内容签名」：只有这些字段变了才需要重建该行。
 // createTime 不在其中（它真的是常量）；但**修改/访问时间必须在内**——它们是这两个字段里
@@ -52,56 +44,6 @@ const rowRefs = new WeakMap();
 
 // 最近一次按下的行内操作与它所属的行（见 actionButton 里的说明）。
 let lastRowAction = null;
-
-function buildThumb(item) {
-  if (item.type !== 'Image') return null;
-
-  if (!item.hasData) {
-    return thumbPlaceholder('cell-content__thumb--missing', '服务器上没有这条记录的图片数据', 'warning');
-  }
-
-  // 大图不拉原图：见 THUMB_MAX_BYTES 的说明
-  if (Number(item.size) > THUMB_MAX_BYTES) {
-    return thumbPlaceholder(
-      'cell-content__thumb--large',
-      `图片较大（${formatSize(item.size)}），点击预览查看`,
-      'image',
-    );
-  }
-
-  const image = el('img', {
-    class: 'cell-content__thumb',
-    alt: '',
-    loading: 'lazy',
-    decoding: 'async',
-    src: `/ui/api/history/${encodeURIComponent(item.type)}/${encodeURIComponent(item.hash)}/data`,
-  });
-  image.addEventListener('error', () => {
-    // 记录说 hasData，但对象已被清理（线上真实存在这种记录）——换成可读状态
-    image.replaceWith(
-      thumbPlaceholder('cell-content__thumb--missing', '数据不可用：文件已不在服务器上', 'warning'),
-    );
-  });
-  return image;
-}
-
-function buildFlags(item) {
-  const flags = [];
-  if (item.pinned) flags.push(el('span', { class: 'chip chip--neutral' }, [svg(iconPaths('pin'), { size: 11 }), el('span', { text: '置顶' })]));
-  // 防御性分支：服务端拒绝写入「非 Text 且没有传输数据」的 Profile（profile.ts 的
-  // `Transfer data is required for …`），因此**当前数据不变量下不可达**（实测线上 + 本地
-  // 226 条非 Text 记录中 hasData=false 为 0 条）。保留是因为 hasData 由服务端推导、
-  // 类型上允许为假，且历史上（F26 修复前）确实产生过这类行——真出现时不该渲染成可下载。
-  if (!item.hasData && item.type !== 'Text') {
-    flags.push(el('span', { class: 'chip chip--warn', text: '数据不可用' }));
-  } else if (item.type === 'Text' && item.hasData) {
-    flags.push(el('span', { class: 'chip chip--neutral', text: '含数据文件' }));
-  }
-  if (item.textTruncated) flags.push(el('span', { class: 'chip chip--neutral', text: '长文本' }));
-  // 恒返回容器（空容器由 CSS 的 `:empty` 隐藏）：收藏/置顶是行内开关，按下之后徽标要立刻跟上——
-  // 有稳定容器才能就地替换，而不是等下一次轮询重建整行（重建会丢焦点、重载缩略图）。
-  return el('div', { class: 'cell-content__flags' }, flags);
-}
 
 // 行内操作按钮：跑 action → 成功就地显示结果、失败留给 action 自己提示（toast）。
 // action 返回 `true` 才显示成功态——「发过请求」不等于「做成了」。
@@ -133,31 +75,6 @@ function actionButton({ action, label, icon, run, successLabel = null, disabled 
     [svg(iconPaths(icon))],
   );
   return button;
-}
-
-// 行内开关（收藏 / 置顶）：字段与文案成对出现——行内按钮、批量操作、就地更新三处都读这一份，
-// 各写一份必然出现「行内按钮说取消收藏、批量按钮说收藏」这类自相矛盾的界面。
-const TOGGLES = {
-  star: { field: 'starred', labels: { on: '取消收藏', off: '收藏' } },
-  pin: { field: 'pinned', labels: { on: '取消置顶', off: '置顶' } },
-};
-
-function applyToggleState(button, on, labels) {
-  const label = on ? labels.on : labels.off;
-  button.setAttribute('aria-pressed', on ? 'true' : 'false');
-  button.setAttribute('aria-label', label);
-  button.setAttribute('title', label);
-}
-
-// 重放开关动画：同一个 data-pop 属性不会重启动画，故先删、强制回流、再置上。
-function playPop(button) {
-  if (!button) return;
-  const icon = button.querySelector('svg');
-  if (!icon) return;
-  delete button.dataset.pop;
-  void button.offsetWidth;
-  button.dataset.pop = 'true';
-  icon.addEventListener('animationend', () => delete button.dataset.pop, { once: true });
 }
 
 function buildActions(item, actions) {
@@ -251,12 +168,16 @@ export function createList(actions) {
   function sortableHeader(label, field, extraClass) {
     const arrow = svg(iconPaths('arrowUp'), { size: 12, class: 'th-sort__arrow' });
     sortArrows.set(field, arrow);
-    const button = el('button', {
-      class: 'th-sort',
-      type: 'button',
-      title: '排序',
-      onclick: () => actions.onSort(field),
-    }, [el('span', { text: label }), arrow]);
+    const button = el(
+      'button',
+      {
+        class: 'th-sort',
+        type: 'button',
+        title: '排序',
+        onclick: () => actions.onSort(field),
+      },
+      [el('span', { text: label }), arrow]
+    );
     return el('th', { class: extraClass, scope: 'col', role: 'columnheader' }, [button]);
   }
 
@@ -271,8 +192,12 @@ export function createList(actions) {
         sortableHeader('创建', 'createTime', 'col-time'),
         sortableHeader('修改', 'lastModified', 'col-modified'),
         sortableHeader('访问', 'lastAccessed', 'col-accessed'),
-        el('th', { class: 'col-star', scope: 'col', role: 'columnheader' }, [el('span', { class: 'sr-only', text: '收藏与置顶' })]),
-        el('th', { class: 'col-actions', scope: 'col', role: 'columnheader' }, [el('span', { class: 'sr-only', text: '操作' })]),
+        el('th', { class: 'col-star', scope: 'col', role: 'columnheader' }, [
+          el('span', { class: 'sr-only', text: '收藏与置顶' })
+        ]),
+        el('th', { class: 'col-actions', scope: 'col', role: 'columnheader' }, [
+          el('span', { class: 'sr-only', text: '操作' })
+        ]),
       ]),
     ]),
     tbody,
@@ -282,7 +207,8 @@ export function createList(actions) {
   const node = el('section', { class: 'results', 'aria-label': '剪贴板历史' }, [head, table, empty]);
 
   const rowByKey = new Map();
-  let lastViewToken = null;
+  // 首屏是否已经画过：入场错峰只属于首屏（见 update 里的说明）
+  let hasRendered = false;
   let currentItems = [];
   let selection = new Set();
   // 范围选择的锚点（Shift+点击的起点）
@@ -376,10 +302,12 @@ export function createList(actions) {
 
     const checkboxWrap = buildCheckbox(item, index);
 
+    const preview = previewText(item);
+
     const body = el('div', { class: 'cell-content__body' }, [
       el('div', {
-        class: `cell-content__text${previewText(item) === '（空文本）' ? ' cell-content__text--empty' : ''}`,
-        text: previewText(item),
+        class: `cell-content__text${previewIsEmpty(item) ? ' cell-content__text--empty' : ''}`,
+        text: preview,
       }),
       buildFlags(item),
       // 窄屏专用的元信息行（类型 · 大小 · 时间）：桌面由独立列承担，故这里 display:none。
@@ -570,16 +498,23 @@ export function createList(actions) {
     el: node,
 
     update(state) {
-      const { items, total, filters, viewToken, flashKeys } = state;
+      const { items, total, filters, flashKeys } = state;
       selection = state.selection;
-      currentItems = items;
       recycleMode = Boolean(filters.deleted);
 
-      const animate = viewToken !== lastViewToken;
-      lastViewToken = viewToken;
+      // 入场错峰**只在首屏**（第一份非空结果）播一次，那是「页面来了」的一次性仪式；此后任何更新
+      // （切类型、翻页、改筛选、轮询）都走按行对账：级联 12 行 × 40ms = 440ms 的尾巴在用户**已经在看
+      // 这张表**时只会读成「内容慢半拍」，而且它要求整表重建（节点全新建）——实测（6× CPU 降速）
+      // 这类切换一次要 250~350ms 主线程，去掉后 38ms。
+      //
+      // 判据不能用「视图标记变了」：boot 的顺序是 `render()`（items 还是空的）→ `refresh()`，
+      // 两次的 token 相同，首屏会被自己吃掉（复核发现过一次同类问题——`hasRendered` 无条件置位）。
+      const firstPaint = !hasRendered && items.length > 0;
+      if (items.length > 0) hasRendered = true;
+      currentItems = items;
 
-      if (animate) {
-        // 新视图（首次/翻页/改筛选）：整表重建并错峰入场——这时「整块换掉」正是要表达的
+      if (firstPaint) {
+        // 首屏：整表重建并错峰入场——这时「整块换掉」正是要表达的
         tbody.replaceChildren();
         rowByKey.clear();
         const flash = flashKeys ?? new Set();

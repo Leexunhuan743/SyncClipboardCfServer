@@ -5,11 +5,10 @@
 import { typeName } from './format.js';
 
 export class ApiError extends Error {
-  constructor(status, code, message) {
+  constructor(status, message) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
-    this.code = code ?? null;
   }
 }
 
@@ -28,14 +27,13 @@ async function request(path, { method = 'GET', body, signal } = {}) {
     try {
       payload = JSON.parse(text);
     } catch {
-      payload = { raw: text };
+      payload = {};
     }
   }
 
   if (!response.ok) {
-    const code = payload && typeof payload.error === 'string' ? payload.error : null;
     const message = (payload && (payload.detail || payload.error)) || response.statusText || '请求失败';
-    throw new ApiError(response.status, code, message);
+    throw new ApiError(response.status, message);
   }
   return payload;
 }
@@ -75,8 +73,6 @@ export const api = {
     const raw = await request(`/ui/api/history?${buildQuery(filters)}`, { signal });
     return {
       total: raw.total ?? 0,
-      page: raw.page ?? 1,
-      pageSize: raw.pageSize ?? 50,
       items: (raw.items ?? []).map(normalizeItem).filter(Boolean),
     };
   },

@@ -265,16 +265,19 @@ npm run deploy
 
 ## 容量提示
 
-- **Workers 免费版每天 10 万请求**。官方客户端即使在事件驱动模式下，仍会每 10 秒调用一次
-  `/api/version` 探活（`TestAliveHelper`），单客户端约 **8.6k 请求/天**；叠加历史同步与轮询，
-  免费版大致可支撑 **5–10 个客户端**，更多需升级 Workers Paid。
+- **Workers 免费版每天 10 万请求**。官方客户端即使在事件驱动模式下，也在每 10 秒跑一次
+  `TestAliveHelper` 探活，而那次探活是**两个请求**：`OfficialAdapter.TestConnectionAsync` 先做
+  WebDAV 存活检测（**`PROPFIND /`**，`WebDavBase.Test()`）再取 `/api/version` 比对版本下限。
+  单客户端因此约 **17.3k 请求/天**（2 × 8640），免费版大致可支撑 **≤5 个客户端**，更多需升级 Workers Paid。
+  （早先文档只算了 `/api/version` 一个请求、写成 8.6k，是漏算了 PROPFIND 那一半；
+  对上游 `28c7e596` 的对照已按 `OfficialAdapter.cs`/`WebDavBase.cs` 订正。）
 - **Web 界面开着标签也会计费**，量级取决于推送通道是否连上（`/ui/api/poll` 一次 D1 读）：
   · **可见 + 推送已连接**（默认）：轮询降为 60 秒看门狗 ≈ **1.4k Worker 请求/天**；另有 DO 侧开销
     ——客户端每 30 秒一次 WS 心跳（≈2.9k 条/天）与 DO 每 15 秒一次心跳 alarm（≈5.8k 次/天），
     两者走 Durable Objects 的计量口径、**不占 Worker 请求额度**；
   · **可见但推送没连上**（被代理/CSP 阻断、DO 不可达）：退回 10 秒轮询 ≈ 8.6k 请求/天；
   · **标签在后台**：推送通道主动断开（省下那条常驻连接与心跳），轮询 30 秒 ≈ 2.9k 请求/天。
-  作为对照：一个官方客户端的探活本身就是 ≈8.6k 请求/天。
+  作为对照：一个官方客户端的探活本身就是 ≈17.3k 请求/天。
 - **单请求体上限**：平台 100MB，本实现另有 **32 MiB 应用层上限**（超限 413）——客户端默认文件上限 20MB，而 isolate 只有 128MB 内存，接近平台上限的体会在解析期 OOM（见 `src/requestLimits.ts` 注释）。
 - **Group（文件夹）解压上限**：解压总量 64 MiB / 条目 1000 / 单条目压缩比 100:1（见 `src/hash.ts`），超限被拒。
 - D1 / R2 的免费额度对个人剪贴板场景（文本与中小文件）通常绰绰有余。
@@ -294,7 +297,7 @@ npm run deploy
 | 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
 | 清理可观测 | 清理按预算分阶段执行、游标续跑、失败写入 `cleanup:lastError`（`/ui/api/info` 可读） | `src/cleanup.ts` |
 | 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` / `src/requestLimits.ts` |
-| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式/连接限本站、`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的短 TTL + `stale-while-revalidate`（无指纹 ⇒ 部署后有 **≤5 分钟**的新旧混用窗口，之后自动收敛；强制刷新可立即取新版）。Worker 自出的 `/ui/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
+| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的短 TTL + `stale-while-revalidate`（无指纹 ⇒ 部署后有 **≤5 分钟**的新旧混用窗口，之后自动收敛；强制刷新可立即取新版）。Worker 自出的 `/ui/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
 
 > **部署前必做**：`USERNAME` / `PASSWORD` 必须是**高熵随机值**。默认/占位口令 + 公开的 `*.workers.dev` 等于把全部剪贴板历史与附件
 > 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
@@ -357,7 +360,8 @@ schema.sql              D1 建表语句
 | [docs/progress.md](docs/progress.md) | 开发与验证记录：里程碑、对照审核结果、版本历史 |
 | [docs/ui.md](docs/ui.md) | Web 历史界面：功能融合清单、模块划分、接口契约、鉴权模型、设计系统、验证记录 |
 | [docs/security-fix-plan.md](docs/security-fix-plan.md) | 安全审计修复计划（cfserver-audit-003 的 11 Findings）：优先级、逐条修复设计、实施状态 |
-| [docs/upstream-issues.md](docs/upstream-issues.md) | 上游 SyncClipboard 自身的安全问题（7 条，附 `文件:行` 证据与复现），用于回馈上游 |
+| [docs/upstream-issues.md](docs/upstream-issues.md) | 上游 SyncClipboard 自身的问题（13 条，附 `文件:行` 证据与复现），用于回馈上游 |
+| [docs/upstream-parity.md](docs/upstream-parity.md) | 与上游 `28c7e596` 的逐文件对照报告：文件映射总表、差异与修复清单、风险分级、待确认项、上线结论 |
 | [docs/backend-gaps.md](docs/backend-gaps.md) | 后端能力缺口与可完善项评估：已建未接（§1）/ 可新增（§2）/ 效率欠账（§3），附建议顺序与复核记录 |
 
 ## 许可证

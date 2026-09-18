@@ -1,7 +1,7 @@
 // 展示层格式化：类型、体积、时间、列表摘要。这里只做“把值变成给人看的字符串”，不含 DOM。
 
 // 服务端返回的 type 是枚举数字（与官方协议一致：ASP.NET 默认按数字序列化枚举）
-export const TYPE_NAMES = { 0: 'Text', 1: 'File', 2: 'Image', 3: 'Group' };
+const TYPE_NAMES = { 0: 'Text', 1: 'File', 2: 'Image', 3: 'Group' };
 
 const TYPE_LABELS = { Text: '文本', Image: '图片', File: '文件', Group: '组合' };
 const TYPE_CHIP = { Text: 'chip--text', Image: 'chip--image', File: 'chip--file', Group: 'chip--group' };
@@ -71,10 +71,18 @@ export function formatAbsolute(iso) {
 }
 
 // 列表单元格里显示的文本：文本记录用正文，文件类用文件名。
+// 空文本占位：标签与样式判定共用这一个常量——改动标签不会悄悄丢掉 `--empty` 样式。
+const EMPTY_TEXT = '（空文本）';
+
 export function previewText(item) {
   if (item.type === 'Text') {
     const text = (item.text ?? '').trim();
-    return text === '' ? '（空文本）' : text;
+    return text === '' ? EMPTY_TEXT : text;
   }
   return item.dataName ?? '（无文件名）';
+}
+
+// 是否显示空文本占位样式：与 previewText 的标签出自同一常量。
+export function previewIsEmpty(item) {
+  return previewText(item) === EMPTY_TEXT;
 }

@@ -50,7 +50,7 @@
 | 1.4 | **排序 6 字段只有 3 个可点** | 白名单 `SORT_COLUMNS` 有 `id/type/size/createTime/lastModified/lastAccessed`（`src/ui/query.ts:62`），表头只给 类型 / 大小 / 时间（`list.js:254-257`） | `lastModified` / `lastAccessed` / `id` 只能手改 URL 才用得上 |
 | 1.5 | **`pageSize` 两套上限** | 服务端 ≤ 500（`src/ui/query.ts:59`），下拉只有 20/50/100/200（`filters.js:25`） | URL 写 `pageSize=500` 能工作，但 `<select>` 会落到空选，读起来像缺陷 |
 | 1.6 | **`PATCH` 响应体被丢弃** | `api.patch` 返回归一化后的条目（`public/ui/js/api.js:92`），调用点只当作成功信号（`main.js:292/322/342`） | 服务端算出的 `version` / `lastModified` 未被采纳。当前无害；将来做并发冲突提示时需要 |
-| 1.7 | **「清空全部」协议有、界面无** | `DELETE /api/history/clear`（`src/routes/history.ts:332-338`） | 且它**不广播**（只有删行 + 删 R2 目录 + 返回计数），与 PATCH / 软删会广播的语义不一致。界面要接此功能**须先补广播**，否则客户端要等下一次同步才知道 |
+| 1.7 | **「清空全部」协议有、界面无** | `DELETE /api/history/clear`（`src/routes/history.ts:331-336`） | 且它**不广播**（只有删行 + 删目录 + 返回计数）。界面要接此功能须先补广播——**该判断已被 §7.5 订正**：不补广播，界面靠 `/ui/api/poll` 的变更标记收敛；本轮已接界面（见 §8） |
 | 1.8 | **`/api/time` 本站界面未使用** | 协议端点存在（`src/index.ts:185`；覆盖率见 `docs/progress.md` §11）；**官方客户端会调用它**做时钟差检查（`docs/protocol.md:430`），本仓库前端零命中 | 客户端会因服务端与本机**时钟差 > 5 分钟而中止历史同步**。端点本身有真实消费者，缺的只是**界面展示**：显示服务端时间/偏移能把这类「同步不动」的根因提前暴露（一次 fetch + 一行文案） |
 
 ## 2. 可新增（按性价比排序）
@@ -77,7 +77,7 @@
 | 3.2 | **列表 / 统计 / info / poll 这些 JSON 响应没有 `Cache-Control`** | 实测：`GET /ui/api/history?pageSize=1` 的响应头只有 `HTTP/1.1 200 OK`，无 `cache-control` / `vary`；`src/index.ts` 的中间件也没有统一设置（只设 HSTS）。**数据端点不在此列**：`GET /ui/api/history/:type/:hash/data` 自己设了 `cache-control: private, max-age=60`（`src/ui/routes.ts:186`，给缩略图/预览用） | 只给**缺省的那些 JSON 响应**补 `Cache-Control: no-store`（一条中间件，但**必须跳过数据端点**——按字面「一律 no-store」会把那 60 s 私有缓存打掉，预览/缩略图退化成每次回源） |
 | 3.3 | ~~**响应压缩未确认**~~ → **复核后撤销（不是欠账）** | **复测（本机实例，带 `Accept-Encoding: gzip, br`）**：响应为 `content-encoding: gzip`、`transfer-encoding: chunked`，200 条列表 **76 595 B → 13 733 B**（−82 %）。上一版写的「本地 dev 无 `content-encoding`」是探测失误：那次请求没带 `Accept-Encoding`，且打印的 `enc=` 实为 content-type | 结论：**压缩已生效，无需处理**。生产边缘未单独复测（免凭据的 401 响应体太小，看不出压缩），但同一运行时行为一致的可能性高；仓库内确实没有出站压缩代码（`CompressionStream` 零命中），说明压缩由运行时/边缘承担 |
 | 3.4 | **变更信号是全局二元组** | `readChangeMarker` 返回 `{count, lastModified}`（`src/ui/query.ts:281-291`；前端 `main.js:540` 按 `lastModified` 拼 signature） | 任何写入都让所有标签整页重拉。当前规模无感；要精细化可带 `type` 或版本号 |
-| 3.5 | **`DELETE /api/history/clear` 不广播** | `src/routes/history.ts:332-338` | 与 PATCH / 软删语义不一致；§1.7 要接界面就得先补 |
+| 3.5 | **`DELETE /api/history/clear` 不广播** | `src/routes/history.ts:331-336` | 初判「与 PATCH / 软删语义不一致，应先补」——**该判断已被 §7.5 订正**（上游触发点清单不含 clear，「不广播」是对齐上游；补广播反而是新的有意偏离） |
 
 ## 4. 不做的（与 `docs/ui.md` §6 一致，本评估不新增）
 
@@ -90,7 +90,7 @@ Web 字体、`/dav` 前缀别名（ADR D15）、JSON-LD（无现实实体）、`
 2. **§1.1 + §1.3**——把已建的清理可观测面接上；批量收藏/置顶/恢复（端点形状照抄 `batch-delete`）；
 3. **§2.1**——收益最大，前置是**前端要手写 SignalR 分帧与 <60 s 心跳**（Worker 侧只需新增一个端点，
    `hubStub` 已导出），且**必须保留轮询作为降级路径**（详见 §2.1 行）；
-4. **§1.7 + §3.5**——「清空全部」须两处一起改（先补广播再接界面）；
+4. **§1.7 + §3.5**——「清空全部」须两处一起改（先补广播再接界面）；**已按 §7.5 改为只做界面侧清空端点、不补广播**；
 5. **§2.3 + §2.4**——Range 只动 UI 数据端点；完整性自检按「目录差集 + 差集逐条 HEAD」实现。
 
 §1.2 / §1.4 / §1.5 / §1.6 / §1.8 属「顺手一起修」的量级。
@@ -171,6 +171,15 @@ Web 字体、`/dav` 前缀别名（ADR D15）、JSON-LD（无现实实体）、`
 另：§2.11 里被驳回的那条（LIKE 50 字节上限）由**可行性审查者提出**，顾问复核时独立核对同一处代码后
 **驳回**（反证：`MAX_SEARCH_BYTES = 48` 的入口共享判定，见 §7.3）。两次的落点相同：
 **判定在读入口 `normalizeSearchText`，不在 `LIKE '%…%'` 的拼接处**。
+
+### 7.5 第三轮订正（实施期复核，2026-09-14）
+
+| # | 原表述 | 订正 |
+|---|---|---|
+| 1 | §1.7/§3.5/§5 第 4 条：界面接「清空全部」**须先补广播** | **订正为不补广播**：① 上游广播触发点清单（`AddProfile`/`Update`/`AddRecordDto`/`MarkForDeletionAsync`/`GetExistingProfileAsync`，见 `docs/protocol.md` §6）**不含 clear**，且上游 `HistoryService.ClearAllAsync` 只删行 + 删数据、无通知调用；② `RemoteHistoryChanged` 的 `arguments[0]` 会被官方客户端按 `HistoryRecordDto` 反序列化，给已硬删的记录推载荷是伪造语义；③ 1000+ 条逐条广播 = 1000+ 次 DO 子请求，超单次调用上限必中途失败。界面与跨标签页收敛走 `/ui/api/poll` 的 `{count, lastModified}` |
+| 2 | §2.8 的推迟理由写「免费档 50 子请求」 | 订正为「真正的约束是免费档 10ms CPU」（D1/R2 binding 属内部服务、上限 1000，见 §7.4 第 4 条） |
+
+（这三处原表述**保留在上文对应单元格里**，只加订正标记——本文件的惯例是订正可追溯，不静默改写。）
 
 ## 8. 实施状态（2026-09-14）
 

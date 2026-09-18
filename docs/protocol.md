@@ -83,6 +83,10 @@
 （含超 int32 范围）→ 400；`Types`/`Starred`/`SortByLastAccessed` 非法值 → 400。
 `Types` 的取值与 `Enum.TryParse<ProfileTypeFilter>` 一致：枚举名（大小写不敏感）、逗号组合、**或数字**；
 数字与名称混用（如 `Text,5`）解析失败 → 400。`Page < 1` 由控制器钳为 1（非 400）。
+**时间字段是例外**：`Before`/`After`/`ModifiedAfter` 解析不了时本实现**忽略该项**而非 400（有意偏离，
+理由与影响见 §10 的「query 的时间字段无法解析」一行）。
+媒体类型不在上面这套绑定语义内：`POST /api/history/query` 只受 `[FromForm]` 约束，没有 `[Consumes]`，
+故 multipart 与 `application/x-www-form-urlencoded` 都接受（见 §5.1 末）。
 
 ### 3.5 HistoryStatisticsDto
 
@@ -268,7 +272,10 @@ public static string GetWorkingDirName(ProfileType type, string hash)
     - 有 data → 写 `history/…` 并校验（`SaveTransferDataAsync`，校验失败 → **422**，见 §8.3；成功后用持久化结果回填实体字段）。
     - 校验本地数据有效（`IsLocalDataValid(true)` 语义，失败 → 400 `"Needs tranfer data."`）。
     - 入库、广播、返回记录 dto（200）。
-- 请求体无 boundary / 非 multipart → 400。
+- 请求体的媒体类型（对齐上游：该 action 有显式 `[Consumes("multipart/form-data")]`）：
+  非 `multipart/form-data` → **415**（模型绑定之前就被拒，不是 400）；是 multipart 但缺 boundary → 400。
+  `POST /api/history/query`（§5.3）不同：上游只有 `[FromForm]`，故它也接受
+  `application/x-www-form-urlencoded`。
 - 成功响应：200 + serverDto（客户端只检查状态码，忽略 body）。
 
 ### 5.2 PATCH /api/history/{type}/{hash}（`上游:…HistoryService.Update`）
@@ -474,6 +481,16 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Basic 密码含冒号 | `Split(':')` 截断 → 校验失败（401） | 取首个冒号后全部 → 可用 | 更宽容；从官方服务器迁移的用户不受影响 |
 | `WWW-Authenticate` | `Basic realm="SyncClipboard"` | 逐字一致 | — |
 | MIME 表 | ~370 项 | 46 项常见类型 + octet-stream 回退 | 可渲染类型必须显式在表内（否则回退后仍不可渲染，安全） |
+| `POST /api/history` 的媒体类型 | 显式 `[Consumes("multipart/form-data")]`（`HistoryController.cs:121`）⇒ 非 multipart 在模型绑定**之前**被拒 → **415** | 同（`src/routes/history.ts` 的 `parseFormBody(c, false)`；提前返回前先排空请求体） | **本轮对齐**（此前本实现一律回 400）。客户端按状态码分支，故必须一致 |
+| `POST /api/history/query` 的媒体类型 | 只有 `[FromForm]`（`HistoryController.cs:81`）、无 `[Consumes]` ⇒ multipart 与 `application/x-www-form-urlencoded` **都接受** | 同（`parseFormBody(c, true)`：urlencoded 走 `URLSearchParams`，字段名同样大小写不敏感） | **本轮补齐**。官方客户端发 multipart，两条路径都不受影响 |
+| `POST /api/history/query` 收到非表单媒体类型（如 JSON body） | 无 `[Consumes]` 约束 ⇒ 等价于「字段全缺失的表单」（`HistoryController.cs:83` 的 `query ??= new HistoryQueryDto()` 实际不可达）→ 按默认参数返回第 1 页（**推断**：ASP.NET 的 form 值提供程序对非表单体不产出任何字段；未实测） | **400**（`Invalid or missing multipart/form-data boundary`） | 有意偏离：不把畸形请求当成一次有效查询（本仓库一贯偏好 fail-loud）。客户端恒发 multipart，不可达 |
+| 畸形 `Authorization` 头 | 三种畸形（`Basic` 后无空格、凭据无冒号、非 base64）都抛未捕获异常 → **500**（`BasicAuthenticationHandler.cs:20-25`） | **401**（`src/auth.ts` 一律返回 null） | 本实现更健壮。状态码**类别**不同（5xx vs 4xx）：第三方客户端若把 5xx 记成「服务器故障」会误判 |
+| hash 的匹配方式 | `EF.Functions.Like(r.Hash, hash)`（`HistoryService.cs:255`）：`%`/`_` 是通配符，且 SQLite 的 LIKE 对 ASCII 大小写不敏感 | `LOWER(Hash) = LOWER(?3)`（`src/db.ts:133`） | 本实现更严格、可走索引；第三方客户端发送含 `%`/`_` 的 hash 时，上游会误命中同前缀记录 |
+| 时间列的存储形态 | `CreateTime`/`LastAccessed`/`LastModified` 为 **TEXT**（EF Core 把 `DateTime` 存成 ISO8601 文本，`Migrations/20251105014242_Init.cs:29-31`） | **INTEGER** epoch 毫秒（`schema.sql:14-16`） | 对外不可见（wire 上两侧都是 ISO8601）。**但存量 `history.db` 不能直接导入**：两实现不共读同一份数据 |
+| 表索引集合 | 3 个含 `Stared` 的复合索引（`HistoryDbContext.cs:40-52`），为「收藏 + 时间范围/类型 + 翻页」优化 | **本轮补齐**其中两个（`idx_h_user_stared_create` / `idx_h_user_stared_type_create`，`schema.sql`）；上游第三个 `(UserId,CreateTime,ID)` 不必单独建——SQLite 的索引条目隐含 rowid，而这里的 `ID` 就是 rowid 别名，`idx_h_user_create` 已是同一形态 | 对齐。此前只缺这两个，收藏筛选与统计在数据量上来后会退化为全表扫描 |
+| Group zip 条目名含 `.` 段 | `Path.Combine` + `GetFullPath` 归一化后**接受**（`./a.txt` 落成 `a.txt`，`GroupProfile.cs:619-621`） | **拒绝**（`src/hash.ts:224-228`：`.`/`..` 段一律拒） | 有意偏离（fail-loud 优于平台相关的归一化）。官方客户端的 zip 用相对路径、无 `.` 段，不可达 |
+| Group zip 的重复条目 | 内容「首次落盘优先」，但 `topLevelFiles`/条目列表**不去重**（`GroupProfile.cs:644-648`）⇒ 重复条目被计入 hash 与 `totalSize` 两次 | 同名条目只取首个，且条目集与顶层条目都**去重**（`src/hash.ts:112-116`、`185-200`） | **有意偏离**：含重复条目的 zip 上两侧 hash 与 size **必然不同**。官方客户端恒不写重复条目，不可达（见 README「已知限制」第 2 条） |
+| 落库 hash 的大小写 | 原样存（`Profile.cs:86`、`TextProfile.cs:55`） | 统一 `.toUpperCase()` 落库 | 对外不可见（查询恒大小写不敏感）；避免同内容在不同设备上于 Linux 生成两个 R2 工作目录（上游在大小写敏感文件系统上会双份存储） |
 
 ## 11. 参考实现对照表
 

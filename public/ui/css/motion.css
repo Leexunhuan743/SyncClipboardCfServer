@@ -177,22 +177,12 @@
 }
 
 /* ============ 视图过渡 ============
- * 跨文档（登录页 → 列表页）由 CSS 声明；同文档（翻页/改筛选后的结果区）由 JS 调
- * document.startViewTransition 触发，故这里给结果区一个稳定的名字。 */
+ * 只保留**跨文档**过渡（登录页 → 列表页）：它由 CSS 声明、由浏览器在两份文档之间完成，成本与我们无关。
+ * 结果区**不再**具名：同文档的 `document.startViewTransition` 已从列表更新路径移除——实测
+ * （6× CPU 降速）它为一次「什么都没变」的切换多花 ~60ms 主线程（布局/样式各上百毫秒级，
+ * 因为它要对整块结果区做快照，成本随页大小上升），换来的只是数据表上的一次交叉淡入。 */
 @view-transition {
   navigation: auto;
-}
-
-.results {
-  view-transition-name: results;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  ::view-transition-old(results),
-  ::view-transition-new(results) {
-    animation-duration: var(--dur-medium);
-    animation-timing-function: var(--ease-out-expo);
-  }
 }
 
 /* ============ 降级：prefers-reduced-motion ============
@@ -214,7 +204,4 @@
     transform: none;
   }
 
-  .results {
-    view-transition-name: none;
-  }
 }

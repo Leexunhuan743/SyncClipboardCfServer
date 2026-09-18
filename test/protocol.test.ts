@@ -262,3 +262,64 @@ describe('历史 API', () => {
     expect(stats).toHaveProperty('activeCount');
   });
 });
+
+// 表单端点的媒体类型语义（上游模型绑定，见 docs/protocol.md §10 的「415 / urlencoded」行）：
+//   POST /api/history        —— 上游有显式 [Consumes("multipart/form-data")]，非 multipart 在模型绑定
+//                               之前就被拒 → 415（客户端按状态码分支，故不能报成 400）
+//   POST /api/history/query  —— 上游只有 [FromForm]（无 Consumes 约束）：ASP.NET 的
+//                               FormValueProviderFactory 同时接受 multipart 与 application/x-www-form-urlencoded
+describe('表单端点的 Media-Type 语义', () => {
+  it('POST /api/history：非 multipart → 415', async () => {
+    const res = await req('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(415);
+  });
+
+  it('POST /api/history：multipart 但缺 boundary → 400', async () => {
+    const res = await req('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'multipart/form-data' },
+      body: 'x',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /api/history/query：接受 application/x-www-form-urlencoded，且字段真的被解析', async () => {
+    // 用一个必然匹配不到记录的搜索词：返回空数组即证明 SearchText 被读到（只回 200 不足以证明）
+    const body = new URLSearchParams({ Page: '1', Types: 'All', SearchText: `none-${RUN}` }).toString();
+    const res = await req('/api/history/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  it('POST /api/history/query：urlencoded 的非法 Page 与 multipart 同一套绑定语义 → 400', async () => {
+    const res = await req('/api/history/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'Page=not-a-number',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /api/history 的 415 不会污染后续请求（提前返回前排空请求体）', async () => {
+    // 回归点：带 body 的请求若在未读完入站体时就返回响应，Workers 运行时会抛
+    // 「Can't read from request stream after response has been sent.」并让**后续**请求以 503 结束
+    // （src/auth.ts 的 drainRequestBody 注释记录了实测过程）。这里用带固定长度 body 的 415 打头，
+    // 紧接着发一个正常请求验证本 isolate 还活着。
+    const rejected = await req('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'Content-Length': '4' },
+      body: 'ping',
+    });
+    expect(rejected.status).toBe(415);
+    const after = await req('/api/version');
+    expect(after.status).toBe(200);
+  });
+});

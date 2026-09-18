@@ -9,7 +9,7 @@ import { api, handleAuthError, redirectToLogin } from './api.js';
 import { createStore } from './store.js';
 import { filtersFromUrl, filtersToApi, syncUrl, DEFAULT_FILTERS } from './filters.js';
 import { writeText, writeImage } from './clipboard.js';
-import { debounce, withViewTransition } from './dom.js';
+import { debounce } from './dom.js';
 import { createLatestGate } from './latest.js';
 import { createPushChannel } from './signalr.js';
 import { createHeader } from './components/header.js';
@@ -41,8 +41,6 @@ const store = createStore({
   version: null,
   selection: new Map(), // key → item（跨页保留选择）
   flashKeys: new Set(),
-  viewToken: 0,
-  loading: true,
   theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
 });
 
@@ -130,8 +128,12 @@ function setFilters(patch, { push = false, scroll = false } = {}) {
   // 类型计数与视图同源：回收站与活跃列表是**两套**计数，切视图时必须重取，
   // 否则分段控件显示的是另一套（列表头「回收站 · 共 938 条」、控件仍写「全部 1009」）。
   const viewChanged = Boolean(next.deleted) !== Boolean(state.filters.deleted);
-  store.set({ filters: next, viewToken: state.viewToken + 1 });
+  store.set({ filters: next });
   syncUrl(next, { push });
+  // 立刻把**筛选控件**画成新状态，不等响应：store 不触发绘制，而 render() 只在 refresh() 落地后跑 ——
+  // 于是从点击到响应这段时间里，被点的那一段控件毫无变化（真实网络上就是几百毫秒的「点下去没反应」，
+  // 响应一到整块换掉，读起来正是卡顿）。列表本身仍是旧行 + `data-busy` 变淡，等响应回来再对账。
+  render();
   // 结果区在首屏之外（用户滚下去看过）时，换页/改筛选要把它带回视野，
   // 否则「点了下一页」只换了脚下看不见的内容。
   refresh().finally(() => {
@@ -160,9 +162,7 @@ const actions = {
   },
   onOpenRecycle: () => {
     if (store.get().filters.deleted) return;
-    store.set({ selection: new Map() });
-    list.updateSelection(store.get().selection);
-    setFilters({ deleted: true, page: 1 }, { push: true, scroll: true });
+    actions.onToggleDeleted();
   },
   onRange: (patch) => setFilters({ ...patch, page: 1 }, { push: true, scroll: true }),
   onRestore: (item) => restoreItem(item),
@@ -275,14 +275,12 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
 
     // 新视图（换页/改筛选）才做入场错峰；轮询刷新不做，否则每次刷新整页闪一遍。
     // 同一视图内的刷新走 list 内部的按行对账：内容没变的行不重建。
-    const mutate = () => {
-      store.set({ items: page.items, total: page.total, flashKeys, loading: false });
-      render();
-    };
-    // 翻页/改筛选走视图过渡，让结果区看起来是同一个面在换内容
-    const shouldTransition = !silent && !flash;
-    if (shouldTransition) withViewTransition(mutate);
-    else mutate();
+    // 列表更新**不再走同文档视图过渡**：实测（6× CPU 降速）一次「什么都没变」的切换里，
+    // 过渡本身就要 ~60ms 主线程（布局与样式各上百毫秒级——它要对 `.results` 整块做快照，
+    // 成本随页大小上升），换来的只是一个数据表上的交叉淡入；而列表现在是一帧落地，
+    // 本就没有「换面」需要掩饰。跨文档过渡（登录页 → 列表页）保留，那条由 CSS 声明、不走这里。
+    store.set({ items: page.items, total: page.total, flashKeys });
+    render();
 
     if (announce) toasts.info(`已刷新，共 ${page.total} 条记录`);
   } catch (error) {
@@ -821,7 +819,7 @@ async function boot() {
   window.addEventListener('popstate', () => {
     const before = store.get().filters.deleted;
     const filters = filtersFromUrl();
-    store.set({ filters, viewToken: store.get().viewToken + 1 });
+    store.set({ filters });
     refresh({ silent: true });
     // 后退/前进也可能在活跃列表与回收站之间切换，计数同样要跟上
     if (Boolean(filters.deleted) !== Boolean(before)) void refreshStats();
