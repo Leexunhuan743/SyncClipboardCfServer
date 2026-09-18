@@ -113,11 +113,14 @@ export function createConfirm() {
   document.body.append(dialog);
 
   return {
-    ask({ title: heading, message: body, confirmLabel = '删除', action: onConfirm = null }) {
+    // `destructive`：目前四个调用方都是销毁性动作（删除 / 清空回收站 / 清空全部），默认的
+    // 填色红是对的；把它做成参数是为了下一处 —— 若将来给"恢复 12 条"这类可逆动作也加一句确认，
+    // 复制粘贴这一行会得到一个红得像删除的按钮，而那正是"同一档强度"要求避免的事。
+    ask({ title: heading, message: body, confirmLabel = '删除', action: onConfirm = null, destructive = true }) {
       title.textContent = heading;
       message.textContent = body;
       okLabel.textContent = confirmLabel;
-      okButton.className = 'btn btn--danger-solid';
+      okButton.className = destructive ? 'btn btn--danger-solid' : 'btn btn--primary';
       action = onConfirm;
       return new Promise((resolve) => {
         resolveCurrent = resolve;

@@ -100,3 +100,40 @@ export function previewText(item) {
 export function previewIsEmpty(item) {
   return previewText(item) === EMPTY_TEXT;
 }
+
+/**
+ * 落盘文件名的安全化（下载这条链上**唯一**的入口）。**纯逻辑**，故放在这里而不是 `main.js`。
+ *
+ * `dataName` 来自客户端（上传时带的文件名），不可信，故四步：
+ *   ① 先取 **basename**（与服务端 `db.ts` 的 `basename()` 同一口径）—— 路径分量根本进不来；
+ *   ② 替换文件系统不认的字符（`\ / : * ? " < > |` 与控制字符）；
+ *   ③ 去掉结尾的 `- . 空白`（Windows 上以点或空格结尾的名字会被静默改写）；
+ *   ④ 限长 64，且**截断时保留扩展名**（`.txt` 被砍掉的话，双击就不知道该用什么打开了）。
+ *
+ * `fallback` 在没有原名时使用（调用方按类型给：`Text-<hash 前 8 位>.txt` / `File-<hash 前 8 位>` …）。
+ */
+export function safeFileName(rawName, fallback = 'download') {
+  const raw = (rawName ?? '').trim();
+  const base = raw === '' ? '' : (raw.split(/[\\/]/).pop() ?? '');
+  const cleaned = (base || fallback)
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
+    .replace(/[-.\s]+$/, '');
+  if (cleaned === '') return fallback;
+  const dot = cleaned.lastIndexOf('.');
+  // 只把"短扩展名"当扩展名：`archive.tar.gz` 的扩展名是 `.gz`，而 `notes.2026` 这种也不该被砍掉大半
+  const ext = dot > 0 && cleaned.length - dot <= 12 ? cleaned.slice(dot) : '';
+  const stem = ext === '' ? cleaned : cleaned.slice(0, dot);
+  return `${stem.slice(0, Math.max(1, 64 - ext.length))}${ext}`;
+}
+
+/**
+ * 文本记录下载时的落盘名。
+ *
+ * **有原文件就保留原扩展名**（2026-09-18 用户定）：`notes.md` → `notes.md`、`f4-mu5pak2v.txt` → 同名 ——
+ * 那个名字是用户原本的文件，改名成 `.txt` 是替用户做决定。只有在**没有**原文件（内联文本，
+ * 服务端根本没这个对象）时，才生成 `<type>-<hash 前 8 位>.txt`：那时候"把正文存成 txt"是唯一的产物。
+ */
+export function downloadNameForText(item) {
+  const fallback = `${item?.type ?? 'Text'}-${(item?.hash ?? '').slice(0, 8)}.txt`;
+  return safeFileName(item?.dataName ?? '', fallback);
+}

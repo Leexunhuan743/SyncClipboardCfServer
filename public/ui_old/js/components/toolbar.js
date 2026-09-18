@@ -255,15 +255,23 @@ export function createToolbar({
     },
 
     update({ filters, byType }) {
+      // 切**范围**（回收站）的那一帧：`byType` 是空的（`countsForView` 的守卫要求"统计的归属视图
+      // 与当前视图一致才显示"），此时**不写数字**——保留上一次的文本、由 CSS 按 `data-stale`
+      // 把它隐藏。为什么不是清空：清空会让五个 chip 各窄掉数字那一段、整条工具栏抖一次
+      // （实测分段控件 -99px、搜索框被顶宽 50px 再弹回，就是"点回收站搜索框闪一下"）。
+      // 为什么不是"留住旧数字显示"：那会在屏上出现另一个视图的计数，正是那条守卫禁止的事。
+      const stale = byType === undefined || byType === null;
+      segmented.dataset.stale = stale ? 'true' : 'false';
       for (const [value, button] of typeButtons) {
         button.setAttribute('aria-pressed', String(filters.types === value));
+        if (stale) continue;
         const count = counts.get(value);
         if (!count) continue;
         if (value === 'All') {
-          const total = Object.values(byType ?? {}).reduce((sum, n) => sum + (n ?? 0), 0);
+          const total = Object.values(byType).reduce((sum, n) => sum + (n ?? 0), 0);
           count.textContent = total > 0 ? String(total) : '';
         } else {
-          const n = byType?.[value] ?? 0;
+          const n = byType[value] ?? 0;
           count.textContent = n > 0 ? String(n) : '';
         }
       }

@@ -8,9 +8,10 @@
 // 用法（需 dev server 已启动）：
 //   node test/manual/probe-ui-old.mjs
 //   node test/manual/probe-ui-old.mjs --width 390 --height 844
+//   node test/manual/probe-ui-old.mjs --width 1024 --coarse   # 触屏模拟（COARSE 行会报媒体查询是否真匹配）
 //   node test/manual/probe-ui-old.mjs --dark
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -39,6 +40,9 @@ const SHOTS = arg('shots', null);
 // 本探针默认只读，只有显式加这个参数才会改动目标实例上的数据（与仓库里"写库套件要显式放行"
 // 是同一条纪律）。它验的是"点下去真的写进去了"，而不只是"按钮画得对"。
 const WRITE = process.argv.includes('--write');
+// `--coarse`：模拟触屏（`pointer: coarse`）。行内操作那一排的命中区与间距只在粗指针下才变，
+// 而它正是"下载紧挨着删除"这类误触的现场 —— 只能在模拟成触屏时才量得到。
+const COARSE = process.argv.includes('--coarse');
 
 const BROWSERS = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -96,6 +100,8 @@ async function waitForDevTools(port, timeoutMs = 20_000) {
 
 const profileDir = join(tmpdir(), `probe-ui-old-${process.pid}`);
 mkdirSync(profileDir, { recursive: true });
+// 文本下载的落点（`TEXTDL` 一行要读回磁盘上的那个 .txt），与浏览器 profile 同生命周期
+const downloadDir = join(tmpdir(), `probe-ui-old-dl-${process.pid}`);
 const proc = spawn(
   findBrowser(),
   [
@@ -134,8 +140,14 @@ try {
     width: WIDTH,
     height: HEIGHT,
     deviceScaleFactor: 1,
-    mobile: false,
+    // 触屏模拟必须**在导航之前**设好（媒体查询首帧就参与布局），且 `mobile: true` 是必需的：
+    // Chrome 的 `(pointer: coarse)` 跟的是设备模拟里的"主指针"，只开 touch 事件时不匹配。
+    mobile: COARSE,
   });
+  if (COARSE) {
+    await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await send('Emulation.setEmitTouchEventsForMouse', { enabled: true, configuration: 'mobile' });
+  }
 
   // 真实登录接口 → 服务端签发的会话 Cookie（与 shoot/probe 同一做法，不伪造已登录状态）
   if (!ANONYMOUS) {
@@ -436,6 +448,69 @@ try {
   })()`);
   console.log('STATE   ', state);
 
+  // ===== 静止即静止（handfeel §7 的落点：到达并停住）=====
+  // 判据不是"看着不动"，而是 `document.getAnimations()` 里没有还在跑的动画。允许的例外只有
+  // **在用持续动效编码"正在做"的那两个**：推送通道连接中的旋转环、以及骨架屏的呼吸
+  // （骨架屏只在首屏未就绪时存在，这里一般看不到）。其余任何 running 动画都意味着
+  // "页面已经静止了，但还有东西在动" —— 那正是装饰性循环动效的形态。
+  const settled = await read(`(() => {
+    const running = document.getAnimations().filter((a) => a.playState === 'running');
+    const nameOf = (a) => a.animationName ?? (a.transitionProperty ? 'transition:' + a.transitionProperty : 'unknown');
+    return JSON.stringify({
+      runningCount: running.length,
+      names: [...new Set(running.map(nameOf))],
+      pushTone: document.querySelector('.status')?.dataset.tone ?? null,
+      resultsBusy: document.querySelector('.results')?.hasAttribute('data-busy') ?? null,
+    });
+  })()`);
+  console.log('SETTLED ', settled);
+
+  // ===== 行内操作这一排的命中区（2026-09-18）=====
+  // 判据来自 V2 踩过的坑：44px 命中区之间只要重叠或贴太近，「下载」与「删除」就会互相误触。
+  // 这里量五件事：媒体查询是否真的匹配（不匹配则这次证据无效，一眼能看出）、这一排的 rest 不透明度、
+  // 按钮的实际尺寸、相邻按钮的**中心距**（≥44 才不重叠）、以及最宽一行（4 个按钮）是否还在单元格里。
+  const coarseGeom = await read(`(() => {
+    const rows = [...document.querySelectorAll('tbody tr.row')];
+    if (!rows.length) return JSON.stringify({ skipped: 'no rows' });
+    const wide = rows.find((r) => r.querySelectorAll('.row-actions .icon-btn').length >= 4) ?? rows[0];
+    const cell = wide.querySelector('.col-actions');
+    const btns = [...cell.querySelectorAll('.icon-btn')];
+    const boxes = btns.map((b) => b.getBoundingClientRect());
+    const cellBox = cell.getBoundingClientRect();
+    const centers = boxes.map((b) => Math.round((b.left + b.right) / 2));
+    const pitch = centers.slice(1).map((c, i) => c - centers[i]);
+    const bar = document.querySelector('.row-actions');
+    return JSON.stringify({
+      coarseMatches: matchMedia('(pointer: coarse)').matches,
+      opacity: bar ? getComputedStyle(bar).opacity : null,
+      gap: bar ? getComputedStyle(bar).columnGap : null,
+      buttons: btns.length,
+      size: boxes.length ? [Math.round(boxes[0].width), Math.round(boxes[0].height)] : null,
+      centerPitch: pitch,
+      minPitch: pitch.length ? Math.min(...pitch) : null,
+      cellWidth: Math.round(cellBox.width),
+      overflowRight: boxes.length ? Math.round(boxes[boxes.length - 1].right - cellBox.right) : null,
+    });
+  })()`);
+  console.log('COARSE  ', coarseGeom);
+
+  // 禁用态的行内按钮还能不能被指针"够到"：够不到就没有 title 提示、也没有 not-allowed 光标
+  // （`.icon-btn[disabled]` 曾经带 `pointer-events: none`，于是「数据不可用，无法下载」永远看不见）。
+  // 用一个临时节点读计算值，读完立刻摘掉 —— 不改页面状态、也不进截图。
+  const disabledIcon = await read(`(() => {
+    const probe = document.createElement('button');
+    probe.className = 'icon-btn';
+    probe.type = 'button';
+    probe.disabled = true;
+    probe.title = '探针临时节点';
+    document.body.append(probe);
+    const cs = getComputedStyle(probe);
+    const out = { pointerEvents: cs.pointerEvents, cursor: cs.cursor, opacity: cs.opacity };
+    probe.remove();
+    return JSON.stringify(out);
+  })()`);
+  console.log('DISABLED', disabledIcon);
+
   // ===== 首屏截图必须在**任何交互之前**拍 =====
   // 下面三段（SELECTION / KEYNAV / IME）会真的去点复选框、按方向键、往搜索框里打字，
   // 而 IME 那段收尾时会走 `setFilters({ search, page: 1 })` —— **把页码重置回 1**。
@@ -680,6 +755,61 @@ try {
   })()`);
   console.log('BATCHCOPY', batchCopy);
 
+  // ===== 文本下载（2026-09-18，"文本也可以下载，格式保存成 txt"）=====
+  // 判据不是"点了有反应"，而是**磁盘上真的出现了一个 .txt，且内容与这条记录的正文对得上**。
+  // 列表里的正文被截断到 500 字符，所以这条探针要在命中一条长文本时跑才有意义：
+  //   node test/manual/probe-ui-old.mjs --url "/ui_old/?types=Text&search=LLLL"
+  // （本机那条 11000 字符的 `Text_….txt` 夹具就是这样命中的。）截断的那条会走"先取全文"，
+  // 于是 `bytes` 应当是全文而不是 500 字符。
+  //
+  // 必须**自己重新导航一次**：前面的 IME 段收尾时会清空搜索（列表回到无筛选状态），
+  // 直接点第一行会点到另一条记录 —— 第一版就是这么量错的（拿到 `Text-68C2F5F9.txt` 27 字节，
+  // 而那一行根本不是 `search=LLLL` 命中的那条）。
+  await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
+  await new Promise((r) => setTimeout(r, 2500));
+  mkdirSync(downloadDir, { recursive: true });
+  await cdp.send('Browser.setDownloadBehavior', {
+    behavior: 'allow',
+    downloadPath: downloadDir,
+    eventsEnabled: true,
+  });
+  const dlCell = JSON.parse(
+    (await read(`(() => {
+      const row = document.querySelector('tbody tr.row');
+      if (!row) return JSON.stringify({ skipped: 'no rows' });
+      const btn = row.querySelector('[data-action="download"]');
+      if (!btn) return JSON.stringify({ skipped: 'no download button' });
+      const cell = row.querySelector('.cell-content__text')?.textContent ?? '';
+      const flags = [...row.querySelectorAll('.cell-content__flags .chip')].map((c) => c.textContent);
+      btn.click();
+      return JSON.stringify({ cell, flags, label: btn.getAttribute('aria-label') });
+    })()`)) ?? '{}',
+  );
+  let dlFile = null;
+  if (!dlCell.skipped) {
+    for (let i = 0; i < 60 && !dlFile; i += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      const files = existsSync(downloadDir)
+        ? readdirSync(downloadDir).filter((f) => !f.endsWith('.crdownload'))
+        : [];
+      if (files.length > 0) dlFile = files[0];
+    }
+  }
+  const dlText = dlFile ? readFileSync(join(downloadDir, dlFile), 'utf8') : null;
+  console.log(
+    'TEXTDL  ',
+    JSON.stringify({
+      skipped: dlCell.skipped ?? null,
+      label: dlCell.label ?? null,
+      name: dlFile,
+      bytes: dlText === null ? null : Buffer.byteLength(dlText, 'utf8'),
+      chars: dlText === null ? null : dlText.length,
+      headMatchesCell: dlText !== null && dlCell.cell ? dlText.startsWith(dlCell.cell) : null,
+      cellChars: (dlCell.cell ?? '').length,
+      flags: dlCell.flags ?? null,
+    }),
+  );
+
   // ===== A5 · 失败路径的「重试」（2026-09-18）=====
   // 用 `Network.emulateNetworkConditions({ offline: true })` 把下一次列表请求打成网络失败，
   // 再点提示条里的「重试」看列表是否恢复。为什么要"制造"故障：真实的瞬时故障没法按需出现，
@@ -743,6 +873,20 @@ try {
       headText: head?.textContent?.trim().slice(0, 40) ?? null,
       hasButton: Boolean(button),
       buttonHidden: button?.hidden ?? null,
+      // 「按钮明显不明显」也有计算值可量（2026-09-18 用户要求"明显点"）：旧版（btn--quiet）
+      // 边框 0px、背景全透明、颜色是次要色 —— 与紧挨着的说明文字完全同色，读起来不是按钮。
+      // 注意：这一段在模板串里，注释里不要再出现反引号（第一版就是这么把外层串闭合掉的）。
+      buttonStyle: (() => {
+        if (!button) return null;
+        const cs = getComputedStyle(button);
+        return {
+          borderWidth: cs.borderTopWidth,
+          borderColor: cs.borderTopColor,
+          background: cs.backgroundColor,
+          color: cs.color,
+          height: Math.round(button.getBoundingClientRect().height),
+        };
+      })(),
       fileChipPressed: [...document.querySelectorAll('.segmented__item')].find((b) => (b.textContent ?? '').includes('文件'))?.getAttribute('aria-pressed'),
     };
     if (!button) return JSON.stringify({ before });
@@ -759,6 +903,49 @@ try {
     });
   })()`);
   console.log('RESETFILTER', resetFilter);
+
+  // ===== 范围切换时的工具栏抖动（2026-09-18）=====
+  // 用户报告的现象："点回收站之后前面的搜索框会闪一下"。机制是切换**范围**会换掉整份类型计数，
+  // 而 `countsForView` 的守卫在新计数到达前把五个 chip 的计数清空 → 分段控件窄 ~99px →
+  // 搜索框与 spacer 分走腾出的宽度 → 下一帧再弹回。修法是给计数槽定宽（`.segmented__count` 的 4ch）。
+  // 这里把"修好"变成可复算的判据：**前后三帧的宽度差 ≤ 2px**（修前实测 搜索框 50 / 类型组 99）。
+  const toolbarShift = await read(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const widthOf = (selector) => Math.round(document.querySelector(selector)?.getBoundingClientRect().width ?? -1);
+    const box = () => ({ search: widthOf('.toolbar__group--search'), types: widthOf('.toolbar__group--types') });
+    const recycleButton = [...document.querySelectorAll('.segmented__item')].find((b) => (b.textContent ?? '').includes('回收站'));
+    if (!recycleButton) return JSON.stringify({ skipped: '找不到回收站按钮' });
+
+    const before = box();
+    recycleButton.click();
+    const during = box();   // 同步重绘之后、统计回来之前 —— 也就是"闪"的那一帧
+    await wait(80);
+    const after80 = box();
+    await wait(1500);
+    const settled = box();
+    // 收尾：再点一次回到原来的范围（后面的步骤默认在活跃列表上跑）
+    recycleButton.click();
+    await wait(1500);
+
+    // 判据是"**帧与帧之间**有没有大跳"（闪 = 一跳一弹），而不是"末态与初态是否相同"：
+    // 切换范围后计数本来就会变（1009 → 2008），宽度随之变几像素是数据变化，不是抖动。
+    const step = (key) => {
+      const values = [before[key], during[key], after80[key], settled[key]];
+      let worst = 0;
+      for (let i = 1; i < values.length; i += 1) worst = Math.max(worst, Math.abs(values[i] - values[i - 1]));
+      return worst;
+    };
+    const searchDelta = step('search');
+    const typesDelta = step('types');
+    // 预算 20px：修前的第一跳是 50（搜索框）/ 99（类型组）；修后只剩"数字位数变化"那几像素。
+    const budget = 20;
+    return JSON.stringify({
+      before, during, after80, settled,
+      searchDelta, typesDelta,
+      ok: searchDelta <= budget && typesDelta <= budget,
+    });
+  })()`);
+  console.log('TOOLBARSW', toolbarShift);
 
   // ===== A8 · 顶栏「复制最近一条」（2026-09-18）=====
   // 断言三件事：按钮真的把内容写进了剪贴板（逐字对照第一行的正文）、提示条报了条数、
@@ -848,6 +1035,108 @@ try {
       return JSON.stringify({ key, before, flipped, restored });
     })()`);
     console.log('WRITE   ', writeCheck);
+
+    // 批量动作后的「焦点不被抢回」（2026-09-18 修）。`list.restoreFocus()` 会把焦点交给结果区，
+    // 它带着一圈 ~0.5s 的重试（用于等浏览器关闭模态后的补焦）。那一圈**不能**把用户自己放好的
+    // 焦点抢回来 —— 这条探针量的就是这件事：动作后立刻点搜索框，等过整个重试窗口，焦点还该在
+    // 搜索框里。没有这道守卫时，`document.activeElement` 会变成表头的全选框。
+    const focusKeep = await read(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      if (!document.querySelector('tbody tr.row')) return JSON.stringify({ skipped: 'no rows' });
+      const search = document.getElementById('search');
+      const pick = async () => {
+        const box = document.querySelector('tbody tr.row .checkbox');
+        if (box && !box.checked) box.click();
+        await wait(140);
+      };
+      const button = (label) =>
+        [...document.querySelectorAll('.results__selection button')].find(
+          (b) => (b.textContent ?? '').trim() === label,
+        );
+      await pick();
+      const on = button('收藏');
+      if (!on) return JSON.stringify({ skipped: 'no 收藏 button' });
+      on.click();
+      await wait(60); // 请求已发出、restoreFocus 的重试计时器已排上，但还没走完
+      search.focus();
+      const justFocused = document.activeElement === search;
+      await wait(1200); // 覆盖 8×60ms 的重试窗口
+      const after = document.activeElement?.id || document.activeElement?.tagName || null;
+      // 净零：把收藏切回去，再取消选择（都不改服务端净状态）
+      await pick();
+      button('取消收藏')?.click();
+      await wait(900);
+      [...document.querySelectorAll('.results__selection button')]
+        .find((b) => (b.textContent ?? '').includes('取消选择'))
+        ?.click();
+      await wait(300);
+      return JSON.stringify({ justFocused, after, keptByUser: after === 'search' });
+    })()`);
+    console.log('FOCUSKEEP', focusKeep);
+
+    // 置顶（2026-09-18 起列表**恒置顶优先**，见 src/ui/query.ts 的 pinnedFirst）：
+    // 这条探针验的不是"按钮按下去了"，而是三件连起来的事 ——
+    //   ① 服务端真的落了 pinned=true（否则只是画得对）；
+    //   ② 徽标就地出现（不用等下一次整页刷新）；
+    //   ③ 这一行真的挪到了置顶组里（按下前在它上面的行，现在全是置顶的），
+    //      且收尾按回去之后整表顺序**逐行还原**（排序键是 CreateTime，置顶只改 LastModified）。
+    // 取「第一个未置顶、且上面还有行」的那一行：第 1 行本来就在最前，置顶它证明不了"会移动"；
+    // 而库里已经有一批置顶记录时，随便取第 4 行会取到**已置顶**的行 —— 那一下是按"取消置顶"，
+    // 行会往下走，断言的方向就反了（本机实测：前 13 行都是置顶的）。
+    const pinCheck = await read(`(async () => {
+      const rows = () => [...document.querySelectorAll('.table tr.row')];
+      const order = () => rows().map((r) => r.dataset.key);
+      const before = order();
+      const isPinned = (r) => r.querySelector('[data-action="pin"]')?.getAttribute('aria-pressed') === 'true';
+      // 取**页内最后一个未置顶**的行：位移一眼可见（本机是 50 → 置顶组末尾），
+      // 而"第一个未置顶的行"在已经有一批置顶记录时只会挪一两位，证明不了什么。
+      const unpinned = rows().filter((r) => r.querySelector('[data-action="pin"]') && !isPinned(r));
+      const target = unpinned[unpinned.length - 1];
+      if (!target) return JSON.stringify({ skipped: 'every row is pinned' });
+      const key = target.dataset.key;
+      const find = () => rows().find((r) => r.dataset.key === key) ?? null;
+      const button = find()?.querySelector('[data-action="pin"]');
+      if (!button) return JSON.stringify({ skipped: 'no pin button' });
+      const indexBefore = before.indexOf(key);
+      const pinnedBefore = rows().filter(isPinned).length;
+      const readServer = async () => {
+        const sep = key.indexOf('-');
+        const res = await fetch(
+          '/ui/api/history/' + encodeURIComponent(key.slice(0, sep)) + '/' + encodeURIComponent(key.slice(sep + 1)),
+        );
+        const body = await res.json();
+        return { status: res.status, pinned: body.pinned, name: body.dataName ?? null };
+      };
+      button.click();
+      await new Promise((r) => setTimeout(r, 1400));
+      const afterOrder = order();
+      const indexAfter = afterOrder.indexOf(key);
+      const current = find();
+      const flags = (current?.querySelector('.cell-content__flags')?.textContent ?? '').trim();
+      const allAbovePinned = afterOrder.slice(0, Math.max(0, indexAfter)).every((k) => {
+        const r = rows().find((x) => x.dataset.key === k);
+        return r ? isPinned(r) : false;
+      });
+      const server = await readServer();
+      // 收尾：按回去（净零）。等重新对账完成再读顺序。
+      find()?.querySelector('[data-action="pin"]')?.click();
+      await new Promise((r) => setTimeout(r, 1400));
+      const back = await readServer();
+      return JSON.stringify({
+        key,
+        indexBefore,
+        pinnedBefore,
+        indexAfter,
+        moved: indexBefore - indexAfter,
+        movedUp: indexAfter < indexBefore,
+        allAbovePinned,
+        badge: flags,
+        server,
+        back,
+        orderRestored: order().join('|') === before.join('|'),
+      });
+    })()`);
+    console.log('PIN     ', pinCheck);
   }
 
   if (SHOTS) {
@@ -917,6 +1206,7 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   try {
     rmSync(profileDir, { recursive: true, force: true });
+    rmSync(downloadDir, { recursive: true, force: true });
   } catch {
     /* 临时目录清不掉不影响结果 */
   }

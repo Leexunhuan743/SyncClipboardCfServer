@@ -18,9 +18,13 @@
 ```bash
 node test/manual/probe-ui-old.mjs                    # 读真实 DOM 的值（只读）
 node test/manual/probe-ui-old.mjs --width 390 --height 844
+node test/manual/probe-ui-old.mjs --width 1024 --coarse   # 触屏模拟：量行内操作的命中区与间距
 node test/manual/probe-ui-old.mjs --shots .shots     # 顺带出图
 node test/manual/probe-ui-old.mjs --write            # 会写：收藏开关来回切一次（状态净零）
 ```
+
+> 手动脚本一律显式给 `--port`（默认端口与其它探针/`states.mjs` 有重合，撞上残留浏览器会量到
+> 另一个页面的状态，得到假结论；详见 `docs/progress.md` §62.6）。
 
 ## 已知边界
 

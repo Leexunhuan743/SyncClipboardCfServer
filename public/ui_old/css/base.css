@@ -37,7 +37,12 @@ html {
 
 :where(a, button, [role="button"], input, select, textarea, summary, label) {
   /* 去掉移动端点击高亮：**必须**与真实 :active 态成对出现，否则页面在触屏上像死的一样
-   * （本项目所有可点元素都有 :active 缩放或变色，见 components.css） */
+   * （触屏没有 hover，`:active` 是唯一的按下反馈）。
+   *
+   * ⚠️ 这句话在 2026-09-18 之前是**假的**：只有 `.btn` 与 `.icon-btn` 写过 `:active`，
+   * 筛选 chip、表头排序、清空搜索、提示条上的关闭/重试、复选框、顶栏「部署信息」都没有。
+   * 现在补齐了，判据在 `test/ui-guard.test.ts` 的「可点控件都有按下反馈」——
+   * 清单在测试里写死，新增可点控件要显式加进去（不靠"看着像按钮"的启发式）。 */
   -webkit-tap-highlight-color: transparent;
 }
 

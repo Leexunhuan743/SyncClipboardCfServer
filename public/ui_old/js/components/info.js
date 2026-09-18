@@ -19,6 +19,14 @@ const CLOCK_SKEW_WARN_MS = 5 * 60 * 1000;
 const RETENTION_MINUTES_MAX = 525_600;
 const MAX_SAVED_HISTORY_COUNT_MAX = 1_000_000;
 
+// 内置默认值：与 `src/cleanup.ts` 的 DEFAULT_RETENTION_MINUTES / DEFAULT_MAX_SAVED_HISTORY_COUNT
+// 逐字同值。**为什么界面要知道它们**：`/ui/api/info` 在"Meta 与部署环境变量都没设"时返回
+// `retentionMinutes: null`，而 null 的语义是"没显式配置"、不是"不限" —— 那一刻真正生效的
+// 就是这两个内置默认（cleanup 的 `settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES`）。把
+// null 说成"不限"或"按部署环境变量"，等于让用户去找一个并不存在的配置项。
+const DEFAULT_RETENTION_MINUTES = 10_080; // 7 天
+const DEFAULT_MAX_HISTORY_COUNT = 1_000;
+
 // 一行「标签 : 值」。标签列定宽、值列吃掉其余宽度 —— 多行并排时标签列彼此对齐，
 // 读起来是一张表；旧版是"小标题一行 + 正文一行"堆叠，十来个字段就堆成一堵墙
 // （每行的标签都重新起一个视觉层级，而它其实只是同一张表的左列）。
@@ -83,21 +91,78 @@ const PUSH_LABELS = {
   offline: '未连接（轮询刷新，可见时每 10 秒）',
 };
 
-// 保留策略的口径必须区分三种状态，不能只判真假：**未设置**（Meta 与部署环境变量都没有）、
-// **已关闭**（0 = 明确关掉该阶段）、**有值**。写成 `retentionMinutes ? … : '未设置'` 会把
-// 「已关闭」显示成「未设置」——那正是用户刚做完的设置，看起来像没保存上。
-function retentionText(retention) {
+/**
+ * 分钟数 → 人话。
+ *
+ * **必须分档**：此前一律 `Math.round(minutes / 1440) 天`，而表单允许填 0..525600 的任意整数 ——
+ * 填 60 分钟显示「0 天」、填 1000 分钟显示「1 天」，两个都是能真的填出来的值
+ * （0 与 null 另外各有语义，见下面 retentionText）。
+ */
+function retentionDuration(minutes) {
+  if (minutes === 0) return '保留期清理已关闭';
+  if (minutes % 1440 === 0) return `${minutes / 1440} 天`;
+  if (minutes < 60) return `${minutes} 分钟`;
+  if (minutes < 1440) {
+    // 90 分钟 → 1.5 小时（留一位小数）；整小时不写小数
+    const hours = minutes % 60 === 0 ? minutes / 60 : Math.round((minutes / 60) * 10) / 10;
+    return `${hours} 小时`;
+  }
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.round((minutes % 1440) / 60);
+  return hours === 0 ? `${days} 天` : `${days} 天 ${hours} 小时`;
+}
+
+/**
+ * 保留策略的口径必须区分四种状态，不能只判真假：**未设置**（Meta 与部署环境变量都没有 →
+ * 生效值是内置默认）、**已关闭**（0 = 明确关掉该阶段）、**有值**、以及两项各自独立。
+ * 写成 `retentionMinutes ? … : '未设置'` 会把「已关闭」显示成「未设置」——那正是用户刚做完的
+ * 设置，看起来像没保存上。
+ *
+ * 导出给 `test/ui-logic.test.ts`：这是一段纯逻辑，而它的三种错法（0 天 / 按部署环境变量 /
+ * 不限）都只在特定取值下才现形，靠人眼在界面上看永远看不全。
+ */
+export function retentionText(retention) {
   const minutes = retention?.retentionMinutes ?? null;
   const maxCount = retention?.maxSavedHistoryCount ?? null;
   if (minutes === null && maxCount === null) {
     // 「未设置」不是「不清理」：cleanup 会用内置默认（7 天 / 1000 条）照常跑，说成「不生效」是错的
-    return '未设置（按内置默认清理：保留 7 天、最多 1000 条）';
+    return (
+      `未设置（按内置默认清理：保留 ${DEFAULT_RETENTION_MINUTES / 1440} 天、` +
+      `最多 ${DEFAULT_MAX_HISTORY_COUNT} 条）`
+    );
   }
   const timePart =
-    minutes === null ? '保留期：按部署环境变量' : minutes === 0 ? '保留期清理已关闭' : `${Math.round(minutes / 1440)} 天`;
+    minutes === null
+      ? `保留期未设置（按内置默认 ${DEFAULT_RETENTION_MINUTES / 1440} 天）`
+      : retentionDuration(minutes);
   const countPart =
-    maxCount === null ? '条数：按部署环境变量' : maxCount === 0 ? '条数裁剪已关闭' : `上限 ${maxCount} 条`;
+    maxCount === null
+      ? `条数未设置（按内置默认 ${DEFAULT_MAX_HISTORY_COUNT} 条）`
+      : maxCount === 0
+        ? '条数裁剪已关闭'
+        : `上限 ${maxCount} 条`;
   return `${timePart} · ${countPart}；已删除的记录再保留 30 天后彻底清除`;
+}
+
+/**
+ * 「当前生效」那一行的值 + 来源。来源的三种说法必须与生效值一致：`null` ⇒ 内置默认
+ * （此前写死成"部署环境变量"，而变量没配时用户会去找一个不存在的东西）、来源 meta ⇒ 此处的设置、
+ * 其余 ⇒ 部署环境变量。
+ */
+export function retentionEffectiveText(retention) {
+  const minutes = retention?.retentionMinutes ?? null;
+  const maxCount = retention?.maxSavedHistoryCount ?? null;
+  const value = (raw, fallback, unit) =>
+    raw === null ? `${fallback} ${unit}（内置默认）` : raw === 0 ? `已关闭（0）` : `${raw} ${unit}`;
+  const source = (raw) =>
+    raw === null ? '内置默认' : retention?.retentionSource === 'meta' ? '此处的设置' : '部署环境变量';
+  const sourceOfCount = (raw) =>
+    raw === null ? '内置默认' : retention?.maxCountSource === 'meta' ? '此处的设置' : '部署环境变量';
+  return (
+    `当前生效：保留 ${value(minutes, DEFAULT_RETENTION_MINUTES, '分钟')}、` +
+    `上限 ${value(maxCount, DEFAULT_MAX_HISTORY_COUNT, '条')}` +
+    `（来源：${source(minutes)} / ${sourceOfCount(maxCount)}）`
+  );
 }
 
 // ISO 串（`formatAbsolute` 要的就是它）——这层转换只在这里做一次，
@@ -206,6 +271,9 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
       max: String(RETENTION_MINUTES_MAX),
       step: '1',
       'aria-label': '历史保留分钟数',
+      // 这一栏的错误与"当前生效值"共用下面那行说明（`components.md` §2 的 error 格）：
+      // 只把文字换掉、不把字段与它关联起来，读屏用户听到的只是一句孤立的报错。
+      'aria-describedby': 'retention-status',
       placeholder: '分钟',
     });
     const maxCount = el('input', {
@@ -215,6 +283,7 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
       max: String(MAX_SAVED_HISTORY_COUNT_MAX),
       step: '1',
       'aria-label': '历史条数上限',
+      'aria-describedby': 'retention-status',
       placeholder: '条数',
     });
     // 只有**确实来自 Meta 覆盖**时才把值填进输入框：否则「什么都没改直接按保存」会把当前生效值
@@ -222,13 +291,16 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
     // 来自 env / 内置默认时留空，生效值放在 placeholder 里（看得见、但不会被顺手提交）。
     minutes.value = retention?.retentionSource === 'meta' ? (retention?.retentionMinutes ?? '') : '';
     maxCount.value = retention?.maxCountSource === 'meta' ? (retention?.maxSavedHistoryCount ?? '') : '';
-    minutes.placeholder = retention?.retentionMinutes === null ? '不限' : `当前 ${retention.retentionMinutes}`;
-    maxCount.placeholder = retention?.maxSavedHistoryCount === null ? '不限' : `当前 ${retention.maxSavedHistoryCount}`;
-    const source = el('span', { class: 'note' });
-    const sourceText = () =>
-      `当前生效：保留 ${retention?.retentionMinutes ?? '不限'} 分钟、上限 ${retention?.maxSavedHistoryCount ?? '不限'} 条` +
-      `（来源：${retention?.retentionSource === 'meta' ? '此处的设置' : '部署环境变量'} / ` +
-      `${retention?.maxCountSource === 'meta' ? '此处的设置' : '部署环境变量'}）`;
+    // placeholder 给**当前生效值**（含内置默认的回落），而不是字面「不限」：
+    // `null` 的语义是"没显式配置"，那一刻生效的是 10080 分钟 / 1000 条。
+    minutes.placeholder = `当前 ${retention?.retentionMinutes ?? DEFAULT_RETENTION_MINUTES}`;
+    maxCount.placeholder = `当前 ${retention?.maxSavedHistoryCount ?? DEFAULT_MAX_HISTORY_COUNT}`;
+    // 这一行既是"当前生效…"的说明，也是这一段的**状态与错误出口**：它是两个输入框的
+    // `aria-describedby` 目标（`id` 必须与下面两处引用逐字一致），出错时被替换成错误文案。
+    // `role="status"` 让错误在读屏里被播报一次 —— 光把文字换掉，读屏用户是听不到的
+    // （`components.md` §2 的 error 格要求：信息挨着控件、被 `aria-describedby` 关联、不靠颜色）。
+    const source = el('span', { class: 'note', id: 'retention-status', role: 'status' });
+    const sourceText = () => retentionEffectiveText(retention);
     source.textContent = sourceText();
 
     const save = el(
@@ -238,6 +310,9 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         type: 'button',
         onclick: async () => {
           if (isPending(save)) return;
+          // 每次尝试保存先清掉上一次的字段级错误标记（`aria-invalid` 不是"曾经错过"的历史记录）
+          minutes.removeAttribute('aria-invalid');
+          maxCount.removeAttribute('aria-invalid');
           // 只接受**整数串**：`Number.parseInt('0.5')` 会得到 0，而 0 的语义是「关闭该阶段」——
           // 用户输入 0.5 就被静默关掉保留期，是那种事后完全看不出原因的故障。小数直接判非法。
           const parse = (input) => {
@@ -249,15 +324,19 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
           // 越界在本地就说清（与服务端同一套上界），不要发出去换一个 400 回来 ——
           // 那会把"填错了"显示成"保存失败：invalid_request"，用户不知道错在哪一栏。
           const bounds = [
-            ['保留分钟', patch.retentionMinutes, RETENTION_MINUTES_MAX],
-            ['条数上限', patch.maxSavedHistoryCount, MAX_SAVED_HISTORY_COUNT_MAX],
+            ['保留分钟', patch.retentionMinutes, RETENTION_MINUTES_MAX, minutes],
+            ['条数上限', patch.maxSavedHistoryCount, MAX_SAVED_HISTORY_COUNT_MAX, maxCount],
           ];
           const bad = bounds.find(
             ([, value, max]) => value !== null && (!Number.isSafeInteger(value) || value < 0 || value > max),
           );
           if (bad) {
+            // 说出**哪一栏**错，并把焦点送过去：这一段的错误只有一行文案，用户得自己去找是哪一个框
+            const [, , max, input] = bad;
+            input.setAttribute('aria-invalid', 'true');
+            input.focus();
             source.textContent =
-              `${bad[0]}只能填 0–${bad[2]} 之间的整数；留空表示回落到部署时的环境变量。`;
+              `${bad[0]}只能填 0–${max} 之间的整数；留空表示回落到部署时的环境变量。`;
             return;
           }
           setPending(save, true);
@@ -290,7 +369,9 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
       el('span', {
         class: 'note',
         text:
-          '留空 = 用部署时的环境变量；0 = 关闭对应阶段。改动立即对下一轮清理生效。' +
+          '留空 = 回落到部署时的环境变量（两边都没有时用内置默认：保留 ' +
+          `${DEFAULT_RETENTION_MINUTES / 1440} 天、最多 ${DEFAULT_MAX_HISTORY_COUNT} 条）；` +
+          '0 = 关闭对应阶段。改动立即对下一轮清理生效。' +
           `可填范围：保留分钟 0–${RETENTION_MINUTES_MAX}（1 年）、条数 0–${MAX_SAVED_HISTORY_COUNT_MAX}。`,
       }),
       source,

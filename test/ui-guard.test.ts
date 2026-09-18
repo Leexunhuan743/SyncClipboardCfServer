@@ -352,3 +352,91 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
     expect(existsSync('public/ui/js/messages.js'), '共用文案表不存在').toBe(true);
   });
 });
+
+// V1 的**样式层**守卫（2026-09-18）。两条都来自"文档写了、实现没跟上"的真实缺陷：
+//   ① `base.css` 写着"本项目所有可点元素都有 :active 缩放或变色"，而全仓只有 `.btn` 与
+//      `.icon-btn` 两处 —— 触屏没有 hover，缺 `:active` 就等于按下毫无反应（页面像死的）；
+//   ② 令牌表里躺着两个只在定义处出现的自定义属性（`--fs-stat`、`--dur-medium`），
+//      它们服务的机制（统计数字 30px、同文档视图过渡）都已经改掉/移除，留着会让人误判当前设计。
+// V2 那边**有意保留**成组的色阶与成对的 kind-*-soft（政策写在 `tokens-v2.css` 里），
+// 所以这两条只扫 V1：V1 没有"成组保留"的例外，一旦出现死令牌就该删或该用。
+describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈）', () => {
+  const V1_DIR = 'public/ui_old';
+
+  function walk(dir: string, ext: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...walk(full, ext));
+      else if (entry.name.endsWith(ext)) out.push(full);
+    }
+    return out;
+  }
+
+  const cssFiles = walk(join(V1_DIR, 'css'), '.css');
+  const cssText = cssFiles.map((file) => readFileSync(file, 'utf8')).join('\n');
+  // 引用可能出现在样式表、脚本（`getPropertyValue('--header-h')`）或页面里
+  const allText = [
+    cssText,
+    ...walk(join(V1_DIR, 'js'), '.js').map((file) => readFileSync(file, 'utf8')),
+    ...['index.html', 'login.html'].map((page) => readFileSync(join(V1_DIR, page), 'utf8')),
+  ].join('\n');
+
+  it('令牌不空转：没有"定义了却没人 var() 引用"的自定义属性', () => {
+    const defined = [...new Set([...cssText.matchAll(/^[ \t]*(--[a-z0-9-]+):/gm)].map((m) => m[1]!))];
+    expect(defined.length, '没扫到任何自定义属性（守卫可能失效）').toBeGreaterThan(50);
+    // 三种引用形态都算：`var(--x`、JS 里的 `'--x'` / `"--x"`（`getPropertyValue` 那一类）
+    const referenced = (name: string) =>
+      allText.includes(`var(${name}`) || allText.includes(`'${name}'`) || allText.includes(`"${name}"`);
+    const dead = defined.filter((name) => !referenced(name)).sort();
+    expect(dead, '定义了却没人引用（要么接上，要么删掉——V1 没有成组保留的例外）').toEqual([]);
+  });
+
+  it('可点控件都有按下反馈（:active）：清单写死，新增控件要显式加进来', () => {
+    // 这份清单是**手写**的：不靠"看着像按钮"的启发式（那是猜测），而靠"这个类在页面上能按"
+    // 这个事实。新增一个可点控件时，这里不加、CSS 不写 :active，就会红。
+    const PRESSABLE = [
+      'btn', // 所有带文字的按钮（含「清除筛选」那枚胶囊）
+      'icon-btn', // 行内动作、主题、登出、对话框关闭
+      'segmented__item', // 类型 / 仅收藏 / 回收站
+      'th-sort', // 表头排序
+      'search__clear', // 清空搜索
+      'notice-bar__close', // 顶部提示条关闭
+      'toast__action', // 提示条里的「重试」
+      'checkbox', // 行选择 / 全选
+      'status', // 顶栏「部署信息」（带推送状态那枚胶囊）
+    ];
+    // 先剥注释：注释里写着 `:active` 三个字（本文件上面就写了一堆）不该算数
+    const css = cssText.replace(/\/\*[\s\S]*?\*\//g, '');
+    const selectors = [...css.matchAll(/([^{}]*):active[^{}]*\{/g)].map((m) => m[1]!);
+    expect(selectors.length, '没扫到任何 :active 规则（守卫可能失效）').toBeGreaterThan(5);
+    const missing = PRESSABLE.filter((cls) => !selectors.some((sel) => sel.includes(`.${cls}`)));
+    expect(missing, '这些可点控件没有 :active（触屏上按下毫无反馈，页面像死的）').toEqual([]);
+  });
+
+  // 错误状态必须**挂在出错的那个字段上**（`components.md` §2 的 error 格：信息挨着控件、
+  // 被 `aria-describedby` 关联、不靠颜色）。V1 的两个表单此前都只写了一个错误框：
+  // 登录页（用户名/密码）与部署信息的保留策略（两个数字输入）。
+  it('表单错误挂在字段上：aria-invalid + aria-describedby，且 CSS 有对应的视觉态', () => {
+    const login = readFileSync(join(V1_DIR, 'js/login.js'), 'utf8');
+    const info = readFileSync(join(V1_DIR, 'js/components/info.js'), 'utf8');
+    for (const [file, source] of [
+      ['js/login.js', login],
+      ['js/components/info.js', info],
+    ] as const) {
+      expect(source, `${file} 没有把错误标到字段上（aria-invalid）`).toContain('aria-invalid');
+      expect(source, `${file} 没有把错误与控件关联（aria-describedby）`).toContain('aria-describedby');
+    }
+    // 关联到的 id 必须真的存在，否则那条描述指向空气
+    for (const id of ['login-error', 'retention-status']) {
+      expect(
+        [...walk(join(V1_DIR, 'js'), '.js'), join(V1_DIR, 'index.html'), join(V1_DIR, 'login.html')].some(
+          (file) => readFileSync(file, 'utf8').includes(`id: '${id}'`) || readFileSync(file, 'utf8').includes(`id="${id}"`),
+        ),
+        `aria-describedby 指向的 #${id} 没有任何生产者`,
+      ).toBe(true);
+    }
+    // 标了 aria-invalid 就得有视觉态：颜色不是主通道，但"什么都没变"会让标记等于不存在
+    expect(cssText, 'CSS 没有消费 aria-invalid（字段标了错却看不出）').toContain('[aria-invalid="true"]');
+  });
+});

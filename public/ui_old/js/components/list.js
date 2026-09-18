@@ -42,6 +42,12 @@ function signature(item) {
 // 行 → 该行当前的 item 与可变引用（收藏状态在行内就地更新，闭包不能拿旧对象）
 const rowRefs = new WeakMap();
 
+// 行的「内容签名」存在 WeakMap 里，**不做 DOM 属性**：签名里含最多 500 字符的正文，
+// 500 行的页面就是每 10 秒重建 ~250 KB 字符串 + 各写一遍属性（属性写入是真实 DOM 变更）。
+// WeakMap 的键就是行节点，行被移除时条目自动回收，判据与原来的 `dataset.sig` 完全一致
+// （全仓没有任何 CSS/探针读它，故这一层可以安全地藏进内存）。
+const rowSignatures = new WeakMap();
+
 // 最近一次按下的行内操作与它所属的行（见 actionButton 里的说明）。
 let lastRowAction = null;
 
@@ -145,11 +151,20 @@ function buildActions(item, actions) {
           })
         : null;
 
-  // 文本不给"下载"：内联文本就在这一行里，下载它没有意义；长文本（有数据文件）的全文
-  // 同样能从预览里复制，多一个入口只会让"下载"这个动作变得暧昧。
+  // 文本也能下载（2026-09-18，用户要求："文本也可以下载"；同日追加："有原文件时保留原扩展名"）。
+  // 第 3 槽对 Text 行**恒满**，四槽固定布局在这一列里不再有空洞。
+  // 名字随产物走（动作标签一律"动词 + 对象"）：
+  //   · 有数据文件 → 「下载」：取回的是服务端那个**原文件**（原字节 + 原扩展名）；
+  //   · 内联文本   → 「下载文本」：对象存储里根本没有它，产物是正文生成的 `.txt`。
   const download =
     item.type === 'Text'
-      ? null
+      ? actionButton({
+          action: 'download',
+          label: item.hasData ? '下载' : '下载文本',
+          icon: 'download',
+          run: () => actions.onDownloadText(item),
+          successLabel: '已下载',
+        })
       : actionButton({
           action: 'download',
           label: '下载',
@@ -180,10 +195,16 @@ export function createList(actions) {
   // 一键复位筛选（2026-09-18）：此前"清除筛选条件"只在**空结果**的空状态里给 ——
   // 有结果、但只是筛得太窄时，用户只能逐项点掉（类型/收藏/时间范围…）。
   // 只在真的有筛选时出现（排序不算筛选：它不改变结果集，只改变顺序）。
+  //
+  // 2026-09-18 用户反馈"清除筛选按钮明显点"：此前是 `.btn--quiet`（透明底 + 次要色），
+  // 和紧挨着的「筛选中 · 共 N 条」是同一种颜色、又没有边框 —— 读起来像那句说明的后半截，
+  // 不像一个能按的东西。改成默认 `.btn`（有描边、正文色）：① 一眼是按钮；
+  // ② 与**空状态里同一个动作**的按钮长得一样（那里本来就是 `.btn`）——
+  // 同一个动作在两处两种强度，是这套界面一直在避免的事。
   const headClear = el(
     'button',
     {
-      class: 'btn btn--quiet',
+      class: 'btn results__clear',
       type: 'button',
       hidden: true,
       onclick: () => actions.onClearFilters(),
@@ -346,7 +367,12 @@ export function createList(actions) {
   let recycleMode = false;
 
   // 复选框（含 Shift 范围选择）。回收站里同样需要它：批量恢复与清空回收站都以选择集为入口。
-  function buildCheckbox(item, index) {
+  //
+  // 入参是那一行的**可变引用**（`rowRefs` 里那个），不是构建时的 `item`：行内开关（收藏/置顶）
+  // 成功后就地改的是 `ref.item`，而这个闭包如果一直抓着旧对象，之后勾选这一行就会把**旧快照**
+  // 存进选择集 —— 选择条的方向与文案随之按旧值算（"已置顶的记录点置顶没反应"就是这么来的）。
+  function buildCheckbox(ref, index) {
+    const item = ref.item; // 这里只用它读 key / type / hash 这些**不随写入变化**的字段
     const checkbox = el('input', {
       class: 'checkbox',
       type: 'checkbox',
@@ -365,7 +391,7 @@ export function createList(actions) {
       }
       anchorIndex = index;
     });
-    checkbox.addEventListener('change', () => actions.onSelect(item, checkbox.checked));
+    checkbox.addEventListener('change', () => actions.onSelect(ref.item, checkbox.checked));
     return el('label', { class: 'check-wrap' }, [checkbox]);
   }
 
@@ -391,7 +417,7 @@ export function createList(actions) {
     const ref = { item };
     rowRefs.set(row, ref);
 
-    const checkboxWrap = buildCheckbox(item, index);
+    const checkboxWrap = buildCheckbox(ref, index);
 
     const preview = previewText(item);
 
@@ -460,7 +486,7 @@ export function createList(actions) {
     // 已删除的行没有这两个动作：收藏与置顶都是活跃记录的属性（回收站里只该有「恢复」）
     const flagButtons = item.isDeleted ? [] : [toggleButton('star'), toggleButton('pin')];
 
-    // 三个时间列：创建 / 修改 / 访问。都是可排序表头（白名单见 src/ui_old/query.ts 的 SORT_COLUMNS），
+    // 三个时间列：创建 / 修改 / 访问。都是可排序表头（白名单见 src/ui/query.ts 的 SORT_COLUMNS），
     // 之前只有创建时间可点，另两个字段要手改 URL 才用得上。
     const timeCell = (className, value) =>
       el('td', { class: `cell-time ${className}`, role: 'cell' }, [
@@ -592,12 +618,12 @@ export function createList(actions) {
       wanted.add(item.key);
       const sig = signature(item);
       const existing = rowByKey.get(item.key);
-      if (existing && existing.dataset.sig === sig) {
+      if (existing && rowSignatures.get(existing) === sig) {
         next.push(existing);
         continue;
       }
       const row = buildRow(item, index, false, flashKeys);
-      row.dataset.sig = sig;
+      rowSignatures.set(row, sig);
       if (existing) {
         // 内容变了（多半是别的设备改了这条）：闪一次说明「它刚被更新」
         row.dataset.flash = 'true';
@@ -644,7 +670,7 @@ export function createList(actions) {
         const flash = flashKeys ?? new Set();
         for (let index = 0; index < items.length; index += 1) {
           const row = buildRow(items[index], index, true, flash);
-          row.dataset.sig = signature(items[index]);
+          rowSignatures.set(row, signature(items[index]));
           rowByKey.set(items[index].key, row);
           tbody.append(row);
         }
@@ -718,7 +744,7 @@ export function createList(actions) {
       if (!row) return;
       const ref = rowRefs.get(row);
       if (ref) ref.item = item;
-      row.dataset.sig = signature(item);
+      rowSignatures.set(row, signature(item));
       for (const [action, spec] of Object.entries(TOGGLES)) {
         const button = row.querySelector(`[data-action="${action}"]`);
         if (button) applyToggleState(button, Boolean(item[spec.field]), spec.labels);
@@ -785,13 +811,22 @@ export function createList(actions) {
       // 行内删除按钮——已被移除，于是焦点先落到 viewport，实测 1–2ms 后又变一次）。
       // 而且 rAF 不能用来重试：headless 与后台标签页里它不会连续触发（实测只跑到第一帧）。
       // 故在**删除确认后的固定窗口内**用定时器反复落点（上限 ~0.5s），一旦落地就停手。
-      // 判据不能用「焦点在别的元素上就停」——实测那一刻焦点可能还停在正在关闭的对话框里。
+      //
+      // 但重试的判据不能只有「焦点不是 target」：那个 0.5s 窗口里**用户的手只要有动作**
+      // （点搜索框、点下一行的按钮），下一轮就会把他拽回全选框。故只接手"无主"的焦点 ——
+      // 没有任何元素、或仍停在正在关闭的对话框里；焦点一旦落在别的可交互元素上就交还给用户。
+      const focusIsIdle = () => {
+        const active = document.activeElement;
+        if (!active || active === document.body || active === document.documentElement) return true;
+        return typeof active.closest === 'function' && active.closest('dialog') !== null;
+      };
       let rounds = 0;
       const place = () => {
         if (!target.isConnected) return;
         // 「上一轮落下之后**留住了**」才算成功：不能在 focus() 之后立刻判成功——
         // 浏览器的补焦晚 1–2ms 到（实测：focus() 成功的同一毫秒内就被 focusout 夺走）。
         if (document.activeElement === target) return;
+        if (!focusIsIdle()) return;
         target.focus();
         rounds += 1;
         if (rounds < 8) setTimeout(place, 60);

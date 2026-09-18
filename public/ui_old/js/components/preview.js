@@ -19,7 +19,7 @@ import { itemIsImage } from '../clipboard.js';
 import { api } from '../api.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
 
-export function createPreview({ onCopy, onCopyImage, onDownload, onClose }) {
+export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onClose }) {
   const title = el('h2', { class: 'dialog__title', id: 'preview-title' });
   const meta = el('span', { class: 'dialog__meta', id: 'preview-meta' });
   // 类型徽标也放进标题行：同一句「内容」在不同类型下是完全不同的东西
@@ -166,6 +166,16 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onClose }) {
           label: '复制文本',
           run: () => onCopy(item, text ?? item.text),
           successLabel: '已复制',
+        }),
+        // 文本也能下载（2026-09-18）：与行内那一槽同一个动作、同一个名字 ——
+        // 有数据文件时是"取回原文件"（叫「下载」，原扩展名保留），内联文本才是「下载文本」
+        // （产物是正文生成的 `.txt`，见 main.js 的 downloadTextItem）。放在这里是因为
+        // 用户已经在看这条记录的全文了，"存一份"是最自然的下一步。
+        actionButton({
+          icon: 'download',
+          label: item.hasData ? '下载' : '下载文本',
+          run: () => onDownloadText(item),
+          successLabel: '已下载',
         }),
       );
     } else {

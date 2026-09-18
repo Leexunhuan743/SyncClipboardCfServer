@@ -148,9 +148,17 @@ export const api = {
 
   // 全库最新的一条（按创建时间倒序取 1 条）：给「复制最近一条」这个入口用。
   // 刻意**不用当前列表的第一行** —— 列表可能被筛选或改过排序，而"最近一条"指的是全库最新的那条。
+  // 同理要显式带 `pinnedFirst=false`：列表默认置顶优先（`src/ui/query.ts`），
+  // 不带这一条的话"最近一条"会变成"最新的那条置顶记录"——答非所问。
   async latest(signal) {
     const raw = await request(
-      `${API_BASE}/history?${buildQuery({ page: 1, pageSize: 1, sort: 'createTime', order: 'desc' })}`,
+      `${API_BASE}/history?${buildQuery({
+        page: 1,
+        pageSize: 1,
+        sort: 'createTime',
+        order: 'desc',
+        pinnedFirst: 'false',
+      })}`,
       { signal },
     );
     return (raw?.items ?? []).map(normalizeItem).filter(Boolean)[0] ?? null;

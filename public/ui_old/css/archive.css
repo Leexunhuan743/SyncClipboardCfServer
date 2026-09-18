@@ -64,7 +64,12 @@
   cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-instant) var(--ease-out-circ);
+}
+
+.notice-bar__close:active {
+  transform: scale(0.9);
 }
 
 .notice-bar__close svg {

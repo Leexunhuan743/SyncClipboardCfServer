@@ -42,6 +42,34 @@
   --btn-bd: transparent;
 }
 
+/* 「清除筛选」（结果区头栏里那个出口，见 list.js 的 headClear）。
+ *
+ * 2026-09-18 用户两句话定形：先说"明显点"（此前是 `.btn--quiet`：透明底 + 次要色，
+ * 与紧挨着的「筛选中 · 共 N 条」同色、没有边界，读起来像那句说明的后半截），
+ * 我改成描边方框之后又被否："不能设计好看点吗 丑死了" —— 一条 42px 的文字带里压一个
+ * 白色方框确实突兀。
+ *
+ * 现在的形态：**强调色浅底的胶囊**，与顶栏那枚状态胶囊（`.status[data-tone="live"]`）同一套取色
+ * （`--accent-soft` 底 + `--accent` 字 + 强调色混出来的描边），字重 600。它在这条灰带上
+ * 一眼是"能给点一下的东西"，但没有方框的硬边；胶囊这个形状在本产品里也已经等于"状态/条件"，
+ * 与工具栏里的筛选 chip 是同一族语言。
+ * 高度沿用 `--control-h`（36px，条高 42px）：不写死 28px 是为了不跟触屏那条
+ * `.btn { min-height: 44px }` 打架（写死反而会把 44px 的命中区切掉）。 */
+.results__clear {
+  --btn-bg: var(--accent-soft);
+  --btn-fg: var(--accent);
+  --btn-bd: color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: var(--r-pill);
+  /* 2026-09-18 用户四句话把高度调到位的轨迹（都记在 progress §67 里）：
+   *   36px（--control-h）→ "上下空白小一点" → 30px（--control-h-sm）→ "再小点" → 24px
+   *   → "加大点" → **28px**（现在这一档）。
+   * 24px 是他看着太小、36px 是看着太胖，28px 落在中间：13px 字（行高约 18px）上下各 5px。
+   * 触屏不受影响：`pointer: coarse` 里的 `.btn { min-height: 44px }` 会覆盖它（命中区规则优先）。 */
+  min-height: 28px;
+  padding: 0 var(--sp-2) 0 6px;
+  font-weight: 600;
+}
+
 /* 销毁性操作：**只有这一档**（填色）。
  * 2026-09-18 统一：此前还有一档 `--btn--danger`（只改前景色的描边红），用途是"选择条里的
  * 删除选中"与"部署信息里的清空全部"。于是同一个动作在触发处是描边、在确认框里是填色，
@@ -75,6 +103,12 @@
     --btn-bg: var(--surface-2);
     --btn-fg: var(--ink);
   }
+  /* 「清除筛选」的 hover 必须写在这一块里（而不是它自己的定义旁边）：
+   * `.btn:hover` 与它是**同特异性**，靠顺序取胜 —— 写在前面会被那条泛用规则按回去，
+   * 悬停时胶囊会从强调色浅底变成中性灰（这个文件的窄屏块也记着同一类坑）。 */
+  .btn.results__clear:hover {
+    --btn-bg: color-mix(in srgb, var(--accent) 14%, var(--accent-soft));
+  }
 }
 
 .btn:active {
@@ -83,11 +117,15 @@
 
 /* 只用原生 [disabled]：全站按钮的禁用都是 `button.disabled = true`（分页首末页、对话框请求中），
  * 没有任何代码写 aria-disabled；此前这里还并列了一个 `[aria-disabled="true"]`，
- * 它永远匹配不到——正是 test/ui-contract.test.ts 抓的那类死规则。 */
+ * 它永远匹配不到——正是 test/ui-contract.test.ts 抓的那类死规则。
+ *
+ * **不要写 `pointer-events: none`**（2026-09-18 删）：原生 `disabled` 已经挡住点击，
+ * 而关掉指针事件会连带把 `cursor: not-allowed` 和 `title` 一起废掉——后者是"为什么禁用"
+ * 唯一的传达通道（例如禁用态的下载按钮写着「数据不可用，无法下载」）。
+ * V2 的同名规则本来就没有这一条（`overlay-v2.css` / `board-v2.css`），两版对齐。 */
 .btn[disabled] {
   opacity: 0.45;
   cursor: not-allowed;
-  pointer-events: none;
 }
 
 /* 载入中：标签/图标让位给转圈，但**保留宽度** —— 否则按钮会在「删除」↔「删除中…」之间抖一下。
@@ -181,6 +219,17 @@
   border-color: transparent;
 }
 
+/* 字段级错误态（`components.md` §2 的 error 格）：`aria-invalid` 由 JS 置上（登录页的
+ * 用户名/密码、部署信息里的两个保留策略输入），视觉上把描边与焦点环换成危险色。
+ * 颜色只是加速识别 —— 错误**文案**在控件旁边、并被 `aria-describedby` 关联，那才是主通道。 */
+.input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.input[aria-invalid="true"]:focus-visible {
+  outline-color: var(--danger);
+}
+
 .input--search {
   /* 左侧留给放大镜图标（图标 left: 9px、宽 15px ⇒ 32px 起步才不压字） */
   padding-left: var(--sp-6);
@@ -242,7 +291,12 @@ input[type="search"]::-webkit-search-decoration {
   cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-instant) var(--ease-out-circ);
+}
+
+.search__clear:active {
+  transform: scale(0.9);
 }
 
 .search__clear[hidden] {
@@ -301,6 +355,14 @@ input[type="search"]::-webkit-search-decoration {
 }
 
 /* ============ 分段控件（类型筛选）============ */
+
+/* 按下反馈的统一纪律（2026-09-18 补，`base.css` 那句"所有可点元素都有 :active"此前是**假的**）：
+ * 只有 `.btn` 与 `.icon-btn` 写过 `:active`，于是筛选 chip、表头排序、清空搜索、提示条上的关闭/重试、
+ * 复选框、顶栏那枚「部署信息」在触屏上按下去**毫无反应**（触屏没有 hover，`:active` 就是唯一的
+ * 按下反馈，缺了它页面像死的 —— base.css 的注释写的正是这件事）。
+ * 手法沿用已有的两档：小圆钮/方钮缩放（`.icon-btn` 的 0.92 那一族，取 0.9），
+ * 文字类控件不缩放、用底色或字色（缩放会让一行文字抖）。时长一律 `--dur-instant`。
+ * 判据（清单写在测试里，新增可点控件要显式加进去）：`test/ui-guard.test.ts`。 */
 .segmented {
   display: inline-flex;
   padding: 2px;
@@ -326,7 +388,12 @@ input[type="search"]::-webkit-search-decoration {
   gap: 6px;
   transition:
     background-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-instant) var(--ease-out-circ);
+}
+
+.segmented__item:active {
+  transform: scale(0.96);
 }
 
 /* 分段控件用 aria-pressed（toolbar.js 写的），没有 aria-checked 的生产者 */
@@ -340,6 +407,16 @@ input[type="search"]::-webkit-search-decoration {
   font-size: var(--fs-sm);
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* 切换**范围**（回收站）那一帧：计数在迁就新视图期间**隐藏，而不是清空** ——
+ * 清空会让五个 chip 各窄掉"数字那一段"，分段控件整体窄约 99px，腾出的宽度被搜索框与
+ * spacer 分走（实测搜索框 314 → 364 → 306，右侧控件先左移再弹回），这就是用户报告的
+ * "点回收站之后搜索框闪一下"。隐藏则保留占位、宽度一点儿不动，而且屏上**不会出现
+ * 另一个视图的数字**（`countsForView` 那条守卫要的正是后者）。
+ * 数据到了就把 `data-stale` 摘掉、写上新数字 —— 那时 chip 宽度只按数字位数变一点点。 */
+.segmented[data-stale="true"] .segmented__count {
+  visibility: hidden;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -483,9 +560,17 @@ th[aria-sort="descending"] .th-sort__arrow {
     opacity: 0.45;
   }
 
-  .th-sort:hover {
+.th-sort:hover {
     color: var(--ink);
   }
+}
+
+/* 表头排序：按下把底色压深一档（**不缩放** —— 一行表头文字缩放会让整行抖），
+ * 并把命中区画成一个圆角小块：触屏上没有 hover，这就是"我按到了"的唯一反馈。 */
+.th-sort:active {
+  color: var(--ink);
+  background: var(--surface-3);
+  border-radius: var(--r-sm);
 }
 
 .col-check {
@@ -727,12 +812,16 @@ th[aria-sort="descending"] .th-sort__arrow {
   white-space: nowrap;
 }
 
-/* 行内操作：默认低对比，hover 行时才提亮（避免整页都是按钮） */
+/* 行内操作：默认低对比，hover 行时才提亮（避免整页都是按钮）。
+ * 0.7 而不是 0.6：图标是识别这些控件的**唯一**手段，属于 SC 1.4.11 的适用对象 ——
+ * 0.6 的 `--ink-muted`(#6d6a64) 压在 #fff 上按 sRGB 折算只有 ≈2.4:1，低于 3:1；
+ * 0.7 约 3.4:1。V2 为此单独审过一次并把 0.55 改到 0.7（`board-v2.css` 的注释有原始数字），
+ * 两版取同一个值。（深色主题下 0.6 也有 3.36:1，过线——但两版一个值更容易守。） */
 .row-actions {
   display: flex;
   gap: 2px;
   justify-content: flex-end;
-  opacity: 0.6;
+  opacity: 0.7;
   transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
@@ -751,7 +840,11 @@ th[aria-sort="descending"] .th-sort__arrow {
   opacity: 1;
 }
 
-@media (max-width: 720px) {
+/* 提亮判据用**指针类型**，不是宽度：触屏没有 hover，"不透明度"就不再是发现机制。
+ * 此前只有 `max-width: 720px` 一条，于是 1024px 的触屏设备（iPad 横屏）既没有 hover、
+ * 又不满足宽度条件，这一排就永久停在 rest 态 —— 正好落在上面那条对比度问题里。
+ * 保留宽度条件是因为窄屏是卡片布局（行内操作整行独占，hover 精度本来就没意义）。 */
+@media (max-width: 720px), (pointer: coarse) {
   .row-actions {
     opacity: 1;
   }
@@ -790,10 +883,13 @@ th[aria-sort="descending"] .th-sort__arrow {
   transform: scale(0.92);
 }
 
+/* 同 `.btn[disabled]` 的处置（2026-09-18 删掉 `pointer-events: none`）：行内禁用态的
+ * 「下载」「复制图片」身上挂着解释（title: 数据不可用，无法…），关掉指针事件就等于
+ * 把这句话永久藏起来 —— 指针事件都没有，浏览器不会弹 title，`cursor: not-allowed`
+ * 也从来没生效过。V2 的 `.icon-btn:disabled` 没有这一条（`board-v2.css`）。 */
 .icon-btn[disabled] {
   opacity: 0.4;
   cursor: not-allowed;
-  pointer-events: none;
 }
 
 /* 行内开关（收藏 / 置顶）：选中态用同一个强调色，且不靠颜色单独表意（图标本身换形状） */
@@ -839,7 +935,12 @@ th[aria-sort="descending"] .th-sort__arrow {
   place-items: center;
   transition:
     background-color var(--dur-fast) var(--ease-standard),
-    border-color var(--dur-fast) var(--ease-standard);
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-instant) var(--ease-out-circ);
+}
+
+.checkbox:active {
+  transform: scale(0.9);
 }
 
 .checkbox::after {
@@ -1223,6 +1324,11 @@ th[aria-sort="descending"] .th-sort__arrow {
   font-weight: 600;
   cursor: pointer;
   pointer-events: auto;
+  transition: transform var(--dur-instant) var(--ease-out-circ);
+}
+
+.toast__action:active {
+  transform: scale(0.94);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1375,12 +1481,15 @@ th[aria-sort="descending"] .th-sort__arrow {
     min-height: var(--hit-min);
   }
 
+  /* 触屏上"下载"与"删除"的命中区之间只隔 4px 是误触的来源（两个 44px 目标、中间 4px，
+   * 手指落偏一点就打到隔壁，而隔壁是删除）。V2 为此专门把间距拉到 10px，注释里的原话是
+   * "缝里点的后果不可接受：这一排里有删除类操作"（`board-v2.css`）。两版取同一个值。 */
   .row-actions {
-    gap: var(--sp-1);
+    gap: 10px;
   }
 
   /* 触屏下按钮放大到 44px，占位槽要同步放大 —— 否则"固定位置"在触屏上又错开了
-   * （与 --col-actions-coarse 的 4×44 + 3×4 + 24 = 212 是同一笔账）。 */
+   * （与 --col-actions-coarse 的 4×44 + 3×10 + 24 = 230 是同一笔账）。 */
   .row-actions__slot {
     width: var(--hit-min);
     height: var(--hit-min);
@@ -1409,11 +1518,21 @@ th[aria-sort="descending"] .th-sort__arrow {
   }
 
   /* 桌面操作列 116/88px 是按 30px 图标按钮摊的；触屏上按钮宽度是 44px——图片/文件行有
-   * **4 个**按钮（预览 + 复制图片 + 下载 + 删除），4×44 + 3×4(gap) = 188px 的**内容**宽度，
-   * 再加单元格左右合计 24px 内边距 = **212px**（--col-actions-coarse）。写 188 时实测仍有
-   * 1 个按钮越出 12px（量的是 Image 行的 4 按钮行；Text 行只有 3 个按钮，量它会得出假结论）。 */
+   * **4 个**按钮（预览 + 复制图片 + 下载 + 删除），4×44 + 3×10(gap) = 206px 的**内容**宽度，
+   * 再加单元格左右合计 24px 内边距 = **230px**（--col-actions-coarse）。这 24px 的账是量出来的：
+   * 写 188（= 4×44 + 3×4 的老间距）时实测仍有 1 个按钮越出 12px；间距那次 4 → 10 之后，
+   * 同一笔账变成 206 + 24 = 230。（量的必须是 Image 行的 4 按钮行 —— Text 行只有 3 个按钮，
+   * 拿它当样本会得出假结论。） */
   .col-actions {
     width: var(--col-actions-coarse);
+  }
+
+  /* 「收藏 / 置顶」那一列同理：84px 是按 30px 按钮摊的，触屏按钮 44px 时两个装不下、
+   * 会换行成上下两个（行高 61 → 105px，实测于 1024×768 触屏模拟）。两个按钮都是**可逆**开关，
+   * 故这里只把列放宽让它们并排，不再为它们另加间距（`.col-actions` 那一排之所以要 10px，
+   * 是因为它的邻居里有删除）。 */
+  .col-star {
+    width: var(--col-star-coarse);
   }
 }
 

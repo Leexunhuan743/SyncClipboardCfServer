@@ -57,7 +57,11 @@ export function createToasts(container) {
     // 在循环条件里等它会让 children.length 永不下降 —— 那就是一个死循环，整个页面卡住。
     const excess = container.children.length - MAX_TOASTS;
     if (excess > 0) {
-      for (const stale of [...container.children].slice(0, excess)) stale.remove();
+      // 先挤掉**没有动作**的老提示：带「重试」的那条要停留 10 秒，用户可能正准备点它；
+      // 被后面接连冒出来的即时提示顶掉，等于那个补救入口凭空消失。
+      const all = [...container.children];
+      const noAction = all.filter((child) => !child.querySelector('.toast__action'));
+      for (const stale of [...new Set([...noAction, ...all])].slice(0, excess)) stale.remove();
     }
     setTimeout(() => dismiss(node), timeout);
   }

@@ -354,6 +354,55 @@ describe('UI API 列表（分页/过滤/搜索/排序白名单）', () => {
     expect(body.items.map((i) => i.size)).toEqual([SORT_SHORT.length, SORT_LONG.length]);
   });
 
+  it('置顶恒排在主排序列之前；pinnedFirst=false 才回到纯列序', async () => {
+    // 判别力来自「置顶的那条 size 更大」：纯 size 升序会把它排在后面，
+    // 故下面的顺序断言只有在置顶优先生效时才成立（置顶没生效 → 两条顺序直接翻过来）。
+    const pinMark = `ui-pin-${RUN}`;
+    const shortText = `${pinMark}-a`;
+    const longText = `${pinMark}-b${'y'.repeat(32)}`;
+    const shortHash = await putText(shortText);
+    const longHash = await putText(longText);
+
+    const pin = await req(`/ui/api/history/Text/${longHash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: true }),
+    });
+    expect(pin.status, 'PATCH 置顶').toBe(200);
+    expect(((await pin.json()) as { pinned: boolean }).pinned).toBe(true);
+
+    const list = async (extra: string) => {
+      const res = await req(
+        `/ui/api/history?search=${encodeURIComponent(pinMark)}&sort=size&order=asc&pageSize=500${extra}`,
+      );
+      expect(res.status, `列表请求（${extra || '默认'}）`).toBe(200);
+      const body = (await res.json()) as { items: { hash: string; pinned: boolean }[] };
+      expect(body.items, '两条自建记录都必须在结果里').toHaveLength(2);
+      return body.items;
+    };
+
+    const pinned = await list('');
+    expect(
+      pinned.map((i) => i.hash),
+      '置顶的记录必须在最前 —— 即使 size 升序本来会把它排在后面',
+    ).toEqual([longHash, shortHash]);
+    expect(pinned[0]!.pinned, '最前那条必须是置顶的').toBe(true);
+
+    const plain = await list('&pinnedFirst=false');
+    expect(
+      plain.map((i) => i.hash),
+      'pinnedFirst=false 必须回到纯 size 升序（「复制最近一条」靠它保持"最新"的含义）',
+    ).toEqual([shortHash, longHash]);
+
+    // 自恢复：置顶是全局状态，留着会让后续用例与本地实例多出一条置顶记录
+    const unpin = await req(`/ui/api/history/Text/${longHash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: false }),
+    });
+    expect(unpin.status, '自恢复：取消置顶').toBe(200);
+  });
+
   it('数据端点：Text 记录 /data 请求 → 404 且 error ∈ {not_found, data_missing}', async () => {
     const mine = await findMine();
     expect(mine, '前置：标记记录存在').not.toBeNull();

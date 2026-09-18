@@ -22,7 +22,7 @@ export const DEFAULT_FILTERS = {
   order: 'desc',
 };
 
-// 页大小档位。上限 500 来自服务端白名单（`src/ui_old/query.ts` 的 UI_MAX_PAGE_SIZE）：
+// 页大小档位。上限 500 来自服务端白名单（`src/ui/query.ts` 的 UI_MAX_PAGE_SIZE）：
 // 档位里必须包含它，否则 URL 写 `pageSize=500` 时下拉会落到空选——读起来像缺陷。
 export const PAGE_SIZES = [20, 50, 100, 200, 500];
 

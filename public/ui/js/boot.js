@@ -694,6 +694,11 @@ function boot() {
       store.patch({ items: state().items.map((i) => (i.key === item.key ? next : i)) });
       // 就地更新那一行（不重拉整页），并按方向播一次动画
       board.patchItem(next, { pop: field === 'starred' ? 'star' : null });
+      // 位置/成员资格变了的两种情形立刻对账（与 V1 同一条判据，见 `public/ui_old/js/main.js`）：
+      // 置顶会把它挪到列表最前（`src/ui/query.ts` 的 pinnedFirst），「仅收藏」开着时取消收藏
+      // 会让它不再符合筛选 —— 不立刻对齐就是"按完没反应，十秒后它自己跳走"。
+      // `board` 在重排时会 captureFocus/restoreFocus，故焦点不会掉到 <body>。
+      if (field === 'pinned' || state().filters.starred) void refresh({ silent: true });
       void refreshOverview();
       return true;
     } catch (error) {

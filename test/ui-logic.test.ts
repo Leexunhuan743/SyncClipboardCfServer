@@ -20,6 +20,14 @@ import { parseFrames, classifyMessage, createPushChannel } from '../public/ui/js
 import { deleteConfirmSpec, batchDeleteConfirmSpec, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui/js/messages.js';
 // @ts-expect-error TS7016：同上
 import { rowMenuItems, sortMenuItems } from '../public/ui/js/menus.js';
+// 这一条破例取 **V1** 的模块：保留策略的显示口径（未设置 / 已关闭 / 有值 / 分档）只在特定取值下
+// 才现形 —— 60 分钟显示成「0 天」、null 显示成「不限」都不会在默认实例上出现，靠人眼看永远看不全。
+// @ts-expect-error TS7016：`public/ui_old/**` 同样是零构建的原生 ES 模块（同上的理由）
+import { retentionText, retentionEffectiveText } from '../public/ui_old/js/components/info.js';
+// 下载的**落盘文件名**（V1 `format.js` 的纯函数）：有原文件就保留原扩展名，没有才生成
+// `<type>-<hash8>.txt`；而名字来自客户端的 `dataName`（不可信）—— 这条判据只能在单测里逐值钉住。
+// @ts-expect-error TS7016：同上
+import { downloadNameForText, safeFileName } from '../public/ui_old/js/format.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const DAY = 86_400_000;
@@ -455,6 +463,101 @@ describe('menus · 菜单项构造（判据是产品决定，不是实现细节�
       { sort: 'createTime', order: 'asc', page: 1 },
       { sort: 'lastAccessed', order: 'desc', page: 1 },
     ]);
+  });
+});
+
+describe('部署信息 · 保留策略的人话口径（V1 `info.js`）', () => {
+  const summary = (minutes: number | null, maxCount: number | null = 1000) =>
+    retentionText({ retentionMinutes: minutes, maxSavedHistoryCount: maxCount });
+
+  it('分钟数分档：小时级不能再写成「0 天」', () => {
+    // 只看**时间那一格**：整句里还有「条数上限 1000 条」「30 天后彻底清除」，
+    // 拿整句做 "不包含 0 天" 的断言会被 "30 天" 里的 "0 天" 骗到（第一版就是这么写错的）。
+    const timePart = (minutes: number | null) => String(summary(minutes)).split(' · ')[0];
+    const cases: [number, string][] = [
+      [1, '1 分钟'],
+      [30, '30 分钟'],
+      [60, '1 小时'],
+      [90, '1.5 小时'],
+      [1000, '16.7 小时'],
+      [1440, '1 天'],
+      [1441, '1 天'],
+      [10_080, '7 天'],
+    ];
+    // 这些值以前**全都**落到 `Math.round(m / 1440) 天`：前五行会变成「0 天」、1441 变成「1 天」
+    for (const [minutes, expected] of cases) {
+      expect(timePart(minutes), `${minutes} 分钟的时间格`).toBe(expected);
+    }
+  });
+
+  it('0 = 明确关闭该阶段，不能被说成「未设置」', () => {
+    const off = retentionText({ retentionMinutes: 0, maxSavedHistoryCount: 0 });
+    expect(off).toContain('保留期清理已关闭');
+    expect(off).toContain('条数裁剪已关闭');
+    expect(off).not.toContain('未设置');
+  });
+
+  it('null = 没显式配置，生效值是内置默认（7 天 / 1000 条），不是「不限」也不是「按部署环境变量」', () => {
+    const both = summary(null, null);
+    expect(both).toContain('未设置');
+    expect(both).toContain('7 天');
+    expect(both).toContain('1000 条');
+
+    // 只有一项是 null 时，另一项照常显示，且这一项说清回落值
+    const mixed = summary(null, 5000);
+    expect(mixed).toContain('内置默认 7 天');
+    expect(mixed).toContain('上限 5000 条');
+    expect(mixed).not.toContain('不限');
+
+    const note = retentionEffectiveText({ retentionMinutes: null, maxSavedHistoryCount: 500 });
+    expect(note).toContain('10080 分钟（内置默认）');
+    expect(note).toContain('来源：内置默认');
+    expect(note).not.toContain('不限');
+    expect(note).not.toContain('按部署环境变量');
+  });
+
+  it('来源与生效值一致：meta = 此处的设置、env = 部署环境变量', () => {
+    const note = retentionEffectiveText({
+      retentionMinutes: 1440,
+      maxSavedHistoryCount: 1000,
+      retentionSource: 'meta',
+      maxCountSource: 'env',
+    });
+    expect(note).toContain('保留 1440 分钟');
+    expect(note).toContain('此处的设置');
+    expect(note).toContain('部署环境变量');
+  });
+});
+
+describe('下载的落盘名（V1 `format.js`）', () => {
+  const name = (item: Record<string, unknown>) => downloadNameForText({ type: 'Text', hash: 'ABCD1234XYZ', ...item });
+
+  it('有原文件就保留原名与扩展名；内联文本才生成 .txt', () => {
+    expect(name({ dataName: null })).toBe('Text-ABCD1234.txt');
+    expect(name({ dataName: '' })).toBe('Text-ABCD1234.txt');
+    expect(name({ dataName: '   ' })).toBe('Text-ABCD1234.txt');
+    expect(name({ dataName: 'f4-mu5pak2v.txt' })).toBe('f4-mu5pak2v.txt');
+    // 用户定的口径：那是他自己原本的文件，不替他改名
+    expect(name({ dataName: 'notes.md' })).toBe('notes.md');
+    expect(name({ dataName: 'archive.tar.gz' })).toBe('archive.tar.gz');
+    expect(name({ dataName: 'data.json' })).toBe('data.json');
+  });
+
+  it('文件名来自客户端 → 必须洗掉路径分隔符与控制字符、去掉结尾的点与空白、限长', () => {
+    // 先取 basename：路径分量根本进不来（与服务端 `db.ts` 的 basename() 同一口径）
+    expect(name({ dataName: '../../etc/passwd' })).toBe('passwd');
+    expect(name({ dataName: 'C:\\Users\\me\\note.txt' })).toBe('note.txt');
+    expect(name({ dataName: 'a\\b:c*d?e"f<g>h|i.txt' })).toBe('b-c-d-e-f-g-h-i.txt');
+    expect(name({ dataName: 'trailing. ' })).toBe('trailing');
+    // 限长时**保留扩展名**：`.txt` 被砍掉的话，双击就不知道该用什么打开了
+    expect(name({ dataName: `${'x'.repeat(200)}.txt` })).toBe(`${'x'.repeat(60)}.txt`);
+  });
+
+  it('safeFileName：文件/图片下载共用同一个入口（无原名时用调用方给的回退名）', () => {
+    expect(safeFileName('shot.png', 'Image-abc')).toBe('shot.png');
+    expect(safeFileName('', 'File-ABCD1234')).toBe('File-ABCD1234');
+    expect(safeFileName('nil', 'File-ABCD1234')).toBe('nil');
+    expect(safeFileName('/etc/hosts', 'File-ABCD1234')).toBe('hosts');
   });
 });
 

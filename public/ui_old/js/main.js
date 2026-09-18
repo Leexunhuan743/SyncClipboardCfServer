@@ -9,7 +9,7 @@ import { api, handleAuthError, redirectToLogin } from './api.js';
 import { createStore } from './store.js';
 import { filtersFromUrl, filtersToApi, syncUrl, DEFAULT_FILTERS } from './filters.js';
 import { writeText, writeImage, itemIsImage } from './clipboard.js';
-import { typeLabel } from './format.js';
+import { typeLabel, downloadNameForText, safeFileName } from './format.js';
 import { debounce } from './dom.js';
 import { createLatestGate } from './latest.js';
 import { createPushChannel } from './signalr.js';
@@ -58,6 +58,7 @@ const preview = createPreview({
   onCopy: copyItem,
   onCopyImage: copyImage,
   onDownload: downloadItem,
+  onDownloadText: downloadTextItem,
   // 预览打开时把这一条写进 URL 的 hash（链接可分享），关闭时清掉——
   // 否则刷新页面会突然弹出上一次看过的记录。`#Text-<hash>` 也是深链接的入口（见 openDeepLink）。
   onClose: () => {
@@ -192,6 +193,7 @@ const actions = {
   onCopy: copyItem,
   onCopyImage: copyImage,
   onDownload: downloadItem,
+  onDownloadText: downloadTextItem,
   onStar: (item, starred) => toggleFlag(item, 'starred', starred),
   onPin: (item, pinned) => toggleFlag(item, 'pinned', pinned),
   onDelete: deleteItem,
@@ -465,12 +467,42 @@ function adoptPatch(item, updated) {
 async function toggleFlag(item, field, value) {
   try {
     const updated = await api.patch(item, { [field]: value });
-    list.patchItem(adoptPatch(item, updated), { pop: field === 'starred' ? 'star' : 'pin' });
+    const next = adoptPatch(item, updated);
+    list.patchItem(next, { pop: field === 'starred' ? 'star' : 'pin' });
+    // `store.items` 这份也要跟着走：它是「全选」与批量方向判定的输入（`onSelectAll` 从这里取对象）。
+    // 只改 list 的内部副本时，"先点行内置顶、再全选 → 置顶"会按**旧快照**算方向，
+    // 于是对那几条本来就没变的记录也各发一次写（服务端照样 Version++ 并广播）。
+    store.set({
+      items: store.get().items.map((entry) => (entry.key === next.key ? next : entry)),
+    });
+    // 这一行如果在选择集里，选择集里那份也要换成新对象：选择条的方向与文案（置顶 / 取消置顶、
+    // 收藏 / 取消收藏）读的正是选择集里的对象。只更新列表而不更新它，就会出现"这一行明明已经
+    // 置顶，选择条还说置顶"。
+    const selection = store.get().selection;
+    if (selection.has(next.key)) {
+      const synced = new Map(selection);
+      synced.set(next.key, next);
+      store.set({ selection: synced });
+      list.updateSelection(synced);
+    }
     void refreshStats();
+    // 这次改动会改变**当前列表里的位置或成员资格**时要立刻对账：
+    //   · 置顶：列表现在是置顶优先（`src/ui/query.ts`），这一行要挪到最前——不立刻对齐的话，
+    //     它会在下一次轮询（≤10 秒）时自己跳走，那时用户已经不知道是谁动的；
+    //   · 「仅收藏」开着时取消收藏：这一行已不符合筛选条件，却还留在列表里。
+    // 不是重拉整页：对账按行签名复用节点，变的只有那一行的位置（见 list.js 的落位注释）。
+    if (field === 'pinned' || store.get().filters.starred) await refresh({ silent: true });
     return true;
   } catch (error) {
     if (handleAuthError(error)) return false;
-    toasts.error(error.status === 409 ? '记录已被其他设备修改，请刷新后重试' : `操作失败：${error.message}`);
+    if (error.status === 409) {
+      // 冲突说明这条已被别的设备改过。只提示"请刷新"等于把对账推给用户，而此刻页面上的
+      // 版本号、徽标、开关都可能已经过期 —— 就地重取一次，让这一行显示真实状态。
+      toasts.error('记录已被其他设备修改，已刷新为最新状态');
+      await refresh({ silent: true });
+      return false;
+    }
+    toasts.error(`操作失败：${error.message}`);
     return false;
   }
 }
@@ -524,7 +556,13 @@ async function restoreItem(item) {
       toasts.error('这条记录的数据文件已被清除，服务端不再允许恢复');
       return false;
     }
-    toasts.error(error.status === 409 ? '记录已被其他设备修改，请刷新后重试' : `恢复失败：${error.message}`);
+    if (error.status === 409) {
+      // 同上：恢复的 409 只提示不刷新，会让回收站里那一行继续显示过期状态
+      toasts.error('记录已被其他设备修改，已刷新为最新状态');
+      await refresh({ silent: true });
+      return false;
+    }
+    toasts.error(`恢复失败：${error.message}`);
     return false;
   }
 }
@@ -881,6 +919,19 @@ async function copyLatest(button) {
   }
 }
 
+// 把一段 Blob 落到磁盘（文件下载与文本下载共用）。单独成函数是因为它有一段**必须成对**的
+// 资源管理：object URL 要在点击之后延迟回收（立刻 revoke 会让部分浏览器取消下载）。
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 async function downloadItem(item) {
   try {
     const response = await fetch(api.dataUrl(item), { credentials: 'same-origin' });
@@ -897,18 +948,46 @@ async function downloadItem(item) {
       );
       return false;
     }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = item.dataName ?? `${item.type}-${item.hash.slice(0, 8)}`;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    // 名字走同一个安全化入口（服务端给的是 basename，但那是客户端上传时带来的，不可信）
+    saveBlob(
+      await response.blob(),
+      safeFileName(item.dataName ?? '', `${item.type}-${item.hash.slice(0, 8)}`),
+    );
     return true;
   } catch (error) {
     toasts.error(`下载失败：${error.message}`);
+    return false;
+  }
+}
+
+// 文本下载（2026-09-18，用户要求："文本也可以下载"；同日追加："有原文件时保留原扩展名"）。
+//
+// 两条分支，判据是**服务端到底有没有这个文件**：
+//   · 有（`hasData`）→ 走文件那条路：取回**原字节**、用**原名**（`notes.md` 就叫 `notes.md`）。
+//     这时"下载文本"和"下载文件"是同一件事，分成两套实现只会让同一条记录两次下载内容不同。
+//   · 没有（内联文本，对象存储里根本没有它）→ 把**正文**包成 `text/plain` 存成
+//     `<type>-<hash 前 8 位>.txt`。列表里的正文被截断到 500 字符，故 `textTruncated` 时必须先取全文
+//     （与复制、预览走同一条 `fetchFull`），否则会存下一个半截文件。
+async function downloadTextItem(item) {
+  try {
+    if (item.hasData) return await downloadItem(item);
+    const full = item.textTruncated ? await api.get(item) : item;
+    if (!full) return false;
+    const text = full.text ?? '';
+    if (text === '') {
+      // 空文本存成空文件没有意义，说清原因比给一个 0 字节的 .txt 好
+      toasts.error('这条记录是空文本，没有可下载的内容');
+      return false;
+    }
+    const name = downloadNameForText(item);
+    saveBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), name);
+    toasts.info(`已下载 ${name}（${text.length} 个字符）`);
+    return true;
+  } catch (error) {
+    if (handleAuthError(error)) return false;
+    toasts.error(`下载文本失败：${error.message}`, {
+      action: { label: '重试', run: () => void downloadTextItem(item) },
+    });
     return false;
   }
 }

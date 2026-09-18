@@ -32,6 +32,17 @@ export interface UiHistoryQuery {
   before: number | null; // CreateTime < before（epoch ms）
   sort: UiSortField;
   order: UiSortOrder;
+  /**
+   * 置顶优先：`Pinned` 恒排在主排序列之前。默认开。
+   *
+   * 为什么默认就是开：这个接口**没有"默认排序"这一档** —— 界面上每一列都是显式排序
+   * （`sort` 恒有值），若只在某一档里插置顶，"置顶"就会随用户点的列时灵时不灵
+   * （同一个动作一半的排序里有用、另一半没用，读起来就是坏掉了）。
+   * 唯一的例外是调用方显式传 `pinnedFirst=false` —— 那是给"**全库**最新的那一条"
+   * 这类查询用的（V1 的「复制最近一条」）：它问的是时间上的最新，不是"当前列表的第一行"，
+   * 让它跟着置顶走会答非所问。
+   */
+  pinnedFirst: boolean;
 }
 
 export interface UiHistoryPage {
@@ -148,6 +159,8 @@ export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
     before: parseTimeParam(params.get('before'), 'before'),
     sort: sortRaw as UiSortField,
     order: orderRaw,
+    // 缺省为真（`parseBoolParam` 对空值返回 null）：只有显式 `pinnedFirst=false` 才关掉置顶优先
+    pinnedFirst: parseBoolParam(params.get('pinnedFirst'), 'pinnedFirst') !== false,
   };
 }
 
@@ -250,11 +263,18 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
   const direction = q.order === 'asc' ? 'ASC' : 'DESC';
   const offset = (q.page - 1) * q.pageSize;
   const limitIdx = params.length + 1;
+  // 置顶优先（默认，见 UiHistoryQuery.pinnedFirst）恒在最前，其余按主列排序；`ID` 是稳定
+  // tiebreaker —— 主列自己就是 ID 时不再重复写一遍。
+  const orderBy = [
+    ...(q.pinnedFirst ? ['Pinned DESC'] : []),
+    `${column} ${direction}`,
+    ...(q.sort === 'id' ? [] : [`ID ${direction}`]),
+  ].join(', ');
 
   const rows = await db
     .prepare(
       `SELECT * FROM HistoryRecords WHERE ${clause} ` +
-        `ORDER BY ${column} ${direction}, ID ${direction} LIMIT ?${limitIdx} OFFSET ?${limitIdx + 1}`,
+        `ORDER BY ${orderBy} LIMIT ?${limitIdx} OFFSET ?${limitIdx + 1}`,
     )
     .bind(...params, q.pageSize, offset)
     .all<DbRow>();

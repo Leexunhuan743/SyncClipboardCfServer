@@ -61,15 +61,18 @@
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", "Courier New", monospace;
 
-  /* 字号阶梯（2026-09-18 收敛为四档正文级 + 一个数字档）：
+  /* 字号阶梯（2026-09-18 收敛为四档正文级）：
    *   13px（--fs-sm）元信息、徽标、说明、时间列
    *   14px（--fs-body）正文与控件
    *   16px（--fs-h2）区块标题      18px（--fs-h1）页面标题
-   *   20–30px（--fs-stat）统计条的数字
    * 此前 `--fs-xs` 是 12px，而它被 chip/meta/note/标签用了 20 处 —— 中文 12px 偏小，
    * 且与 13px 的 --fs-sm 只差 1px（一个只有 1px 区分的档位等于把层级做糊）。
-   * 现在 12px 整档抬到 13px，两档合并为 --fs-sm。 */
-  --fs-stat: clamp(1.5rem, 1.25rem + 0.9vw, 1.875rem);
+   * 现在 12px 整档抬到 13px，两档合并为 --fs-sm。
+   *
+   * 2026-09-18 删掉了这一档里的 `--fs-stat`（clamp 24–30px）：统计条的数字在
+   * 2026-09-17 的改版里已经由 `.stat__value` 自己写死成 1.25rem（20px），
+   * 那个 clamp 从此没有任何 `var()` 引用 —— 一个只在定义处出现的令牌会让人以为"数字是 30px"。
+   * 判据见 `test/ui-guard.test.ts` 的「没有定义了却没人引用的自定义属性」。 */
   --fs-h1: 1.125rem;
   --fs-h2: 1rem;
   --fs-body: 0.875rem;
@@ -108,8 +111,14 @@
   --control-h: 36px;
   --control-h-sm: 30px;
   --hit-min: 44px;
-  /* 触屏下操作列宽：4 个 44px 按钮 + 3×4 间距 + 单元格 24px 内边距（量的是 Image 行的 4 按钮行） */
-  --col-actions-coarse: 212px;
+  /* 触屏下操作列宽：4 个 44px 按钮 + 3×10 间距（2026-09-18 由 4 提到 10，防"下载/删除"误触，
+   * 与 V2 的 `board-v2.css` 同名处置）+ 单元格 24px 内边距（量的是 Image 行的 4 按钮行） */
+  --col-actions-coarse: 230px;
+  /* 触屏下「收藏 / 置顶」列宽：2 个 44px 开关 + 24px 内边距。
+   * 桌面那 84px 是按 30px 按钮摊的（2×30 + 24）；触屏按钮涨到 44px 后内容需要 88px，
+   * 84px 的列装不下 → 两个按钮**换行成上下两个**，行高从 61px 变成 105px
+   * （2026-09-18 在 1024×768 的触屏模拟里量到；`.col-actions` 是同一类问题，见它的注释）。 */
+  --col-star-coarse: 112px;
 
   /* ---- 遮罩：浅深主题共用（两边的“变暗”语义相同，各自配一个值只会漂移）---- */
   --overlay: rgb(20 19 18 / 45%);
@@ -123,7 +132,10 @@
   --dur-instant: 90ms; /* 指针反馈、tooltip */
   --dur-fast: 160ms; /* hover、按下、标签切换 */
   --dur-standard: 300ms; /* 浮层进出、行入场 */
-  --dur-medium: 460ms; /* 列表整体替换、视图过渡 */
+  /* 460ms（--dur-medium）已删：它标注的用途是"列表整体替换、视图过渡"，而那条机制在
+   * 2026-09-18 被**有意移除**（同文档视图过渡实测一次 ~60ms 主线程，见 motion.css 与
+   * `test/ui-contract.test.ts` 的性能守卫）——留一个只为已删机制存在的档位，
+   * 会让人以为还有一处 460ms 的过渡没接上。 */
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-out-circ: cubic-bezier(0, 0.55, 0.45, 1);
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);

@@ -184,6 +184,9 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
       }
       stopped = false;
       failures = 0;
+      // 退避间隔也要归零：`failures` 清了但 `retryDelay` 还停在上一次的档位（最多 60 秒）时，
+      // "切回前台重连失败"会先白白等一分钟才试第二次 —— 而这一刻正是最需要快速重连的时候。
+      retryDelay = RETRY_MIN_MS;
       // 手动 start（boot / 切回前台）与冷却计时器是两条通往 open() 的路：留着计时器的话，
       // 它会在我们已经重连之后再触发一次（open() 自身有 socket/pending 守卫，不会建出第二条
       // 连接，但没必要留一个定时器）。

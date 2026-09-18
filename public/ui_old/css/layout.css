@@ -108,7 +108,13 @@
   transition:
     border-color var(--dur-fast) var(--ease-standard),
     background-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-instant) var(--ease-out-circ);
+}
+
+/* 按下反馈（与 .btn 同一档）：触屏上这枚胶囊是"部署信息"的唯一入口，没有 :active 就是死的 */
+.status:active {
+  transform: scale(0.97);
 }
 
 /* 「部署信息」那四个字：它现在是这枚控件**唯一**的可见文字，也就是按钮的名字 ——
@@ -137,6 +143,16 @@
 
 .status[data-tone="offline"] {
   background: var(--surface-2);
+}
+
+/* 「正在连接」也必须有自己的色（2026-09-18 补：这条此前**漏了** —— 三态里只有 live 与 offline
+ * 写了规则，connecting 落在 `.status` 的默认灰上，于是"进行中"与"已退回轮询"看起来一模一样。
+ * 是靠把三态并排渲染出来截图才发现的：文档里写着青/琥珀/灰，实现里只有两种颜色）。
+ * 用琥珀（--star）而不是灰：connecting 是**进行中**，offline 是终态。 */
+.status[data-tone="connecting"] {
+  color: var(--star);
+  border-color: color-mix(in srgb, var(--star) 32%, var(--border));
+  background: color-mix(in srgb, var(--star) 8%, var(--surface));
 }
 
 /* 状态图标随 tone 上色：live 青、connecting 琥珀、offline 灰（继承胶囊的 color）。

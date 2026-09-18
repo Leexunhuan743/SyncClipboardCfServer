@@ -31,7 +31,9 @@ export function createPagination({ onPage }) {
   jump.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    const target = Number.parseInt(jump.value, 10);
+    // 只认**纯整数**：`parseInt('2abc')` 会得到 2，而"打错的页码被猜成另一页"比不跳更难解释
+    const raw = jump.value.trim();
+    const target = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
     // 跳完就清空并交还焦点：留在输入框里会让人以为「还没跳」，也可能被下一次回车重复触发。
     jump.value = '';
     jump.blur();

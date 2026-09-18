@@ -489,24 +489,38 @@ try {
   // 5d. 点菜单里的动作要生效（而不是只关闭）。
   // 判据取**服务端返回值**而不是行内按钮的 `aria-pressed`：行会被随后的静默刷新重建，
   // 那一刻读到的按钮可能还没重绘完（实测踩过这个假阴性）。
+  //
+  // 2026-09-18 修正 —— 置顶优先生效后暴露了两处过期假设（都是这条脚本自己的，不是界面的）：
+  //   ① 复核不能走"列表第一条 = 该类型第一条"（`?pageSize=1&types=X`）：置顶恒排在最前，
+  //      刚被取消置顶的那条已经不是该类型的首条 → `find` 落空，读到 `null`（跑出来就是这条假红）。
+  //      改成**按 hash 取单条**，不依赖任何排序假设。
+  //   ② 复位必须按 `data-key` 认行：置顶/取消置顶会让这一行**换位置**，原来"再点一次第一条"
+  //      会去切另一条记录（旧行为下行不动，所以一直没暴露）。
   const menuAction = await evaluate(`(async () => {
-    const btn = document.querySelector('.item .icon-btn[data-icon="dots"]');
     const key = document.querySelector('.item').dataset.key;
-    btn.click();
+    const nth = () => document.querySelector('.item[data-key="' + key + '"]');
+    const [type, ...rest] = key.split('-');
+    const readServer = async () => {
+      const res = await fetch(
+        '/ui/api/history/' + encodeURIComponent(type) + '/' + encodeURIComponent(rest.join('-')),
+        { credentials: 'same-origin' },
+      );
+      const body = await res.json();
+      return { status: res.status, pinned: body.pinned };
+    };
+    nth().querySelector('.icon-btn[data-icon="dots"]').click();
     await new Promise((r) => setTimeout(r, 350));
     const pin = [...document.querySelectorAll('.menu__item')].find((b) => /置顶/.test(b.textContent));
     if (!pin) return JSON.stringify({ error: '菜单里没有置顶项' });
     const wasPinned = pin.textContent.trim() === '取消置顶';
     pin.click();
     await new Promise((r) => setTimeout(r, 1600));
-    const [type, ...rest] = key.split('-');
-    const res = await fetch('/ui/api/history?pageSize=1&types=' + type, { credentials: 'same-origin' });
-    const list = await res.json();
-    const row = list.items?.find((i) => i.hash === rest.join('-'));
+    const server = await readServer();
     return JSON.stringify({
+      key,
       menuClosed: !document.querySelector('.menu').hidden,
       wasPinned,
-      serverPinned: row?.pinned ?? null,
+      serverPinned: server.pinned ?? null,
     });
   })()`);
   record('菜单里的「置顶」', menuAction);
@@ -521,8 +535,7 @@ try {
     );
     // 复位：切回原状态，别把数据留给后面的用例
     await evaluate(`(async () => {
-      const btn = document.querySelector('.item .icon-btn[data-icon="dots"]');
-      btn.click();
+      document.querySelector('.item[data-key="${parsed.key}"] .icon-btn[data-icon="dots"]')?.click();
       await new Promise((r) => setTimeout(r, 300));
       const pin = [...document.querySelectorAll('.menu__item')].find((b) => /置顶/.test(b.textContent));
       pin?.click();

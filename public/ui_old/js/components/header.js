@@ -60,11 +60,17 @@ export function createHeader({ onToggleTheme, onLogout, onInfo, onCopyLatest }) 
   // 图标是**唯一**承载状态的地方，故它随状态整体替换（三个字形互不相同，见 PUSH_STATES）
   const statusIcon = el('span', { class: 'status__icon-slot' });
 
+  // 状态变化播给读屏器：`aria-live` **不能挂在按钮上** —— 按钮的可访问名本来就会随状态变
+  // （`aria-label` 每轮都写），两者叠加等于把同一件事念两遍，而且"按钮名"不是状态该住的地方。
+  // 这里用一个视觉隐藏的 status 区域承载**状态词**（不带解释：状态抖动时一长句念不完）。
+  // 初值在插入文档**之前**写好，故首屏不会播一次"轮询刷新"；此后只在真的变化时改写。
+  const statusLive = el('span', { class: 'sr-only', role: 'status', text: PUSH_STATES.offline.label });
+
   // 状态 + 入口合一：整枚可点，进「部署信息」—— 那里有完整解释
   // （传输清单、轮询间隔、保留策略、最近变更），胶囊自己只说结论。
   const statusButton = el(
     'button',
-    { class: 'status', type: 'button', 'aria-live': 'polite', onclick: () => onInfo() },
+    { class: 'status', type: 'button', onclick: () => onInfo() },
     [statusIcon, el('span', { class: 'status__entry', text: '部署信息' })],
   );
 
@@ -113,6 +119,7 @@ export function createHeader({ onToggleTheme, onLogout, onInfo, onCopyLatest }) 
     ]),
     el('span', { class: 'app-header__spacer' }),
     el('div', { class: 'app-header__actions' }, [
+      statusLive,
       copyLatestButton,
       // 「部署信息（带推送状态图标）」紧跟「复制最近一条」：它是动作组的一员（点开对话框），
       // 状态只是它携带的一枚图标 —— 故不再单独立组、也不在前面放分隔线。
@@ -145,6 +152,8 @@ export function createHeader({ onToggleTheme, onLogout, onInfo, onCopyLatest }) 
       //      把它塞进按钮名只会让每次状态变化都念一长句。
       statusButton.title = state.hint;
       statusButton.setAttribute('aria-label', `部署信息（${state.label}）`);
+      // 只在真的变化时改写：同值写入也是 DOM 变更，而 aria-live 区域每写一次就可能播一次
+      if (statusLive.textContent !== state.label) statusLive.textContent = state.label;
     },
   };
 }
