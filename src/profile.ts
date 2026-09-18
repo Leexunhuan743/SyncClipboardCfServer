@@ -45,9 +45,11 @@ export interface NotifyHandlers {
   notifyHistory: (dto: Record<string, unknown>) => Promise<void> | void;
 }
 
-// 生成 Group 上传文件的新名称（上游 CreateNewDataFileName：File_{CreateTimeBasedFileName}.zip）
+// 生成 Group 上传文件的新名称（上游 `GroupProfile.CreateNewDataFileName`）
+// 上游：$"File_{Utility.CreateTimeBasedFileName()}.zip" —— 后缀是 `.zip`（此前误写成 `.tmp.zip`，
+// 与上游命名不符；虽然 SetTransferData 只校验 EndsWith(".zip") 故功能未受影响，仍属多余偏差）
 export function createNewGroupDataFileName(now = new Date()): string {
-  return `File_${timeStampSuffix(now)}.tmp.zip`;
+  return `File_${timeStampSuffix(now)}.zip`;
 }
 
 // 生成 Text 传输数据文件的新名称（上游 TextProfile：_transferDataName ??= $"{Type}_{CreateTimeBasedFileName}.txt"）
@@ -55,12 +57,45 @@ export function createNewTextDataFileName(now = new Date()): string {
   return `Text_${timeStampSuffix(now)}.txt`;
 }
 
+// 对齐上游 `Utility.CreateTimeBasedFileName()` = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}_{Path.GetRandomFileName()}"。
+// 注意 `Path.GetRandomFileName()` 的形状是 8 个随机字符 + '.' + 3 个随机字符（含点），故上游文件名里
+// 随机段自带一个点；这里保持同一形状，避免存储层命名与上游相左。
 function timeStampSuffix(now: Date): string {
-  const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+  const pad = (n: number) => String(n).padStart(2, '0');
   const stamp =
     `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_` +
     `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-  return `${stamp}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${stamp}_${randomNameSegment()}`;
+}
+
+const RANDOM_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+function randomNameSegment(): string {
+  const bytes = new Uint8Array(11);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < 11; i++) {
+    if (i === 8) out += '.';
+    out += RANDOM_CHARS[bytes[i]! % RANDOM_CHARS.length];
+  }
+  return out;
+}
+
+// 上游 `Profile.Create(ProfileDto dto)`：type=File 且 DataName 是图片扩展名时**提升为 ImageProfile**，
+// 因此落库的 Type 是 Image 而非 File。扩展名表取自上游 `ImageTool.ImageExtensions`
+// （注意不含 webp/heic/avif —— 那些在 ImageHelper.ExImageExtensions，仅供本机转换判断）。
+// 仅 PUT /SyncClipboard.json 走这条 Promotion；POST /api/history 不提升（上游 HistoryService 直接用
+// dto.Type 建 profile），故此处只用于 PUT 路径。
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.gif', '.bmp', '.png']);
+
+export function resolveCreateProfileType(dto: ProfileDto): ProfileType {
+  if (dto.type === ProfileType.File && dto.dataName) {
+    const dot = dto.dataName.lastIndexOf('.');
+    if (dot >= 0 && IMAGE_EXTENSIONS.has(dto.dataName.slice(dot).toLowerCase())) {
+      return ProfileType.Image;
+    }
+  }
+  return dto.type;
 }
 
 // ===== 数据校验与持久化 =====
@@ -184,7 +219,10 @@ export async function putSyncProfile(
     }
   }
 
-  // CreateAndSaveNewProfile 分支
+  // CreateAndSaveNewProfile 分支：上游 `Profile.Create(dto)` 会把 File+图片扩展名提升为 Image，
+  // 落库类型随之改变；但上面的既有记录查询用的是 **原始 dto.Type**（上游 GetExistingProfileAsync
+  // 在 Create 之前调用），故这里只在创建分支使用提升后的类型。
+  const createDto: ProfileDto = { ...dto, type: resolveCreateProfileType(dto) };
   let persisted: PersistedData | null = null;
   if (dto.hasData) {
     if (!dto.dataName) {
@@ -197,7 +235,7 @@ export async function putSyncProfile(
     }
     const content = new Uint8Array(await temp.arrayBuffer());
     try {
-      persisted = await validateAndPersistData(storage, dto, fileName, content);
+      persisted = await validateAndPersistData(storage, createDto, fileName, content);
     } catch (err) {
       // 上游 catch 全部异常 → BadRequest("Hash is not match data.")
       throw new BadRequestError('Hash is not match data.');
@@ -212,13 +250,13 @@ export async function putSyncProfile(
   // "No local data available to prepare persistent storage."），请求被拒绝。
   // 此前本实现静默入库 → 写入一条永远取不到数据的坏记录，并把当前 profile 也污染成
   // 无数据形态（客户端拉到后反复重试下载 404）。这里明确拒绝（400 而非上游的未处理异常 500）。
-  if (!persisted && dto.type !== ProfileType.Text) {
+  if (!persisted && createDto.type !== ProfileType.Text) {
     throw new BadRequestError(
-      `Transfer data is required for ${ProfileType[dto.type]} profile`,
+      `Transfer data is required for ${ProfileType[createDto.type]} profile`,
     );
   }
 
-  const entity = await addProfile(db, dto, persisted, now, notify.notifyHistory);
+  const entity = await addProfile(db, createDto, persisted, now, notify.notifyHistory);
   await saveAndNotifyCurrentProfile(db, entity, notify);
   return entity;
 }
@@ -430,8 +468,6 @@ async function saveTransferData(
       fileName,
       content,
       entity.hash,
-      entity.text,
-      entity.size,
     );
   } catch (err) {
     if (err instanceof ProfileDataInvalidError) throw err;
@@ -473,8 +509,11 @@ async function saveTextTransferData(
   return {
     hash,
     text: entity.text, // 内联截断文本保持不变（上游 _text）
-    // 上游 GetSize()：Size 非 null 直接返回声明值；缺失时读文件算**字符数**（非字节）
-    size: entity.size > 0 ? entity.size : new TextDecoder().decode(content).length,
+    // 上游 POST 路径的 Size 口径：`HistoryService.ParseLong(metadata,"size")` → 0（缺失/非法时），
+    // 存入实体后 `TextProfile(ProfilePersistentInfo)` 赋值 `Size = entity.Size`
+    // —— `ProfilePersistentInfo.Size` 是 `required long`（非空），故 `GetSize()` 直接返回它，
+    // **不会回落到读文件**（该回落只存在于 PUT 路径：`TextProfile(ProfileDto)` 的 `Size` 可为 null）。
+    size: entity.size,
     transferDataFile: fileName,
     filePaths: [fileName],
   };
@@ -487,8 +526,6 @@ async function validateAndPersistWithName(
   fileName: string,
   content: Uint8Array,
   expectedHash: string,
-  incomingText: string,
-  declaredSize: number,
 ): Promise<PersistedData> {
   if (type === ProfileType.File || type === ProfileType.Image) {
     const hash = await fileProfileHash(fileName, content);
@@ -496,8 +533,10 @@ async function validateAndPersistWithName(
       throw new ProfileDataInvalidError('File transfer data hash mismatch.');
     }
     await storage.putHistory(type, hash, fileName, content);
-    // 与 PUT 路径同口径：声明值优先，缺失时才用内容长度（上游 GetSize 对非 null Size 不测量，F11）
-    return { hash, text: fileName, size: declaredSize, transferDataFile: fileName, filePaths: [fileName] };
+    // 上游 POST 路径此处**忽略 dto.Size**：`FileProfile(ProfilePersistentInfo)` 不设置 Size
+    // （保持 null）→ Persist 时 `GetSize()` 走 ComputeSize → `FileInfo(FullPath).Length`，
+    // 即实际写入的字节数。（PUT 路径相反：`FileProfile(ProfileDto)` 会带上 dto.Size，故那边优先声明值。）
+    return { hash, text: fileName, size: content.length, transferDataFile: fileName, filePaths: [fileName] };
   }
 
   if (type === ProfileType.Group) {

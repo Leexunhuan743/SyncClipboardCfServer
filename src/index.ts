@@ -1,7 +1,7 @@
 // Worker 入口：Basic Auth → Hono 路由；SignalR negotiate/WS 升级走独立路径
 import { Hono } from 'hono';
 import { Bindings } from './env';
-import { authFailure } from './auth';
+import { authFailure, drainRequestBody } from './auth';
 import { createWebdavRoutes } from './routes/webdav';
 import { createHistoryRoutes } from './routes/history';
 import { forwardToHub, negotiateResponse, HUB_PATH } from './hub';
@@ -13,7 +13,12 @@ const app = new Hono<{ Bindings: Bindings }>({ strict: false }) // 尾斜杠容�
 // 全局 Basic Auth（所有端点，含 /api/version、/api/time —— 上游 [Authorize] 类级）
 app.use('*', async (c, next) => {
   const denied = authFailure(c.env, c.req.raw);
-  if (denied) return denied;
+  if (denied) {
+    // 先排空请求体：否则带 body 的请求（如 POST /api/history）在鉴权失败时会触发
+    // 运行时错误「Can't read from request stream after response has been sent.」并以 503 结束
+    await drainRequestBody(c.req.raw);
+    return denied;
+  }
   await next();
 });
 
@@ -37,7 +42,10 @@ export default {
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）
     if (url.pathname === `${HUB_PATH}/negotiate`) {
       const denied = authFailure(env, request);
-      if (denied) return denied;
+      if (denied) {
+        await drainRequestBody(request);
+        return denied;
+      }
       try {
         return await negotiateResponse(env, request);
       } catch {
@@ -46,9 +54,10 @@ export default {
       }
     }
 
-    // WebSocket 升级：转发 DO。鉴权在 DO 内完成——校验 negotiate 登记的 connectionToken，
-    // 或接受直接携带有效 Basic 凭据的升级请求（上游 hub 类级 [Authorize] 的等价物，F1）。
-    if (url.pathname === HUB_PATH && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+    // Hub 连接：全部转发 DO。鉴权在 DO 内完成——校验 negotiate 登记的 connectionToken，
+    // 或接受直接携带有效 Basic 凭据的请求（上游 hub 类级 [Authorize] 的等价物，F1）。
+    // 覆盖三种传输：WS 升级、SSE 的 GET、长轮询的 GET/POST/DELETE。
+    if (url.pathname === HUB_PATH) {
       return forwardToHub(env, request);
     }
 

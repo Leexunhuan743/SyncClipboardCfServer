@@ -6,6 +6,9 @@ import {
   HistoryRecordDto,
   HistoryRecordEntity,
   HistoryRecordUpdateDto,
+  INT32_MIN,
+  INT32_MAX,
+  isValidProfileHash,
 } from './types';
 
 // ===== 时间 =====
@@ -97,6 +100,16 @@ export function parseProfileTypeFilter(
   fieldName = 'Types',
 ): ProfileTypeFilter {
   if (s == null || s.trim() === '') return ProfileTypeFilter.All;
+  const trimmed = s.trim();
+  // 上游 `Enum.TryParse<ProfileTypeFilter>(value)` **接受数字**（如 "5" = Text|Image）；
+  // 数字与名称不能混用（TryParse("Text,5") 失败）。此前数字一律 400，与上游相左（F27）。
+  if (/^[+-]?\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (!Number.isSafeInteger(n) || n < INT32_MIN || n > INT32_MAX) {
+      throw new InvalidQueryValueError(`Invalid ${fieldName} value: ${trimmed}`);
+    }
+    return n as ProfileTypeFilter;
+  }
   let value = 0;
   for (const part of s.split(',')) {
     const name = part.trim();
@@ -128,12 +141,59 @@ export function profileDtoToJson(dto: ProfileDto): string {
   return JSON.stringify(obj);
 }
 
+// 请求体必须是 JSON **对象**：上游是 `[FromBody] ProfileDto`，反序列化失败即 400。
+// 此前 `[]` / `null` / `123` 会被当成「字段全缺失的 DTO」继续处理，最终写入一条空文本历史
+// 记录并把它设为当前 profile——客户端发错 body 会静默污染数据（PUT /SyncClipboard.json）。
+export function requireJsonObject(json: string, what: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(json);
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${what} must be a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+// 存储的「当前 profile」JSON 的可用性判定（对齐上游 `GetSyncProfile` 的降级分支）。
+// 上游读文件后 `JsonSerializer.Deserialize<ProfileDto>(text) ?? new ProfileDto()`，有两个降级出口：
+//   - 反序列化**抛错**（含 `[]`、非法枚举名、非对象）→ catch → `new TextProfile("").ToProfileDto()`
+//     （hash = SHA256("")、size = 0）
+//   - 反序列化得到 **null**（文本为 `null`）→ `new ProfileDto()`
+//     （hash = ""、size 为 null 故序列化时省略）
+// 本实现把当前 profile 存在 D1 的 Meta 表里，正常路径写入的必为合法 JSON；此判定用于
+// 「存储值被外部改坏 / 未来写入路径出错」时仍能像上游一样优雅降级，而不是把坏 JSON 发给客户端
+// （客户端 `ReadFromJsonAsync` 会抛异常 → 剪贴板同步中断）。
+export type StoredProfileHealth = 'ok' | 'corrupt' | 'null-dto';
+
+export function classifyStoredProfile(raw: string): StoredProfileHealth {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 'corrupt';
+  }
+  if (parsed === null) return 'null-dto';
+  // 数组 / 标量：`Deserialize<ProfileDto>` 抛 JsonException → catch 分支
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) return 'corrupt';
+  const type = (parsed as Record<string, unknown>).type;
+  // 键缺失 → Type 取默认 Text（不抛错）；数字 → JsonStringEnumConverter 接受整数枚举值
+  if (type === undefined) return 'ok';
+  if (typeof type === 'number') return Number.isInteger(type) ? 'ok' : 'corrupt';
+  // 字符串必须是合法枚举名（大小写不敏感，与 JsonStringEnumConverter 一致；数字串亦可）
+  if (typeof type !== 'string') return 'corrupt';
+  if (parseProfileType(type) === undefined) return 'corrupt';
+  // Hash 同样要能安全使用：它参与 R2 key 构造（见 types.isValidProfileHash）。含路径分隔符的
+  // 存储值若原样返回，客户端会用同一规则构造本地路径 → 抛异常/产生非法路径。视同损坏并降级。
+  const hash = (parsed as Record<string, unknown>).hash;
+  if (hash === undefined || hash === null) return 'ok';
+  if (typeof hash !== 'string') return 'corrupt';
+  return isValidProfileHash(hash) ? 'ok' : 'corrupt';
+}
+
 // 解析：大小写不敏感取值（客户端总发 camelCase，防御性容忍其他大小写）
 // type 处理与上游一致：键缺失 → Text；非法枚举名 → 抛错（上游 JsonException → 400）；
 // Unknown/None → 抛错（上游 Profile.Create 抛 NotSupportedException）。
 // 禁止静默降级为 Text —— 否则畸形输入会覆盖当前 profile 并写入历史（F8）。
 export function parseProfileDto(json: string): ProfileDto {
-  const raw = JSON.parse(json) as Record<string, unknown>;
+  const raw = requireJsonObject(json, 'ProfileDto');
   const get = (key: string): unknown => {
     if (raw[key] !== undefined) return raw[key];
     const lower = key.toLowerCase();
@@ -253,7 +313,8 @@ export function historyListToJson(list: HistoryRecordDto[]): string {
 
 // HistoryRecordUpdateDto 解析（camelCase；注意 IsDelete → isDelete）；大小写不敏感
 export function parseHistoryRecordUpdateDto(json: string): HistoryRecordUpdateDto {
-  const raw = JSON.parse(json) as Record<string, unknown>;
+  // 同上：`[]` 曾被当作「空 dto」→ 走 ShouldUpdate 分支推进版本/时间戳，静默改动了记录（PATCH）
+  const raw = requireJsonObject(json, 'HistoryRecordUpdateDto');
   const get = (key: string): unknown => {
     if (raw[key] !== undefined) return raw[key];
     const lower = key.toLowerCase();

@@ -11,9 +11,31 @@ const AUTH = 'Basic ' + Buffer.from(`${USER}:${PASS}`).toString('base64');
 
 const sha256 = (data: string) => createHash('sha256').update(data).digest('hex').toUpperCase();
 
+// @microsoft/signalr 在 Node 下默认用 ws 库，而 ws 库不读 HTTP(S)_PROXY：BASE 为远端且本机需经代理
+// 出网时，WS 会在**客户端侧**握手失败（服务端无问题），表现为整组用例超时。
+// 注入全局 WebSocket（undici，会走代理）使本文件在本地与线上都能验证服务端行为。
+// 运行时支持 `options.WebSocket`，但其 TS 声明未暴露该字段。
+interface HubOptionsWithWebSocket extends signalR.IHttpConnectionOptions {
+  WebSocket?: new (url: string, protocols?: string | string[]) => unknown;
+}
+
 // 广播 DTO 形状收窄（含 hash 字段的协议对象）
 function hasHash(v: unknown): v is { hash: string } {
   return typeof v === 'object' && v !== null && 'hash' in v;
+}
+
+// 有界轮询等待条件成立。F6 的真实主张是「广播被 await、不会因 floating promise 丢失」——
+// 服务端把消息交给传输后，帧仍需经网络抵达客户端；本地 RTT≈0 时「响应即已收到」貌似成立，
+// 但经代理/WAN 访问线上时该假设不成立（断言会假失败）。有界等待保留了判别力：
+// 若广播真的丢失（响应后才 fire-and-forget，Workers 可能在响应后终止该 promise），
+// 无论等多久都收不到，用例仍会失败。
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await delay(100);
+  }
+  return predicate();
 }
 
 function delay(ms: number): Promise<void> {
@@ -25,8 +47,9 @@ function delay(ms: number): Promise<void> {
 }
 
 async function connect() {
+  const options: HubOptionsWithWebSocket = { headers: { Authorization: AUTH }, WebSocket };
   const connection = new signalR.HubConnectionBuilder()
-    .withUrl(`${BASE}/SyncClipboardHub`, { headers: { Authorization: AUTH } })
+    .withUrl(`${BASE}/SyncClipboardHub`, options)
     .build();
   await connection.start();
   return connection;
@@ -38,13 +61,13 @@ beforeAll(async () => {
 });
 
 describe('SignalR 兼容 Hub', () => {
-  it('连接 + 握手成功（拿到 connectionId）', async () => {
+  it('连接 + 握手成功（拿到 connectionId）', { timeout: 60_000 }, async () => {
     const connection = await connect();
     expect(connection.connectionId).toBeTruthy();
     await connection.stop();
   });
 
-  it('PUT /SyncClipboard.json 触发 RemoteProfileChanged + RemoteHistoryChanged 广播', async () => {
+  it('PUT /SyncClipboard.json 触发 RemoteProfileChanged + RemoteHistoryChanged 广播', { timeout: 60_000 }, async () => {
     const connection = await connect();
     const profile: unknown[] = [];
     const history: unknown[] = [];
@@ -60,14 +83,14 @@ describe('SignalR 兼容 Hub', () => {
     });
     expect(res.status).toBe(200);
 
-    // 广播 await 于响应内（服务端 await 后返回），响应到达即应收到。
-    // 并发跑其他测试文件时可能混入无关广播，故只断言本次 PUT 的 hash 且类型为 Text。
-    expect(profile.some((p) => hasHash(p) && p.hash === hash)).toBe(true);
-    expect(history.some((h) => hasHash(h) && h.hash === hash)).toBe(true);
+    // 服务端在响应前 await 广播；这里仍有界等待帧抵达（见 waitFor 说明）。
+    // 并发跑其他测试文件时可能混入无关广播，故只断言本次 PUT 的 hash。
+    expect(await waitFor(() => profile.some((p) => hasHash(p) && p.hash === hash)), 'RemoteProfileChanged').toBe(true);
+    expect(await waitFor(() => history.some((h) => hasHash(h) && h.hash === hash)), 'RemoteHistoryChanged').toBe(true);
     await connection.stop();
   });
 
-  it('PATCH /api/history 成功路径也触发 RemoteHistoryChanged（F6：广播在响应返回前 await）', async () => {
+  it('PATCH /api/history 成功路径也触发 RemoteHistoryChanged（F6：广播在响应返回前 await）', { timeout: 60_000 }, async () => {
     const connection = await connect();
     const history: unknown[] = [];
     connection.on('RemoteHistoryChanged', (dto) => history.push(dto));
@@ -87,8 +110,8 @@ describe('SignalR 兼容 Hub', () => {
       body: JSON.stringify({ starred: true, version: 999 }),
     });
     expect(res.status).toBe(200);
-    // 响应到达时广播应已 await 完成；floating promise 的实现会非确定性丢失
-    expect(history.some((h) => hasHash(h) && h.hash === hash)).toBe(true);
+    // 服务端在响应前 await 广播；floating promise 的实现会非确定性丢失（等待也不会到达）
+    expect(await waitFor(() => history.some((h) => hasHash(h) && h.hash === hash)), 'RemoteHistoryChanged').toBe(true);
     await connection.stop();
   });
 

@@ -4,9 +4,10 @@ import { Bindings } from '../env';
 import { HistoryDb, basename, BadRequestError as DbBadRequestError } from '../db';
 import { R2Storage } from '../storage';
 import { putSyncProfile, BadRequestError, NotFoundError } from '../profile';
-import { parseProfileDto, profileDtoToJson } from '../serialization';
+import { parseProfileDto, profileDtoToJson, classifyStoredProfile } from '../serialization';
+import type { StoredProfileHealth } from '../serialization';
 import { textProfileHash } from '../hash';
-import { ProfileType, ProfileDto } from '../types';
+import { ProfileType, ProfileDto, isValidProfileHash } from '../types';
 import { broadcast } from '../hub';
 import { multistatusXml, xmlResponse } from '../webdavXml';
 
@@ -146,26 +147,42 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // MKCOL /file —— 200 空体（上游 `Ok()`；客户端 CreateDirectory 只判 2xx）
   app.on('MKCOL', '/file', (c) => c.body(null, 200));
 
-  // GET /SyncClipboard.json —— 当前 Profile；无则空 TextProfile dto
+  // GET /SyncClipboard.json —— 当前 Profile。
+  // 三个降级出口逐字对齐上游 GetSyncProfile：无存储值 / 存储值损坏 → 空 TextProfile dto
+  // （hash=SHA256("")、size=0）；存储值为字面 `null` → `new ProfileDto()`（hash=""、size 省略键）。
   app.get('/SyncClipboard.json', async (c) => {
     const { db } = handlers(c);
     const json = await db.getCurrentProfileJson();
-    if (json === null) {
-      // 上游 GetSyncProfile 无文件时返回 new TextProfile(string.Empty).ToProfileDto：
-      //   Hash = GetHash() = SHA256("")，Text = ""，HasData = false，DataName = null（整键省略），
-      //   Size = GetSize() = 0（Size 为 long?，仅 WhenWritingNull 才省略 → wire 必含 "size":0）（F11）
-      const empty: ProfileDto = {
+    // null 存储值 = 上游「文件不存在」分支
+    const health: StoredProfileHealth | 'missing' =
+      json === null ? 'missing' : classifyStoredProfile(json);
+    if (health === 'ok') {
+      return new Response(json!, {
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    }
+    if (health === 'null-dto') {
+      // 上游 `Deserialize<ProfileDto>("null") ?? new ProfileDto()`：Hash 为空串（非 SHA256("")），
+      // Size 为 null → WhenWritingNull 省略该键
+      const fallback: ProfileDto = {
         type: ProfileType.Text,
-        hash: await textProfileHash(''),
+        hash: '',
         text: '',
         hasData: false,
-        size: 0,
       };
-      return c.json(JSON.parse(profileDtoToJson(empty)), 200);
+      return c.json(JSON.parse(profileDtoToJson(fallback)), 200);
     }
-    return new Response(json, {
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-    });
+    // 上游 GetSyncProfile 无文件时返回 new TextProfile(string.Empty).ToProfileDto：
+    //   Hash = GetHash() = SHA256("")，Text = ""，HasData = false，DataName = null（整键省略），
+    //   Size = GetSize() = 0（Size 为 long?，仅 WhenWritingNull 才省略 → wire 必含 "size":0）（F11）
+    const empty: ProfileDto = {
+      type: ProfileType.Text,
+      hash: await textProfileHash(''),
+      text: '',
+      hasData: false,
+      size: 0,
+    };
+    return c.json(JSON.parse(profileDtoToJson(empty)), 200);
   });
 
   // PUT /SyncClipboard.json —— 上传剪贴板（含历史复用/新建+数据校验+广播）
@@ -176,6 +193,11 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
       dto = parseProfileDto(await c.req.text());
     } catch {
       return c.text('Invalid JSON body', 400);
+    }
+    // 上游 `GetWorkingDirName` 拒绝含路径分隔符的 hash（抛 ArgumentException）。这里在写路径
+    // 入口给出可诊断的 400，避免入库一条 hash 含 `/` 的坏记录并被设为当前 profile（推给客户端）。
+    if (dto.hash !== '' && !isValidProfileHash(dto.hash)) {
+      return c.text('Hash contains invalid path characters', 400);
     }
     try {
       await putSyncProfile(db, storage, dto, {

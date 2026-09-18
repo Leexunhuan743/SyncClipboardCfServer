@@ -11,7 +11,17 @@ export function tempKey(name: string): string {
   return `${TEMP_PREFIX}${name}`;
 }
 
+// 最后防线（对齐上游 `Profile.GetWorkingDirName` 在 key 构造处抛 ArgumentException）：
+// 路由层已把含路径分隔符的 hash 拒为 400，此处断言确保将来新增写路径若漏校验会**快速失败**，
+// 而不是静默产生跨目录的 R2 key（那会让孤儿清理的目录判定与实际 key 结构不同构）。
+function assertHashForPath(hash: string): void {
+  if (hash.includes('/') || hash.includes('\\')) {
+    throw new Error(`Hash contains invalid path characters: ${hash}`);
+  }
+}
+
 export function workingDirPrefix(type: ProfileType, hash: string): string {
+  assertHashForPath(hash);
   return `${HISTORY_PREFIX}${ProfileType[type]}_${hash}/`;
 }
 

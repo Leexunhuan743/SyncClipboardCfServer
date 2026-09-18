@@ -10,7 +10,19 @@ export const REGISTER_TOKEN_PATH = '/register-token';
 // 与服务端实际注册了哪些协议无关（上游 Web.cs:38 只 AddSignalR() = 仅 JSON）。
 // 官方客户端用默认 JSON(Text) 协议，两种宣告都能连上（已实测）；为保持 negotiate 载荷
 // 与上游逐字一致，这里保留 "Binary"（F13：不再自行收敛为 Text）。
-const TRANSFER_FORMATS = ['Text', 'Binary'];
+const WS_TRANSFER_FORMATS = ['Text', 'Binary'];
+// 上游对 SSE 只宣告 Text、对长轮询宣告 Text+Binary（ASP.NET Core SignalR 的固定表）
+const SSE_TRANSFER_FORMATS = ['Text'];
+const LP_TRANSFER_FORMATS = ['Text', 'Binary'];
+
+// 宣告顺序即客户端的尝试顺序（客户端按列表顺序取第一个可用的传输）。
+// 与上游一致：WebSockets 优先；WS 不可用（代理剥离 Upgrade、防火墙只放行普通 HTTP）时
+// 回退 ServerSentEvents，再回退 LongPolling —— 这是上游具备、此前本实现缺失的降级能力。
+const AVAILABLE_TRANSPORTS = [
+  { transport: 'WebSockets', transferFormats: WS_TRANSFER_FORMATS },
+  { transport: 'ServerSentEvents', transferFormats: SSE_TRANSFER_FORMATS },
+  { transport: 'LongPolling', transferFormats: LP_TRANSFER_FORMATS },
+];
 
 function hubStub(env: Bindings): DurableObjectStub {
   return env.HUB.get(env.HUB.idFromName(HUB_INSTANCE));
@@ -39,9 +51,9 @@ export function forwardToHub(env: Bindings, request: Request): Promise<Response>
 }
 
 // negotiate 响应（.NET SignalR JSON 协议）
-// - 只宣告 WebSockets 传输，强制官方客户端走 WS
-// - negotiateVersion >= 1 时返回 connectionToken（v1 token 模式，WS URL 用 ?id=connectionToken）
-// - 老客户端（无 negotiateVersion）用 connectionId 作为 WS id
+// - 按上游顺序宣告三种传输（WebSockets → ServerSentEvents → LongPolling），客户端取首个可用的
+// - negotiateVersion >= 1 时返回 connectionToken（v1 token 模式，WS/SSE/长轮询 URL 用 ?id=connectionToken）
+// - 老客户端（无 negotiateVersion）用 connectionId 作为连接 id
 // - 无论哪种模式都把 token 登记到 Hub：WS 升级时 DO 会校验它（F1）
 export async function negotiateResponse(env: Bindings, request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -56,13 +68,13 @@ export async function negotiateResponse(env: Bindings, request: Request): Promis
       negotiateVersion: 1,
       connectionId: connectionToken,
       connectionToken,
-      availableTransports: [{ transport: 'WebSockets', transferFormats: TRANSFER_FORMATS }],
+      availableTransports: AVAILABLE_TRANSPORTS,
     });
   }
 
   return Response.json({
     connectionId: connectionToken,
-    availableTransports: [{ transport: 'WebSockets', transferFormats: TRANSFER_FORMATS }],
+    availableTransports: AVAILABLE_TRANSPORTS,
   });
 }
 

@@ -241,6 +241,106 @@ function buildZipWithDuplicateNames(name: string, contents: Uint8Array[]): Uint8
 }
 
 // ============================================================ F7 / F8 / F11 序列化
+describe('F27 · 服务端生成的传输数据文件名（对齐上游 Utility.CreateTimeBasedFileName）', () => {
+  it('Group：File_{stamp}_{8chars}.{3chars}.zip；Text：Text_..._.txt', async () => {
+    const { createNewGroupDataFileName, createNewTextDataFileName } = await import('../src/profile');
+    const group = createNewGroupDataFileName();
+    // 上游 CreateTimeBasedFileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}_{Path.GetRandomFileName()}"，
+    // 而 Path.GetRandomFileName() 形如 "abcd1234.xyz"（随机段自带一个点）
+    expect(group).toMatch(/^File_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[a-z0-9]{8}\.[a-z0-9]{3}\.zip$/);
+    const text = createNewTextDataFileName();
+    expect(text).toMatch(/^Text_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[a-z0-9]{8}\.[a-z0-9]{3}\.txt$/);
+    // 唯一性（同一秒内多次调用不得碰撞）
+    expect(new Set(Array.from({ length: 50 }, () => createNewGroupDataFileName())).size).toBe(50);
+  });
+});
+
+describe('F30 · 存储的当前 profile 损坏时优雅降级（对齐上游 GetSyncProfile 的两个 catch 出口）', () => {
+  it('classifyStoredProfile：合法 DTO → ok；数组/标量/非法枚举名 → corrupt；字面 null → null-dto', async () => {
+    const { classifyStoredProfile } = await import('../src/serialization');
+
+    // ok：正常写入的形状，以及上游同样不抛错的形状
+    for (const raw of [
+      JSON.stringify({ type: 'Text', hash: 'H', text: 't', hasData: false, dataName: null }),
+      // type 键缺失 → JsonSerializer 用默认 Text，不抛错
+      JSON.stringify({ hash: 'H', text: 't' }),
+      // JsonStringEnumConverter 接受整数枚举值与大小写不敏感的枚举名
+      JSON.stringify({ type: 0 }),
+      JSON.stringify({ type: 'text' }),
+      JSON.stringify({ type: 'None' }),
+      JSON.stringify({ type: 'Unknown' }),
+    ]) {
+      expect(classifyStoredProfile(raw), raw).toBe('ok');
+    }
+
+    // corrupt：反序列化抛 JsonException → 上游 catch → 空 TextProfile
+    for (const raw of [
+      'not json at all',
+      '[]', // 数组不是 ProfileDto
+      '"a string"',
+      '123',
+      'true',
+      JSON.stringify({ type: 'Bogus' }),
+      JSON.stringify({ type: 'Text,File' }), // 逗号组合不是合法枚举名
+      JSON.stringify({ type: 1.5 }), // 非整数数字无法转枚举
+      JSON.stringify({ type: {} }),
+    ]) {
+      expect(classifyStoredProfile(raw), raw).toBe('corrupt');
+    }
+
+    // null-dto：文本为字面 `null` → `Deserialize(...) ?? new ProfileDto()`
+    expect(classifyStoredProfile('null')).toBe('null-dto');
+  });
+
+  it('corrupt → 空 TextProfile dto（hash=SHA256("")、size:0）；null → hash="" 且省略 size 键', async () => {
+    const { profileDtoToJson } = await import('../src/serialization');
+    const { textProfileHash } = await import('../src/hash');
+    const { ProfileType } = await import('../src/types');
+
+    // 上游 catch 分支：new TextProfile(string.Empty).ToProfileDto()
+    const emptyWire = JSON.parse(
+      profileDtoToJson({
+        type: ProfileType.Text,
+        hash: await textProfileHash(''),
+        text: '',
+        hasData: false,
+        size: 0,
+      }),
+    ) as Record<string, unknown>;
+    expect(emptyWire.size).toBe(0);
+    expect(emptyWire.hash).toBe(await textProfileHash(''));
+    expect(emptyWire.dataName).toBeNull();
+
+    // 上游 `?? new ProfileDto()` 分支：Hash 为空串、Size 为 null（WhenWritingNull 省略键）
+    const nullWire = JSON.parse(
+      profileDtoToJson({ type: ProfileType.Text, hash: '', text: '', hasData: false }),
+    ) as Record<string, unknown>;
+    expect(nullWire.hash).toBe('');
+    expect('size' in nullWire).toBe(false);
+    expect(nullWire.dataName).toBeNull();
+  });
+});
+
+describe('F31 · hash 参与 R2 key 构造时的路径字符防线（对齐上游 Profile.GetWorkingDirName）', () => {
+  it('workingDirPrefix / historyKey 对含分隔符的 hash 抛错（最后防线）', async () => {
+    const { workingDirPrefix, historyKey, tempKey } = await import('../src/storage');
+    const { ProfileType } = await import('../src/types');
+
+    // 合法 hash（SHA256 hex）正常构造
+    expect(workingDirPrefix(ProfileType.Text, 'ABCDEF')).toBe('history/Text_ABCDEF/');
+    expect(historyKey(ProfileType.File, 'ABCDEF', 'a.bin')).toBe('history/File_ABCDEF/a.bin');
+
+    // 含 `/` 或 `\` 一律抛错：否则 key 结构会与「按第一个 / 截断工作目录名」的孤儿判定不同构
+    for (const bad of ['A/B', 'A\\B', '/lead', 'trail/', 'A//B']) {
+      expect(() => workingDirPrefix(ProfileType.Text, bad), bad).toThrow(/invalid path characters/);
+      expect(() => historyKey(ProfileType.Text, bad, 'x'), bad).toThrow(/invalid path characters/);
+    }
+
+    // 暂存区 key 不受此限（文件名由 invalidFileName 在路由层单独校验）
+    expect(tempKey('a.bin')).toBe('file/a.bin');
+  });
+});
+
 describe('F7 · PATCH 非法日期在解析期被拒绝（→ 400 而非 500）', () => {
   it('非法 lastModified 抛错', () => {
     expect(() => parseHistoryRecordUpdateDto('{"lastModified":"not-a-date"}')).toThrow();
@@ -595,9 +695,10 @@ describe('F9 · 越界数值不再导致 OFFSET 类型错误', () => {
 // F10 的运行时行为难以断言（需要 60s 墙钟 + 真实 workerd alarm），
 // 这里直接驱动 DO 的清理逻辑，确定性地锁住「静默 >60s 关闭、活跃保留」与「alarm 发心跳并重排」。
 type HubInternals = {
-  connections: Set<unknown>;
-  lastSeen: Map<unknown, number>;
-  closeIdleConnections(): void;
+  wsClients: Map<unknown, number>;
+  sseClients: Map<string, unknown>;
+  lpClients: Map<string, unknown>;
+  closeIdleClients(): void;
   alarm(): Promise<void>;
 };
 
@@ -616,23 +717,20 @@ async function makeHub(setAlarm: (t: number) => void) {
 }
 
 describe('F10 · 死连接清理（半开 TCP 不会产生 close/error 事件）', () => {
-  it('closeIdleConnections 关闭静默 >60s 的连接，保留活跃连接', async () => {
+  it('closeIdleClients 关闭静默 >60s 的连接，保留活跃连接', async () => {
     const hub = await makeHub(() => undefined);
     const closed: [number, string][] = [];
     const mk = () => ({ readyState: 1, close: (c: number, r: string) => closed.push([c, r]) });
     const idle = mk();
     const active = mk();
-    hub.connections.add(idle);
-    hub.lastSeen.set(idle, Date.now() - 61_000);
-    hub.connections.add(active);
-    hub.lastSeen.set(active, Date.now());
+    hub.wsClients.set(idle, Date.now() - 61_000);
+    hub.wsClients.set(active, Date.now());
 
-    hub.closeIdleConnections();
+    hub.closeIdleClients();
 
     expect(closed).toEqual([[1000, 'idle timeout']]);
-    expect(hub.connections.has(idle)).toBe(false);
-    expect(hub.connections.has(active)).toBe(true);
-    expect(hub.lastSeen.has(idle)).toBe(false);
+    expect(hub.wsClients.has(idle)).toBe(false);
+    expect(hub.wsClients.has(active)).toBe(true);
   });
 
   it('alarm() 发送心跳并重排下一轮 alarm（DO 空闲时定时器冻结，靠 alarm 保活）', async () => {
@@ -640,8 +738,7 @@ describe('F10 · 死连接清理（半开 TCP 不会产生 close/error 事件）
     const hub = await makeHub((t) => alarms.push(t));
     const sent: string[] = [];
     const ws = { readyState: 1, send: (m: string) => sent.push(m), close: () => undefined };
-    hub.connections.add(ws);
-    hub.lastSeen.set(ws, Date.now());
+    hub.wsClients.set(ws, Date.now());
 
     await hub.alarm();
 
@@ -844,7 +941,11 @@ describe('F19 · Text transfer data 语义对齐上游（复用文件名 / Size 
     expect(storage.objects.has(`history/Text_${hash}/${originalName}`)).toBe(true);
   });
 
-  it('Size 声明缺失（0）时回退为全文**字符数**（上游读文件算 .Length）', async () => {
+  it('POST 路径 Size 用声明值（缺失/非法 → 0）；**不**回落到读文件', async () => {
+    // 上游依据：`ProfilePersistentInfo.Size` 是 `required long`（非空），
+    // `TextProfile(ProfilePersistentInfo)` 赋值 `Size = entity.Size` → `GetSize()` 原样返回，
+    // 永不触发 ComputeSize。POST 的 size 来自 `ParseLong(metadata,"size")`，缺失/非法即 0。
+    // （读文件的回落只存在于 PUT 路径：`TextProfile(ProfileDto)` 的 Size 可为 null。）
     const db = new FakeDb();
     const full = '你'.repeat(11000); // 字符数 11000，UTF-8 字节数 33000
     const hash = sha256(strToU8(full));
@@ -853,7 +954,23 @@ describe('F19 · Text transfer data 语义对齐上游（复用文件名 / Size 
       incoming({ type: ProfileType.Text, hash, text: '你'.repeat(10240), size: 0 }),
       strToU8(full), silentNotify,
     );
-    expect(db.rows[0]!.size).toBe(11000);
+    expect(db.rows[0]!.size).toBe(0);
+  });
+
+  it('POST 路径 File/Image 的 Size 取实际写入字节数（忽略声明的 size）', async () => {
+    // 上游依据：`FileProfile(ProfilePersistentInfo)` 不设置 Size（保持 null）→
+    // Persist 时 GetSize 走 ComputeSize → FileInfo(FullPath).Length = 实际文件长度。
+    const db = new FakeDb();
+    const name = 'real-size.bin';
+    const content = strToU8('0123456789'); // 10 字节
+    const hash = sha256(`${name}|${sha256(content)}`);
+    const dto = await addRecordDto(
+      db as never, new FakeR2() as unknown as R2Storage,
+      incoming({ type: ProfileType.File, hash, text: name, size: 999999 }),
+      content, silentNotify,
+    );
+    expect(dto.size).toBe(10);
+    expect(db.rows[0]!.size).toBe(10);
   });
 
   it('size > 文本长度但无 transfer data → 拒绝（上游 IsLocalDataValid：HasTransferData 真而文件不存在）', async () => {

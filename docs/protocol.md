@@ -72,12 +72,17 @@
 | Before | DateTime(UTC) | null | `CreateTime/LastAccessed < before`（按排序字段） |
 | After | DateTime(UTC) | null | `CreateTime/LastAccessed >= after`（按排序字段） |
 | ModifiedAfter | DateTime(UTC) | null | `LastModified >= modifiedAfter` |
-| Types | ProfileTypeFilter 字符串 | All | 位掩码名：`None|Text|File|Image|Group|FileAndGroup|All`，支持逗号组合（`Text,Image`） |
+| Types | ProfileTypeFilter | All | 位掩码名：`None|Text|File|Image|Group|FileAndGroup|All`，逗号组合（`Text,File`）；**也接受数字**（`"5"` = Text\|Image）。非法名 → 400 |
 | SearchText | string | null | `LIKE %text%`（对 Text 字段） |
-| Starred | bool | null | 空串视为无过滤 |
-| SortByLastAccessed | bool | false | true 时按 LastAccessed 排序/过滤，否则按 CreateTime |
+| Starred | bool | null | 空串视为无过滤；非 true/false → 400 |
+| SortByLastAccessed | bool | false | true 时按 LastAccessed 排序/过滤，否则按 CreateTime；非 true/false → 400 |
 
 客户端总是发送全部字段（空值发空串）；解析须**大小写不敏感**。字段名 PascalCase（`Page`、`SortByLastAccessed` 等）。
+
+**模型绑定失败 → 400**（对齐上游 `[ApiController]`）：`Page` 非 C# `int.TryParse` 可接受的形式
+（含超 int32 范围）→ 400；`Types`/`Starred`/`SortByLastAccessed` 非法值 → 400。
+`Types` 的取值与 `Enum.TryParse<ProfileTypeFilter>` 一致：枚举名（大小写不敏感）、逗号组合、**或数字**；
+数字与名称混用（如 `Text,5`）解析失败 → 400。`Page < 1` 由控制器钳为 1（非 400）。
 
 ### 3.5 HistoryStatisticsDto
 
@@ -89,7 +94,7 @@
 
 | 方法 | 路径 | 行为 |
 |---|---|---|
-| GET | `/SyncClipboard.json` | 返回当前 ProfileDto（camelCase）。无则返回**空 TextProfile dto**：`{"type":"Text","hash":"","text":"","hasData":false,"dataName":null}` |
+| GET | `/SyncClipboard.json` | 返回当前 ProfileDto（camelCase）。**三个降级出口**见 §4.0 |
 | PUT | `/SyncClipboard.json` | 见 §4.1。body 为 ProfileDto JSON |
 | GET/HEAD | `/file/{fileName}` | 历史查找下载，见 §4.2 |
 | PUT | `/file/{fileName}` | 暂存二进制到 `file/{fileName}`（**不校验**），使当前 profile 缓存失效（无缓存实现可忽略）。文件名含 `\`/`/` → 400 |
@@ -105,6 +110,23 @@
 > 否则客户端的 `DeletePreviousFilesOnPush` 清理会静默失效、R2 暂存区无限累积。
 > 另：`DELETE /file/{fileName}` 为本实现附加端点（上游仅 `DELETE /file`），官方客户端不调用。
 
+### 4.0 GET /SyncClipboard.json 的三个降级出口（`上游:…GetSyncProfile`）
+
+上游先查内存缓存，未命中再读 `server/SyncClipboard.json`，读失败时有两个出口；加上「文件不存在」共三种：
+
+| 情形 | 上游代码路径 | 响应体（wire） |
+|---|---|---|
+| 文件不存在 | `new TextProfile(string.Empty).ToProfileDto()` | `{"type":"Text","hash":"<SHA256("")>","text":"","hasData":false,"dataName":null,"size":0}` |
+| 反序列化**抛错**（`[]`／标量／非法枚举名／非整数数字 type） | `catch` → 同上 | 同上（`size:0` 必现） |
+| 反序列化得 **null**（文本为字面 `null`） | `?? new ProfileDto()` | `{"type":"Text","hash":"","text":"","hasData":false,"dataName":null}`（**`size` 键省略**：`Size` 为 `long?` 且 null） |
+
+注意两者的 `hash` 不同：空 `TextProfile` 的 hash 是 `SHA256("")`，而 `new ProfileDto()` 的 `Hash` 是默认空串。
+对客户端二者等价（`TextProfile(dto)` 的 `Size` 为 null → `GetSize()` 回落到 `ComputeSize` → 文本长度 0）。
+
+本实现把当前 profile 存在 D1 `Meta` 表（不存在 = 上游「文件不存在」），
+并用 `classifyStoredProfile` 复刻另外两个出口的判定，避免把损坏值原样发给客户端
+（客户端 `ReadFromJsonAsync` 会抛异常 → 剪贴板同步中断）。
+
 ### 4.1 PUT /SyncClipboard.json 精确流程
 
 1. body 为 null → 400 `"dto cannot be null"`。
@@ -116,10 +138,17 @@
      b. R2 读 `file/{Path.GetFileName(DataName)}`，不存在 → 404 `"Transfer data file not found"`。
      c. 按类型**校验数据哈希**（§8），不符 → 400 `"Hash is not match data."`。
      d. 移入 `history/{Type}_{Hash}/{transferDataName}`（File/Image 用 DataName 原名；Group 用 DataName）。
+     c'. **Profile 类型提升**（`Profile.Create(ProfileDto)`）：`dto.Type == File` 且 `DataName` 扩展名属于
+        `ImageTool.ImageExtensions`（`.jpg .jpeg .gif .bmp .png`）→ 实际建 `ImageProfile`，
+        故「哈希校验 / 落库 / 当前 profile」全部按 **Image** 处理（既有记录查询仍用原始 dto.Type）。
+        `webp/heic/avif` **不**在提升表内（那些属于 `ImageHelper.ExImageExtensions`，仅本机转换用）。
      e. 入库（`AddProfile` 语义，**不检查 IsDeleted**）：
         - 已存在（Type+Hash）→ 复活：`IsDeleted=false`、刷新时间、更新 TransferDataFile/FilePaths、`Version++`。
         - 不存在 → 新建：`CreateTime/LastAccessed/LastModified = now`、`Stared/Pinned=false`、`Version=0`、
           `Text`（Text=内容 / File/Image=文件名 / Group=路径列表 \r\n 分隔）、`Size`、`TransferDataFile`。
+          `Size` 口径按类型：Text = `dto.Size`（JSON 缺失时回落到**解码后字符数**，对应
+          `TextProfile(ProfileDto).Size = dto.Size` 为 null 时的 `ComputeSize`）；
+          File/Image = `dto.Size`（缺失时回落实字节数）；Group = 解压后条目长度之和。
         - 广播 `RemoteHistoryChanged(记录 dto)`。
      f. 写当前 profile（该记录 dto）→ 广播 `RemoteProfileChanged(记录 dto)` → 200。
 3. `hash` 为空 → 直接走 2 的未命中流程（不查历史）。
@@ -144,19 +173,63 @@
 | GET | `/api/time` | 200，ISO8601 当前时间（UTC） |
 | GET | `/api/version` | 200，纯文本版本号（须 ≥ 3.1.1） |
 | GET | `/api/history/{profileId}` | `profileId` 格式 `Type-Hash`；解析失败 → 400 `"Invalid profileId format. Expected format: 'Type-Hash'"`；不存在 → 404；成功 → HistoryRecordDto |
-| GET | `/api/history/{profileId}/data` | 按记录取数据文件；无 → 404；成功 → 二进制 + `Content-Disposition`（文件名） |
+| GET | `/api/history/{profileId}/data` | 按记录取数据文件。**profileId 解析失败也返回 404**（上游此端点不自行校验格式，而是 `GetTransferDataFileByProfileId` 返回 null）；无数据 → 404；成功 → 二进制 + `Content-Disposition`（文件名） |
 | POST | `/api/history/query` | §3.4 过滤 + 分页，返回 `HistoryRecordDto[]` |
 | POST | `/api/history` | multipart 上传，见 §5.1 |
 | PATCH | `/api/history/{type}/{hash}` | 部分更新，见 §5.2 |
 | GET | `/api/history/statistics` | HistoryStatisticsDto |
 | DELETE | `/api/history/clear` | 删除全部记录及其数据文件，返回 `{"deleted": n}` |
 
+### 5.0 hash 的字符约束（`上游:Shared/Profiles/Profile.cs:GetWorkingDirName`）
+
+上游在 key 构造处校验并抛异常：
+
+```csharp
+public static string GetWorkingDirName(ProfileType type, string hash)
+{
+    if (hash.Contains(Path.DirectorySeparatorChar) || hash.Contains(Path.AltDirectorySeparatorChar))
+        throw new ArgumentException("Hash contains invalid path characters.", nameof(hash));
+    return $"{type}_{hash}";
+}
+```
+
+本实现的 hash 参与两处**必须同构**的用途：R2 key 的 `history/{Type}_{Hash}/{file}`
+与孤儿目录判定（`listHistoryWorkingDirs` 只按**第一个** `/` 截断工作目录名）。
+一条 hash = `A/B` 的记录在 DB 侧是工作目录 `Text_A/B`，在 R2 侧却只会被识别为目录 `Text_A/`
+—— 两者不同构，会让孤儿清理误删或被绕过。此外客户端本地也以同一规则构造路径，拿到这种 hash 会抛异常。
+
+因此：
+
+| 位置 | 行为 |
+|---|---|
+| `PUT /SyncClipboard.json`（`hash` 非空时） | 含 `/` 或 `\` → **400** `Hash contains invalid path characters` |
+| `POST /api/history`（`hash` 必填） | 同上 → 400 |
+| `PATCH /api/history/{type}/{hash}` | 同上 → 400（该路径在删除时会构造 R2 前缀） |
+| `GET /SyncClipboard.json` 的存储值 | hash 含分隔符 → 视同损坏，降级为空 TextProfile（见 §4.0） |
+| `src/storage.ts` 的 key 构造 | 另有断言兜底：将来新增写路径若漏校验会**快速失败**，而非产生跨目录 key |
+
+官方客户端恒发 SHA256 hex（64 个十六进制字符），永不触发该校验。
+
 ### 5.1 POST /api/history（multipart 流式上传）
 
 - 元数据字段（**大小写不敏感**）：`hash`(必填)、`type`(必填，枚举名，None/Unknown → 400)、
   `createTime`、`lastModified`、`lastAccessed`、`starred`、`pinned`、`version`、`isDeleted`、`text`、`size`。
   解析规则（`ParseHistoryRecord`）：时间解析失败 → `UtcNow`；bool/int/long 解析失败 → 默认值。
-- `data` 字段：可选二进制文件流，**必须为最后一部分**（解析到即停止读取）。
+- `data` 字段：可选二进制文件流。官方客户端**总是把它放在最后**；上游解析到 `data` 即 `break`
+  （其后字段被忽略）。本实现解析全部部分后再取值，因此**对字段顺序更宽容**（宽松超集，
+  官方客户端行为不受影响；`data` 之前/之后顺序颠倒时本实现仍能成功，上游会因缺 `hash` 而 400）。
+  空 `data` 部分（0 字节）仍算「有 data」，与上游「按 part 是否存在决定是否保存数据流」一致。
+- **`size` 口径按类型**（上游 `GetSize()` 的落点，易错点）：
+  | 类型 | POST /api/history | PUT /SyncClipboard.json |
+  |---|---|---|
+  | Text | `size` 字段原值（缺失/非法 → **0**，`ParseLong` 语义）——上游 `ProfilePersistentInfo.Size` 是必填 `long`，故**不会**回落到读文件 | `dto.Size`（JSON 缺失时回落为解码后**字符数**） |
+  | File/Image | **实际写入字节数**（上游 `FileProfile(ProfilePersistentInfo)` 不设 Size → `ComputeSize` 用 `FileInfo.Length`） | `dto.Size`（缺失时回落实字节数） |
+  | Group | 解压后条目长度之和（`totalSize`），**非** zip 体积 | 同左 |
+- 服务端生成的传输数据文件名（`Utility.CreateTimeBasedFileName()` 等价）：
+  `Text_{yyyy-MM-dd_HH-mm-ss}_{8 随机字符}.{3 随机字符}.txt`、
+  `File_{yyyy-MM-dd_HH-mm-ss}_{8 随机字符}.{3 随机字符}.zip`（后者用于 Group 无既有名时）。
+  注意随机段**自带一个点**（源 `Path.GetRandomFileName()` 的形状）。
+  File/Image 用 `text` 字段作为文件名；已删除记录带 data 复活时**复用记录已有名**（否则记录指向旧名 → /data 404 + 孤儿对象）。
 - 处理（`AddRecordDto`）：
   - 记录已存在（Type+Hash）：
     - 若 IsDeleted：有 data → 先写文件并校验；无 data → 校验本地数据有效（无效 → 400 `"Needs tranfer data."`）。
@@ -212,9 +285,25 @@
 7. 客户端主动关闭: {"type":7}（Close）→ 服务端回 {"type":7} 并关闭
 ```
 
+- **传输**：negotiate 按上游顺序宣告三种传输，客户端按序自动降级（与 ASP.NET Core SignalR 一致）：
+  | 传输 | 传输格式 | 服务端实现 |
+  |---|---|---|
+  | `WebSockets` | `["Text","Binary"]` | Durable Object 的 WebSocketPair |
+  | `ServerSentEvents` | `["Text"]` | 挂起的流式响应（`data: <msg>\n\n` 帧，带 `x-accel-buffering: no`） |
+  | `LongPolling` | `["Text","Binary"]` | 挂起 GET（首个轮询立即返回、无消息挂起 ≤25s）+ POST 上报 + DELETE 关闭（204/200） |
+- 连接建立后的 HTTP 路径：`GET`（SSE 与长轮询按 `Accept: text/event-stream` 区分）、`POST`（上报消息）、
+  `DELETE`（关闭）。三种传输共用同一套消息语义与心跳。
 - 连接 token：negotiate（Basic Auth 保护）时签发并**登记到 DO**（`/register-token`，TTL 10 分钟），
-  WS 升级时校验；未登记/过期/token 缺失时回落校验请求携带的 Basic 凭据，两者皆无 → **401**。
+  连接建立时校验；未登记/过期/token 缺失时回落校验请求携带的 Basic 凭据，两者皆无 → **401**。
   `/register-token` 仅 Worker 内部可达（外部路径不匹配任何路由）。
+- 心跳：DO alarm 每 15s 发送 `{"type":6}`，对三种传输分别投递（WS 直接 send、SSE 写帧、长轮询入队）。
+  长轮询依赖它——空轮询响应不会重置客户端 ServerTimeout，必须有真实消息（实测 15s 内返回）。
+- 提前返回响应前必须消费请求体（Workers 运行时会在响应已发出但入站体未读完时抛错并使后续请求 503）。
+- 长轮询关键常量对照（取自客户端源码）：客户端单次 poll 超时**硬编码 100s**
+  （`LongPollingTransport.js` `timeout: 100000`），其轮询循环**串行**（同一连接不会并发两个 poll）；
+  本实现挂起上限 25s、心跳 15s，均低于客户端超时。
+- 平台并发（实测于 Cloudflare 边缘）：20/50 路并发挂起长轮询均正常返回且各自收到心跳；
+  20 路并发 SSE 流正常建立；WS/SSE/长轮询混合时均收到同一次广播。
 - 心跳：DO alarm 每 15s 发 `{"type":6}`（对齐上游 `KeepAliveInterval`），并关闭静默超过 60s 的连接
   （半开 TCP 无 close 事件；上游由框架 `ClientTimeoutInterval=30s` 承担）。
 - 广播触发点（对应官方代码）：
@@ -287,7 +376,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | 项 | 官方服务器 | 本实现 | 影响 |
 |---|---|---|---|
 | 请求体上限 | Kestrel 无限制（MaxRequestBodySize=int.MaxValue） | Workers 免费 100MB / 付费更高 | 超限大文件失败；客户端默认 20MB 上限，可接受 |
-| SignalR 传输 | WebSockets + SSE + LongPolling | 仅 WebSockets | 官方客户端无影响（WS 优先） |
+| SignalR 传输 | WebSockets + SSE + LongPolling | 三种均实现，宣告顺序与格式表逐字对齐 | — |
 | 磁盘布局 | 本地文件系统 | R2 对象存储 | 对外不可见，语义等价 |
 | 并发 | 单进程信号量串行 | `(UserId,Type,Hash)` UNIQUE 索引 + 唯一冲突按 ShouldUpdate 合并 + `updateEntityIfVersion` 乐观锁 | 语义等价（多设备并发实测无重复行/丢更新） |
 | `/api/history/statistics.totalFileSizeMB` | 遍历本地目录 | 按 R2 对象 size 求和 | 等价（R2 list 最终一致，存在短暂窗口） |
@@ -295,6 +384,15 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h） | Cron Trigger 每小时批量执行同类语义 | 等价（周期不同；软删/硬删/孤儿判定一致） |
 | Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | 18 项常见扩展 + `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type |
 | 错误响应体 | `BadRequest()` 空体 / ProblemDetails | 统一文本（状态码一致） | 官方客户端只判状态码 |
+| 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |
+| `/api/history/{id}/data` 的 Content-Type | `FileExtensionContentTypeProvider`（按数据文件扩展名） | 恒 `application/octet-stream` + `nosniff` + `attachment` | 安全加固；客户端按字节落盘，不读该头 |
+| `Profile.Create` 的 File→Image 提升 | 有（`.jpg/.jpeg/.gif/.bmp/.png`） | 同左 | — |
+| POST 路径 `size` 口径 | Text=声明值、File/Image=实际字节、Group=条目和 | 同左 | — |
+| query 的时间字段无法解析（如 `Before=not-a-date`） | 表单绑定失败 → 400 | **忽略该过滤条件**（等价于上游 POST 元数据路径的 `TryParse` 失败回退） | 有意偏离：客户端时间串带偏移（`DateTimeOffsetPattern = 短日期 + 长时间 + zzz`，见 .NET `DateTimeFormatInfo.DateTimeOffsetPattern`），`Date.parse` 可覆盖 zh-CN/en-US/de-DE 等；若某文化串两边都解析不了，返 400 会让客户端历史同步**整轮失败**，而忽略只会让增量过滤退化为「多取一页」 |
+| `GET /file/{name}` 内部异常（非「文件名非法」） | `catch (Exception)` → **400** + 异常消息（`GetFileFromFolder`） | 500（异常上抛到运行时） | 客户端对两者都只走 `EnsureSuccessStatusCode` 的失败分支；把内部故障报成 400 会误导排障，故有意保留 500 |
+| hash 含路径分隔符（`/` 或 `\`） | `Profile.GetWorkingDirName` 抛 `ArgumentException`（未捕获 → 500） | 写路径入口 → **400**（`Hash contains invalid path characters`）；存储值分类视同损坏 → 降级为空 TextProfile | 可诊断的 400 优于 500；且杜绝「入库一条 hash 含 `/` 的记录并被设为当前 profile」（该记录会被推给客户端，而客户端本地用同一规则构造路径会抛异常） |
+| hash 含分隔符的**平台差异** | Windows：`DirectorySeparatorChar='\'`、`Alt='/'` → 两者都拒；Linux：两者都是 `/` → 只拒 `/`，**允许 `\`** | 两平台一致地拒绝两者 | 严格超集；跨平台行为一致，官方客户端恒发 SHA256 hex（永不触发） |
+| `profileId` 里的类型枚举大小写 | **大小写敏感**：`Profile.ParseProfileId` 用 `Enum.TryParse<TEnum>(value, out r)`（.NET 源码该重载固定 `ignoreCase: false`），故 `text-HASH` → 400。但 `PATCH /{type}` 走模型绑定（`EnumTypeModelBinder` → `EnumConverter.ConvertFrom` → `Enum.Parse(t, s, ignoreCase: **true**)`），**大小写不敏感** —— 上游自身不一致 | 两处均大小写不敏感 | 宽松超集：官方客户端恒发 `Text`/`File`/`Image`/`Group` 规范名，两种实现等价；第三方客户端更不易踩坑 |
 | 第三方畸形 zip | 隐式目录/重复条目按解压落盘语义 | 隐式目录计入；重复条目首见保留（filter）；`a` 与 `a/` 同名冲突不报错 | 官方客户端恒写显式目录条目且无重复 → 不可达 |
 | 请求体上限 | 无限制 | 100MB（Free/Pro） | 客户端默认 20MB 上限 |
 | 应用层解压上限 | 无 | 无（同为全量解压，受平台内存约束） | 认证后可用性风险，双方均无解压炸弹防护 |

@@ -22,7 +22,8 @@
 ### 非目标
 
 - 不实现 WebDAV 完整协议（PROPFIND 多状态响应、DAV 锁等）——官方服务器也只实现了协议所需子集。
-- 不实现 SignalR 的 SSE / 长轮询传输——通过 negotiate 只宣告 WebSockets 强制客户端走 WS。
+- 不实现 SignalR 的二进制协议（MessagePack）——官方客户端用默认 JSON 协议；传输宣告里保留
+  上游同款的 `"Binary"` 声明以逐字对齐 negotiate 载荷。
 - 不做多租户——官方服务器单用户（`HARD_CODED_USER_ID = "default_user"`），Basic Auth 只是门禁。
 - 不兼容 v3.1.1 之前的老协议（官方自身也不兼容）。
 
@@ -35,11 +36,12 @@
 | D3 | 框架 Hono | 轻量、类型安全、Workers 生态标准 | 已定 |
 | D4 | 历史记录 + 当前 Profile 存 D1（SQLite），数据文件存 R2 | 强一致、可事务；文件体量走对象存储 | 已定 |
 | D5 | SignalR 兼容层用 Durable Object 持连接 + 广播 | Workers 无状态，连接状态必须落在 DO | 已定 |
-| D6 | negotiate 只宣告 WebSockets 传输 | 官方客户端默认 WebSockets 优先，免去 SSE/长轮询实现 | 已定 |
+| D6 | negotiate 按上游顺序宣告三种传输（WebSockets → ServerSentEvents → LongPolling） | 与上游一致；WS 被代理/防火墙阻断时客户端可自动降级（原先只宣告 WS 会直接失联）。SSE 走流式响应、长轮询走挂起请求，均在 Durable Object 内实现 | 已定（2026-09-12 修订） |
 | D7 | `/api/version` 返回 `VERSION` 变量（默认 "3.2.1"） | 客户端要求服务端 ≥ 3.1.1 | 已定 |
 | D8 | 存储时间用 epoch 毫秒 INTEGER（D1），DTO 边界转 ISO8601 | 排序/比较精确，协议输出为标准 ISO 字符串 | 已定 |
 | D9 | 严格复刻官方行为，不做行为超集 | 兼容性以官方实现为准（如 `GET /file/{name}` 仅按历史查找） | 已定 |
 | D10 | 测试 = 协议级集成测试（`wrangler dev` + 真实 HTTP + `@microsoft/signalr`）+ 真实客户端联调 | 与 .NET 客户端同协议的 JS SignalR 客户端可验证握手细节 | 已定 |
+| D11 | **提交历史保持正常粒度**：每个逻辑变更一次提交，禁止压缩为单一提交 | 提交历史对审阅者有价值（能看到演进与修复过程）；除仓库首次发布需清理历史外，不做 squash/force push | 已定（2026-09-12） |
 
 ## 3. 架构总览
 
@@ -163,7 +165,7 @@ CREATE TABLE IF NOT EXISTS Meta (
 | 区域 | Key | 说明 |
 |---|---|---|
 | WebDAV 暂存 | `file/{dataName}` | `PUT /file/{name}` 落此处；`PUT SyncClipboard.json` 成功后移出；`DELETE /file` 清空 |
-| 历史持久 | `history/{Type}_{Hash}/{transferDataName}` | File/Image 保留原始文件名；Group 为 `File_*.zip` |
+| 历史持久 | `history/{Type}_{Hash}/{transferDataName}`（**`Hash` 不得含 `/`/`\`**：否则 key 结构会与孤儿判定不同构，见 protocol.md §5.0） | File/Image 保留原始文件名（来源 `text` 字段 / `DataName`）；Group 无既有名时为 `File_{stamp}_{rand}.zip`；Text 为 `Text_{stamp}_{rand}.txt`（`Utility.CreateTimeBasedFileName()` 等价形状） |
 
 > 注意：`GET /file/{name}` **不直读**暂存区，而是按"历史记录 `TransferDataFile` 文件名匹配 + LastAccessed 倒序取最新"查找（复刻 `GetRecentTransferFile`），再读 `history/...`。找不到返回 404。
 
@@ -243,12 +245,30 @@ CREATE TABLE IF NOT EXISTS Meta (
 |---|---|---|
 | 200 | 成功（PATCH 成功为 200 空体） | 按端点 |
 | 400 | 参数非法 / 哈希不符（`Hash is not match data.`）/ 历史数据无效 | 纯文本错误消息 |
+| 400 | **模型绑定失败**（对齐上游 `[ApiController]`）：`Page` 非 int32/非十进制整数、`Types` 非法枚举值、`Starred`/`SortByLastAccessed` 非 true\|false、JSON body 非对象（`[]`/`null`/数字/字符串） | 纯文本错误消息 |
+| 404 | `GET /api/history/{id}/data` 的 `profileId` 解析失败（上游该端点不自行校验格式） | — |
 | 401 | Basic Auth 失败 | — |
 | 404 | 记录/文件/暂存文件不存在 | — |
 | 409 | PATCH 版本冲突 | JSON `HistoryRecordUpdateDto`（服务器当前值） |
 | 422 | POST /api/history 数据校验失败 | ProblemDetails `{"status":422,"title":"History transfer data is invalid","code":"history_data_invalid","detail":"..."}` |
 
 客户端对上述语义有硬依赖（409 回写本地、422 判定数据拒绝、400/404 重试路径），必须精确复刻。
+
+## 8.1 降级与容错（对齐上游的宽 catch）
+
+上游控制器在多处用 `catch` 把「读/解析失败」降级成可用的默认值，而不是把错误抛给客户端。
+本实现逐条对齐（除标注的两处有意偏离）：
+
+| 位置 | 上游行为 | 本实现 |
+|---|---|---|
+| `GET /SyncClipboard.json`：存储值反序列化抛错 | catch → 空 `TextProfile` dto（hash=`SHA256("")`、`size:0`） | `classifyStoredProfile` → 同左 |
+| `GET /SyncClipboard.json`：存储值为字面 `null` | `?? new ProfileDto()`（hash=""、`size` 键省略） | 同左（两个出口形状不同，见 protocol.md §4.0） |
+| `PUT /SyncClipboard.json`：数据校验失败 | catch 全部异常 → 400 `"Hash is not match data."` | 同左 |
+| `POST /api/history`：时间/布尔/整数解析失败 | `TryParse` 失败 → 默认值（`UtcNow` / `false` / `0`） | 同左 |
+| `DELETE /file`：删除失败 | `SafeDeleteFolder` 吞异常 → 200 | `clearTempFolder` 吞异常 → 200 |
+| `GET /file/{name}`：内部异常 | `catch (Exception)` → 400 + 消息 | **500**（有意偏离：内部故障不应报成 400，客户端两者都按失败处理） |
+| 广播失败 | hub 调用被 `try/catch` 吞掉 | 同左（`broadcast` 内吞异常） |
+| hash 含路径分隔符 | `GetWorkingDirName` 抛 `ArgumentException`（未捕获 → 500） | 请求边界 → 400；存储值分类 → 降级；key 构造处另有断言兜底（三层一致，见 protocol.md §5.0） |
 
 ## 9. 历史保留与清理（对齐上游 HistoryCleaner）
 
@@ -263,6 +283,20 @@ CREATE TABLE IF NOT EXISTS Meta (
 - 保留规则：过期的**未收藏/未置顶/未删除**记录才删；条数裁剪按 `MAX(LastModified, LastAccessed)` 升序软删最旧的，收藏/置顶豁免
 - 每次删除同步清理 R2 工作目录，并广播 `RemoteHistoryChanged`（与上游逐条通知一致）
 - 实现：`src/cleanup.ts`（`runCleanup`）+ `src/index.ts` 的 `scheduled` handler + `db.ts`/`storage.ts` 数据层方法
+
+## 9.1 输入校验策略（对齐上游模型绑定）
+
+「能绑定就接受、绑定失败即 400」是 ASP.NET `[ApiController]` 的默认行为，也是本实现刻意复刻的部分——
+宽松解析会把「拼错的过滤条件」变成「返回全部记录」这类静默错误：
+
+| 输入 | 上游绑定 | 本实现 |
+|---|---|---|
+| `Page` | `int.TryParse`（可选符号 + 十进制 + int32 范围） | 同左；失败 → 400，`< 1` 钳为 1 |
+| `Types` | `Enum.TryParse<ProfileTypeFilter>`（名称 / 逗号组合 / **数字**） | 同左；混用或非法名 → 400 |
+| `Starred`、`SortByLastAccessed` | `bool.TryParse`（空 → 默认） | 同左；非 true/false → 400 |
+| POST 表单 `version`/`size` | `int.TryParse`/`long.TryParse`（**整体**必须合法，失败取 0） | 同左（不再用 `parseInt` 的前缀解析） |
+| JSON body | `[FromBody]` 反序列化失败 → 400 | 非对象（数组/null/标量）→ 400（此前会被当作「字段全空的 DTO」并在 PUT 路径**覆盖当前 profile**） |
+| 时间字段 | `DateTimeOffset.TryParse(RoundtripKind)` | `Date.parse`；失败时 POST → `UtcNow`，PATCH → 400，**query 过滤器 → 忽略该项**（有意偏离，理由见 protocol.md §10 差异表） |
 
 ## 10. 版本策略
 

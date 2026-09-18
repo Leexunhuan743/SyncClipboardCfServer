@@ -17,7 +17,7 @@ import {
   historyListToJson,
   InvalidQueryValueError,
 } from '../serialization';
-import { ProfileType, HistoryQueryDto } from '../types';
+import { ProfileType, HistoryQueryDto, INT32_MIN, INT32_MAX, isValidProfileHash } from '../types';
 import { broadcast } from '../hub';
 import { parseBoundary, parseMultipart, MultipartResult } from '../multipart';
 
@@ -57,19 +57,19 @@ function parseDateOrNull(s: string | null): Date | null {
   return Number.isNaN(ms) ? null : new Date(ms);
 }
 
-function parseBoolOrNull(s: string | null): boolean | null {
-  if (s === null || s === '') return null;
+// 上游 [FromForm] 的 `bool?`/`bool` 模型绑定：值为空 → null（bool?）/默认值；
+// 非空且非 true/false → ModelState 失败 → [ApiController] 自动 400。
+// 此前非法值静默当作 null / false，会把「拼错的过滤条件」变成「返回全部记录 / 按未过滤排序」。
+function parseBoolOrNull(s: string | null, fieldName: string): boolean | null {
+  if (s === null || s.trim() === '') return null;
   const t = s.trim().toLowerCase();
   if (t === 'true') return true;
   if (t === 'false') return false;
-  return null;
+  throw new InvalidQueryValueError(`Invalid ${fieldName} value: ${s}`);
 }
 
 // 上游 [FromForm] int Page 的模型绑定 = C# int.TryParse（可选正负号 + 十进制数字，且落在 int32 内），
 // 绑定失败时 [ApiController] 自动返回 400；控制器随后 `if (query.Page < 1) query.Page = 1;`。
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
-
 function parseCSharpInt32(raw: string): number | null {
   const s = raw.trim();
   if (!/^[+-]?\d+$/.test(s)) return null;
@@ -91,8 +91,9 @@ function parsePage(form: MultipartResult): number {
 function parseQueryForm(form: MultipartResult): HistoryQueryDto {
   const page = parsePage(form);
   const types = parseProfileTypeFilter(formGet(form, 'Types'));
-  const starred = parseBoolOrNull(formGet(form, 'Starred'));
-  const sortByLastAccessed = (formGet(form, 'SortByLastAccessed') ?? '').trim().toLowerCase() === 'true';
+  const starred = parseBoolOrNull(formGet(form, 'Starred'), 'Starred');
+  const sortByLastAccessed =
+    parseBoolOrNull(formGet(form, 'SortByLastAccessed'), 'SortByLastAccessed') === true;
   return {
     page,
     before: parseDateOrNull(formGet(form, 'Before')),
@@ -108,22 +109,31 @@ function parseQueryForm(form: MultipartResult): HistoryQueryDto {
 function parseIncomingForm(form: MultipartResult): IncomingRecord {
   const hash = formGet(form, 'hash');
   if (!hash) throw new BadRequestError('hash is required');
+  // 同 PUT：拒绝含路径分隔符的 hash（上游 GetWorkingDirName 语义），给出可诊断的 400
+  if (!isValidProfileHash(hash)) {
+    throw new BadRequestError('Hash contains invalid path characters');
+  }
   const type = parseProfileType(formGet(form, 'type'));
   if (type === undefined || type === ProfileType.None || type === ProfileType.Unknown) {
     throw new BadRequestError('Type is invalid or missing');
   }
+  // 上游用 bool.TryParse / int.TryParse / long.TryParse：语法不合法即取默认值 0（不抛错）。
   const toBool = (v: string | null): boolean => (v ?? '').trim().toLowerCase() === 'true';
   const toInt = (v: string | null): number => {
-    const n = parseInt(v ?? '', 10);
-    return Number.isNaN(n) ? 0 : n;
+    const raw = (v ?? '').trim();
+    if (raw === '') return 0;
+    // 此前用 parseInt：'3abc' → 3、'3.9' → 3、'0x10' → 16，与 int.TryParse 的「整体必须合法」相左（F27）
+    return parseCSharpInt32(raw) ?? 0;
   };
   const toLong = (v: string | null): number => {
     const raw = (v ?? '').trim();
     if (raw === '') return 0;
+    if (!/^[+-]?\d+$/.test(raw)) return 0;
     const n = Number(raw);
-    // 上游 long.TryParse 失败时归零；此前用 Number() 会让 '1e999' 变成 Infinity，
-    // 而 Infinity 绑定进 D1 会存成 NULL（即便列声明 NOT NULL）（F9）
-    return Number.isSafeInteger(n) && n >= 0 ? n : 0;
+    // long.TryParse 接受负数；但 JS 无法精确表示 |n| > 2^53，超界取 0（客户端不会发这种值）。
+    // 此前用 Number() 会让 '1e999' 变成 Infinity，而 Infinity 绑定进 D1 会存成 NULL
+    // （即便列声明 NOT NULL）（F9）
+    return Number.isSafeInteger(n) ? n : 0;
   };
   return {
     hash,
@@ -193,8 +203,10 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   app.get('/api/history/:profileId/data', async (c) => {
     const { db, storage } = handlers(c);
     const parsed = parseProfileId(c.req.param('profileId')!);
+    // 上游此端点的 profileId 解析失败走 `GetTransferDataFileByProfileId` 返回 null → **404**
+    // （与 GET /api/history/{profileId} 的 400 不同：那是控制器自己校验格式）
     if (!parsed) {
-      return c.text('Bad Request', 400);
+      return c.text('Not Found', 404);
     }
     const rec = await db.getByTypeAndHash(parsed.type, parsed.hash);
     if (!rec || rec.transferDataFile === '') {
@@ -289,6 +301,10 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
       return c.text('Bad Request', 400);
     }
     const hash = c.req.param('hash')!;
+    // 含路径分隔符的 hash 在删除路径会构造 R2 前缀（deleteHistoryWorkingDir）→ 拒绝
+    if (!isValidProfileHash(hash)) {
+      return c.text('Bad Request', 400);
+    }
     let dto;
     try {
       dto = parseHistoryRecordUpdateDto(await c.req.text());

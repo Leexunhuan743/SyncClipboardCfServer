@@ -31,8 +31,8 @@ SyncClipboard 客户端支持三类服务端，能力并不相同：
 ## 功能
 
 - **剪贴板双向同步**：WebDAV 兼容 API（`SyncClipboard.json` + `file/`），支持文本 / 图片 / 文件 / 多文件组
-- **实时推送**：SignalR 兼容 Hub（negotiate / WebSocket / 握手 / 心跳 / 广播），
-  客户端保持事件驱动模式，不退化为轮询
+- **实时推送**：SignalR 兼容 Hub（negotiate / 握手 / 心跳 / 广播），支持 **WebSockets、
+  ServerSentEvents、长轮询** 三种传输并按上游顺序宣告，WS 不可用时自动降级
 - **历史记录与历史同步**：`/api/history/*` 全套（查询 / 上传 / PATCH 乐观并发 / 统计 / 清空），
   支持官方客户端的历史面板、收藏置顶、跨设备历史同步
 - **数据完整性校验**：Text / File / Image / Group 四类哈希算法逐字节对齐上游 C# 实现，
@@ -191,7 +191,8 @@ npm run deploy
 
 ## 已知限制
 
-- 仅实现 SignalR **WebSockets** 传输（官方客户端默认即 WebSockets，SSE / 长轮询未实现）
+- SignalR **三种传输**均已实现（WebSockets → ServerSentEvents → LongPolling，与上游宣告顺序一致），
+  故 WS 被代理/防火墙阻断时客户端会自动降级，不会失联
 - 第三方**畸形 zip**（隐式目录、重复条目、`a` 与 `a/` 同名冲突）的语义与上游存在 minor 差异
   ——官方客户端恒写显式目录条目且无重复，该路径不可达
 - `Content-Type` 映射表小于 .NET 的 `FileExtensionContentTypeProvider`（客户端按文件名落盘，不校验该头）

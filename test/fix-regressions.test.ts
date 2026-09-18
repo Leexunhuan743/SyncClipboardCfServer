@@ -4,6 +4,9 @@ import { describe, expect, it, beforeAll } from 'vitest';
 import { createHash } from 'node:crypto';
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787';
+// WS 探测必须跟随 BASE：此文件也会以线上 BASE 运行，硬编码 localhost 会让「真实 token 可通过升级」
+// 用例拿到线上 token 却去连本地服务（本地必拒）——测试自身的缺陷，不是服务端行为。
+const WS_BASE = BASE.replace(/^http/, 'ws');
 const USER = process.env.USER ?? 'admin';
 const PASS = process.env.PASS ?? 'admin';
 const AUTH = 'Basic ' + Buffer.from(`${USER}:${PASS}`).toString('base64');
@@ -91,19 +94,19 @@ describe('F1 · WS 升级鉴权（negotiate 签发的 token）', () => {
   });
 
   it('伪造 ?id 且无凭据的 WS 升级被拒绝（旧实现返回 101）', async () => {
-    const { opened } = await tryWs(`ws://127.0.0.1:8787/SyncClipboardHub?id=forged-token-${RUN}`);
+    const { opened } = await tryWs(`${WS_BASE}/SyncClipboardHub?id=forged-token-${RUN}`);
     expect(opened).toBe(false);
   });
 
   it('无 ?id 且无凭据的 WS 升级被拒绝', async () => {
-    const { opened } = await tryWs('ws://127.0.0.1:8787/SyncClipboardHub');
+    const { opened } = await tryWs(`${WS_BASE}/SyncClipboardHub`);
     expect(opened).toBe(false);
   });
 
   it('已登记的真实 token 可以通过升级（基线）', async () => {
     const nego = await req('/SyncClipboardHub/negotiate?negotiateVersion=1', { method: 'POST' });
     const { connectionToken } = await nego.json() as { connectionToken: string };
-    const { opened } = await tryWs(`ws://127.0.0.1:8787/SyncClipboardHub?id=${connectionToken}`);
+    const { opened } = await tryWs(`${WS_BASE}/SyncClipboardHub?id=${connectionToken}`);
     expect(opened).toBe(true);
   });
 });
@@ -362,7 +365,7 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(unauth.headers.get('www-authenticate')).toContain('Basic');
   });
 
-  it('F22 · GET /file 在最新同名记录的数据缺失时回退到更旧的同名记录（上游 File.Exists 过滤语义）', async () => {
+  it('F22 · GET /file 在最新同名记录的数据缺失时回退到更旧的同名记录（上游 File.Exists 过滤语义）', { timeout: 60_000 }, async () => {
     const name = `fallback-${RUN}.bin`;
     const c1 = Buffer.from('first-version-content');
     const c2 = Buffer.from('second-version-content');
@@ -447,7 +450,7 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(badName.status).toBe(400);
   });
 
-  it('F24 · query 的 Types 非法名 → 400；合法名/缺失 → 200（上游枚举绑定语义）', async () => {
+  it('F24 · query 的 Types 非法名 → 400；合法名/缺失 → 200（上游枚举绑定语义）', { timeout: 60_000 }, async () => {
     const q = async (types: string | null) => {
       const b = `bnd${RUN}q${Math.random().toString(36).slice(2, 8)}`;
       const fields: Record<string, string> = { Page: '1' };
@@ -495,6 +498,247 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(responses.length).toBeGreaterThanOrEqual(2); // 目录自身 + 至少一个对象
     // 每个 response 都应带 propstat/status（客户端按 propstat 取属性）
     expect(body.match(/<D:propstat>/g)?.length).toBe(responses.length);
+  });
+
+  it('F27 · 请求体必须是 JSON 对象（上游 [FromBody] 反序列化失败 → 400）', async () => {
+    // 修复前：[] / null / 123 会被当成「字段全缺失的 DTO」→ 写出一条空文本历史记录并设为当前 profile
+    for (const body of ['[]', 'null', '123', '"text"', 'true']) {
+      const res = await req('/SyncClipboard.json', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      expect(res.status, `PUT body=${body}`).toBe(400);
+    }
+
+    // PATCH：[] 曾被当作「空 dto」→ 走 ShouldUpdate 分支推进版本/时间戳，静默改动记录
+    const text = `objguard-${RUN}`;
+    const hash = sha256(text);
+    const created = await req('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ hash, type: 'Text', text, version: '0', isDeleted: 'false' }).toString(),
+    });
+    // 上游 [Consumes("multipart/form-data")] → 非 multipart 应被拒
+    expect(created.status).toBeGreaterThanOrEqual(400);
+
+    const patch = await req(`/api/history/Text/${hash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: '[]',
+    });
+    expect(patch.status).toBe(400);
+  });
+
+  it('F27 · query 的 Types 接受数字位掩码（上游 Enum.TryParse 语义）', { timeout: 60_000 }, async () => {
+    const q = async (types: string) => {
+      const b = `bnd${RUN}n${Math.random().toString(36).slice(2, 8)}`;
+      return req('/api/history/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'multipart/form-data; boundary=' + b },
+        body: multipart(b, { Page: '1', Types: types }).body,
+      });
+    };
+    // 客户端 ProfileTypeFilter.ToString() 的真实形式（带空格）与数字形式都必须被接受
+    for (const ok of ['Text, File', '5', '0', '15', '2']) {
+      expect((await q(ok)).status, `Types=${ok}`).toBe(200);
+    }
+    // 非数字非法名仍 400；数字/名称混用（TryParse 失败）也 400
+    for (const bad of ['Bogus', 'Text,5', '1e2', '99999999999999']) {
+      expect((await q(bad)).status, `Types=${bad}`).toBe(400);
+    }
+  });
+
+  it('F27 · query 的 Starred / SortByLastAccessed 非法值 → 400（上游 bool 绑定失败）', { timeout: 60_000 }, async () => {
+    const q = async (fields: Record<string, string>) => {
+      const b = `bnd${RUN}b${Math.random().toString(36).slice(2, 8)}`;
+      return req('/api/history/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'multipart/form-data; boundary=' + b },
+        body: multipart(b, { Page: '1', Types: 'All', ...fields }).body,
+      });
+    };
+    // 合法：True/False 任意大小写
+    for (const ok of ['True', 'False', 'true', 'FALSE']) {
+      expect((await q({ Starred: ok })).status, `Starred=${ok}`).toBe(200);
+      expect((await q({ SortByLastAccessed: ok })).status, `SortByLastAccessed=${ok}`).toBe(200);
+    }
+    // 非法：修复前静默当作 null/false → 变成「返回全部记录」（把拼错的过滤条件当无过滤）
+    for (const bad of ['maybe', 'yes', '1', '0']) {
+      expect((await q({ Starred: bad })).status, `Starred=${bad}`).toBe(400);
+      expect((await q({ SortByLastAccessed: bad })).status, `SortByLastAccessed=${bad}`).toBe(400);
+    }
+  });
+
+  it('F27 · POST /api/history 的 version/size 按 TryParse 语义（整体必须合法，否则 0）', { timeout: 60_000 }, async () => {
+    const text = `tryparse-${RUN}`;
+    const hash = sha256(text);
+    const b = `bnd${RUN}v`;
+    // 上游 int.TryParse("3abc") 失败 → 0；long.TryParse("1e999") 失败 → 0
+    const res = await req('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'multipart/form-data; boundary=' + b },
+      body: multipart(b, { hash, type: 'Text', text, version: '3abc', size: '1e999', isDeleted: 'false' }).body,
+    });
+    expect(res.status).toBe(200);
+    const dto = await res.json() as { version: number; size: number };
+    // 修复前 parseInt('3abc')=3、Number('1e999')=Infinity（D1 里会变成 NULL）
+    expect(dto.version).toBe(0);
+    expect(dto.size).toBe(0);
+  });
+
+  it('F27 · 空 multipart 的 POST /api/history → 400（上游 hash is required）', async () => {
+    const b = `bnd${RUN}e`;
+    const res = await req('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${b}` },
+      body: '--' + b + '--\r\n',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('F28 · PUT type=File + 图片文件名 → 落库为 Image（上游 Profile.Create 提升语义）', async () => {
+    const name = `promote-${RUN}.png`;
+    const content = Buffer.from(`png-bytes-${RUN}`);
+    const hash = sha256(`${name}|${sha256(content)}`); // 上游 CombineHash 公式
+
+    const up = await req(`/file/${name}`, { method: 'PUT', body: content });
+    expect(up.status).toBe(200);
+
+    const put = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'File', hash, text: name, hasData: true, dataName: name, size: content.length }),
+    });
+    expect(put.status).toBe(200);
+
+    // 关键：上游 Profile.Create(dto) 把它建成 ImageProfile → 记录 Type 为 Image
+    const asImage = await req(`/api/history/Image-${hash}`);
+    expect(asImage.status).toBe(200);
+    const asFile = await req(`/api/history/File-${hash}`);
+    expect(asFile.status).toBe(404);
+
+    // 当前 profile 的 type 也应是 Image
+    const cur = (await (await req('/SyncClipboard.json')).json()) as { type: string; dataName: string };
+    expect(cur.type).toBe('Image');
+
+    // 非图片扩展名的 File 不提升
+    const binName = `promote-${RUN}.bin`;
+    const binContent = Buffer.from(`bin-bytes-${RUN}`);
+    const binHash = sha256(`${binName}|${sha256(binContent)}`);
+    await req(`/file/${binName}`, { method: 'PUT', body: binContent });
+    const put2 = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'File', hash: binHash, text: binName, hasData: true, dataName: binName, size: binContent.length }),
+    });
+    expect(put2.status).toBe(200);
+    expect((await req(`/api/history/File-${binHash}`)).status).toBe(200);
+  });
+
+  it('F28 · GET /api/history/{profileId}/data 解析失败 → 404（上游此端点不自行校验格式）', async () => {
+    // 上游 HistoryService.GetTransferDataFileByProfileId 在 ParseProfileId 失败时返回 null → 404
+    for (const bad of ['Bogus-abc', 'no-dash', '06-abc']) {
+      const res = await req(`/api/history/${bad}/data`);
+      expect(res.status, `data ${bad}`).toBe(404);
+    }
+    // 对照：同一 profileId 走元数据端点时是 400（上游控制器自行校验格式）
+    expect((await req('/api/history/Bogus-abc')).status).toBe(400);
+  });
+
+  it('F29 · HEAD /file/{name} 与 GET 同源（200 + Content-Length，无响应体）', { timeout: 60_000 }, async () => {
+    const name = `head-${RUN}.bin`;
+    const content = Buffer.from(`head-body-${RUN}`);
+    const hash = sha256(`${name}|${sha256(content)}`);
+    await req(`/file/${name}`, { method: 'PUT', body: content });
+    const put = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'File', hash, text: name, hasData: true, dataName: name, size: content.length }),
+    });
+    expect(put.status).toBe(200);
+
+    // 上游 [HttpHead("file/{fileName}")] 与 HttpGet 同挂一个 action
+    const head = await req(`/file/${name}`, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(content.length));
+    expect((await head.text()).length).toBe(0);
+
+    // Range 被忽略（上游 File(bytes, contentType) 的 EnableRangeProcessing 默认 false）
+    const ranged = await req(`/file/${name}`, { headers: { Range: 'bytes=0-3' } });
+    expect(ranged.status).toBe(200);
+    expect((await ranged.arrayBuffer()).byteLength).toBe(content.length);
+
+    // HEAD 不存在 → 404（上游 NotFound()）
+    expect((await req(`/file/nope-${RUN}.bin`, { method: 'HEAD' })).status).toBe(404);
+  });
+
+  it('F31 · 存储值里的 hash 含分隔符 → 视为损坏并降级（读取路径同样不推出坏 hash）', async () => {
+    const { classifyStoredProfile } = await import('../src/serialization');
+    // 写入已拒绝（见 HTTP 用例），但历史遗留/外部篡改的存储值仍可能在 Meta 里；
+    // 若原样返回，客户端会用同一规则构造本地路径 → 抛异常/产生非法路径。
+    for (const bad of ['A/B', 'A\\B']) {
+      const raw = JSON.stringify({ type: 'Text', hash: bad, text: 'x', hasData: false });
+      expect(classifyStoredProfile(raw), bad).toBe('corrupt');
+    }
+    // 合法 hash 与非字符串/缺失 hash 的处理
+    expect(classifyStoredProfile(JSON.stringify({ type: 'Text', hash: sha256('x'), text: 'x' }))).toBe('ok');
+    expect(classifyStoredProfile(JSON.stringify({ type: 'Text', text: 'x' }))).toBe('ok'); // 键缺失 → 空串
+    expect(classifyStoredProfile(JSON.stringify({ type: 'Text', hash: null }))).toBe('ok');
+    expect(classifyStoredProfile(JSON.stringify({ type: 'Text', hash: 42 }))).toBe('corrupt');
+  });
+
+  it('F31 · hash 含路径分隔符 → 400（上游 GetWorkingDirName 抛 ArgumentException）', { timeout: 60_000 }, async () => {
+    // 上游依据：`Profile.GetWorkingDirName` 在 hash 含 Directory/AltDirectory 分隔符时抛
+    // ArgumentException（未捕获 → 500）。本实现给出可诊断的 400。
+    // 修复前：含 `/` 的内联 Text 会被接受（200）、入库并**设为当前 profile** —— 该坏记录随后推给
+    // 客户端（客户端本地用同一规则构造路径，会抛异常/产生非法路径）。
+    const current = (await (await req('/SyncClipboard.json')).json()) as { hash: string; text: string };
+
+    const slashHash = 'ABCD1234/EF567890';
+    const backslashHash = 'ABCD1234\\EF567890';
+
+    for (const bad of [slashHash, backslashHash]) {
+      const put = await req('/SyncClipboard.json', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'Text', hash: bad, text: `badhash-${RUN}`, hasData: false, size: 5 }),
+      });
+      expect(put.status, `PUT hash=${bad}`).toBe(400);
+    }
+
+    // POST /api/history：同样拒绝
+    const b = `bnd${RUN}hash`;
+    const post = await req('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${b}` },
+      body: multipart(b, { hash: slashHash, type: 'Text', text: `badhash-${RUN}`, version: '0', isDeleted: 'false' }).body,
+    });
+    expect(post.status).toBe(400);
+
+    // PATCH：含分隔符的 hash 在删除路径会构造 R2 前缀 → 拒绝
+    const patch = await req(`/api/history/Text/${encodeURIComponent(backslashHash)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isDelete: true, version: 1 }),
+    });
+    expect(patch.status).toBe(400);
+
+    // 关键：坏 hash 未被入库，也没污染当前 profile
+    const notStored = await req(`/api/history/Text-${encodeURIComponent(slashHash)}`);
+    expect(notStored.status).toBe(404);
+    const after = (await (await req('/SyncClipboard.json')).json()) as { hash: string; text: string };
+    expect(after).toMatchObject(current as object);
+  });
+
+  it('F31 · 合法 hash（SHA256 hex）不受影响', { timeout: 60_000 }, async () => {
+    const text = `okhash-${RUN}`;
+    const res = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'Text', hash: sha256(text), text, hasData: false, size: text.length }),
+    });
+    expect(res.status).toBe(200);
   });
 
   it('F26 · File/Image/Group 缺传输数据时拒绝（上游 Persist 抛异常拒绝，本实现 400）', async () => {

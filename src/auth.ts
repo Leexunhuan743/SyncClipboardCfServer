@@ -74,6 +74,20 @@ export function unauthorized(): Response {
   });
 }
 
+// 提前返回响应前必须消费掉请求体：Workers 运行时在「响应已发出但入站体未被读完」时会抛
+// `Can't read from request stream after response has been sent.`，并让**后续请求**以 503 结束
+// （实测：带 body 的 POST 走鉴权失败路径后，紧接着的 DELETE 收到 503）。
+// 注意：`body.cancel()` 不足以消除该错误，必须真正读完；这里用流式丢弃避免把大 body 读进内存。
+export async function drainRequestBody(request: Request): Promise<void> {
+  const body = request.body;
+  if (!body) return;
+  try {
+    await body.pipeTo(new WritableStream());
+  } catch {
+    /* 体已被消费或不可读：忽略 */
+  }
+}
+
 // Hono 中间件：校验 Basic Auth，失败返回 401
 export const basicAuthMiddleware = (env: Bindings) =>
   async (c: Context<{ Bindings: Bindings }>, next: Next) => {

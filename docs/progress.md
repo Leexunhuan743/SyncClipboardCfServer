@@ -337,15 +337,204 @@ POST /api/history 峰值内存由约文件大小 **3 倍降到 ~1 倍**（40MB �
 - 线上：`c512124f`（cron `17 * * * *` 已注册），smoke 13 项全通过
 - 仓库：工作区干净，本地 = 远端（`492705a`）
 
-## 12. 待办与已知问题
+
+## 12. 第八轮：补上 SignalR 传输回退（2026-09-12）
+
+**问题**：此前 negotiate 只宣告 `WebSockets`，客户端按服务端列表取第一个可用项，
+因此 WS 被代理/防火墙阻断时**没有回退、直接失联**；而上游 ASP.NET Core SignalR 默认宣告
+`WebSockets → ServerSentEvents → LongPolling` 三种，可自动降级。这是与上游的真实能力差距。
+
+**实现**（对照 `@microsoft/signalr` 客户端源码的协议要求）：
+
+| 传输 | 客户端要求（源码依据） | 服务端实现 |
+|---|---|---|
+| WebSockets | 升级 + 帧收发 | 既有 WebSocketPair 路径（回归通过） |
+| ServerSentEvents | `GET` 返回 `text/event-stream`，每个 `data:` 帧交给 `onreceive`；消息用 `POST` 发到同 URL | DO 内挂起的流式响应（`TransformStream` + writer），帧格式 `data: <msg>\n\n`，首帧写注释促使头部下发，响应带 `x-accel-buffering: no` |
+| LongPolling | 首个 `GET` 立即返回（用于完成初始化）；后续 `GET` 挂起，有数据返 200+内容、无数据挂起；服务端关闭返 **204**；消息用 `POST`；`DELETE` 关闭 | DO 内连接状态（消息队列 + 单个挂起轮询），首轮 GET 立即 200、无消息挂起 ≤25s、关闭/静默返 204、DELETE 返 200 |
+
+- negotiate 改为按上游顺序与格式表宣告（`WebSockets ["Text","Binary"]`、`ServerSentEvents ["Text"]`、
+  `LongPolling ["Text","Binary"]`）——与 ASP.NET Core SignalR 的固定表逐字一致
+- Worker 侧把 `/SyncClipboardHub` 的**所有**方法转发 DO（原先只转发 WS 升级）
+- 三种传输共用同一套消息语义（握手/Ping/Close）与心跳（15s Ping）；长轮询尤其依赖心跳——
+  空轮询响应不会重置客户端 ServerTimeout，必须有真实消息
+
+**顺带修复的真实缺陷**：提前返回响应时未消费请求体 → Workers 运行时抛
+`Can't read from request stream after response has been sent.`，并让**后续请求**以 503 结束
+（实测：带 body 的 POST 走鉴权失败路径后，紧接着的 DELETE 收到 503）。
+修复：`drainRequestBody`（流式丢弃，不占内存）用于鉴权失败、未配置凭据、405 等提前返回路径。
+注意 `body.cancel()` 不足以消除该错误，必须真正读完。
+
+**验证**：
+
+| 项 | 结果 |
+|---|---|
+| 新增 `test/transports.test.ts`（8 例） | 本地 **8/8**、线上 **8/8** 全绿 |
+| 覆盖内容 | negotiate 宣告顺序与格式表；三种传输各自的握手+广播；长轮询首轮立即返回；长轮询挂起有界（实测 ~15s 返回，由心跳先行触发）；自动回退（不指定传输）；三种传输的无凭据请求一律 401 |
+| 全量测试 | **113/113 通过**（6 个套件） |
+| 线上实测 | 三种传输在真实 CF 边缘端到端可用（SSE 流式、长轮询挂起 17s） |
+| 真实客户端回归 | v3.2.0 WinUI3 客户端 WS 主路径正常、事件驱动模式保持 |
+| 部署 | `7049992d` |
+
+**已知限制（测试环境，非实现）**：`@microsoft/signalr` 在 Node 下用 ws 库，而 ws 库不读
+`HTTP(S)_PROXY`；`transports.test.ts` 与 `signalr.test.ts` 均注入全局 WebSocket（undici，会走代理）
+以完成 WS 路径验证。这不影响服务端行为，也不影响真实 .NET 客户端（它用自己的 WS 实现）。
+
+**测试装置的两处修正（第九轮附带）**：
+- `fix-regressions.test.ts` 的 WS 探测地址改为从 `BASE` 派生（此前硬编码 `ws://127.0.0.1:8787`，
+  以线上 BASE 运行时会把线上 token 拿去连本地服务 → 假失败）。修正后 3 条 WS 鉴权用例
+  首次真正覆盖线上边缘。
+- 广播用例由「响应即断言」改为**有界轮询**（10s）。原断言依赖本地 RTT≈0；跨代理/WAN 时帧尚未
+  抵达 → 假失败。F6 的真实主张是「广播不因 floating promise 丢弃」，有界等待仍能在真丢失时失败。
+- 网络密集用例加 `{ timeout: 60_000 }`（与 `signalr.test.ts` 心跳用例的既有约定一致）；
+  vitest 默认 5s 预算在多请求用例上会以 `Test timed out in 5000ms` 形式假失败。
+
+
+### 传输回退的并发与平台行为验证（补验）
+
+对照 `@microsoft/signalr` 客户端源码确认了两个关键常量，并做了平台并发实测：
+
+| 项 | 客户端/平台事实（来源） | 本实现取值 | 结论 |
+|---|---|---|---|
+| 长轮询单次请求超时 | **硬编码 100s**（`LongPollingTransport.js:43` `timeout: 100000`） | 挂起上限 25s、心跳 15s | 均远低于客户端超时，不会误判失败 |
+| 长轮询客户端轮询方式 | **严格串行**（`_poll` 内 `while` + `await get`，同一连接不会并发两个轮询） | 防御性处理同连接并发挂起 | 真实客户端不可达该路径 |
+
+**平台并发实测（真实 Cloudflare 边缘）**：
+
+| 场景 | 结果 |
+|---|---|
+| 20 / 50 路并发**挂起**的长轮询 | 全部 200 返回，且**每路都收到心跳**（20/20、50/50），耗时 15.2s / 15.7s |
+| 20 路并发 SSE 流 | 20/20 建立成功（0.7s） |
+| 三传输混合扇出（1 WS + 1 SSE + 1 LP） | 三者均收到**同一次**广播（ws:1 sse:1 lp:1） |
+| 同连接两个并发挂起（防御路径） | 本地（miniflare）语义正确：旧的立即结算（0.2s）、新的继续挂起到心跳（15.0s） |
+
+**残留不确定（如实记录）**：同连接并发挂起在**线上**观测为两个都在 15s（心跳）返回，与本地语义不同。
+成因未定位（可能是测试经由代理的 HTTP 层连接复用，也可能是 DO 平台行为差异）。
+影响评估：**无功能影响**——真实客户端的轮询循环是串行的（见上表第二行），不会产生同连接并发挂起；
+即便发生，最坏结果是陈旧请求最多多挂 15s 后返回空体并被客户端丢弃。
+DO 单实例的并发挂起容量未探到上限（已实测 **50 路**正常，真实使用规模为此的百分之一）。
+
+
+## 14. 第九轮：输入校验与路径细节对照（2026-09-12）
+
+对照上游控制器 / 服务 / Profile 类逐条核对「模型绑定与 size 口径」，发现并修复 5 项偏差。
+全部先取得**修复前线上实测**证据，再修复并复验。
+
+| # | 偏差 | 上游行为（证据） | 修复前线上实测 | 修复 |
+|---|---|---|---|---|
+| F27a | PUT/PATCH 的 JSON body 非对象 | `[FromBody] ProfileDto` 反序列化失败 → 400 | `body=[]`/`123`/`"text"`/`true` → **200 且覆盖当前 profile**（`text` 被清空）；`null` → 400 | `requireJsonObject` → 400 |
+| F27b | `Types` 数字位掩码 | `Enum.TryParse<ProfileTypeFilter>("5")` 成功 → 200 | `Types=5` → **400** | 接受数字（int32 内），仍拒绝 `Text,5` 混用 |
+| F27c | `Starred`/`SortByLastAccessed` 非法值 | `bool.TryParse` 失败 → ModelState 失败 → 400 | `Starred=maybe`、`SortByLastAccessed=yes` → **200**（静默当作无过滤） | → 400 |
+| F27d | POST 表单 `version`/`size` 解析 | `int.TryParse`/`long.TryParse` **整体**必须合法，失败取 0 | `version=3abc` → **3**（`parseInt` 前缀解析） | 严格整数语法，失败取 0 |
+| F28a | POST 路径 `size` 口径 | `ProfilePersistentInfo.Size` 是必填 `long` → Text 用声明值（缺失即 0，**不读文件**）；`FileProfile(ProfilePersistentInfo)` 不设 Size → File/Image 用**实际字节数** | 实现与上游相左（Text 回落读文件、File/Image 用声明值） | 按类型分别对齐 |
+| F28b | `Profile.Create` 的 File→Image 提升 | `dto.Type=File` + `DataName` ∈ `.jpg/.jpeg/.gif/.bmp/.png` → 建 `ImageProfile`，落库 Type=**Image** | 落库为 **File** | `resolveCreateProfileType`（仅 PUT 路径；`webp/heic/avif` 不在提升表） |
+| F28c | `GET /api/history/{id}/data` 的非法 profileId | 上游此端点不校验格式，`GetTransferDataFileByProfileId` 返回 null → **404** | 返回 **400** | → 404（元数据端点仍 400，两者上游本就不同） |
+| F29a | Group 数据文件名后缀 | `CreateNewDataFileName()` = `File_{stamp}.zip` | 生成为 `File_{stamp}**.tmp**.zip`（与自身注释矛盾） | → `.zip`；随机段对齐 `Path.GetRandomFileName()` 形状（8 字符 + `.` + 3 字符） |
+| F29b | `HEAD /file/{name}` | `[HttpHead]` 与 `[HttpGet]` 同挂一个 action；`File(bytes, contentType)` 的 `EnableRangeProcessing` 默认 false（忽略 Range） | 未覆盖测试 | 补判别用例（200 + Content-Length + 无体；Range 返回全量；缺失 404） |
+
+**自我纠错（记录在案）**：此前一条单测写作「Size 声明缺失（0）时回退为全文字符数（上游读文件算 .Length）」——
+该断言基于对上游的**误读**：`ProfilePersistentInfo.Size` 是 `required long`（非空），
+`TextProfile(ProfilePersistentInfo)` 赋值 `Size = entity.Size` 后 `GetSize()` 原样返回，永不触发 `ComputeSize`；
+读文件的回落只存在于 PUT 路径（`TextProfile(ProfileDto).Size` 是 `long?`）。
+该用例已按上游证据改写为「POST 路径 Size = 声明值（缺失即 0）」，并新增 File/Image 用实际字节数的用例。
+
+**验证**：本地 `npm test` **123/123**（6 套件）；`npx tsc --noEmit` 干净；修复前证据脚本
+`.audits/f27-pre-fix.mjs` 对线上旧版本运行、修复后由 `test/fix-regressions.test.ts`（F27/F28/F29）守卫。
+**线上全套**：HTTP 套件 49/49（fix-regressions 33 + protocol 16）、hub/传输 12/12
+（signalr 4 + transports 8）——共 **61 例在真实 Cloudflare 边缘通过**。
+
+**已知（有意保留，不影响官方客户端）**：
+- **query 时间字段无法解析时不 400，而是忽略该过滤条件**（有意偏离）。依据：客户端发送的时间串
+  由 `DateTimeOffset.ToString()` 生成，其模式为 `ShortDatePattern + " " + LongTimePattern + " zzz"`
+  —— .NET 源码 `DateTimeFormatInfo.DateTimeOffsetPattern` 注释原文「default pattern DateTimeOffset :
+  shortDate + long time + time zone offset」，故**带偏移**（如 `2026/9/12 22:48:42 +08:00`），
+  `Date.parse` 对 zh-CN / en-US / de-DE 等形式均可正确解析（已实测），无时区偏差。
+  若某文化形式两边都解析不了（如 ko-KR 的 `2026. 9. 12. 오후 10:48:42 +08:00`），
+  返 400 会让客户端 `SyncTaskImpl` 整轮历史同步抛错停止；忽略则仅让增量过滤退化为「多取一页」（结果仍正确）。
+- 方法不匹配时上游 405、本实现 404（客户端不会发错方法）。
+- `/api/history/{id}/data` 的 Content-Type 恒为 `application/octet-stream` + `nosniff` + `attachment`
+  （上游按扩展名推断）——安全加固，客户端按字节落盘不读此头。
+- POST multipart 的字段顺序容忍度更高（上游解析到 `data` 即停止读取）。
+
+
+## 15. 第十轮：逐条核对两个控制器的每个返回点（2026-09-12）
+
+方法：把上游 `SyncClipboardController`（9 个 action）与 `HistoryController`（8 个 action）的**每一个 return**
+列出，与本仓库路由逐条比对状态码与响应体形状。结论：**状态码全部一致**，发现 1 项真实健壮性缺口 + 2 项需记录的差异。
+
+| # | 项 | 上游（源码依据） | 修复前 | 处理 |
+|---|---|---|---|---|
+| F30 | `GET /SyncClipboard.json` 的降级出口 | `GetSyncProfile` 有两个 catch/`??` 出口：① 反序列化**抛错**（`[]`／标量／非法枚举名／非整数数字）→ `new TextProfile("").ToProfileDto()`（hash=`SHA256("")`、`size:0`）；② 反序列化得 **null** → `?? new ProfileDto()`（hash=""、`size` 键省略） | 只处理「无存储值」，损坏值**原样返回** → 客户端 `ReadFromJsonAsync` 抛异常、剪贴板同步中断 | 新增 `classifyStoredProfile` 复刻两出口判定（含 `null` 与 `corrupt` 两种形状差异） |
+| — | `GET /file/{name}` 内部异常 | `catch (Exception ex) → BadRequest(ex.Message)` = 400 | 500 | **有意保留 500** 并文档化：客户端两者都走失败分支；把内部故障报成 400 会误导排障 |
+| — | `profileId` 中的类型枚举大小写 | `Profile.ParseProfileId` 用 `Enum.TryParse<TEnum>(value, out r)` —— .NET 源码该重载固定 `ignoreCase: **false**`（**大小写敏感**）；而 `PATCH /{type}` 走模型绑定 `EnumTypeModelBinder → EnumConverter.ConvertFrom → Enum.Parse(t, s, true)`（**大小写不敏感**）。**上游自身不一致** | 两处均大小写不敏感 | 记为宽松超集并文档化（客户端恒发规范枚举名，两种实现等价） |
+
+**顺带核对（均为一致，无需改动）**：`api/version` 的 text/plain 裸串、`api/time` 的 JSON ISO 串、
+`PROPFIND`/`MKCOL`/`DELETE /file` 的 2xx、`GET/PUT /file/{name}` 的 400/404/200 与 Range 忽略、
+`PUT /SyncClipboard.json` 的 400/404 与 `"Hash is not match data."`、
+`POST /api/history` 的 400/422(ProblemDetails `code=history_data_invalid`)、
+`PATCH` 的 200/409(dto)/404、`DELETE /api/history/clear` 的 `{"deleted":n}`（上游 `ClearAllAsync` 是**硬删**，
+与本实现的 `DELETE ... RETURNING` 一致）、`GET /api/history/{id}/data` 的 404、
+`statistics` 的两位小数与「非 0 但显示为 0 → 0.01」、`POST query` 的 `after >= before → 400`。
+
+**自我纠错（记录在案）**：本轮第一次提交 `ed39b72` 的**提交信息被 shell 反引号展开破坏**
+（3 处空洞，其中两处丢失了 `GetSyncProfile` / `ReadFromJsonAsync` 等标识符）。根因是用了
+`git commit -m "…反引号…"` —— 这正是既有的自记规则所禁止的（应改用 `write` 写消息文件 + `git commit -F`）。
+处置：该提交尚未推送，经用户授权后按「仅重写这一条未推送提交的消息」修复
+（先 `git stash create` 记下备份对象，再 `git reset --soft` + 路径限定重提交 + `cherry-pick` 重放后两条），
+**三棵树的哈希与改写前逐字节一致**（`d3418f85` / `7208d586` / `20e76698`），内容零变化、无 force push。
+此后所有提交一律走 `-F` 文件方式。
+
+**验证**：本地 `npm test` **125/125**（6 套件）；`npx tsc --noEmit` 干净；新增 F30 单测覆盖
+`classifyStoredProfile` 的 6 个 ok 形状、9 个 corrupt 形状与 `null` 形状，以及两个降级 dto 的 wire 差异
+（`size:0` 必现 vs `size` 键省略）。
+
+
+## 16. 第十一轮：hash 的路径字符约束（对齐上游 GetWorkingDirName）（2026-09-12）
+
+对照上游 `Profile.GetWorkingDirName` 时发现本实现缺少等价防线。上游在 key 构造处校验：
+
+```csharp
+if (hash.Contains(Path.DirectorySeparatorChar) || hash.Contains(Path.AltDirectorySeparatorChar))
+    throw new ArgumentException("Hash contains invalid path characters.", nameof(hash));
+```
+
+**判别性证据（线上 pre-fix 实测）**：`PUT /SyncClipboard.json` 带 `hash="ABCD1234/EF567890"` 与
+`hash="ABCD1234\\EF567890"` 均返回 **200**，且第二条**成为了当前 profile**
+（`.audits/f31-pre-fix.mjs` 对旧版本运行，输出「★ 当前 profile 已被含分隔符的 hash 污染」）。
+
+**为什么有害**：hash 参与两处必须同构的用途 —— R2 key `history/{Type}_{Hash}/{file}` 与孤儿目录判定
+（`listHistoryWorkingDirs` 只按**第一个** `/` 截断工作目录名）。记录侧是 `Text_A/B`，R2 侧只会被识别为
+目录 `Text_A/`，二者不同构。且该坏记录会被**设为当前 profile 推给客户端**，而客户端本地用同一规则
+构造路径（`GetWorkingDirName`）会抛异常/产生非法路径。
+
+**修复（三层）**：
+
+| 层 | 行为 |
+|---|---|
+| 请求边界（PUT / POST / PATCH） | hash 含 `/` 或 `\` → **400** `Hash contains invalid path characters`（上游是未捕获异常 500；400 可诊断） |
+| 读取（`classifyStoredProfile`） | 存储值里的 hash 含分隔符 → 视同损坏，降级为空 TextProfile（覆盖历史遗留/外部篡改的 Meta 值） |
+| `src/storage.ts` key 构造 | 断言兜底：将来新增写路径若漏校验会**快速失败**，而非产生跨目录 key |
+
+`isValidProfileHash` 放在 `types.ts`（无依赖层），使 `serialization.ts` 的分类器与路由层共用同一判据。
+
+**顺带修正的平台差异**：上游 Windows 拒绝 `/` 与 `\`，Linux 只拒 `/`（`Alt` 与 `Directory` 同值）→
+**允许 `\`**。本实现两平台一致地拒绝两者（严格超集，跨平台行为一致）。
+
+**验证**：
+- 本地 `npm test` **129/129**；`npx tsc --noEmit` 干净。
+- 线上（部署 `494cdce0` 后）：两种分隔符均 **400**、当前 profile 未被污染；
+  线上套件 **52/52**（fix-regressions 36 + protocol 16）。
+- 线上数据清理：删除探针注入的 2 条坏记录（`instr(Hash,'/')>0 OR instr(Hash,char(92))>0` 现为 0 条）
+  —— 它们会让 cleanup 的删除路径触发断言，必须清除。
+
+## 17. 待办与已知问题
 
 - [ ] **线上 secrets 仍为 admin/admin，需用户修改**（`wrangler secret put USERNAME/PASSWORD`）
 - [ ] 可选：官方真实客户端连接线上 URL 完成一次完整同步（协议栈已由本地真客户端 + 线上 @microsoft/signalr 双重验证）
 - [ ] 可选：绑定自定义域名（wrangler.toml routes 或 Cloudflare 控制台）
 
-已知限制（详见 README）：免费版单请求 100MB；仅 WebSockets 传输；畸形 zip 的隐式目录/重复条目语义与上游在第三方畸形输入上存在 minor 差异（官方客户端不可达）。
+已知限制（详见 README）：免费版单请求 100MB；畸形 zip 的隐式目录/重复条目语义与上游在第三方畸形输入上存在 minor 差异（官方客户端不可达）。
 
-## 13. 版本记录
+## 18. 版本记录
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
@@ -361,3 +550,7 @@ POST /api/history 峰值内存由约文件大小 **3 倍降到 ~1 倍**（40MB �
 | 1.5.0 | 2026-09-12 | 第五轮：无数据 profile 拒绝 + WebDAV PreciseDelete 端到端打通（105 测试全绿） |
 | 1.6.0 | 2026-09-12 | 第六轮：历史同步端到端验证通过（两端 45=45 一致）+ 客户端探测频率与容量评估 |
 | 1.7.0 | 2026-09-12 | 第七轮：端点覆盖 100% 审计 + 收敛确认（105 测试全绿，线上 smoke 全通过） |
+| 1.8.0 | 2026-09-12 | 第八轮：补上 SignalR SSE/长轮询回退 + 修复提前返回未消费请求体导致的 503（113 测试全绿） |
+| 1.9.0 | 2026-09-12 | 第九轮：输入校验（JSON body/Types 数字/布尔/整数 TryParse）+ size 口径 + File→Image 提升 + data 端点 404（123 测试全绿） |
+| 1.10.0 | 2026-09-12 | 第十轮：逐条核对两个控制器的每个返回点（状态码全一致）+ 补 `GET /SyncClipboard.json` 损坏值降级（125 测试全绿） |
+| 1.11.0 | 2026-09-12 | 第十一轮：hash 路径字符约束（写路径 400 / 读取降级 / key 断言三层，对齐上游 GetWorkingDirName，129 测试全绿） |
