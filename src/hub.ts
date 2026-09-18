@@ -57,9 +57,12 @@ export function forwardToHub(env: Bindings, request: Request): Promise<Response>
 
 // negotiate 响应（.NET SignalR JSON 协议）
 // 逐字对齐 ASP.NET Core 的 `HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`：
-//   - 版本判定（源码依据见 docs/protocol.md §6）：
-//       缺参数 → 版本 0；非整数 → `{"error":"The client requested a non-integer protocol version."}`；
-//       负数（< MinimumProtocolVersion=0）→ `{"error":"The client requested version '<v>', but the server does not support this version."}`；
+//   - 版本判定（源码依据见 docs/protocol.md §6；**2026-09-15 用官方 v3.2.0 服务端发布件逐值 A/B 实测过**）：
+//       缺参数 → 版本 0；负数（< MinimumProtocolVersion=0）→
+//         `{"error":"The client requested version '<解析后的整数>', but the server does not support this version."}`；
+//       `int.TryParse` 失败 → `{"error":"The client requested an invalid protocol version '<原样未 trim 的入参>'"}`
+//         （**失败**包括：非数字、千位分隔符、空串、**超出 Int32 范围**——注意"超出 Int32"属失败，
+//          而"解析成功但为负"属不支持，两者错误串不同）；
 //       > 1 → 钳为服务端最大值 1
 //   - 出错时**仍返回 HTTP 200**，响应体只有 `error` 字段（dispatcher 不设置非 200 状态码）
 //   - `negotiateVersion` **恒出现**（版本 0 也会写成 `"negotiateVersion":0`）
@@ -91,18 +94,28 @@ export async function negotiateResponse(env: Bindings, request: Request): Promis
   return Response.json(body);
 }
 
-// 返回钳制后的版本号，或上游语义下的错误消息字符串
+// 返回钳制后的版本号，或上游语义下的错误消息字符串。
+// 语义按 .NET `int.TryParse`（NumberStyles.Integer：允许首尾空白与正负号，不允许千位分隔符）
+// 与官方服务端 v3.2.0 的 A/B 实测结果实现（见 docs/progress.md §44）：
+//   - 解析失败（含**超出 Int32**）→ 错误串里回显**原样未 trim** 的入参
+//   - 解析成功但 < 0        → 错误串里回显**解析后的整数**（`' -1 '` → `'-1'`）
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
+const NEGOTIATE_MIN_VERSION = 0;
 function negotiateClientVersion(raw: string | null): number | string {
   if (raw === null) return 0; // 未携带 → 版本 0（MinimumProtocolVersion 为 0，故不是错误）
-  if (!/^[+-]?\d+$/.test(raw.trim())) {
-    return 'The client requested a non-integer protocol version.';
+  const trimmed = raw.trim();
+  if (/^[+-]?\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (Number.isInteger(n) && n >= INT32_MIN && n <= INT32_MAX) {
+      if (n < NEGOTIATE_MIN_VERSION) {
+        // 上游：clientProtocolVersion < MinimumProtocolVersion(0) → 版本不支持
+        return `The client requested version '${n}', but the server does not support this version.`;
+      }
+      return Math.min(n, MAX_NEGOTIATE_VERSION);
+    }
   }
-  const n = Number(raw.trim());
-  if (!Number.isSafeInteger(n) || n < 0) {
-    // 上游：clientProtocolVersion < MinimumProtocolVersion(0) → 版本不支持
-    return `The client requested version '${raw.trim()}', but the server does not support this version.`;
-  }
-  return Math.min(n, MAX_NEGOTIATE_VERSION);
+  return `The client requested an invalid protocol version '${raw}'`;
 }
 
 // 生成随机连接令牌并登记进 DO —— negotiate 与 UI 的实时推送端点（`/ui/api/hub-ticket`）

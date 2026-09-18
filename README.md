@@ -101,7 +101,20 @@ flowchart LR
 | 实时 | `/SyncClipboardHub`（negotiate + WebSocket） |
 
 **客户端要求**：SyncClipboard **v3.1.1 或更高**（v3.1.1 起协议为当前格式，旧版不兼容）。
-已验证官方 **v3.2.0 WinUI3 客户端**的文本、大文本、文件双向同步与历史同步。
+已验证官方 **v3.2.0 WinUI3 客户端**：文本（含大文本）、文件的双向同步、历史同步，**以及 SignalR 实时推送**
+（服务端改动 → 客户端剪贴板 **1.5 s** 内更新）。2026-09-15 用官方 v3.2.0 客户端对生产做了一轮完整 E2E 复验
+（含文件字节级一致、File 哈希规则与客户端逐字一致），记录见 [`docs/progress.md`](docs/progress.md) §44.5。
+
+**版本口径（两套编号，互不相干，不要"顺手对齐"）**：
+
+| 编号 | 含义 | 当前位置 |
+|---|---|---|
+| `VERSION`（`wrangler.toml` `[vars]`） | **对外自我描述**：`/api/version` 返回的串。**逐字对齐上游基线**编译后真实返回的值 —— 上游 `src/Directory.Build.props` 的 `<VersionPrefix>3.2.0</VersionPrefix>` 是唯一事实源，`SyncClipboardProperty.AppVersion` 取 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分，故基线 `28c7e596` 报 `3.2.0` | **`3.2.0`** |
+| `version`（`package.json`） | **本迁移项目自身**的版本号（记录/发布用，客户端看不到） | 见 `package.json` |
+
+跟版规则：**仅当上游改动版本事实源**（bump `<VersionPrefix>` 或换版本来源）时才改 `VERSION`，
+并同步 `docs/protocol.md` §10 的登记行与 `docs/design.md` §10。客户端下限只要求 `≥ 3.1.1`，
+且该检查在版本串解析失败时会被**静默跳过**，所以这个值没有功能后果——它是**忠实性**要求。
 
 已知行为差异与有意偏离记录在 [`docs/protocol.md`](docs/protocol.md) 的差异表。
 
@@ -381,9 +394,30 @@ src/
 public/                 静态资源：robots.txt（站点根）+ ui/（原生 ES 模块，无构建步骤）
                         文件清单以 docs/ui.md §3 为准（避免四处各列一份、加文件时漏更新）
 test/                   全部 20 个套件 + live-signalr.mjs（线上验证脚本）
+tools/                  ab-upstream-probe.ps1（与**官方服务端发布件**逐条 A/B 对照的探针/守卫）
 docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md / backend-gaps.md
 schema.sql              D1 建表语句
 ```
+
+### 与官方服务端做 A/B 对照（`tools/ab-upstream-probe.ps1`）
+
+本仓库的兼容性主张有**三类**证据：套件里的黑盒断言、**真上游服务端**的逐条 A/B、**真客户端** E2E。第二类靠这个探针：
+
+```bash
+# 一次性准备：本机只需有 ASP.NET Core 运行时（无需 SDK），上游 release 直接附了服务端发布件
+gh release download v3.2.0 -R Jeric-X/SyncClipboard -p 'SyncClipboard.Server.zip' -D "$TEMP/scsrv-upstream"
+Expand-Archive "$TEMP/scsrv-upstream/SyncClipboard.Server.zip" -DestinationPath "$TEMP/scsrv-upstream/app"
+# 在 <run> 目录**先自写** appsettings.json：发布件默认监听 http://*:5033（所有网卡），务必改回环 + 合成凭据
+dotnet "$TEMP/scsrv-upstream/app/SyncClipboard.Server.dll" --contentRoot "$TEMP/scsrv-upstream/run"
+
+# 另一侧起本实现，然后对跑
+npx wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1
+pwsh -File tools/ab-upstream-probe.ps1          # 退出码 = **未登记差异**的条数
+```
+
+探针会逐条打印两边的**状态码 / `Allow` / `WWW-Authenticate`**，并把差异分成**一致 / 已知偏离（必须在
+`docs/protocol.md` §10 有登记）/ 未登记差异**三类；第二段再对 `negotiate` 的 18 个取值做**逐字**比较。
+结果与结论见 [`docs/progress.md`](docs/progress.md) §44。
 
 ## 文档
 

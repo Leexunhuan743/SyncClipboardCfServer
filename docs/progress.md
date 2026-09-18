@@ -145,7 +145,7 @@ push 到 `master` 只在**改动涉及产品代码或构建输入**时触发流�
 | 2026-09-12 | 最终验证 = 协议级测试 + 真实客户端联调 | 兼容性最可靠 |
 | 2026-09-12 | 历史/当前 Profile 存 D1，数据文件存 R2 | 强一致 + 对象存储 |
 | 2026-09-12 | negotiate 只宣告 WebSockets | 缩小 SignalR 实现面（**已被 D6 取代**：第八轮起改为 WebSockets → SSE → 长轮询三传输宣告，见 `docs/design.md` D6 与本文 §12） |
-| 2026-09-12 | `/api/version` 返回 "3.2.1"（可配 VERSION） | 客户端要求 ≥ 3.1.1 |
+| 2026-09-12 | `/api/version` 返回 "3.2.1"（可配 VERSION） | 客户端要求 ≥ 3.1.1 —— **订正（2026-09-15，§43）**：该值已改为 `"3.2.0"`，逐字对齐上游基线。原表述保留作历史记录 |
 | 2026-09-12 | 服务端心跳用 DO alarm（15s）而非定时器 | DO 空闲时 JS 定时器冻结，alarm 由平台保证触发 |
 | 2026-09-12 | SignalR 消息必须带 RS（0x1E）结尾 | .NET SignalR JSON 协议硬性要求 |
 | 2026-09-12 | 广播 await 于响应内 | fire-and-forget 的 DO fetch 会被 Workers 运行时取消 |
@@ -697,7 +697,7 @@ design.md §12（套件清单 + CI 执行策略 + 凭据来源及其原因）。
 执行后 `COUNT(*) = 301`、重复行 `(UserId,Type,Hash)` 计数 = **0** → 去重语句未删除任何行，
 **无数据丢失**（唯一索引保证不可能出现重复）。
 
-**CI 部署后的线上校验**：`/api/version` = 3.2.1、`/SyncClipboard.json` 200、
+**CI 部署后的线上校验**：`/api/version` = 3.2.1（当时的取值；2026-09-15 起为 `3.2.0`，见 §43）、`/SyncClipboard.json` 200、
 negotiate 三形态（`v=1` 有 token / 无参数 `v=0` 无 token / `abc` 仅 error）均与修复后一致。
 
 **本轮线上套件产生的 56 条测试记录已软删清理**（`.audits/live-cleanup.mjs`，0 失败）。
@@ -1160,8 +1160,10 @@ minor 差异（官方客户端不可达）；Web 界面的三条限制（不走 
 | 1.21.0 | 2026-09-15 | 第二十一轮：**清理吞吐对齐上游** —— 批 500（原 200）+ 批内一次目录清扫（每条成本 3→1 次子请求）+ cron 每 20 分钟；实测 300 条过期 / 500 条超量都在**一轮内**处理完（原 105 / 115 条每轮）；重算预算与保底配额，新增「R2 调用数与批内条数无关」的结构性守卫（20 套件 / 325 测试全绿，详见 §40） |
 | 1.21.1 | 2026-09-15 | 工具链升级：**wrangler 3 → 4**（连带 `@cloudflare/workers-types` 4 → 5）⇒ 本地/CI 与生产同跑 `compatibility_date = 2025-09-01`，并去掉 workflow 里的 `wranglerVersion` 钉子；typecheck 零错误、全量 325 例在新运行时下全绿（详见 §41） |
 | 1.21.2 | 2026-09-15 | 运维可观测性：`wrangler.toml` **显式** `[observability] enabled = true`，README 新增「日志与排障」（tail 用法、控制台路径、日志前缀表、隐私口径）（详见 §42） |
-
-## 26. 数据处置：无数据记录与早期 e2e 残留（2026-09-13）
+| 1.21.3 | 2026-09-15 | `/api/version` 取值对齐：`VERSION` `3.2.1` → **`3.2.0`**（= 上游基线编译后真实返回值），并把「两套编号互不相干」与跟版规则写进 README/design/protocol（详见 §43） |
+| 1.21.4 | 2026-09-15 | 文档：§39.4「复核驳回」表补齐**证据链**（六条，含文件:行号；③ 附 ASP.NET 官方文档引用）并区分证据等级（确定性代码路径 vs 未实测的框架文档推断）（详见 §39.4） |
+| 1.22.0 | 2026-09-15 | 第二十二轮：**真上游 A/B + 真客户端 E2E** —— 在本机起官方 v3.2.0 服务端发布件逐条对照（32 例状态码级 + 18 例 negotiate 文本级），找出并修复 negotiate 的**两处真缺陷**（错误串写错、把「超出 Int32」误并入「负数」分支）；再用官方 v3.2.0 客户端对生产做双向文本/文件与实时推送 E2E（详见 §44） |
+| 1.22.1 | 2026-09-15 | 路径**字面段**大小写归一（`src/pathCase.ts` + 入口最前面）：`/API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`/SYNCCLIPBOARDHUB/negotiate` 与上游同为 200；只归一字面段、取值不动，并加"遍历 `app.routes` 断言字面段全覆盖"的守卫（20 套件 / 328 例，A/B 未登记差异 0，详见 §44.7） |## 26. 数据处置：无数据记录与早期 e2e 残留（2026-09-13）
 
 线上**实测**（不沿用旧统计）：活跃 **79** 条中，**12 条 `hasData` 为真而取不到数据**；
 另有 **7 条早期轮次的人工 e2e 残留**（`wdfile.txt`、`r5push.txt`、`R5BIG-*`、`e2e-r5-*`、
@@ -2013,14 +2015,28 @@ PROPFIND 207、附件加固、hash 分隔符 400、时间字段忽略、hash 统
 
 ### 39.4 复核驳回（防后人重提）
 
-| 候选 | 结论 |
-|---|---|
-| 列表排序缺 `ThenByDescending(ID)`（子代理判"高"） | **不成立**：迁移是 `ORDER BY sortCol DESC, ID DESC`，与上游逐字一致 |
-| 硬删时无条件删数据目录（子代理判"中高"） | **不成立**：上游 `DeleteProfileDataIfNeed(force:false)` 只在 `IsDeleted == false` 时早退，而硬删候选集恒为已删记录 ⇒ 行为相同 |
-| `MarkForDeletionAsync` detached 分支"设字段却不保存" | **不成立**：该分支改的是被跟踪实体，保存由 `HistoryManagerHelper` 的 `SaveChangesAsync` 负责 |
-| `Web.cs` 未设 `DefaultChallengeScheme` ⇒ 401 变 500 | **驳回**（框架回退链 `DefaultChallengeScheme ?? DefaultScheme`）。未实测 ⇒ 按"不主张"处理，不写进 upstream-issues |
-| `README_DOCKER.md` 挂载路径与 `--contentRoot` 不符 | **驳回**：`Program.cs:48-74` 正好从 `/app` 复制该文件到 `/app/data/` 并显式加载 ⇒ 文档给的挂载点生效 |
-| `dto.Version` 为 null 会 NRE | **不成立**：`HistoryService.cs:50-51` 有 `??=` 兜底 |
+> **2026-09-15 补记（证据链，用户要求）**：下表原有结论**一条都没改**，本轮为每条补上**可复查的证据**
+> （文件:行号）。分类：①②⑤⑥ 是**对己方实现的误报**（子代理把"看起来缺失"当成缺失）；
+> ③④ 是**疑似上游缺陷**被驳回。
+>
+> **证据等级要分清**（这是本节最该记住的一条）：①⑤⑥ 是**确定性代码路径**（读源码即可判）；
+> ④ 也是确定性代码路径（Dockerfile + `Program.cs` 的启动顺序可完整复现）。
+> **③ 已在 2026-09-15 升级为实测级**（真上游服务端 × 本实现，见 §44）：未认证 `GET /api/version` 两边都是
+> **401 + 同样的 `WWW-Authenticate: Basic realm="SyncClipboard"`** ⇒ 原"未实测"标注作废。该条之所以长期停留
+> 在"文档级"，是因为当时误判本机"无 .NET"（实际只是无 SDK，运行时与官方发布件都在）——即 §44.8 教训 1。
+
+| 候选 | 结论 | 证据（文件:行号，可复查） |
+|---|---|---|
+| ① 列表排序缺 `ThenByDescending(ID)`（子代理判"高"） | **不成立**（对己方实现的误报） | 上游 `HistoryService.cs:169-170`：`OrderByDescending(LastAccessed).ThenByDescending(ID)` / `OrderByDescending(CreateTime).ThenByDescending(ID)`；本实现 `src/db.ts:265`：`ORDER BY ${sortCol} DESC, ID DESC` ⇒ **逐字等价** |
+| ② 硬删时无条件删数据目录（子代理判"中高"） | **不成立**（对己方实现的误报） | 上游硬删候选集 `HistoryService.cs:522` 恒含 `r.IsDeleted` ⇒ `DeleteProfileDataIfNeed` → `DeleteProfileData(entity, force:false)` 的早退（`:473-483`，条件 `IsDeleted == false`）**永不触发**，实际就是"无条件删"；本实现候选集 `src/db.ts:464`（`IsDeleted = 1 AND LastModified < ?2`）与上游同集合，删目录在 `src/cleanup.ts`（硬删阶段与 `cleanOrphans` 同批清扫） ⇒ **行为相同** |
+| ③ `Web.cs` 未设 `DefaultChallengeScheme` ⇒ 401 变 500 | **驳回**（框架回退链）→ **2026-09-15 已实测确认**：真上游服务端对未认证 `GET /api/version` 返回 **401 + `WWW-Authenticate: Basic realm="SyncClipboard"`**，与本实现逐字相同（`tools/ab-upstream-probe.ps1` 用例 1；见 §44） | 上游 `Web.cs:27-29`：`AddAuthentication("BasicAuthentication")` + `AddScheme<…, BasicAuthenticationHandler>("BasicAuthentication", null)`。官方文档：`AddAuthentication(services, defaultScheme)` 的 `defaultScheme` 是 "The default scheme used as a **fallback for all other schemes**"；`AuthenticationOptions.DefaultScheme` 是 "Used as the **fallback default scheme for all the other defaults**"，而 `DefaultChallengeScheme` 才是 `ChallengeAsync` 的默认方案 ⇒ 未显式设置 challenge 方案时回退到 `BasicAuthentication` ⇒ **401 + `WWW-Authenticate`**，不是 500。文档：[AddAuthentication](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.dependencyinjection.authenticationservicecollectionextensions.addauthentication?view=aspnetcore-8.0)、[AuthenticationOptions](https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.authentication.authenticationoptions?view=aspnetcore-8.0) |
+| ④ `README_DOCKER.md` 挂载路径与 `--contentRoot` 不符 | **驳回**：文档给的挂载点**确实生效** | `Dockerfile` 的 `ENTRYPOINT` 是 `--contentRoot /app/data`；`Program.cs:29` 在 `Configure<AppSettings>(GetSection(...))`（`:43`）**之前**调 `EnsureAppSettingsExists(builder.Environment.ContentRootPath, builder.Configuration)`；`:48-74` 取 target=`<contentRoot>/appsettings.json`（`/app/data/…`），不存在时从 `AppContext.BaseDirectory`（镜像里 = `/app`）**复制过去并 `AddJsonFile(target)` 显式加载** ⇒ 挂 `-v …:/app/appsettings.json` 生效。**补充**：直接挂到 `/app/data/appsettings.json` 同样生效（host 默认读 content root）——两种挂法都对，原候选不成立 |
+| ⑤ `MarkForDeletionAsync` detached 分支"设字段却不保存" | **不成立**（对己方实现的误报） | 上游 `HistoryService.cs:583-600`：detached 分支改的是 `Query(...)` 取回的**被跟踪实体** `existing`（`:593-595`），原 `entity` 只做同步以便后续广播/删文件（`:597-599`）；持久化由上层 `HistoryManagerHelper.cs:48` 的 `SaveChangesAsync` 完成（`RemoveExpiredInBatchesAsync` 里对应 `:88`），它在 per-record 循环**之后**统一保存 |
+| ⑥ `dto.Version` 为 null 会 NRE | **不成立** | 上游 `HistoryService.cs:50-51`：`dto.Version ??= existing.Version + 1;` / `dto.LastModified ??= DateTimeOffset.UtcNow;` ⇒ 后续 `:55` 的 `dto.Version.Value` 安全 |
+
+**为什么值得把这些写下来**：每一轮的对照/审计都会重新发现同样几条"疑似问题"（子代理尤其容易产出
+①②⑤ 这类"我方代码看起来缺了一行"的误报），而复核一次就要逐条回源码。把证据与**证据等级**写在结论旁边，
+下一次就是"引用 + 核对"而不是"重查"；同时它也标出了唯一真正需要将来实机验证的 ③。
 
 ### 39.5 订正（保留原表述，只加标记）
 
@@ -2042,8 +2058,8 @@ PROPFIND 207、附件加固、hash 分隔符 400、时间字段忽略、hash 统
 
 未修：CI 不创建 D1/R2（U1）、冒烟断言过弱（U2）、`compatibility_date` 本地 fallback（U3：仓库锁
 `wrangler ^3.80`，本地运行时最高支持 `2025-07-18`，生产侧被平台支持）——**U3 已在 §41 修复**、
-无日志级别配置（U4）、
-版本事实源三处不同（U5：上游 `VersionPrefix=3.2.0` / `Changes.md` 3.2.1 / 本仓库 `VERSION=3.2.1`）。
+无日志级别配置（U4：**已在 §42 处理**）、
+版本事实源三处不同（U5：上游 `VersionPrefix=3.2.0` / `Changes.md` 3.2.1 / 本仓库 `VERSION=3.2.1`：**已在 §43 修复**）。
 
 待确认（本环境无 .NET SDK、无 NuGet 缓存，**无法起上游服务端实测**）：negotiate 的版本钳制与错误响应、
 客户端 Close 后服务端是否回帧、`[FromForm]` 对非表单体是否等价于空表单、`VERSION` 是否应改成与上游一致的
@@ -2266,3 +2282,208 @@ Workers 上，**平台侧没有"日志级别"这个对应物**，只有 Workers 
 免费额度是 **2000 万条日志/月**。按单个官方客户端的探活频率（README 记录的 ~17.3k 请求/天 ≤ 5 客户端）
 估算，平台调用日志 ≲ 1M 条/月，留有一个数量级余量。若将来客户端数量大幅上升，优先调 `head_sampling_rate`
 （采样）而不是关掉整个 Observability——采样至少保留趋势，关掉只剩黑盒。
+## 43. `/api/version` 取值对齐上游（2026-09-15，v1.21.3）
+
+### 43.1 问题（第 7 项待决事项，用户裁决）
+
+`/api/version` 报什么版本号一直是个"三处不同"的悬案（`upstream-parity.md` 的 U5）：
+
+| 来源 | 值 |
+| --- | --- |
+| 上游版本唯一事实源 `src/Directory.Build.props` 的 `<VersionPrefix>` | **3.2.0**（`<VersionSuffix>` 为空） |
+| 上游 `Changes.md` 顶部条目（已写、尚未发版） | **v3.2.1** |
+| 本仓库 `wrangler.toml` 的 `VERSION` | **3.2.1**（本轮之前） |
+
+### 43.2 事实链（逐条实测，不是推断）
+
+1. 上游 `/api/version` → `SyncClipboardProperty.AppVersion` → 取程序集 `AssemblyInformationalVersion`
+   并**截掉 `+` 之后的元数据**（取不到时回退 `GetName().Version.ToString(3)`）。
+   `VersionPrefix=3.2.0` + 空 suffix ⇒ **基线 `28c7e596` 实际返回的字符串就是 `3.2.0`**。
+2. 基线位置：`git describe` = **`v3.2.0-14-g28c7e596`** —— 在 `v3.2.0` 标签**之后 14 个提交**。
+   上游是"发版时才 bump 版本号"，所以这 14 个提交的二进制仍自报 3.2.0。
+3. 这 14 个提交里有 **2 个动了服务端**：
+   - `9ec65ddf 功能：服务器支持按时长自动删除记录 (#402)` —— 落地物正是 `appsettings.json` 的
+     `"MaxSavedHistoryCount": 1000, "HistoryRetentionMinutes": 10080`（**本仓库 `wrangler.toml` 里那两个值就是照它抄的**）；
+   - `6f0d014c fix: 上传前检查历史记录文件是否完整 (#412)`。
+   ⇒ 我们迁移的**内容**是"3.2.1 时代"的，而上游该基线的**自我描述**是 3.2.0。
+4. 客户端判定（`OfficialAdapter.TestConnectionAsync`）：`serverVer < Env.RequestServerVersion("3.1.1")` 才拒绝，
+   且 `AppVersion.TryParse`（正则 `^v?\d+\.\d+\.\d+(\.\d)?(-beta\d+)?$`）**解析失败时该检查被静默跳过**
+   （`if` 无 `else`）⇒ **这个值没有功能后果**，改它是**忠实性/可追溯性**问题，不是兼容性问题。
+
+### 43.3 用户裁决与实施
+
+给出三个方案（A 保持 3.2.1 并登记偏离 / B 改为 3.2.0 逐字对齐 / C 保持现状不登记），**用户选 B**。
+实施（只改一个字符串常量 + 文档，**不动任何行为**）：
+
+- `wrangler.toml`：`VERSION = "3.2.1"` → **`"3.2.0"`**，注释写明事实源、跟版规则，以及"与本仓库
+  `package.json` 版本是两套互不相干的编号，切勿顺手对齐"。
+- `docs/design.md`：ADR **D7** 修订为默认 `"3.2.0"`；§10「版本策略」补上事实源、两套编号的分工、跟版规则，
+  以及"解析失败会静默跳过检查"这一关键细节。
+- `docs/protocol.md` §10：新增登记行（取值、事实源、影响、跟版规则指引）。
+- `README.md`：新增「版本口径」表，把两个编号的含义与跟版规则讲清（这是最容易被后人踩的一处）。
+- `docs/upstream-parity.md`：U5 标记为已修复；§6 待确认项第 4 条标记为已决。
+- `docs/progress.md`：§24 决策表与 §8 线上校验记录的历史表述**保留原文并加订正标记**（不追改历史）。
+- 测试：`test/hardening.test.ts` / `test/rate-limit.test.ts` 里的 `VERSION` 夹具与一处
+  `expect(await res.text()).toBe(...)` 同步改为 `3.2.0`（该断言校验"配置值被原样返回"）。
+
+### 43.4 与"上游自我描述滞后"的关系（值得记住）
+
+**"上游自己报的版本 ≠ 上游代码的版本"**：上游的 `Changes.md` 与 `VersionPrefix` 由人按发版节奏维护，
+基线上的二进制可能既包含下一版的功能、又报着上一版的号。所以对照时**不能只比版本串**——
+本轮真正的证据是提交数与 `git describe`，版本串只是其中一条线索。反过来，本仓库选择"逐字对齐上游
+该基线的返回值"，意味着**将来上游发 `v3.2.1` 时我们必须主动跟版**，这条规则已经写进
+`design.md` §10 与 `protocol.md` §10（钉子旁边写清"何时该拆"，沿用 §41.5 的教训）。
+
+### 43.5 验证
+
+- `test/hardening.test.ts`、`test/rate-limit.test.ts`、`test/protocol.test.ts`（`/api/version` 形状守卫）
+  与 `test/docs.test.ts` 全绿；全量套件见本节 CI 记录。
+- `npx wrangler deploy --dry-run` 绑定表将显示 `env.VERSION ("3.2.0")`。
+## 44. 真上游 A/B + 真客户端 E2E（2026-09-15，v1.22.0）
+
+### 44.1 先纠正一个错了两轮的结论
+
+此前 `upstream-parity.md` §6 写「本机**无 .NET**（`dotnet --version` 无输出）⇒ 框架级行为未能实测」。
+本轮实测发现这句话**只对了一半**：
+
+| 探测 | 结果 |
+| --- | --- |
+| `dotnet --list-sdks` | **空** ⇒ 确实**不能构建**（也无 NuGet 缓存） |
+| `dotnet --list-runtimes` | **有** `Microsoft.AspNetCore.App 8.0.27`（另有 9/10）⇒ **能跑框架依赖型发布件** |
+| 上游 v3.2.0 release 资产 | **含 `SyncClipboard.Server.zip`**（24.5 MB，其 `runtimeconfig.json` 为 `net8.0` + frameworks） |
+
+⇒ 「不能实测」是**方法问题，不是能力问题**。`dotnet --version` 只反映 SDK，不反映运行时；而 release 资产里
+就有服务端这一条，只要看一眼 `gh release view` 就能发现。教训写在 §44.8。
+
+### 44.2 做法（可复用，已固化为 `tools/ab-upstream-probe.ps1`）
+
+1. `gh release download v3.2.0 -p SyncClipboard.Server.zip` → 解压到临时目录（**不动上游仓库、不进本仓库**）。
+2. **先自写** `<run>\appsettings.json`：发布件默认监听 `http://*:5033`（**所有网卡**），改成
+   `http://127.0.0.1:5033`；凭据用合成本地值，存储目录由 `--contentRoot` 指向临时目录 ⇒ 与用户的任何
+   真实数据完全隔离。
+3. `dotnet <app>\SyncClipboard.Server.dll --contentRoot <run>` 起官方服务端；本实现一侧照常用
+   `wrangler dev --port 8787`。
+4. 探针脚本用 **curl** 统一发请求（能发 `PROPFIND`/`MKCOL` 这类自定义方法，也少一层 PowerShell 实现差异），
+   逐条打印两边的**状态码 / `Allow` / `WWW-Authenticate`**，并把差异分成三类：
+   **一致** / **已知偏离**（必须在 §10 有登记）/ **未登记差异**（⇒ 退出码非 0，这才是要修的）。
+5. 第二段做**文本级对照**：`negotiate` 的协商结果与错误串**就是响应体**，18 个取值逐字比较。
+
+### 44.3 结果总览
+
+- **状态码级 32 例**：一致 **21**、已登记偏离 **10**、未登记差异 **1**（见 §44.7）。
+- **negotiate 文本级 18 例**：**18/18 逐字一致**（修复后）。
+
+值得一提的「一致」（此前都只是源码级推断，现在是实测）：
+
+- 未认证 `GET /api/version` → **401 + `WWW-Authenticate: Basic realm="SyncClipboard"`**（顺带把 §39.4 那条
+  「401 会变 500」的驳回从**文档级**升级为**实测级**）
+- `POST /api/history` 非 multipart → **415**（1.20.0 修的那条，实测确认）
+- `POST /api/history/query` urlencoded → **200**（1.20.0 补的那条）
+- `negotiateVersion=2` → **200 + 钳制为 1**（钳制语义实测确认）
+- `PUT /file/x` 之后 `GET /file/x` → 两边都 **404**（「只按历史查找」的口径实测确认）
+- `GET /` → 两边都 **200** `Server is running.`
+
+**已登记偏离全部被实测印证**（逐条已在 §10 登记，此处不重复理由）：畸形 `Authorization` → 上游 **500**；
+非 `/file` 的 `HEAD` → 上游 **405 + `Allow: GET`**（`HEAD /` 是 `Allow: GET, PROPFIND`）；`POST /` → **405 +
+`Allow: GET, PROPFIND`**；`PROPFIND /` → 上游 **200 空体**；`DELETE /file/x` → 上游 **405 +
+`Allow: GET, HEAD, PUT`**；`/query` 收 JSON → 上游 **200 默认第 1 页**（原「推断」被实测确认）；
+hash 含 `%` → 上游 **200 误命中**（本实现 404）。
+
+### 44.4 A/B 找出的真缺陷（本轮修复）
+
+`negotiate` 的版本解析有**两处**与上游不符，且都在「响应体即契约」的位置：
+
+| 入参 | 上游（实测） | 本实现（修复前） | 本实现（修复后） |
+| --- | --- | --- | --- |
+| `abc` / `1.5` / `1,5` / 空串 / `+` | `invalid protocol version '<**原样未 trim** 的入参>'` | `non-integer protocol version.`（**上游没有这种说法**） | 同上游 |
+| `2147483648` / `99999999999` | `invalid protocol version '…'`（**超出 Int32 = 解析失败**） | 当成「版本不支持」，甚至**钳成 1 并正常签发** | 同上游 |
+| `-2147483649` | `invalid protocol version '…'` | 「版本不支持」 | 同上游 |
+| `-1` / `-2147483648` | `version '<**解析后整数**>', but the server does not support this version.` | 同上游（但该分支此前把「超范围」也吸了进来） | 同上游 |
+| `+1` / `01` / ` 1 ` / `-0` | 接受（.NET `int.TryParse` 语义） | 接受 | 接受 |
+
+根因：把「**解析失败**」与「**解析成功但低于最小值**」两个分支混在一起（`!Number.isSafeInteger(n) || n < 0`），
+且错误串是上一轮**从记忆里写的**。
+
+修复：`src/hub.ts` 的 `negotiateClientVersion` 按 .NET `int.TryParse` 语义重写（Int32 边界单列，「失败」回显
+原样入参、「不支持」回显解析后整数）。测试：F32 从 6 条断言扩到 **18 个用例**（「超出 Int32」「原样回显」
+「Int32 边界两侧」「可解析形态」四组），断言值**全部取自本轮实测字符串**。
+
+### 44.5 官方客户端 E2E（真客户端 × 生产）
+
+资产：`_tmpclient2` 是本机既有的**官方 v3.2.0 便携客户端**（`FileVersion 3.2.0.0`、self-contained `net9.0`），
+其配置 `%APPDATA%\SyncClipboard\SyncClipboard.json` 指向我们的生产 worker ⇒ `upstream-parity.md` §6 第 2 条
+「本机没有 Windows 官方客户端」**同样不成立**。
+
+| # | 场景 | 结果与证据 |
+| --- | --- | --- |
+| 1 | 文本 客户端 → 服务端 | ✓ 生产 `/SyncClipboard.json` 变为该文本；历史 74 → 75；**服务端存的 hash == 本地算的 SHA256(text)** |
+| 2 | 文本 服务端 → 客户端 | ✓ `PUT /SyncClipboard.json` 后 **1.5 s** 内剪贴板被改写；日志出现 `[OfficialEventDrivenServer] [EVENT] Remote profile changed detected` |
+| 3 | 文件 客户端 → 服务端 | ✓ `type=File`、`hasData=true`；从服务端回下载的字节 SHA256 **与本地一致** |
+| 4 | 文件 服务端 → 客户端 | ✓ 客户端落盘到本地历史目录并设为剪贴板文件，内容一致 |
+| 5 | **File hash 规则** | ✓ 真客户端上传的 hash 与本实现 `fileProfileHash`（`SHA256hex("fileName\|" + SHA256hex(content).toUpperCase())`）**逐字相同** |
+| 6 | 实时通道（生产实测） | ✓ `negotiate` 200 → **WebSocket 升级 101** → SSE 200；客户端侧 `[EVENT]` 正常触发 |
+
+### 44.6 E2E 暴露但**不属于本服务**的三个问题（如实记录，避免误判）
+
+1. **启动时有一次 SignalR 连接失败（间歇，不是每次）**：`Unable to connect … (WebSockets failed: A task was canceled.)
+   (ServerSentEvents failed: …) (LongPolling failed: …)`。三种传输**同时**被取消 ⇒ 是**调用方取消**
+   （启动期竞态），不是服务端拒绝。实测 **3 次启动中 2 次出现**（19:47、19:52 出现，20:13 那次干净）；
+   出现后事件驱动模式随即正常工作（上表 #6 已证明）。本机 curl 直连生产：`negotiate 200 / WS 101 / SSE 200`，
+   无一失败。
+2. `403 (rate limit exceeded)`：**不是本服务**。本实现的限流是 `429 Too Many Requests`（实测：连续错误口令
+   6 次仍 401 计数、未触发限流），而**未认证的 GitHub API 正是 403 "API rate limit exceeded"** —— 该行紧跟在
+   启动日志里 `UpdateSrc = github` 的更新检查之后。
+3. **`[History] 同步所有历史记录失败: Hash contains invalid path characters`**：根因在**客户端本地库**。
+   查 `%APPDATA%\SyncClipboard\data\history.db`（235 条）发现 **2 条脏行**：`Hash="ABCD1234/EF567890"` 与
+   `Hash="ABCD1234\EF567890"`（`Text="badhash-…"`）—— 这是**我们早期套件的测试残留**当年被拉进了客户端本地库；
+   只要它们存在，客户端**每次启动的历史同步都会整轮失败**。**当前生产库无此问题**：扫描 `/api/history/query`
+   全部 78 条，hash **全部是规范 64-hex**，无 `/` 或 `\`。
+   **处置（2026-09-15，用户选择"清空本地历史缓存"）**：停客户端 → `DELETE FROM HistoryRecords`（238 → 0 行）
+   + 清空 `file\history\*`（15 个缓存文件）→ 重启客户端 ⇒ 从服务端**重拉 82 条**、**非规范 hash 0 条**，
+   `[History] 同步所有历史记录失败` **不再出现**。备份按要求未保留。
+   **根因侧已封堵**：本实现现在对含路径分隔符的 hash 一律 **400 拒写**（F26/F27 套件守着），故这类脏数据
+   不会再进服务端、也就不会再被客户端拉进本地库。
+
+### 44.7 路径**字面段**的大小写：待决 → **已决并修复**
+
+实测：`/API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`/SYNCCLIPBOARDHUB/negotiate` 在上游
+**全部 200**（ASP.NET 路由对字面段不区分大小写），本实现 **404/400**。
+
+**决策过程（用户三轮追问，值得留档）**：先给三个方案（修协议面 / 修全站 / 只登记）；用户要求解释
+「为什么不修、为什么修复、之前为什么不同一」，随后问「两种修复有什么区别」。核架构后得到**决定性事实**：
+`public/ui/*` 由 **Cloudflare 静态资源直接托管、不经过 Worker**（`[assets] directory = "./public"`、
+`not_found_handling = "none"`）⇒ **"全站统一"在架构上做不到**——静态资源压根不进我们的代码，且那里的每段都是
+**文件名**而非路由字面段。于是"修全站"实际只是"协议面 + 我们自己的 `/ui/api/*` 段名"，而那一块**没有上游参系物**
+（无法用 A/B 证明）。用户据此选 **A：只覆盖协议面**。
+
+**实现**：`src/pathCase.ts`（位置感知的归一表）+ 入口 `fetch` **最前面**归一。放在入口而不是 Hono 中间件里，是因为
+Hub 路径在进 Hono **之前**就被 `url.pathname === HUB_PATH` 精确判等，中间件覆盖不到。
+
+**实现中踩到的坑（A/B 当场照出来）**：第一版把"规范写法"写成**全小写**，于是 `/SyncClipboard.JSON` 被归一成
+`/syncclipboard.json` ⇒ **照样 404**——路由表是精确匹配，规范写法必须是**路由里的真实写法**
+（`SyncClipboard.json` / `SyncClipboardHub` 都是大小写混合）。3 条大小写用例里当场有 2 条仍不一致。
+
+**验证**：`/API/version`、`/api/VERSION`、`/SyncClipboard.JSON`、`/api/history/Statistics`、
+`/SYNCCLIPBOARDHUB/negotiate` 与真上游**逐条同为 200**；取值侧 `/file/Statistics`、`/File/x.txt` 两边同为 404
+（**取值大小写未被破坏**）。探针结果：**状态码级 34 例 → 一致 24 / 已知偏离 10 / 未登记 0**（那 3 条从"已知偏离"
+转为"一致"），negotiate 文本级仍 **18/18**。
+
+**测试**：`test/protocol.test.ts` 新增 3 条 —— ① 归一函数单元用例（含"取值不得被改"的 `/file/Statistics`、
+"超出协议面"的 `/ui/*`、以及**幂等**断言）；② HTTP 大小写变体命中同一端点；③ **遍历 `app.routes` 的守卫**
+（解析每个路由的字面段并断言都落在归一表覆盖的位置上——新增端点忘记登记即红，把"表漏项"从静默风险变成 CI 红灯）。
+全量 **20 套件 / 328 例**通过。
+
+### 44.8 固化了什么 / 教训
+
+- 新增可复用工具 **`tools/ab-upstream-probe.ps1`**（**34** 例状态码级 + 18 例文本级，带「已登记偏离」白名单，
+  退出码只对**未登记差异**报错）—— 以后每轮都能一键回归对照。
+- 新增 E2E 资产：`_tmpclient2`（官方 v3.2.0 客户端）+ 其生产配置。E2E 期间在生产新增 **5 条记录**
+  （3 文本 / 2 文件），按保留策略 7 天内自动过期，无需手工清理。
+- **教训 1**：「本机没有 X」这类结论要**逐层验证**：`dotnet --version` 只答 SDK，不等于没有运行时；
+  在写下「无法实测」之前，先看看**官方 release 里有没有现成的可执行件**。这个错误的代价是两轮里把 §6 三条
+  都标成了「未实测」。
+- **教训 2**：**从记忆里写协议字符串是危险的**。`non-integer protocol version` 这条错误串在仓库里活了很久
+  （代码注释、测试、文档三处**一致地错**），三处互相印证也不会变成真的——只有**真上游**能证伪。
+- **教训 3**：错误分支不能「合并同类项」。把「解析失败」和「数值越界/负值」合成一条
+  `!Number.isSafeInteger(n) || n < 0` 看似更简洁，实际把两种**不同的对外语义**（invalid vs unsupported）
+  压成了一个。

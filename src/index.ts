@@ -15,6 +15,7 @@ import { forwardToHub, negotiateResponse, HUB_PATH } from './hub';
 import { SyncClipboardHub } from './durable/SyncClipboardHub';
 import { runCleanup } from './cleanup';
 import { MAX_REQUEST_BODY_BYTES, isLoopbackHost } from './requestLimits';
+import { normalizeProtocolPath } from './pathCase';
 
 // F8：明文跳转/HSTS 只对「浏览器可访问的 host」生效；loopback 一律不跳转、不加 HSTS，
 // 否则本地开发（wrangler dev 走明文）会被强行升级到不存在的 https。判定与 F7 的限速豁免共用。
@@ -186,6 +187,16 @@ app.get('/api/time', (c) => c.json(new Date().toISOString()));
 
 export default {
   async fetch(request: Request, env: Bindings, ctx: ExecutionContext): Promise<Response> {
+    // 路径**字面段**归一放在最前面：上游（ASP.NET Core）路由对字面段不区分大小写
+    // （`/API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`/SYNCCLIPBOARDHUB/negotiate`
+    // 都命中），Hono 与下面的 `url.pathname === HUB_PATH` 都是精确比较 ⇒ 必须先归一。
+    // 只动字面段，`/file/{fileName}` 与 `/api/history/{profileId}` 的取值原样保留（见 src/pathCase.ts）。
+    const normalizedPath = normalizeProtocolPath(new URL(request.url).pathname);
+    if (normalizedPath !== null) {
+      const rewritten = new URL(request.url);
+      rewritten.pathname = normalizedPath; // 赋值 pathname 保留 query
+      request = new Request(rewritten, request);
+    }
     const url = new URL(request.url);
 
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）

@@ -337,14 +337,22 @@ public static string GetWorkingDirName(ProfileType type, string hash)
 
 **版本协商**（请求参数 `negotiateVersion`，服务端最大值 `_protocolVersion = 1`、最小值 0）：
 
+> **2026-09-15 起本表为 A/B 实测值**（官方 v3.2.0 服务端发布件 × 本实现，工具
+> `tools/ab-upstream-probe.ps1`，18 个取值逐字一致；见 `progress.md` §44）。此前本实现有**两处错**：
+> ① 错误串写成 `"The client requested a non-integer protocol version."`（上游并无此说法）；
+> ② 把"**超出 Int32**"与"负数"混为一谈（上游把前者当解析失败）。两处均已修。
+
 | 请求 | 上游行为 | 响应 |
 |---|---|---|
 | `negotiateVersion=1` | 正常 | 版本 1 |
 | 未携带该参数 | 视为版本 0（最小值 0，**不是错误**） | 版本 0 |
-| `negotiateVersion=0` | 正常 | 版本 0 |
-| `negotiateVersion=2` | `> _protocolVersion` → **钳制**（不报错） | 版本 **1** |
-| `negotiateVersion=abc` | `int.TryParse` 失败 | `{"error":"The client requested a non-integer protocol version."}` |
-| `negotiateVersion=-1` | `< MinimumProtocolVersion(0)` | `{"error":"The client requested version '-1', but the server does not support this version."}` |
+| `negotiateVersion=0` / `-0` | 正常 | 版本 0 |
+| `negotiateVersion=2` / `2147483647` | `> _protocolVersion` → **钳制**（不报错） | 版本 **1** |
+| `negotiateVersion=+1` / `01` / `" 1 "` | .NET `int.TryParse` 接受正号与前导零、首尾空白 | 版本 1 |
+| `negotiateVersion=abc` / `1.5` / `1,5` / 空串 / `+` | `int.TryParse` 失败 | `{"error":"The client requested an invalid protocol version '<**原样未 trim** 的入参>'"} |
+| `negotiateVersion=2147483648` / `99999999999` | **超出 Int32 ⇒ 同样算解析失败**（不是"版本不支持"） | 同上（回显原样入参，如 `' 2147483648 '`） |
+| `negotiateVersion=-1` / `-2147483648` | 解析成功但 `< MinimumProtocolVersion(0)` | `{"error":"The client requested version '<**解析后的整数**>', but the server does not support this version."}`（`' -1 '` → `'-1'`） |
+| `negotiateVersion=-2147483649` | 低于 Int32 下界 ⇒ 解析失败 | `{"error":"The client requested an invalid protocol version '-2147483649'"}` |
 
 **报错时仍返回 HTTP 200**（dispatcher 不设置非 200 状态码），响应体**只有** `error` 一个字段，
 不签发 `connectionId`/`connectionToken`（客户端收到 error 即抛错，见 `HttpConnection.js` 的
@@ -458,8 +466,8 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h），软删单批 500、无批次上限 | Cron Trigger **每 20 分钟**批量执行同类语义；软删单批 **500**（对齐上游）、受单次调用子请求预算截断并以游标续跑 | 等价（周期 20min vs 10min；批一致；软删/硬删/孤儿判定与广播一致。差异只在"积压收敛速度"与平台预算机制，见 design.md §9） |
 | Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | 46 项常见扩展 + `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type |
 | 错误响应体 | `BadRequest()` 空体 / ProblemDetails | 统一文本（状态码一致） | 官方客户端只判状态码 |
-| 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed（带 `Allow` 头） | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |
-| 非 `/file/{name}` 路径上的 `HEAD` | **405**（ASP.NET 路由**不**把 HEAD 映射到 GET —— 见下方依据） | **200**（Hono 为 GET 路由自动处理 HEAD） | 本实现更宽容（超集）：客户端不发这类 HEAD（`WebDavBase.Exist()` 定义了但未被调用），`HEAD /file/{name}` 两边都是 200 |
+| 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed，**实测 `Allow: GET, PROPFIND`** | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |
+| 非 `/file/{name}` 路径上的 `HEAD` | **405**（ASP.NET 路由**不**把 HEAD 映射到 GET —— 见下方依据）；**2026-09-15 A/B 实测**：`HEAD /api/version` → `Allow: GET`，`HEAD /` → `Allow: GET, PROPFIND` | **200**（Hono 为 GET 路由自动处理 HEAD） | 本实现更宽容（超集）：客户端不发这类 HEAD（`WebDavBase.Exist()` 定义了但未被调用），`HEAD /file/{name}` 两边都是 200 |
 | `/api/history/{id}/data` 的 Content-Type | `FileExtensionContentTypeProvider`（按数据文件扩展名） | 恒 `application/octet-stream` + `nosniff` + `attachment` | 安全加固；客户端按字节落盘，不读该头 |
 | `Profile.Create` 的 File→Image 提升 | 有（`.jpg/.jpeg/.gif/.bmp/.png`） | 同左 | — |
 | `PUT /SyncClipboard.json` 的数据落盘方式 | `File.Move`（**不读数据**，常数内存、瞬时完成） | 读入内存（`arrayBuffer()`）→ 重传到 `history/` 新 key（R2 **无 move/rename**） | 峰值内存 ≈ 文件大小，且多一次 R2 读+写。客户端默认上限 20MB，实测 20/60MB 通过；若把客户端上限提到 ~50MB 以上需留意 Workers 128MB 内存 |
@@ -469,13 +477,13 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | `GET /file/{name}` 内部异常（非「文件名非法」） | `catch (Exception)` → **400** + 异常消息（`GetFileFromFolder`） | 500（异常上抛到运行时） | 客户端对两者都只走 `EnsureSuccessStatusCode` 的失败分支；把内部故障报成 400 会误导排障，故有意保留 500 |
 | hash 含路径分隔符（`/` 或 `\`） | `Profile.GetWorkingDirName` 抛 `ArgumentException`（未捕获 → 500） | 写路径入口 → **400**（`Hash contains invalid path characters`）；存储值分类视同损坏 → 降级为空 TextProfile | 可诊断的 400 优于 500；且杜绝「入库一条 hash 含 `/` 的记录并被设为当前 profile」（该记录会被推给客户端，而客户端本地用同一规则构造路径会抛异常） |
 | hash 含分隔符的**平台差异** | Windows：`DirectorySeparatorChar='\'`、`Alt='/'` → 两者都拒；Linux：两者都是 `/` → 只拒 `/`，**允许 `\`** | 两平台一致地拒绝两者 | 严格超集；跨平台行为一致，官方客户端恒发 SHA256 hex（永不触发） |
-| `profileId` 里的类型枚举大小写 | **大小写敏感**：`Profile.ParseProfileId` 用 `Enum.TryParse<TEnum>(value, out r)`（.NET 源码该重载固定 `ignoreCase: false`），故 `text-HASH` → 400。但 `PATCH /{type}` 走模型绑定（`EnumTypeModelBinder` → `EnumConverter.ConvertFrom` → `Enum.Parse(t, s, ignoreCase: **true**)`），**大小写不敏感** —— 上游自身不一致 | 两处均大小写不敏感 | 宽松超集：官方客户端恒发 `Text`/`File`/`Image`/`Group` 规范名，两种实现等价；第三方客户端更不易踩坑 |
+| `profileId` 里的类型枚举大小写 | **大小写敏感**：`Profile.ParseProfileId` 用 `Enum.TryParse<TEnum>(value, out r)`（.NET 源码该重载固定 `ignoreCase: false`），故 `text-HASH` → 400。但 `PATCH /{type}` 走模型绑定（`EnumTypeModelBinder` → `EnumConverter.ConvertFrom` → `Enum.Parse(t, s, ignoreCase: **true**)`），**大小写不敏感** —— 上游自身不一致 | 两处均大小写不敏感 | 宽松超集：官方客户端恒发 `Text`/`File`/`Image`/`Group` 规范名，两种实现等价；第三方客户端更不易踩坑。**2026-09-15 A/B 实测的状态码差异**：`GET /api/history/text-ABC`（hash 不存在）→ 上游 **400**（类型名大小写敏感）、本实现 **404**（接受小写类型但查不到该 hash）——若该 hash 存在，本实现会 **200** 而上游 400 |
 | 第三方畸形 zip | 隐式目录/重复条目按解压落盘语义 | 隐式目录计入；重复条目首见保留（filter）；`a` 与 `a/` 同名冲突不报错 | 官方客户端恒写显式目录条目且无重复 → 不可达 |
 | zip 条目名的**路径形态** | 越界形态按**平台相关**的方式处理：读取守卫（`GroupProfile.cs:619-624`：`Path.Combine` + `GetFullPath` + `StartsWith(extractPath)`）在 Windows 上会拒掉 rooted 形态（`Path.Combine` 遇 rooted 第二参数直接返回它 ⇒ 不在解压根下），在 Linux/macOS 上则把 `C:/evil.txt` 当**相对路径**落盘（生成名为 `C:` 的目录）；含 **NUL** 的名字没有专门处理，落盘时抛未处理异常（**500**，不是干净拒绝） | 入口**一律拒绝**，不依赖平台：盘符 + 分隔符形态与含 NUL 的名字都拒（POST→422 / PUT→400）；同时**不**拒「第二字符是冒号」的普通名字（`a:b.txt`、`1:30.txt`） | **有意偏离**：拒绝口径跨平台一致，且不让畸形输入变成 500。附注：`a:b.txt` 这类名字在 POSIX 上合法（上游同样落盘成功），在 Windows 上游会被同一个 rooted 守卫拒掉，而本实现一律接受——宽松超集，官方客户端不可达 |
 | 应用层解压上限 | 无 | **有**：Group zip 解压总量 64MiB / 条目 1000 / 单条目压缩比 100:1（比值守卫含 8MiB 绝对下限；见 `src/hash.ts`） | **有意偏离**：合法但超大的文件夹会被拒（POST→422、PUT→400）；上游无此防护（同为全量解压） |
-| PROPFIND 响应 | 200 空体 | 207 标准 multistatus | 客户端两处调用均按 2xx 判定（`DirectoryExist` 只看 404、`GetFolderSubList` 用 `EnsureSuccessStatusCode`），且 207 是 `PreciseDelete` 解析目录列表的前提 |
+| PROPFIND 响应 | 200 空体（**2026-09-15 A/B 实测**：`PROPFIND /` → `200` + `Content-Length: 0`） | 207 标准 multistatus | 客户端两处调用均按 2xx 判定（`DirectoryExist` 只看 404、`GetFolderSubList` 用 `EnsureSuccessStatusCode`），且 207 是 `PreciseDelete` 解析目录列表的前提 |
 | **附件响应头** | 仅 `Content-Type` | 一律 `X-Content-Type-Options: nosniff`；可渲染类型（html/htm/xhtml/svg/xml）额外 `CSP: default-src 'none'; sandbox` + `Content-Disposition: attachment` | **有意加固偏离**：附件与 API 同源、浏览器会自动附带已缓存的 Basic 凭据，直接打开可读取全部历史（存储型 XSS）。桌面客户端不读这些头，已 E2E 验证无回归；代价是浏览器不再内联预览 HTML/SVG 附件 |
-| `DELETE /file/{name}` | 无该路由（`PreciseDelete` 因而失效） | 已实现单文件删除 | **补全**：客户端 `PreciseDelete=true` 的 `GetFolderSubList` → `DELETE file/{name}` 才会真正生效 |
+| `DELETE /file/{name}` | 无该路由（`PreciseDelete` 因而失效）；**2026-09-15 A/B 实测**：`405` + `Allow: GET, HEAD, PUT` | 已实现单文件删除；**本实现口径**：无论文件是否存在都返回 200（幂等），官方客户端只判 2xx | **补全**：客户端 `PreciseDelete=true` 的 `GetFolderSubList` → `DELETE file/{name}` 才会真正生效 |
 | 无数据的 File/Image/Group | `Persist()` 抛异常 → 500 | 400 | 更准确的拒绝；客户端对两者同为「失败重试」，无行为差异 |
 | Basic 凭据缺冒号 | `credentials[1]` 越界 → **IndexOutOfRangeException（500）** | 401 | 更健壮（上游为未处理异常） |
 | Basic 密码含冒号 | `Split(':')` 截断 → 校验失败（401） | 取首个冒号后全部 → 可用 | 更宽容；从官方服务器迁移的用户不受影响 |
@@ -483,14 +491,15 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | MIME 表 | ~370 项 | 46 项常见类型 + octet-stream 回退 | 可渲染类型必须显式在表内（否则回退后仍不可渲染，安全） |
 | `POST /api/history` 的媒体类型 | 显式 `[Consumes("multipart/form-data")]`（`HistoryController.cs:121`）⇒ 非 multipart 在模型绑定**之前**被拒 → **415** | 同（`src/routes/history.ts` 的 `parseFormBody(c, false)`；提前返回前先排空请求体） | **本轮对齐**（此前本实现一律回 400）。客户端按状态码分支，故必须一致 |
 | `POST /api/history/query` 的媒体类型 | 只有 `[FromForm]`（`HistoryController.cs:81`）、无 `[Consumes]` ⇒ multipart 与 `application/x-www-form-urlencoded` **都接受** | 同（`parseFormBody(c, true)`：urlencoded 走 `URLSearchParams`，字段名同样大小写不敏感） | **本轮补齐**。官方客户端发 multipart，两条路径都不受影响 |
-| `POST /api/history/query` 收到非表单媒体类型（如 JSON body） | 无 `[Consumes]` 约束 ⇒ 等价于「字段全缺失的表单」（`HistoryController.cs:83` 的 `query ??= new HistoryQueryDto()` 实际不可达）→ 按默认参数返回第 1 页（**推断**：ASP.NET 的 form 值提供程序对非表单体不产出任何字段；未实测） | **400**（`Invalid or missing multipart/form-data boundary`） | 有意偏离：不把畸形请求当成一次有效查询（本仓库一贯偏好 fail-loud）。客户端恒发 multipart，不可达 |
-| 畸形 `Authorization` 头 | 三种畸形（`Basic` 后无空格、凭据无冒号、非 base64）都抛未捕获异常 → **500**（`BasicAuthenticationHandler.cs:20-25`） | **401**（`src/auth.ts` 一律返回 null） | 本实现更健壮。状态码**类别**不同（5xx vs 4xx）：第三方客户端若把 5xx 记成「服务器故障」会误判 |
-| hash 的匹配方式 | `EF.Functions.Like(r.Hash, hash)`（`HistoryService.cs:255`）：`%`/`_` 是通配符，且 SQLite 的 LIKE 对 ASCII 大小写不敏感 | `LOWER(Hash) = LOWER(?3)`（`src/db.ts:133`） | 本实现更严格、可走索引；第三方客户端发送含 `%`/`_` 的 hash 时，上游会误命中同前缀记录 |
+| `POST /api/history/query` 收到非表单媒体类型（如 JSON body） | 无 `[Consumes]` 约束 ⇒ 等价于「字段全缺失的表单」（`HistoryController.cs:83` 的 `query ??= new HistoryQueryDto()` 实际不可达）→ 按默认参数返回第 1 页（**2026-09-15 A/B 实测确认该推断**：上游返回 **200 + 默认第 1 页列表**，即非表单体等价于"字段全缺失的表单"） | **400**（`Invalid or missing multipart/form-data boundary`） | 有意偏离：不把畸形请求当成一次有效查询（本仓库一贯偏好 fail-loud）。客户端恒发 multipart，不可达 |
+| 畸形 `Authorization` 头 | 三种畸形（`Basic` 后无空格、凭据无冒号、非 base64）都抛未捕获异常 → **500**（`BasicAuthenticationHandler.cs:20-25`）**——2026-09-15 A/B 实测确认** | **401**（`src/auth.ts` 一律返回 null） | 本实现更健壮。状态码**类别**不同（5xx vs 4xx）：第三方客户端若把 5xx 记成「服务器故障」会误判 |
+| hash 的匹配方式 | `EF.Functions.Like(r.Hash, hash)`（`HistoryService.cs:255`）：`%`/`_` 是通配符，且 SQLite 的 LIKE 对 ASCII 大小写不敏感。**2026-09-15 A/B 实测**：`GET /api/history/Text-<前 8 位>%` → 上游 **200 命中该记录**、本实现 **404** | `LOWER(Hash) = LOWER(?3)`（`src/db.ts:133`） | 本实现更严格、可走索引；第三方客户端发送含 `%`/`_` 的 hash 时，上游会误命中同前缀记录 |
 | 时间列的存储形态 | `CreateTime`/`LastAccessed`/`LastModified` 为 **TEXT**（EF Core 把 `DateTime` 存成 ISO8601 文本，`Migrations/20251105014242_Init.cs:29-31`） | **INTEGER** epoch 毫秒（`schema.sql:14-16`） | 对外不可见（wire 上两侧都是 ISO8601）。**但存量 `history.db` 不能直接导入**：两实现不共读同一份数据 |
 | 表索引集合 | 3 个含 `Stared` 的复合索引（`HistoryDbContext.cs:40-52`），为「收藏 + 时间范围/类型 + 翻页」优化 | **本轮补齐**其中两个（`idx_h_user_stared_create` / `idx_h_user_stared_type_create`，`schema.sql`）；上游第三个 `(UserId,CreateTime,ID)` 不必单独建——SQLite 的索引条目隐含 rowid，而这里的 `ID` 就是 rowid 别名，`idx_h_user_create` 已是同一形态 | 对齐。此前只缺这两个，收藏筛选与统计在数据量上来后会退化为全表扫描 |
 | Group zip 条目名含 `.` 段 | `Path.Combine` + `GetFullPath` 归一化后**接受**（`./a.txt` 落成 `a.txt`，`GroupProfile.cs:619-621`） | **拒绝**（`src/hash.ts:224-228`：`.`/`..` 段一律拒） | 有意偏离（fail-loud 优于平台相关的归一化）。官方客户端的 zip 用相对路径、无 `.` 段，不可达 |
 | Group zip 的重复条目 | 内容「首次落盘优先」，但 `topLevelFiles`/条目列表**不去重**（`GroupProfile.cs:644-648`）⇒ 重复条目被计入 hash 与 `totalSize` 两次 | 同名条目只取首个，且条目集与顶层条目都**去重**（`src/hash.ts:112-116`、`185-200`） | **有意偏离**：含重复条目的 zip 上两侧 hash 与 size **必然不同**。官方客户端恒不写重复条目，不可达（见 README「已知限制」第 2 条） |
 | 落库 hash 的大小写 | 原样存（`Profile.cs:86`、`TextProfile.cs:55`） | 统一 `.toUpperCase()` 落库 | 对外不可见（查询恒大小写不敏感）；避免同内容在不同设备上于 Linux 生成两个 R2 工作目录（上游在大小写敏感文件系统上会双份存储） |
+| `/api/version` 的**取值** | 版本唯一事实源是 `src/Directory.Build.props` 的 `<VersionPrefix>3.2.0</VersionPrefix>`（`<VersionSuffix>` 为空）；`SyncClipboardProperty.AppVersion` 取程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `28c7e596` **返回字符串 `3.2.0`**。（上游 `Changes.md` 顶部已写 `v3.2.1`，但该基线位于 `v3.2.0` 标签之后 14 个提交、版本号尚未 bump——上游是"发版时才 bump"。） | `wrangler.toml` 的 `[vars] VERSION = "3.2.0"`，**逐字对齐** | **本轮对齐**（2026-09-15，此前报 `3.2.1`）。两边响应形状本就一致（纯文本、三段、无引号，见 §3.1）。功能上无任何差别：客户端下限是 `Env.RequestServerVersion = "3.1.1"`，且 `AppVersion.TryParse` 失败时该检查**被静默跳过**（`OfficialAdapter.cs:151-160` 的 `if` 无 `else`）——改的是**自我描述的真实性**。跟版规则与"两套编号互不相干"的说明见 `design.md` §10 |
 
 ## 11. 参考实现对照表
 
@@ -505,3 +514,6 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Hub | `Server.Core/Hubs/SyncClipboardHub.cs` | `src/durable/SyncClipboardHub.ts` |
 | 鉴权 | `Server.Core/BasicAuthenticationHandler.cs` | `src/auth.ts`（UTF-8 解码、scheme 大小写不敏感、`WWW-Authenticate` 头） |
 | 保留/清理 | `Server.Core/Services/History/HistoryCleaner.cs` | `src/cleanup.ts` + `wrangler.toml [triggers]` |
+| 路径**字面段**的大小写 | ASP.NET Core 路由对字面段**不区分**大小写：`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate` 全部 **200** | **同左**：`src/pathCase.ts` 在入口最前面按**位置**归一**字面段**（取值原样保留） | **本轮对齐（2026-09-15，A/B 实测驱动）**：此前 Hono 精确匹配 ⇒ 上述路径 404/400。归一表只覆盖协议面（`/ui/*` 与静态资源不在其内——静态资源由 Cloudflare 直接托管、不经 Worker），且只动字面段：`/file/Statistics` 是**取值**，绝不能被改成 `statistics`。表漏项由 `test/protocol.test.ts` 的守卫（遍历 `app.routes` 断言字面段全覆盖）兜住 |
+| `GET /api/time` 的格式 | `DateTimeOffset.Now` ⇒ **本机偏移**，7 位小数（`"2026-09-15T19:39:00.8230566+08:00"`） | UTC `Z`，3 位小数（`"2026-09-15T11:39:00.982Z"`） | 同一时刻、都是 ISO8601；客户端 `DateTimeOffset` 两种都能解析（实测对照） |
+| `GET /file/{name}` 的历史查找口径 | 只按历史查（暂存文件不算）→ 未命中 **404** | 同左 → **404** | **实测一致**（`PUT /file/x` 后才 `GET` 仍 404，两边相同） |

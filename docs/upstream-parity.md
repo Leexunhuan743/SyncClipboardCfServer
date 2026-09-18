@@ -89,7 +89,7 @@
 | 上游 | 迁移对应物 | 结论 |
 |---|---|---|
 | `ProfileDto.cs` | `src/types.ts` + `serialization.ts` | **逐字等价**（`[JsonConverter(JsonStringEnumConverter)]` 对 type、`WhenWritingNull` 只加在 Size、`DataName` 为 null 时保留键） |
-| `SyncClipboardProperty.cs` | `wrangler.toml` 的 `VERSION` | 等价（上游取自 Shared 程序集的 `AssemblyInformationalVersion` ⇒ 实际值为 `3.2.0`；迁移报 `3.2.1`，见 §6.4） |
+| `SyncClipboardProperty.cs` | `wrangler.toml` 的 `VERSION` | **逐字等价**（2026-09-15 对齐后：上游取自 Shared 程序集的 `AssemblyInformationalVersion` ⇒ 基线实际值的 `3.2.0`，本仓库 `VERSION = "3.2.0"`；见 §4.2 U5） |
 | `Profiles/Profile.cs` | `src/profile.ts` + `src/types.ts` | 等价（`GetWorkingDirName` 分隔符约束、`ParseProfileId`、`Create` 的类型提升） |
 | `Profiles/TextProfile.cs` | `src/profile.ts`（PUT/POST 两条路径分开复刻） | 等价（哈希按文件字节、Size 口径、`NeedsTransferData` 判定） |
 | `Profiles/FileProfile.cs` | `src/hash.ts#fileProfileHash` + `profile.ts` | **逐字节等价** |
@@ -192,8 +192,8 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 | U1 | CI 不创建 D1/R2 资源 | 中 | `deploy.yml` 只 `d1 execute` 已存在的库；全新账号首次部署必须照 README 手工 `d1 create`/`r2 bucket create`。写进 README 已有，但 CI 不会给出可诊断的提示 |
 | U2 | 冒烟检查只断言未认证请求 = 401 | 中 | 能间接发现「凭据未配置」（那种情况返回 500），但**不能**证明凭据可用、历史读写打通。建议后续加一步带凭据的 `/api/history/statistics` |
 | U3 | ~~本地 `compatibility_date` 与生产不一致~~ → **已修复（2026-09-15）** | 低-中 | 原状：`wrangler.toml` 写 `2025-09-01`，而仓库锁定的 `wrangler ^3.80`（3.114.17）本地运行时最高支持 `2025-07-18` ⇒ 本地/CI 与生产跑在不同 compat date 上。**处置**：wrangler 升到 **4.131.2**（连带 `@cloudflare/workers-types` 4 → 5，wrangler 4 的 peer 要求），本地起 dev server 不再 fallback、CI 质量门与部署工具链同为 v4；全量 20 套件 / 325 例在新运行时下复跑通过 |
-| U4 | 无日志级别配置 | 低 | 上游 `Logging:LogLevel` 在 Workers 上没有等价物（console 即日志流）。需要时可加 `[observability]` |
-| U5 | 版本事实源三处不同 | 低 | 上游 `VersionPrefix=3.2.0`、`Changes.md` 最新条目 `v3.2.1`、本仓库 `VERSION=3.2.1` + `package.json 1.19.2`。功能无影响（客户端只比较 `≥3.1.1`），但对外报的版本比真实上游服务器**高一个补丁号** |
+| U4 | ~~无日志级别配置~~ → **已处理（2026-09-15）** | 低 | 上游 `Logging:LogLevel` 在 Workers 上没有等价物（console 即日志流）。**处置**：`wrangler.toml` 显式声明 `[observability] enabled = true`（不依赖"新建 Worker 默认已开"这一会变的默认），README 新增「日志与排障」写清查询方式、7 天保留、日志前缀表与隐私口径（见 `progress.md` §42） |
+| U5 | ~~版本事实源三处不同~~ → **已修复（2026-09-15）** | 低 | 原状：上游 `VersionPrefix=3.2.0`、`Changes.md` 最新条目 `v3.2.1`、本仓库 `VERSION=3.2.1`。**处置**：`VERSION` 改为 **`3.2.0`**，与上游基线编译后真实返回值逐字一致（用户决定，理由与跟版规则见 `progress.md` §43、`protocol.md` §10、`design.md` §10）。两套编号的语义已在 README 写清：`VERSION` = 对外自我描述，`package.json` 版本 = 迁移项目自身版本 |
 
 ### 4.3 有意偏离（已在 §10 登记，**本轮不修**）
 
@@ -239,20 +239,30 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 
 ## 6. 仍需人工确认（本环境无法验证）
 
-1. **框架级行为**：negotiate 的"版本 >1 钳为 1 / 出错仍回 200 / `connectionToken` 仅版本 >0 出现"、
-   客户端 `{"type":7}` 后服务端是否回 Close 帧、`[FromForm]` 对非表单体是否等价于空表单 —— 这些都在
-   ASP.NET Core / SignalR 框架内部，仓库内无源码，本机也无 .NET SDK（`dotnet --version` 无 SDK、
-   无 NuGet 缓存）⇒ **未能实测**。若要与官方服务器做一次 A/B 实测，最小成本是起一台 .NET 8 环境、
-   跑 `dotnet run --project src/SyncClipboard.Server`，再对同一组请求（未认证 `/api/version`、
-   `POST /api/history` 非 multipart、`PROPFIND /`、`negotiate?negotiateVersion=2`）逐条比对状态码与响应头。
-2. **上游客户端 E2E**：本机没有 Windows 官方客户端可用，因此"迁移实现的改动不会破坏真实客户端"只能靠
-   `@microsoft/signalr`（与 .NET 客户端同协议）与 HTTP 黑盒套件间接支撑；本轮改动（415/urlencoded）都在
-   客户端**不会走**的路径上（客户端恒发 multipart），风险面很小。
+1. ~~**框架级行为**：negotiate 的"版本 >1 钳为 1 / 出错仍回 200 / `connectionToken` 仅版本 >0 出现"、
+   客户端 `{"type":7}` 后服务端是否回 Close 帧、`[FromForm]` 对非表单体是否等价于空表单——未能实测。~~
+   → **大部分已实测（2026-09-15，见 `progress.md` §44）**。做法：本机**有** ASP.NET Core 8 运行时
+   （只是没有 SDK），而官方 v3.2.0 release 附了框架依赖型的 `SyncClipboard.Server.zip` ⇒ 直接起官方服务端
+   对跑，工具固化为 `tools/ab-upstream-probe.ps1`（**34** 例状态码级 + 18 例 negotiate 文本级；
+   其中 3 条大小写用例在 2026-09-15 修复后由「已知偏离」转为「一致」，见 §44.7）。
+   实测结论：negotiate 的**钳制为 1**、**出错仍回 200**、**`connectionToken` 仅版本 >0 出现**、**错误串逐字**
+   全部一致（并修掉两处真缺陷，见 §44.4）；`[FromForm]` 对非表单体**等价于空表单**（上游 200 + 默认第 1 页）。
+   **仍未实测的只剩**：客户端发 `{"type":7}`（Close）后服务端是否回 Close 帧——探针停在 HTTP 层，未做
+   WebSocket 帧级捕获。
+2. ~~**上游客户端 E2E**：本机没有 Windows 官方客户端可用……~~
+   → **已实测（2026-09-15，见 `progress.md` §44.5）**：本机 `_tmpclient2` 就是**官方 v3.2.0 便携客户端**
+   （self-contained `net9.0`），其配置指向我们的生产 worker。真客户端 × 生产的双向验证全部通过：
+   文本（客户端→服务端 hash == SHA256(text)；服务端→客户端 **1.5 s** 内改写剪贴板，日志出现 `[EVENT]`
+   实时推送）、文件（上传后从服务端回下载**字节一致**；服务端推送的文件被落盘并设为剪贴板文件）、
+   以及 **File hash 规则与真客户端逐字相同**。1.20.0 那两处改动（415/urlencoded）也确实落在客户端不走的路径上。
 3. **上游 `HistoryRecordCreateDto`**：全仓零引用，但可能是给未来/外部（如 SDK）用的公共模型；判为死代码
    只是"当前仓库内"的结论。
-4. **版本号语义**：迁移对外报 `3.2.1`，而按上游 `VersionPrefix` 编译出的真实服务端会报 `3.2.0`。
-   若希望与官方服务器**逐字一致**，应把 `wrangler.toml` 的 `VERSION` 改成 `3.2.0` —— 这属于对外承诺口径，
-   需用户决定（改动会影响 README 与已有部署的显示值），本轮**未擅自修改**。
+4. ~~**版本号语义**：迁移对外报 `3.2.1`，而按上游 `VersionPrefix` 编译出的真实服务端会报 `3.2.0`。~~
+   → **已决（2026-09-15）**：用户选择**逐字对齐上游**，`VERSION` 改为 `3.2.0`（见 §4.2 U5、
+   `protocol.md` §10）。附带结论：该值**没有功能后果**——客户端下限是 `3.1.1`，且
+   `AppVersion.TryParse` 失败时版本检查被静默跳过（`OfficialAdapter.cs:151-160` 的 `if` 无 `else`）；
+   改的是自我描述的真实性。另需注意上游基线的"自我描述滞后"现象：基线在 `v3.2.0` 标签之后 14 个提交
+   （含服务端提交 `#402` 保留期自动删除、`#412` 完整性检查），但版本号仍写 `3.2.0`。
 
 ---
 
@@ -260,6 +270,9 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 
 **验证方式**：`wrangler dev --test-scheduled`（本地 miniflare，128MB isolate、D1/R2/DO 全部模拟）
 + 全量套件（含 HTTP 黑盒、真 SignalR 客户端三传输、清理 Cron 真触发、界面 API 与契约守卫）。
++ **真上游 A/B**（`tools/ab-upstream-probe.ps1` × 官方 v3.2.0 服务端发布件，34 例状态码级 + 18 例文本级）
++ **真客户端 E2E**（官方 v3.2.0 便携客户端 × 生产：双向文本/文件 + 实时推送）——两类证据的完整记录见
++`progress.md` §44。
 
 **结果**：`20` 个套件全绿、**324 例通过**（本轮新增 5 例：415 ×3、urlencoded ×2）；
 `npm run check`（`tsc --noEmit` + `eslint`）通过；`wrangler d1 execute --local --file=./schema.sql`

@@ -41,10 +41,10 @@
 | D4 | 历史记录 + 当前 Profile 存 D1（SQLite），数据文件存 R2 | 强一致、可事务；文件体量走对象存储 | 已定 |
 | D5 | SignalR 兼容层用 Durable Object 持连接 + 广播 | Workers 无状态，连接状态必须落在 DO | 已定 |
 | D6 | negotiate 按上游顺序宣告三种传输（WebSockets → ServerSentEvents → LongPolling） | 与上游一致；WS 被代理/防火墙阻断时客户端可自动降级（原先只宣告 WS 会直接失联）。SSE 走流式响应、长轮询走挂起请求，均在 Durable Object 内实现 | 已定（2026-09-12 修订） |
-| D7 | `/api/version` 返回 `VERSION` 变量（默认 "3.2.1"） | 客户端要求服务端 ≥ 3.1.1 | 已定 |
+| D7 | `/api/version` 返回 `VERSION` 变量（**默认 `"3.2.0"`，逐字对齐上游基线** `Directory.Build.props` 的 `VersionPrefix`；2026-09-15 从 `"3.2.1"` 改回，理由见 `protocol.md` §10 与 `progress.md` §43） | 客户端要求服务端 ≥ 3.1.1；自我描述须与上游一致 | 已定（2026-09-15 修订） |
 | D8 | 存储时间用 epoch 毫秒 INTEGER（D1），DTO 边界转 ISO8601 | 排序/比较精确，协议输出为标准 ISO 字符串 | 已定 |
 | D9 | 严格复刻官方行为，不做行为超集 | 兼容性以官方实现为准（如 `GET /file/{name}` 仅按历史查找） | 已定 |
-| D10 | 测试 = 协议级集成测试（`wrangler dev` + 真实 HTTP + `@microsoft/signalr`）+ 真实客户端联调 | 与 .NET 客户端同协议的 JS SignalR 客户端可验证握手细节 | 已定 |
+| D10 | 测试 = 协议级集成测试（`wrangler dev` + 真实 HTTP + `@microsoft/signalr`）+ 真实客户端联调 + **真上游服务端 A/B**（`tools/ab-upstream-probe.ps1`，官方 v3.2.0 发布件逐条对照，退出码只对**未登记差异**报错——2026-09-15 增补） | 与 .NET 客户端同协议的 JS SignalR 客户端可验证握手细节；但**"我们读懂的协议"不等于"上游真的这么做"**——凡属推断的行为都必须有一次对真上游的实测（见 `progress.md` §44） | 已定（2026-09-15 修订） |
 | D11 | **提交粒度与推送策略**（2026-09-13 修订）：**本地**可多次 minor commit（细碎、随手记）；**推送到云端 `master` 前**按主题压成合适的提交（每个逻辑变更一条），不把一堆小提交直接推 | 本地细碎便于迭代与回滚；云端历史要能看出演进，不该被几十条同类微调淹没。**修订原因**：原约定"禁止 squash/force push"在实践里产生 91 条提交、其中大量是同一件事的反复微调，云端历史反而更难读（已在用户要求下把 91 条压成 13 条：根提交 + 12 个主题提交，见 `docs/progress.md` §28）。**改写已推送历史时的硬约束**：① 先建备份分支；② 用树快照回放，保证新 HEAD 与旧 HEAD **树逐字节一致**（`git diff` 必须为空）；③ 推送前跑全量套件且**真门禁**（`set -o pipefail` 或 `if` 判定退出码，别让管道吞掉失败）；④ 用 `--force-with-lease` 推送，不用裸 `--force` | 已定（2026-09-12，2026-09-13 修订） |
 
 > **D11 执行流程（2026-09-13 实测通过）**：① 留底并**推送**备份分支：`git branch -f backup/pre-squash-<日期>` → `git push -u origin backup/pre-squash-<日期>`（旧 SHA 因此永远可解析，文档里的历史引用不会悬空）；② 从根提交开新分支，逐组 `git read-tree -u --reset <该组旧 tip>` 后**直接** `git commit -F <msg>`——**不要** `git add -A`（它会把未跟踪的临时文件卷进历史）；③ 逐组断言 `git diff --name-only <新提交> <该组旧 tip>` 为空（只验末态不够：中间的杂物会被下一组的 reset 悄悄抹掉）；④ 末态断言 `git diff <旧 HEAD> HEAD` 为空；⑤ 跑全量套件且用真门禁；⑥ `git push --force-with-lease origin <新分支>:master`，推送后删掉临时分支（备份分支保留）。
@@ -129,6 +129,7 @@ SyncClipboardCfServer/
 │   ├── auth.ts                 # Basic Auth 校验、凭据校验、请求体排空
 │   ├── rateLimit.ts            # 认证失败限速：isolate 内存快路径 + DO 权威计数（F7）
 │   ├── requestLimits.ts        # 请求体上限与 loopback 判定（F8/HSTS 与 F9 共用）
+│   ├── pathCase.ts             # 协议路径**字面段**大小写归一（对齐 ASP.NET 路由；2026-09-15 A/B 后补救）
 │   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
 │   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间与体积口径转换
 │   ├── hash.ts                 # Text / File / Image / Group 哈希（协议级精确复刻）
@@ -365,8 +366,17 @@ CREATE TABLE IF NOT EXISTS Meta (
 
 ## 10. 版本策略
 
-- `/api/version` 返回 `VERSION` 变量（wrangler.toml `[vars]`，默认 `"3.2.1"`）。
+- `/api/version` 返回 `VERSION` 变量（wrangler.toml `[vars]`，**默认 `"3.2.0"`**）。
+  - **该值 = 上游基线编译后真实会返回的串**，不是本仓库的版本号：上游 `src/Directory.Build.props`
+    的 `<VersionPrefix>3.2.0</VersionPrefix>` 是唯一事实源，`SyncClipboardProperty.AppVersion` 取
+    程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `28c7e596` 报 `3.2.0`。
+  - **两套编号互不相干**：`package.json` 的版本（如 `1.21.3`）是**迁移项目自身**的版本；
+    `VERSION` 是**对外协议的自我描述**。不要把两者"对齐"（这是本轮显式决定的坑，见 `progress.md` §43）。
+  - **跟版规则**：仅当上游改动版本事实源（bump `<VersionPrefix>` / 换版本来源）才改 `VERSION`，
+    并同步 `protocol.md` §10 的登记行与本节。
 - 官方客户端校验 `serverVersion >= Env.RequestServerVersion("3.1.1")`，低版本拒绝连接。
+  注意 `AppVersion.TryParse` 失败时该检查**被静默跳过**（`OfficialAdapter` 里 `if` 无 `else`）——
+  所以该值没有功能后果，改它是**忠实性**要求而非兼容性要求。
 
 ## 11. 部署指南
 

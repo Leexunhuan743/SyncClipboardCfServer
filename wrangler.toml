@@ -28,8 +28,16 @@ new_sqlite_classes = ["SyncClipboardHub"]
 
 # 公开变量
 [vars]
-# /api/version 返回值。官方客户端要求服务端版本 >= 3.1.1（Env.RequestServerVersion）
-VERSION = "3.2.1"
+# /api/version 返回值 = 上游基线（28c7e596）编译后**真实会返回的那个串**：上游
+# `src/Directory.Build.props` 是版本唯一事实源（VersionPrefix=3.2.0 / VersionSuffix 空），
+# `SyncClipboardProperty.AppVersion` 取程序集 AssemblyInformationalVersion 并截掉 '+' 之后的部分
+# ⇒ 该基线的 /api/version 返回 "3.2.0"。此处**逐字对齐上游**，与本仓库自身的 package.json 版本
+# （迁移项目版本号，当前 1.21.3）是两套互不相干的编号，切勿"顺手对齐"。
+# 跟版规则：仅当上游改动版本事实源（bump `<VersionPrefix>` 或换版本来源）时才改这里，
+# 并同步 docs/protocol.md §10 的登记行。
+# 功能上无影响：官方客户端只要求服务端 >= 3.1.1（Env.RequestServerVersion="3.1.1"），
+# 且 AppVersion.TryParse 解析失败时该检查会被静默跳过（OfficialAdapter 里 if 无 else）。
+VERSION = "3.2.0"
 # 历史保留策略（对齐上游 appsettings AppSettings.MaxSavedHistoryCount / HistoryRetentionMinutes）
 MAX_SAVED_HISTORY_COUNT = "1000"
 HISTORY_RETENTION_MINUTES = "10080"

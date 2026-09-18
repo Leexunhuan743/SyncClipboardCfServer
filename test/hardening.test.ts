@@ -134,7 +134,7 @@ describe('G6 · SearchText 上限（按字节）', () => {
 // 不可归因流量；用例 2 固定 IP + 每次换用户名，证明该锁仍然生效（否则用例 1 可能只是限速整体失效）。
 describe('限速归因制：不可归因不封锁，可归因仍封锁', () => {
   // 必须给真实凭据：未配置时是 500 fail-closed，那是另一条路径（见上面的 G2 用例）。
-  const ENV = { USERNAME: 'syncuser', PASSWORD: 'correct-horse-battery-staple', VERSION: '3.2.1' } as never;
+  const ENV = { USERNAME: 'syncuser', PASSWORD: 'correct-horse-battery-staple', VERSION: '3.2.0' } as never;
   const CTX = { waitUntil: () => {}, passThroughOnException: () => {} } as never;
   const worker = async (headers: Record<string, string>) =>
     (await import('../src/index')).default.fetch(

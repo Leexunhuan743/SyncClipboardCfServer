@@ -748,11 +748,13 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(res.status).toBe(200);
   });
 
-  it('F32 · negotiate 版本协商与错误路径逐字对齐上游', { timeout: 60_000 }, async () => {
-    // 依据：ASP.NET Core `HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`
+  it('F32 · negotiate 版本协商与错误路径逐字对齐上游（2026-09-15 起为 A/B 实测值）', { timeout: 60_000 }, async () => {
+    // 依据：ASP.NET Core `HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`，
+    // 并已用**官方 v3.2.0 服务端发布件**逐值实测（`tools/ab-upstream-probe.ps1`，见 docs/progress.md §44）：
     //   - 未携带 negotiateVersion → 版本 0（MinimumProtocolVersion=0，不算错误）
-    //   - 非整数 → error "The client requested a non-integer protocol version."
-    //   - 负数 → error "The client requested version '<v>', but the server does not support this version."
+    //   - `int.TryParse` 失败（非数字 / 千位分隔符 / 空串 / **超出 Int32**）→
+    //     error "The client requested an invalid protocol version '<原样未 trim 的入参>'"
+    //   - 解析成功但为负 → error "The client requested version '<解析后的整数>', but the server does not support this version."
     //   - > 1 → 钳制到服务端最大值 1
     //   - `negotiateVersion` 恒出现；`connectionToken` 仅在版本 > 0 时出现
     //   - 出错时仍返回 HTTP 200，响应体只有 error
@@ -789,23 +791,64 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(v0b.body.negotiateVersion).toBe(0);
     expect(v0b.body.connectionToken).toBeUndefined();
 
-    // ④ 高于服务端最大值 → 钳制为 1（不是错误）
+    // ④ 高于服务端最大值 → 钳制为 1（不是错误）；Int32 上界本身仍是合法整数 → 同样钳为 1
     const v2 = await nego('?negotiateVersion=2');
     expect(v2.status).toBe(200);
     expect(v2.body.negotiateVersion).toBe(1);
     expect(v2.body.connectionToken).toBeTruthy();
+    expect((await nego('?negotiateVersion=2147483647')).body.negotiateVersion).toBe(1);
 
-    // ⑤ 非整数 → 200 + error（上游不设置非 200 状态）
+    // ⑤ `int.TryParse` 失败 → 200 + invalid 错误串（上游不设置非 200 状态）
     const bad = await nego('?negotiateVersion=abc');
     expect(bad.status).toBe(200);
-    expect(bad.body.error).toBe('The client requested a non-integer protocol version.');
+    expect(bad.body.error).toBe("The client requested an invalid protocol version 'abc'");
     expect(bad.body.availableTransports).toBeUndefined();
 
-    // ⑥ 负数 → 200 + error
+    // ⑤b 失败的六种形态：小数 / 千位分隔符 / 空串 / 超出 Int32 ×2 / 只有正号
+    //     （"超出 Int32"曾被我方误并入"负数（不支持）"分支 —— 2026-09-15 A/B 实测纠正）
+    for (const [query, raw] of [
+      ['?negotiateVersion=1.5', '1.5'],
+      ['?negotiateVersion=1%2C5', '1,5'],
+      ['?negotiateVersion=', ''],
+      ['?negotiateVersion=2147483648', '2147483648'],
+      ['?negotiateVersion=99999999999', '99999999999'],
+      ['?negotiateVersion=%2B', '+'],
+    ] as const) {
+      const r = await nego(query);
+      expect(r.status, query).toBe(200);
+      expect(r.body.error, query).toBe(`The client requested an invalid protocol version '${raw}'`);
+      expect(r.body.connectionId, query).toBeUndefined();
+    }
+
+    // ⑤c 错误串回显**原样未 trim** 的入参（实测上游 `' abc '` → `' abc '`）
+    expect((await nego('?negotiateVersion=%20abc%20')).body.error).toBe(
+      "The client requested an invalid protocol version ' abc '",
+    );
+    expect((await nego('?negotiateVersion=%202147483648%20')).body.error).toBe(
+      "The client requested an invalid protocol version ' 2147483648 '",
+    );
+
+    // ⑤d 可解析形态：`+1` / `01` / 首尾空白 / `-0` 都被接受（.NET `int.TryParse` 语义）
+    expect((await nego('?negotiateVersion=%2B1')).body.negotiateVersion).toBe(1);
+    expect((await nego('?negotiateVersion=01')).body.negotiateVersion).toBe(1);
+    expect((await nego('?negotiateVersion=%201%20')).body.negotiateVersion).toBe(1);
+    expect((await nego('?negotiateVersion=-0')).body.negotiateVersion).toBe(0);
+
+    // ⑥ 负数（解析成功但低于最小值）→ 200 + 不支持错误串；回显**解析后的整数**（`' -1 '` → `'-1'`）
     const neg = await nego('?negotiateVersion=-1');
     expect(neg.status).toBe(200);
     expect(neg.body.error).toBe(
       "The client requested version '-1', but the server does not support this version.",
+    );
+    expect((await nego('?negotiateVersion=%20-1%20')).body.error).toBe(
+      "The client requested version '-1', but the server does not support this version.",
+    );
+    // Int32 下界本身是合法整数 → 走"不支持"分支；再低一格则属解析失败（两者错误串不同）
+    expect((await nego('?negotiateVersion=-2147483648')).body.error).toBe(
+      "The client requested version '-2147483648', but the server does not support this version.",
+    );
+    expect((await nego('?negotiateVersion=-2147483649')).body.error).toBe(
+      "The client requested an invalid protocol version '-2147483649'",
     );
 
     // 报错路径不签发 token：用返回体里的任何值都不应通过连接鉴权

@@ -115,7 +115,7 @@ function createEnv(identity?: TestIdentity): { env: Bindings; limits: Map<string
     DB: {} as never,
     R2: {} as never,
     HUB: { idFromName: (name: string) => name, get: () => hub } as never,
-    VERSION: '3.2.1',
+    VERSION: '3.2.0',
     MAX_SAVED_HISTORY_COUNT: '1000',
     HISTORY_RETENTION_MINUTES: '10080',
     USERNAME: identity?.user ?? USER,
@@ -453,7 +453,7 @@ describe('F8 明文跳转与 HSTS', () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get('strict-transport-security')).toBeNull();
-    expect(await res.text()).toBe('3.2.1');
+    expect(await res.text()).toBe('3.2.0');
   });
 
   it('经边缘（cf-ray / x-forwarded-proto: https）的响应带 HSTS', async () => {
