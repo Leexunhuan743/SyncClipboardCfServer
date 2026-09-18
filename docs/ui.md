@@ -115,7 +115,7 @@ Worker
 现有两个真实调用方：WebDAV 附件与界面数据端点——少一道 `nosniff` 就是一个存储型 XSS 面）；
 `auth.ts` 抽出 `verifyCredentials`（Basic 头与登录表单共用）。
 
-### 3.2 前端（`public/ui/`，真文件 + 原生 ES 模块，无构建步骤）
+### 3.2 前端（`public/ui_old/` = V1，真文件 + 原生 ES 模块，无构建步骤）
 
 > **本节描述的是 V1，而 V1 从 2026-09-18 起就是默认界面。**
 > 站点根 `GET /` 的浏览器分支（`src/routes/webdav.ts`）与 `/ui/` 的目录索引
@@ -137,13 +137,13 @@ Worker
 > 那边试）；② 开发期的实验场（改坏了不影响默认入口）；③ 它与协议端点
 > （`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）零关系，两版可以各自演进。
 
-`public/` 下共 88 个资源，分三部分：
+`public/` 下共 89 个资源，分三部分：
 
 | 部分 | 文件数 | 说明 |
 |---|---|---|
-| **V2**（`public/ui/`，**开发测试版**） | 48 | 3 个 HTML（`app/index.html`、`app/login.html`、`/ui/` 的跳转索引 `index.html`）+ 5 张样式表 + 36 个 JS（34 个模块 + 跳转页那个经典脚本 `redirect-hash.js`）+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest` |
+| **V2**（`public/ui/`，**开发测试版**） | 49 | 3 个 HTML（`app/index.html`、`app/login.html`、`/ui/` 的跳转索引 `index.html`）+ 5 张样式表 + 37 个 JS（35 个模块 + 2 个经典脚本 `theme-init.js` / `redirect-hash.js`）+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest` |
 | **V1**（`public/ui_old/`，**默认界面**） | 38 | 默认入口；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`） |
-| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP/安全头 + 缓存策略——这批文件不经过 Worker，只能在那里声明） |
+| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的短 TTL + `stale-while-revalidate`、图标/manifest 的长缓存——这批文件不经过 Worker，只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
 
 下表是 **V1** 的文件清单（供对照）：
 
@@ -181,7 +181,8 @@ Worker
 | `js/login.js` | 登录页逻辑 |
 | `js/next-target.js` | 登录后「下一跳」的判定（纯函数 `resolveNext`）：只接受**同源**目标，否则回落站内默认页。独立成文件是为了能被测试直接覆盖（见 §7） |
 | `js/theme-init.js` | 首帧前把主题写进 `<html data-theme>` 的**经典脚本**（不是模块：模块默认 defer，会晚于首帧）。外链而非内联，CSP 才能保持 `script-src 'self'` |
-| `_headers` | 静态资源的响应头：CSP（`default-src 'none'` + 逐项白名单）、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的短 TTL + `stale-while-revalidate`、图标/manifest 的长缓存。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询 |
+
+> 上表**只列 V1 自己的文件**。`_headers` 曾误列在这里 —— 它住在**站点根**（`public/_headers`，与两个界面都无关，见上一张表的「站点根」行）。
 
 ### 3.3 前端交互约定（改动这些地方前先读）
 
@@ -346,11 +347,14 @@ Worker
 | GET | `/ui/api/history/:type/:hash/data` | 数据文件；`?download=1` 走附件。**支持 Range**（单区间 206 + `content-range` + `accept-ranges`；后缀区间 `bytes=-n`；不可满足 → 416 + `bytes */size`；多段 → 按 200 全量回退；协议侧的 `/file/{name}` 与 `/api/history/{id}/data` **有意忽略 Range**，见 F29b） | 404 `not_found` / 404 `data_missing` |
 | PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`） | 400/404/409 |
 | POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（**单次 ≤100 条**，逐条走同一条写路径；更多由界面按 100 分片串行发——每条 ≈5 次子请求，200 条正好顶到单次调用 1000 次内部子请求的上限）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
+| POST | `/ui/api/history/batch-meta` | 批量取记录（**含完整正文**）：`{items:[{type,hash}]}`（**单次 ≤100 条**，超出由界面分片串行发）→ `{items:[完整 HistoryRecordDto]}`。用于「选中多条 → 一起复制/下载」——列表里的正文被服务端截断到 500 字符，而逐条走单条端点是 O(N) 次请求；**只接受 `application/json`**（与 batch-update / clear 同一条纵深防御） | 400 / 415 |
 | POST | `/ui/api/history/clear` | 清空历史：`{scope:'trash'\|'all'}`。trash = 只删已删除行并返回计数（不物化整批行）；all = 与协议 `DELETE /api/history/clear` **共用** `historyOps.clearAllHistory`（先删行，再按 `clearAll` 返回的**实体集合**删工作目录——最坏漏删孤儿目录，不会误删并发写入的新记录）。**不逐条广播**（上游的广播触发点清单里没有 clear，见 §6 的说明；跨标签页收敛靠 `/ui/api/poll` 的计数变化） | 400 / 415 |
 | POST | `/ui/api/hub-ticket` | 签发一张 Hub 连接票据（`{token, path}`），供前端建立 WebSocket；DO 打不通时 503（前端据此继续轮询） | 503 |
 | GET | `/ui/api/integrity` | 数据完整性自检：`{checkedAt, recordsWithData, historyObjects, missingCount, missing[], missingTruncated}`。成本 = 1 次 D1 + `ceil(对象数/1000)` 次 R2 列举（**不逐条 HEAD**） | — |
 | PUT | `/ui/api/settings` | 保留策略的在线调整：`{retention:{retentionMinutes, maxSavedHistoryCount, retentionSource, maxCountSource}}`；`null` = 清除覆盖、`0` = 关闭该阶段。**没有对应的 GET**：读取走 `/ui/api/info` 的 `retention`（同一份 `readRetentionSettings`，连通来源字段一起给） | 400 / 415 |
 | GET | `/ui/api/statistics` | 官方统计 + 按类型分布。**两个计数键口径不同**：`byType` 随 `?deleted=true` 走（工具栏的类型计数要与当前视图同源），`byTypeActive` **恒为活跃口径**（统计条「存储占用」的明细用它——已删记录的 R2 文件在软删时就删了） | 400 参数非法 |
+| GET | `/ui/api/overview` | **首屏合成快照**：一次往返拿到 `{stats, byType, byTypeActive, marker, info, serverTime}` —— 统计、类型计数、变更标记、部署信息、服务端时间**同源**（数字与列表来自同一瞬间，不会「控件说 1009、列表说 1008」）。`?deleted=true` 时 `byType` 随视图走（`byTypeActive` 恒活跃）。**只读、无副作用**，且统计层只算一次（此前单次请求要列举两遍 R2 全桶，见 O-01）。**不含 `activity`**：那是独立的一天粒度查询，前端在列表落地后单独拉 | 400 参数非法（`deleted` 非法值 → 400 而不是 500） |
+| GET | `/ui/api/activity` | 活动趋势（概览带的趋势图 + 抽屉明细）：`?days`（默认 14，上限 **90**）`&tz`（`getTimezoneOffset()` 的分钟数，UTC+8 ⇒ −480）→ `{days:[{day,total,Text,Image,File,Group}], max}`。「一天」按**调用方时区**切分——服务端只知道 UTC，按 UTC 切会让 UTC+8 的用户在早上 8 点前看到的"今天"其实是昨天 | 400 `invalid_range`（days / tz 越界） |
 | GET | `/ui/api/info` | 部署信息（客户端该填的地址、版本、传输、保留策略、存储；`cleanup` 为清理状态：`lastRunAt` / `lastError` / 各阶段游标） | — |
 | GET | `/ui/api/poll` | 变更信号 `{count, lastModified, serverTime}`——`serverTime` 供界面显示与本机的时钟差（官方客户端在 \|差\| > 5 分钟时中止历史同步） | — |
 

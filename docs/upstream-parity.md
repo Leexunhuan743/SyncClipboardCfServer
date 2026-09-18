@@ -5,8 +5,14 @@
 > **对象**：本仓库（迁移实现）@ 本轮基线 `e86ddef`。
 > **方法**：上游在范围内文件**逐个打开**读取（不是检索式扫读）；HTTP 行为以**上游服务端源码 + 官方客户端
 > 源码**双向核对（`OfficialAdapter` / `WebDavBase` / `OfficialEventDrivenServer` 定义了服务端必须满足的契约）；
-> 迁移侧改动后跑全量套件验证。**未运行上游服务端**（本机无 .NET SDK、无 NuGet 缓存），涉及
-> ASP.NET Core 框架运行时行为的结论均标注为「推断/待实测」。
+> 迁移侧改动后跑全量套件验证。
+> ⚠️ **本节写于第一轮（2026-09-15 上午）：当时确实没跑过上游服务端。此后已被推翻两次，请配合下文看**——
+> 本机缺的只是 **.NET SDK**（不能构建），**运行时在**（`dotnet --list-runtimes` 有
+> `Microsoft.AspNetCore.App 8.0.27`），且官方 v3.2.0 release 附了框架依赖型的
+> `SyncClipboard.Server.zip` ⇒ 同一轮里就起了**真上游服务端**做 A/B（工具固化为
+> `tools/ab-upstream-probe.ps1`：34 例状态码级 + 18 例 negotiate 文本级），并用**真客户端**
+> 做了生产 E2E。逐条结论见 §6 与 §7；**仍未实测**的只剩"客户端发 `{"type":7}` 后服务端是否回 Close 帧"。
+> §4.2 的 U3/U4/U5、§6 的多条"未实测"标注都已随之更新。
 > **关联**：逐条差异的登记表在 [`protocol.md`](protocol.md) §10；上游自身缺陷在 [`upstream-issues.md`](upstream-issues.md)；
 > 本轮实施记录在 [`progress.md`](progress.md) §39。
 
@@ -35,7 +41,7 @@
 | 上游目录 | 内容 | 判定 |
 |---|---|---|
 | `docs/` | `Hash.md`（**上游自带的哈希规范**）、`README_EN.md`（**公开 API 文档**）、`S3-Adapter-Design.md`、`ai_design/*`、图片、`donate.md` | **已核对**：前两个是协议级文档，与迁移实现逐条比对见 §3.7；其余为客户端设计/宣传素材 |
-| `.github/workflows/` | 24 个工作流，其中 `server-build.yml` / `server-release.yml` 是本复刻对象的构建与发布链路 | **已核对**：`dotnet publish` → zip 产物 + Docker 镜像（`linux/amd64,linux/arm64` → Docker Hub）。**上游服务端发布链路没有任何测试门禁**（对比：本仓库 CI 先跑 20 个套件，`needs: quality` 才部署） |
+| `.github/workflows/` | 24 个工作流，其中 `server-build.yml` / `server-release.yml` 是本复刻对象的构建与发布链路 | **已核对**：`dotnet publish` → zip 产物 + Docker 镜像（`linux/amd64,linux/arm64` → Docker Hub）。**上游服务端发布链路没有任何测试门禁**（对比：本仓库 CI 先跑 22 个套件，`needs: quality` 才部署） |
 | `build/` | 客户端安装包/打包脚本（Inno Setup、dmg、AppImage、pupnet） + 图标 | 不适用（客户端打包） |
 | `script/` | AutoX.js / HTTP Shortcuts 客户端脚本 | 不适用（移动端客户端脚本） |
 | `winget-manifest/`、`LICENSES/`、`.vscode/`、`scratch/`（空） | 包清单、第三方许可、编辑器配置 | 不适用（与运行形态无关；`scratch/` 为空目录） |
@@ -191,7 +197,7 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 |---|---|---|---|
 | U1 | CI 不创建 D1/R2 资源 | 中 | `deploy.yml` 只 `d1 execute` 已存在的库；全新账号首次部署必须照 README 手工 `d1 create`/`r2 bucket create`。写进 README 已有，但 CI 不会给出可诊断的提示 |
 | U2 | 冒烟检查只断言未认证请求 = 401 | 中 | 能间接发现「凭据未配置」（那种情况返回 500），但**不能**证明凭据可用、历史读写打通。建议后续加一步带凭据的 `/api/history/statistics` |
-| U3 | ~~本地 `compatibility_date` 与生产不一致~~ → **已修复（2026-09-15）** | 低-中 | 原状：`wrangler.toml` 写 `2025-09-01`，而仓库锁定的 `wrangler ^3.80`（3.114.17）本地运行时最高支持 `2025-07-18` ⇒ 本地/CI 与生产跑在不同 compat date 上。**处置**：wrangler 升到 **4.131.2**（连带 `@cloudflare/workers-types` 4 → 5，wrangler 4 的 peer 要求），本地起 dev server 不再 fallback、CI 质量门与部署工具链同为 v4；全量 20 套件 / 325 例在新运行时下复跑通过 |
+| U3 | ~~本地 `compatibility_date` 与生产不一致~~ → **已修复（2026-09-15）** | 低-中 | 原状：`wrangler.toml` 写 `2025-09-01`，而仓库锁定的 `wrangler ^3.80`（3.114.17）本地运行时最高支持 `2025-07-18` ⇒ 本地/CI 与生产跑在不同 compat date 上。**处置**：wrangler 升到 **4.131.2**（连带 `@cloudflare/workers-types` 4 → 5，wrangler 4 的 peer 要求），本地起 dev server 不再 fallback、CI 质量门与部署工具链同为 v4；全量 22 套件在新运行时下复跑通过（当轮为 20 套件 / 325 例，见 `progress.md` §41.3） |
 | U4 | ~~无日志级别配置~~ → **已处理（2026-09-15）** | 低 | 上游 `Logging:LogLevel` 在 Workers 上没有等价物（console 即日志流）。**处置**：`wrangler.toml` 显式声明 `[observability] enabled = true`（不依赖"新建 Worker 默认已开"这一会变的默认），README 新增「日志与排障」写清查询方式、7 天保留、日志前缀表与隐私口径（见 `progress.md` §42） |
 | U5 | ~~版本事实源三处不同~~ → **已修复（2026-09-15）** | 低 | 原状：上游 `VersionPrefix=3.2.0`、`Changes.md` 最新条目 `v3.2.1`、本仓库 `VERSION=3.2.1`。**处置**：`VERSION` 改为 **`3.2.0`**，与上游基线编译后真实返回值逐字一致（用户决定，理由与跟版规则见 `progress.md` §43、`protocol.md` §10、`design.md` §10）。两套编号的语义已在 README 写清：`VERSION` = 对外自我描述，`package.json` 版本 = 迁移项目自身版本 |
 
@@ -269,7 +275,7 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 ## 7. 验证证据与上线结论
 
 > **2026-09-15 追加（专项对照）**：本轮又做了一次「上游缺陷/怪癖在本实现里怎么处置」的对照，
-> 产物是 **[`upstream-defects.md`](upstream-defects.md)**（16 条已复刻 + 5 条未复刻，逐条给 `文件:行` 证据与处置决定）。
+> 产物是 **[`upstream-defects.md`](upstream-defects.md)**（21 条候选按处置分五类：A 必须复刻 10 / B 有意偏离 5 / C 结构性消除 2 / D 待办 2 / 不改但需知 2，逐条给 `文件:行` 证据与处置决定）。
 > 结论：本文件 §4 的差异清单**没有新增** —— 专项对照确认本实现的每一处复刻都能指回上游具体行，
 > 需要动作的只有 3 处文档补强（`src/db.ts` 的 `LIKE` 注释、`protocol.md` §10 的「并发」与「缓存」两行）
 > 与 1 条新 issue（`upstream-issues.md` Issue 14）。本节下述结论不受影响。
@@ -280,7 +286,8 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 + **真客户端 E2E**（官方 v3.2.0 便携客户端 × 生产：双向文本/文件 + 实时推送）——两类证据的完整记录见
 +`progress.md` §44。
 
-**结果**：`20` 个套件全绿、**324 例通过**（本轮新增 5 例：415 ×3、urlencoded ×2）；
+**结果**：`22` 个套件全绿（本轮新增 5 例：415 ×3、urlencoded ×2；当轮用例数记录在 `progress.md` §39.8 ——
+用例数刻意不在这里固化，现状以 README 与命令输出为准）；
 `npm run check`（`tsc --noEmit` + `eslint`）通过；`wrangler d1 execute --local --file=./schema.sql`
 （含新索引）幂等执行成功；文档口径守卫（`test/docs.test.ts`）与前端契约守卫（`test/ui-contract.test.ts`）通过。
 

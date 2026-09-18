@@ -937,7 +937,7 @@
 
 > 本节是**执行记录**，不是审计发现。第三轮把本文与 `docs/AUDIT-commit-9b4cdca.md` 合并后落地。
 > 只列"已改"与"明确不改"，未列出的条目即"尚未处理"。
-> 验证：`npm run check`（tsc + eslint）0 错误；`npm run dev` 起本地 dev server 后 `npm test` → **22 个套件 / 401 用例全通过**。
+> 验证：`npm run check`（tsc + eslint）0 错误；`npm run dev` 起本地 dev server 后 `npm test` → **22 个套件全通过**（当轮 401 用例；用例数刻意不固化，现状见命令输出）。
 
 ### 14.1 已实施（`src/`）
 
@@ -1005,6 +1005,51 @@
 | 1 | §7 **O-08g**：`#board-area` 与 `.board-area` 是"同一元素" | **不是**同一元素，是父子（`boot.js:282` `append`）。两条 `min-height` 各管一个时刻，**不合并**（§7 该行已标注推翻） |
 | 2 | §4 **D-05** 说"必须同一变更内同步 `docs/ui.md:159`" | `docs/ui.md` 的那张表描述的是 **V1**，而 V1 的 `api.js` **确实**有 `batchMeta()`（被 `main.js` 调用）。该行无需改动 —— 原判定把 §3.2 的表误当成 V2 的了。（本轮删的是 **V2** 的 `batchMeta`。） |
 | 3 | §4 **D-13** 论证"公开面越窄越好" | 见 14.5 第 1 行：与"两版导出面一致"冲突，本轮只做死 id 部分 |
+
+---
+
+## 15. 处置记录（第四轮：2026-09-18 晚，按"逐行通读"结论落地）
+
+> 与 §14 的关系：§14 是第三轮（依据本文 + `AUDIT-commit-9b4cdca.md`）；本节是**第四轮** —— 由一次
+> 独立的全仓逐行通读（V1/V2 全部前端文件 + 全部文档）驱动，约束仍是"只修逐行核实过、且不与既有决定
+> 冲突的项"。过程叙事见 `docs/progress.md` §84。
+
+### 15.1 已实施（代码）
+
+| 条目 | 改动 |
+|---|---|
+| **O-08k** | 新建 `public/ui/js/paths.js`（纯函数 `dataPath(item, {download})`）：`api.js` 的 `dataUrl` 改为转发、`ui/row.js:228` 改用它 —— 分层纪律保住（`ui/*` 仍不 import `api.js`）。连带：`app/index.html` 与 `app/login.html` 各补一条预载、资源数 **88 → 89**、三处目录树同步（`docs/ui.md` §3 / `docs/design.md` §4 / `docs/ui-v2-design.md` §7） |
+| 新发现（V2） | ① `shell-v2.css`：基础规则 `.main > .overview .overview__spark{display:none}`（特异性 0,3,0）**恒压过**末尾窄屏那档的裸类 `display:block`（0,1,0）⇒ 趋势图有数据、有 DOM、**可见高度恒为 0**（"桌面/中屏让位、窄屏独占一行"的原设计因此只剩前一半）；② `ui/drawer.js`：保留天数用裸 `parseInt` ⇒ `1.5`→1 天、`e`→`NaN`→JSON `null`（= 静默"清除覆盖"，与用户意图**相反**）→ 改 `^\d+$` + 上下界 + `aria-invalid`/`aria-describedby`；③ `ui/dialog.js`：确认框初始焦点找 `.btn--primary`，而确认键是 `.btn--danger`、正文只有 `<p>` ⇒ **谁都没聚焦** → `[data-autofocus]` 链；④ `ui/board.js`：内容变化的行**就地重填**（重建操作列）却不保焦点 ⇒ 焦点掉到 `<body>` → `captureFocus/restoreFocus`；⑤ `ui/ghost.js`：CLS 注释 0.91 → 0.90（与 `board.js`/`boot.js`/本文同值） |
+| 新发现（V1 = 产品面） | ① `main.js:refreshOverview()` **没有 latest-gate**，且 `view` 在**落地那一刻**读 `filters.deleted` ⇒ 一份"活跃视图"的迟到快照会被盖上"回收站视图"的归属，`countsForView` 随之把活跃计数当回收站计数画出来（`refreshStats` 有这道守卫，这条路径没有）→ 新增 `overviewGate` + 请求时定格 + `aborted` 早退；② `copyImage` / `downloadItem` 此前**裸用 `fetch`** ⇒ 既无 30s 超时（半开连接时按钮永久转圈）也无 401 跳登录 → 新增 `api.fetchData()`（与 `request()` 共用同一套"调用方取消 + 超时"合成，计时器留到读完 body），`ApiError` 补 `payload` 字段；③ 5 处"注释与实现相反"订正 |
+
+### 15.2 已实施（探针与测试）
+
+- `test/manual/probe.mjs` 新增 **`sparkBox`（渲染盒）**：原 `sparkBars` 只数 DOM 条数，而 `display:none` 时它**照样是 14** —— 这正是 15.1 那条 CSS 缺陷长期没被发现的原因（**测量本身是错的，缺陷就不可见**）。另修 `firstRowOps` 的假阴性：`tr:first-of-type` 命中的是分组小标题 `.daymark`，该项**恒为空数组**。
+- `test/ui-input.test.ts` **+3**：V1 `api.fetchData` 的超时 / `payload` 透传 / Blob + URL 逐段编码。
+
+### 15.3 已实施（文档）
+
+| 条目 | 改动 |
+|---|---|
+| **M-05** | `README.md:418` 与 `security-fix-plan.md` 的 `.audits/` 口径统一：明确"**不在版本库内**（`.gitignore:14`）"，并在该文 §五 补边界说明 —— 那批探针只存在于审计时的**本机工作区**，干净检出上会 `MODULE_NOT_FOUND`；§五 的长期价值是"判别实验的设计"，不是可执行脚本清单（当前可跑的替代证据是 `test/fix-regressions.test.ts` 与 `test/rate-limit.test.ts`） |
+| 新增 `AGENTS.md` | 根目录**行为契约**（改代码顺手维护文档 / 完成定义 DoD / V1-V2 约定 / 协议红线 / 提交与推送规矩），并在 `README.md` §项目结构 与 §文档 登记、`docs/design.md` §4 目录树登记 |
+| **M-01 的同族加固** | 把 `AGENTS.md` 纳入 `test/docs.test.ts` 的 `CURRENT_STATE_FILES` —— 它写下的**套件数**从此被守卫盯住（契约自己遵守契约，不靠自觉）；`test/docs.test.ts` 的"文档"规模口径同步含它 |
+| 通读发现的 12 份文档失准 | 逐条订正，见下文"文档校准清单" |
+
+**文档校准清单（第四轮）**：`ui.md`（§3.2 标题挂错版本；§5 端点表 15 → **18** 条，与 `ui-guard` 的 `EXPECTED_API_ROUTES` 对齐；`_headers` 移出 V1 表）；`ui-v2-design.md`（8 处套件数 + 三处令牌名/函数名 + `clients()` 已删）；`frontend-checklist.md`（messages 口径改为"V1 本地副本 + 对等守卫"；"未来时间戳未处理"改为"V1 已修 / V2 仍旧行为"；去掉已删的 460ms 档）；`protocol.md`（§11 表里混进的三行 4 列差异**上移回 §10**，§11 恢复纯 3 列参考表）；`upstream-parity.md`（头部"未运行上游服务端"—— 该结论此后被推翻两次）；`upstream-issues.md` / `upstream-defects.md`（条数口径统一为 21 条候选的四类分布，并注明"初版写作 16 已复刻 + 5 未复刻"）；`ui-v2-audit.md`（章节重号 → 序号单调）；`progress.md`（目录按 83 个标题重生成；修一处标题粘连在表格行尾的格式缺陷）；`security-fix-plan.md` / 本文（套件数）。
+
+### 15.4 明确不做（第四轮新增，避免下轮重复提议）
+
+| 条目 | 为什么不改 |
+|---|---|
+| V2 三处回退：**未来时间戳** / 跨 DST 日历运算 / 推送冷却重连 | 沿用 §13.3 与 N-05 的决定（"不回移，写进 V2 重写验收清单"）。注：未来时间戳在本机**可复现**（探针 `firstRowMeta` 读到 `DC168F2D…·17 B·09:03`），改它必须同时改 `test/ui-logic.test.ts:172` —— 那条断言钉的正是被修掉的行为 |
+| V2 死代码（`appbar` 的 `offline` 态不可达、`.tag[data-tone=star\|pin]`、`.bar__fill[data-kind]`） | 按 §10.2 第 3 条：V2 允许破坏性重构，重写会自然消掉 |
+| `row.js:228` 的 data URL 重复 | **已做**（见 15.1 的 O-08k），从待办中划掉 |
+
+### 15.5 验证
+
+`tsc --noEmit` 0 错 · `eslint public/ui/js public/ui_old/js` 0 告警 · **22 套件全绿**（当轮 405 用例；用例数刻意不固化）
+· 真实浏览器实测：1440 ⇒ `sparkBox 0×0`（桌面让位，符合设计）；390 ⇒ `sparkBox 424×26`、`firstRowOps ["copy","star","dots"]`、`pageOverflow 0`、零 console 错误 · `ui-contract` 的「预载 == import 闭包」在新增 `paths.js` 后仍通过。
 
 ---
 
