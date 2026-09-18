@@ -111,6 +111,7 @@ flowchart TB
 
 ```
 SyncClipboardCfServer/
+├── AGENTS.md                   # 行为契约（给 AI 代理与新人）：改代码顺手维护文档、DoD、协议与前端红线
 ├── package.json / tsconfig.json / vitest.config.ts / eslint.config.js / wrangler.toml
 ├── schema.sql                  # D1 建表语句（部署时执行）
 ├── docs/
@@ -131,7 +132,7 @@ SyncClipboardCfServer/
 │       ├── index.html          # 跳转页（重定向到 /ui_old/）
 │       ├── app/                # V2 应用本体（index.html / login.html）
 │       ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
-│       └── js/                 # api / boot / clipboard / dom / filters / focus / format / icons / keys / latest / login / menus / messages / next-target / push / redirect-hash / spark / state / theme / theme-init / ui/*
+│       └── js/                 # api / boot / clipboard / dom / filters / focus / format / icons / keys / latest / login / menus / messages / next-target / paths / push / redirect-hash / spark / state / theme / theme-init / ui/*
 ├── src/
 │   ├── index.ts                # Worker 入口：Hono 装配、中间件、Hub 转发、Cron
 │   ├── env.ts                  # 绑定类型（D1/R2/HUB/Vars/Secrets）

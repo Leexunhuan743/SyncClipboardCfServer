@@ -415,9 +415,11 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 > 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
 > 客户端与 WebDAV/R2 工具的账号配置（否则表现为"同步无声坏掉"）。
 
-安全审计的完整账目在 `.audits/cfserver-audit-003/`（`report.md` 为报告）；修复计划见 [`docs/security-fix-plan.md`](docs/security-fix-plan.md)，
+安全审计的完整账目在本机工作区 `.audits/cfserver-audit-003/`（`report.md` 为报告）——**它被 `.gitignore:14` 排除、不在版本库内**，
+版本库里可长期查阅的是修复计划 [`docs/security-fix-plan.md`](docs/security-fix-plan.md)，
 其中**同时属于上游 SyncClipboard 的问题**整理为 [`docs/upstream-issues.md`](docs/upstream-issues.md)（15 条，附 `文件:行` 证据与复现）；
-而「上游缺陷与怪癖在本实现里如何处置」逐条列在 [`docs/upstream-defects.md`](docs/upstream-defects.md)（16 条已复刻 + 5 条未复刻）。
+而「上游缺陷与怪癖在本实现里如何处置」逐条列在 [`docs/upstream-defects.md`](docs/upstream-defects.md)
+（21 条候选：A 必须复刻 10 / B 有意偏离 5 / C 结构性消除 2 / D 待办 2 / 不改但需知 2）。
 
 ## 已知限制
 
@@ -465,6 +467,7 @@ public/                 静态资源：robots.txt + _headers + ui_old/（默认�
 test/                   全部 22 个套件 + live-signalr.mjs（线上验证脚本）
 tools/                  ab-upstream-probe.ps1（与**官方服务端发布件**逐条 A/B 对照的探针/守卫）
 docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md / upstream-parity.md / upstream-defects.md / backend-gaps.md / ui-v2-design.md / ui-v2-audit.md / frontend-checklist.md
+AGENTS.md               行为契约（给 AI 代理与新人）：改代码顺手维护文档、完成定义、协议与前端红线
 schema.sql              D1 建表语句
 ```
 
@@ -475,6 +478,7 @@ schema.sql              D1 建表语句
 
 | 文档 | 内容 |
 |---|---|
+| [AGENTS.md](AGENTS.md) | **行为契约**（给 AI 代理与新人）：改代码顺手维护文档、完成定义（DoD）、V1/V2 约定、协议红线、提交与推送规矩 |
 | [docs/design.md](docs/design.md) | 总体设计：架构、存储映射、核心数据流、决策记录、部署、风险 |
 | [docs/protocol.md](docs/protocol.md) | 协议契约：逐条端点的精确行为、DTO 定义、哈希算法、SignalR 细节、差异表 |
 | [docs/progress.md](docs/progress.md) | 开发与验证记录：里程碑、对照审核结果、版本历史 |
@@ -487,6 +491,8 @@ schema.sql              D1 建表语句
 | [docs/ui-v2-design.md](docs/ui-v2-design.md) | Web 界面 V2 设计与实现记录：骨架线框、设计令牌、组件词汇表、API 契约与验证记录 |
 | [docs/ui-v2-audit.md](docs/ui-v2-audit.md) | Web 界面 V2 系统性审计报告：设计系统体检、类名契约、跨端交互与状态矩阵验证 |
 | [docs/frontend-checklist.md](docs/frontend-checklist.md) | 前端质量检查清单：关注点、判据与落地指导原则 |
+| [docs/AUDIT-redundancies.md](docs/AUDIT-redundancies.md) | 代码审计报告（冗余 / 重复实现 / 死代码 / 兼容红线）：结论分级、可删项清单，以及唯一的已实施记录 §14（含对自身判定的三处勘误） |
+| [docs/AUDIT-commit-9b4cdca.md](docs/AUDIT-commit-9b4cdca.md) | 单次提交审核报告（`9b4cdca`）：逐行读 diff + 交叉核对服务端实现 + 跑本地质量门后的结论与整改项 |
 
 ## 许可证
 

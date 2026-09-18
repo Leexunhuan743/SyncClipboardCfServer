@@ -78,7 +78,16 @@ const ASSETS = countFiles('public', () => true, true);
 //   2. 不校验**用例数**：它不能从文件系统推导（要跑一遍才知道），解析 `it(` 计数又会被
 //      参数化/条件用例带偏——守出一道假警报比不守更糟。故现状文档一律只写套件数，
 //      用例数交给 `npm test` 自己的输出（历史快照里保留）。
-const CURRENT_STATE_FILES = ['README.md', 'docs/design.md', 'docs/ui.md', '.github/workflows/deploy.yml'];
+//   3. **含根目录 `AGENTS.md`**（2026-09-18 加入）：它是给代理/新人的行为契约，只描述现状
+//      （不像 progress.md 混着历史），而且它自己那条「改代码顺手维护文档」正要求人同步这些数字。
+//      把它纳入守卫，等于让"它写下的套件数"自动被盯住——契约自己遵守契约，不靠自觉。
+const CURRENT_STATE_FILES = [
+  'README.md',
+  'AGENTS.md',
+  'docs/design.md',
+  'docs/ui.md',
+  '.github/workflows/deploy.yml',
+];
 
 describe('文档口径与仓库实际一致', () => {
   it('描述当前状态的文档与 CI 里的「套件数」与实际一致', () => {
@@ -131,7 +140,7 @@ describe('文档口径与仓库实际一致', () => {
 // 口径（与 docs/progress.md §1.1 的记录一致）：
 //   业务代码 = src/**/*.ts
 //   测试代码 = test/**/*.{ts,mjs}（含 support/ 与一次性脚本）
-//   文档     = README.md + docs/*.md
+//   文档     = README.md + AGENTS.md + docs/*.md（根目录那两份"给人/代理读的入口"都算）
 // 只统计行数，不区分空行/注释——「有效代码行」需要语言级解析，而这一层的用途是**规模量级**
 // 与增长趋势，精确到行反而制造无谓争议。
 
@@ -243,7 +252,7 @@ describe('代码规模统计', () => {
   it('计算出业务/测试/文档的行数，并要求 progress.md 保有记录节', () => {
     const business = measure('业务代码', collectFiles('src', ['.ts']));
     const tests = measure('测试代码', collectFiles('test', ['.ts', '.mjs']));
-    const docs = measure('文档', ['README.md', ...collectFiles('docs', ['.md'])]);
+    const docs = measure('文档', ['README.md', 'AGENTS.md', ...collectFiles('docs', ['.md'])]);
 
     const all = [business, tests, docs];
     const total = all.reduce((n, s) => n + s.lines, 0);
