@@ -22,7 +22,7 @@
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
   color: var(--ink-muted);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   line-height: 1.5;
   text-align: center;
 }
@@ -68,8 +68,8 @@
 }
 
 .notice-bar__close svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 @media (hover: hover) and (pointer: fine) {

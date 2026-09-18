@@ -10,7 +10,7 @@
 //      只有成功才关闭。否则一个两秒的删除请求读起来就是「点了没反应」。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../icons.js';
-import { setPending } from './toast.js';
+import { setPending, isPending } from './toast.js';
 
 export function createConfirm() {
   let resolveCurrent = null;
@@ -77,6 +77,10 @@ export function createConfirm() {
   }
 
   okButton.addEventListener('click', async () => {
+    // 重入守卫：`setPending` 只加 `pointer-events: none`（挡鼠标），**键盘 Enter 照样
+    // 会派发 click** —— 确认框上连按两次回车就会执行两次 action（两次批量删除 / 两次清空）。
+    // 其余同类按钮都有这一条（list.js 的行内动作、info.js 的保存与检查、preview.js 的动作）。
+    if (isPending(okButton)) return;
     if (!action) {
       dialog.close('confirm');
       settle(true);

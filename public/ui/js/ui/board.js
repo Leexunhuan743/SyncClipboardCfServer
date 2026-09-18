@@ -141,7 +141,9 @@ export function createBoard(handlers) {
     const isHome = event.key === 'Home';
     const isEnd = event.key === 'End';
     if (!(event.key in MOVES) && !isHome && !isEnd) return;
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    // 修饰键一律让路：**Shift+方向键是"选中文字"**，不是列表导航（V1 的同行守卫就是这么写的）。
+    // 此前这里漏了 shiftKey，于是 Shift+↑ 会把焦点搬走而不是选中上一行 —— 两版手感不一致。
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
 
     const row = document.activeElement?.closest?.('tr.item');
     if (!row || row.parentElement !== tbody) return; // 焦点不在列表行里
@@ -153,7 +155,12 @@ export function createBoard(handlers) {
     const rows = [...tbody.querySelectorAll('tr.item')];
     const index = rows.indexOf(row);
     const target = isHome ? rows[0] : isEnd ? rows.at(-1) : rows[index + MOVES[event.key]];
-    if (!target || target === row) return;
+    if (!target || target === row) {
+      // 到边界（首行再按 ↑、末行再按 ↓）：**吞掉这次按键**，否则页面会跟着滚一下。
+      // 与 V1 的列表行为一致 —— 两版的键盘手感不该有差别。
+      event.preventDefault();
+      return;
+    }
 
     const next = target.querySelector(snapshot.selector);
     if (!next) return;

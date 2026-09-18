@@ -15,3 +15,7 @@ dev.vars
 
 # 视觉回归截图输出（test/manual/shoot.mjs）
 .shots/
+# 同一用途的带后缀目录（`.shots-v1-final` 这类按轮次命名的工作目录）：
+# 它们同样只是证据工件，不进仓库。加这条是为了让 `git status` 干净，
+# 也免得有人用 `git add -A` 把几十张 PNG 卷进提交（ADR D11 明确禁止 `-A`）。
+.shots-*/

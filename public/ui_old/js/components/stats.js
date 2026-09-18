@@ -15,7 +15,11 @@
 // （回收站视图下是文本 1590）—— 两个口径各自都对（服务端 `byType` / `byTypeActive` 就是这么分的），
 // 但并排显示会被读成自相矛盾。按类型的分布属于「部署信息 → 按类型」，那里没有同屏对照。
 import { el } from '../dom.js';
-import { formatSize } from '../format.js';
+import { formatSize, formatRelative } from '../format.js';
+
+// 时钟差的告警阈值：官方客户端在 |差| > 5 分钟时**中止历史同步**（docs/protocol.md）。
+// 超过它就不是"一个数字"，而是"同步不动"的根因，故排障条上要变色。
+const CLOCK_SKEW_WARN_SECONDS = 5 * 60;
 
 // 趋势柱的高度上限（px）。与 `.stats__spark` 的 height 一致：柱高是**写死的像素**而不是百分比，
 // 因为柱子的容器是 flex 行、每根柱的高度基准是容器高度而不是最大值 —— 用百分比要先知道容器高度，
@@ -54,7 +58,14 @@ export function createStats() {
   // 柱子旁边必须有字：14 根小柱子单独放在行尾时，读者不知道它画的是天、是条、还是别的。
   // 这行字同时是它的单位说明（`aria-label` 里是完整口径，见 setActivity）。
   const sparkLabel = el('span', { class: 'stats__spark-label', text: '近 14 天新增' });
-  const sparkWrap = el('span', { class: 'stats__spark-wrap' }, [sparkLabel, spark]);
+  // 初值 hidden：趋势是**附加信息**，取不到就不该占位（见 main.js 的 refreshActivity ——
+  // 它失败时是静默的）。此前它的标签是常驻节点，于是「接口挂了」在界面上表现为
+  // 一行「近 14 天新增」后面什么都没有 —— 一个没有图的图注。拿到数据才显示。
+  const sparkWrap = el('span', { class: 'stats__spark-wrap', hidden: true }, [sparkLabel, spark]);
+  // 排障面（2026-09-18）：最近一次同步 / 时钟差 / 清理状态。
+  // 为什么放首屏：这三样是"同步不动"最常见的三个根因，而它们此前**只在**部署信息对话框里
+  // （要用户主动点开、并且知道去那里找）。它们的数据来自每次轮询与首屏的合成快照，本就不额外花钱。
+  const health = el('span', { class: 'stats__health' });
 
   const node = el('section', { class: 'stats', 'aria-label': '用量统计' }, [
     records.node,
@@ -79,7 +90,60 @@ export function createStats() {
       // 这里是同一条信息的第二个入口，而它后面那句"30 天后清除"属于保留策略
       // （部署信息 → 保留策略里已经写着）。这一段只留结果区头栏读不出来的那个数。
       // sparkWrap 是**常驻节点**（柱子的内容由 setActivity 单独填），故每次都重新挂上它
-      meta.replaceChildren(total, sparkWrap);
+      meta.replaceChildren(total, health, sparkWrap);
+    },
+
+    /**
+     * 排障面：最近一次同步、本机与服务端的时钟差、清理任务的状态。
+     *
+     * 三样都**有就显示、没有就整条不显示** —— 观测值要等第一次轮询/快照，
+     * 新部署的实例也可能还没跑过清理；画一个"尚未观测到"只会让首屏多一句噪音。
+     * 超过阈值的那两项（时钟差 > 5 分钟、清理上次失败）换成警示色，并把原因放进 title。
+     */
+    setHealth({ lastChangeMs = null, clockOffsetMs = null, cleanup = null } = {}) {
+      const parts = [];
+      if (Number.isFinite(lastChangeMs) && lastChangeMs > 0) {
+        parts.push(
+          el('span', {
+            class: 'stats__health-item',
+            text: `最近同步 ${formatRelative(new Date(lastChangeMs).toISOString())}`,
+            title: `服务端最新一条记录的修改时间：${new Date(lastChangeMs).toLocaleString('zh-CN')}`,
+          }),
+        );
+      }
+      if (Number.isFinite(clockOffsetMs)) {
+        const seconds = Math.round(clockOffsetMs / 1000);
+        const skew = Math.abs(seconds);
+        const warn = skew > CLOCK_SKEW_WARN_SECONDS;
+        parts.push(
+          el('span', {
+            class: `stats__health-item${warn ? ' stats__health-item--warn' : ''}`,
+            text: `时钟差 ${skew} 秒`,
+            title: warn
+              ? '与本机相差超过 5 分钟：官方客户端会因此中止历史同步，先校准两边的系统时间（详见「部署信息」）'
+              : '本机与服务器的时间差：官方客户端在 |差| > 5 分钟时会中止历史同步',
+          }),
+        );
+      }
+      if (cleanup?.lastError) {
+        parts.push(
+          el('span', {
+            class: 'stats__health-item stats__health-item--warn',
+            text: '清理任务上次失败',
+            title: `清理失败：${cleanup.lastError}（详见「部署信息」→ 清理任务）`,
+          }),
+        );
+      } else if (cleanup?.lastRunAt) {
+        parts.push(
+          el('span', {
+            class: 'stats__health-item',
+            text: '清理正常',
+            title: `最近一次清理：${new Date(cleanup.lastRunAt).toLocaleString('zh-CN')}`,
+          }),
+        );
+      }
+      health.replaceChildren(...parts);
+      health.hidden = parts.length === 0;
     },
 
     /**
@@ -91,7 +155,10 @@ export function createStats() {
      */
     setActivity(activity) {
       const days = activity?.days ?? [];
-      if (days.length === 0) return;
+      if (days.length === 0) {
+        sparkWrap.hidden = true;
+        return;
+      }
       const max = Math.max(1, Number(activity.max) || 1);
       spark.replaceChildren(
         ...days.map((day, index) => {
@@ -109,6 +176,7 @@ export function createStats() {
       spark.setAttribute('role', 'img');
       spark.setAttribute('aria-label', label);
       spark.setAttribute('title', label);
+      sparkWrap.hidden = false;
     },
   };
 }

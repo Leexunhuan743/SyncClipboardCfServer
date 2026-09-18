@@ -7,6 +7,7 @@ import { el, svg } from '../dom.js';
 import { iconPaths } from '../icons.js';
 import { formatSize } from '../format.js';
 import { api } from '../api.js';
+import { itemIsImage } from '../clipboard.js';
 
 // 缩略图只对「小图」直接取原图。数据端点不做缩放（R2 透传），所以一条 32 MiB 的图片记录
 // 就是一整张 32 MiB 的下载——`loading="lazy"` 只推迟它，不减少它。超过阈值改用占位，
@@ -18,7 +19,12 @@ function thumbPlaceholder(className, title, icon) {
 }
 
 function buildThumb(item) {
-  if (item.type !== 'Image') return null;
+  // 判据与「复制图片」按钮、预览对话框**必须同一份**（`clipboard.js` 的 `itemIsImage`：
+  // Image 类型，或文件名带图片扩展名）。此前这里判的是 `type !== 'Image'`，于是
+  // 一条 `POST /api/history` 同步过来的 `File/shot.png`（上游只在 PUT 路径把 File 提升成
+  // Image，见 src/profile.ts）会出现「有『复制图片』按钮、却没有缩略图、点开还说不能预览」
+  // 这种自相矛盾。V2 的缩略图用的就是这个判据（public/ui/js/ui/row.js）。
+  if (!itemIsImage(item)) return null;
 
   if (!item.hasData) {
     return thumbPlaceholder('cell-content__thumb--missing', '服务器上没有这条记录的图片数据', 'warning');
@@ -41,9 +47,15 @@ function buildThumb(item) {
     src: api.dataUrl(item),
   });
   image.addEventListener('error', () => {
-    // 记录说 hasData，但对象已被清理（线上真实存在这种记录）——换成可读状态
+    // 两种原因都会走到这里，故文案要对两者都成立：对象已被清理（线上真有这种记录），
+    // 或者文件名看着像图片、内容其实不是（服务端不校验 File 的扩展名与内容是否一致）。
+    // 不要写成「数据不可用：文件已不在服务器上」—— 后者在第二种情况下是误报。
     image.replaceWith(
-      thumbPlaceholder('cell-content__thumb--missing', '数据不可用：文件已不在服务器上', 'warning'),
+      thumbPlaceholder(
+        'cell-content__thumb--missing',
+        '缩略图加载失败：数据可能已不在服务器上，或该文件不是可显示的图片',
+        'warning',
+      ),
     );
   });
   return image;
@@ -52,7 +64,7 @@ function buildThumb(item) {
 function buildFlags(item) {
   const flags = [];
   if (item.pinned) flags.push(el('span', { class: 'chip chip--neutral' }, [
-    svg(iconPaths('pin'), { size: 11 }),
+    svg(iconPaths('pin'), { size: 12 }),
     el('span', { text: '置顶' })
   ]));
   // 防御性分支：服务端拒绝写入「非 Text 且没有传输数据」的 Profile（profile.ts 的

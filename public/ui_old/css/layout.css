@@ -64,7 +64,7 @@
 }
 
 .brand__meta {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--ink-faint);
   line-height: 1.2;
 }
@@ -102,7 +102,7 @@
   border-radius: var(--r-pill);
   background: var(--surface);
   color: var(--ink-muted);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -111,12 +111,22 @@
     color var(--dur-fast) var(--ease-standard);
 }
 
-.status__dot {
-  width: 7px;
-  height: 7px;
+/* 「部署信息」那四个字：它现在是这枚控件**唯一**的可见文字，也就是按钮的名字 ——
+ * 加粗一档，与旁边同样带文字的「复制最近一条」读起来是一类东西。 */
+.status__entry {
+  font-weight: 600;
+}
+
+/* 状态图标槽（2026-09-18）：图标随状态整体替换，槽位固定住尺寸以免"刷新箭头换信号弧"时
+ * 胶囊宽度跳一下（三种字形在 16px 下宽度相同，槽位只是把这件事钉住）。
+ * 16px 是图标阶梯里的"默认"档：14px 下那两道广播弧挤在一起，读不出是信号。 */
+.status__icon-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   flex: none;
-  border-radius: var(--r-pill);
-  background: var(--ink-faint);
 }
 
 .status[data-tone="live"] {
@@ -125,25 +135,20 @@
   background: color-mix(in srgb, var(--accent) 7%, var(--surface));
 }
 
-.status[data-tone="live"] .status__dot {
-  background: var(--accent);
-  /* 芯外一圈同色低透明：7px 的实心块在小尺寸下偏弱 */
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.status[data-tone="connecting"] .status__dot {
-  background: var(--star);
-  animation: status-pulse 1.4s var(--ease-standard) infinite;
-}
-
 .status[data-tone="offline"] {
   background: var(--surface-2);
 }
 
-@keyframes status-pulse {
-  50% {
-    opacity: 0.35;
-  }
+/* 状态图标随 tone 上色：live 青、connecting 琥珀、offline 灰（继承胶囊的 color）。
+ * 「正在连接」那个缺口圆环**转起来**——形状（缺口）与运动（旋转）各说一半，
+ * 不靠颜色单独表意。`prefers-reduced-motion` 下 motion.css 的全局规则把时长降到 1ms
+ * （等于静止），缺口圆环本身仍然读得出"未完成"。 */
+.status__icon {
+  flex: none;
+}
+
+.status[data-tone="connecting"] .status__icon {
+  animation: spin 1.1s linear infinite;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -219,7 +224,7 @@
 }
 
 .stat__label {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--ink-muted);
   font-weight: 500;
   white-space: nowrap;
@@ -239,7 +244,7 @@
 }
 
 .stat__unit {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--ink-muted);
   letter-spacing: 0;
@@ -257,7 +262,7 @@
   padding: 7px var(--sp-4);
   border-top: 1px solid var(--border);
   background: var(--surface-2);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--ink-faint);
   min-width: 0;
 }
@@ -268,6 +273,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+/* 排障面（最近一次同步 / 时钟差 / 清理状态，2026-09-18）
+ * 这三样是「同步不动」最常见的三个根因，此前只在部署信息对话框里。
+ * 与左侧的「全库 N 条」同一行、同一档小字：它们是**状态**，不是要抢注意力的数字。
+ * 危险值用 --star（琥珀）而不是 --danger（红）：它们是"要看一眼"，不是"操作失败"。 */
+.stats__health {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.stats__health[hidden] {
+  display: none;
+}
+
+.stats__health-item {
+  white-space: nowrap;
+}
+
+.stats__health-item--warn {
+  color: var(--star);
+  font-weight: 600;
 }
 
 /* 活动趋势：近 N 天每天一根柱，高度按当日新增条数（像素值由 js/components/stats.js 写）。
@@ -295,7 +324,7 @@
 }
 
 .stats__spark-label {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--ink-faint);
   white-space: nowrap;
 }
@@ -408,7 +437,7 @@
   border-top: 1px solid var(--border);
   padding: var(--sp-4) var(--sp-5);
   color: var(--ink-faint);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
 }
 
 .app-footer__inner {
@@ -464,6 +493,12 @@
     flex-wrap: nowrap;
   }
 
+  /* 排障面在窄屏让位：这一行已经有「全库 N 条」与趋势图，再加三项会把两者挤没。
+   * 桌面上的价值最高（那是运维/排障的界面），窄屏要看这些时走「部署信息」。 */
+  .stats__health {
+    display: none;
+  }
+
   .who {
     display: none;
   }
@@ -477,22 +512,38 @@
   }
 }
 
-/* 更窄时顶栏只留图标动作：390px 下「部署信息」的文字会与品牌挤在一起 */
+/* 更窄时顶栏只留必要的文字：390px 下品牌标题、「复制最近一条」的文字都会与「部署信息」挤在一起。
+ * 让位顺序按"要不要办事"排：「复制最近一条」收成图标（它有图标且有 aria-label），
+ * **「部署信息」四个字留着** —— 它是这枚控件唯一的可见文字，也是 `docs/ui.md` §9.5 记的
+ * "第一次使用者找不到客户端该填哪个地址"那个教训的直接防线。 */
 @media (max-width: 560px) {
   .app-header__actions .btn__label {
     display: none;
   }
 
-  /* 状态点收成只有圆点：文字说明在 aria-label 与 title 里，读屏与悬停都还在。
-   * 390px 的顶栏放不下「实时推送」四个字 + 三个图标 + 品牌。 */
-  .status__label {
-    display: none;
+  .status {
+    /* 宽度自动：图标 + 「部署信息」四个字，写死 30px 会挤到边缘 */
+    width: auto;
+    padding: 0 var(--sp-2);
+    justify-content: center;
   }
 
-  .status {
+  /* 触屏没有 hover，状态词读不到（`4b` 的选择是"图标留着"）——故这里**不隐藏图标**：
+   * 字形（信号 / 缺口圆环 / 刷新箭头）仍然把它是什么状态说出来一半。 */
+
+  /* 品牌文字（标题 + 版本号）在窄屏让位：390px 下顶栏要放下「图标 + 部署信息」+ 三个图标，
+   * 而品牌文字是"进来了才知道"的信息，入口是"要办事"的东西 —— 挤的时候让前者退。
+   * 用 clip 隐藏而不是 `display: none`：`<h1>` 仍留在无障碍树里（读屏用户照样听得到页面标题），
+   * 这也与 base.css 的 `.sr-only` 同一手法。 */
+  .brand__text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
     padding: 0;
-    width: var(--control-h-sm);
-    justify-content: center;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .app-header__divider {

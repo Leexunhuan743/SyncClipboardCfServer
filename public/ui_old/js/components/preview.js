@@ -75,7 +75,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onClose }) {
           }
         },
       },
-      [svg(iconPaths(icon), { size: 15 }), el('span', { class: 'btn__label', text: label })],
+      [svg(iconPaths(icon), { size: 16 }), el('span', { class: 'btn__label', text: label })],
     );
     return button;
   }
@@ -138,7 +138,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onClose }) {
 
     if (item.type === 'Text') {
       body.append(renderText(text ?? item.text));
-    } else if (item.type === 'Image') {
+    } else if (itemIsImage(item)) {
+      // 判据与行内缩略图、行内「复制图片」按钮同一份（理由见 row-content.js 的 buildThumb）：
+      // 文件名叫 shot.png 的 File 记录同样是可显示的图片，不该落到下面的「不支持预览」分支。
       body.className = 'dialog__body dialog__body--flush';
       body.append(renderImage(item));
     } else {
@@ -159,7 +161,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onClose }) {
       primary.push(
         actionButton({
           icon: 'copy',
-          label: '复制全文',
+          // 与行内动作同一个名字（动作标签一律"动词 + 对象"，见 list.js 的说明）。
+          // 预览里显示的本来就是全文，故"全文"两字不承担信息。
+          label: '复制文本',
           run: () => onCopy(item, text ?? item.text),
           successLabel: '已复制',
         }),

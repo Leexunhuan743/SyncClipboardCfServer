@@ -11,10 +11,14 @@
 // （进程内 `app.request`，不依赖 8787 常驻实例），只对白名单网开一面。
 // 新增路由若忘了分类 → 默认按受保护断言 → 红；把 use 下移 → 受保护路由拿不到 401 → 红。
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { createUiRoutes } from '../src/ui/routes';
 import type { Bindings } from '../src/env';
 import worker from '../src/index';
 import { isUiEnabled } from '../src/uiEnabled';
+// @ts-expect-error TS7016：`public/ui_old/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里
+import { API_BASE, api, itemPath } from '../public/ui_old/js/api.js';
 
 const USER = 'guard-probe-user';
 const PASS = 'guard-probe-password';
@@ -232,7 +236,8 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     expect(seen, '/ui/api/* 不该去问静态资源').toEqual(['/ui/__missing__']);
   });
 
-  // V1 存档（`public/ui_old/`，冻结不再维护，见该目录 README）与 V2 共用同一个界面开关。
+  // V1（`public/ui_old/`，2026-09-17 起作为备用界面重新纳入维护，见该目录 README）与 V2
+  // 共用同一个界面开关。
   // 这条守卫拦的是"关掉界面却留下一个仍可访问的旧界面"——那正是这个开关要消除的东西。
   it('V1 存档同样受界面开关约束：关闭态 404，开启态转静态资源', async () => {
     const off = makeEnv('false', 200);
@@ -249,5 +254,101 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('asset-body');
     expect(on.seen).toEqual(['/ui_old/index.html']);
+  });
+});
+
+// ===== V1 界面（`public/ui_old/`）的接口前缀与两页一致性 =====
+//
+// 这一节守的是一个**真实故障**：2026-09-15 把 V1 存档到 `public/ui_old/` 时，`/ui/` → `/ui_old/`
+// 的批量改写把 17 处**接口前缀**也一起改了，界面从此去打 `/ui_old/api/*` —— 而服务端从不提供
+// 那个命名空间（`src/index.ts` 把 `/ui_old/*` 整体当静态存档）。症状：HTML/CSS/JS 全部 200，
+// 页面永远停在骨架屏上，只报一句「初始化失败：Not Found」。
+//
+// 为什么既有测试一条都没红：`test/ui-contract.test.ts` 的扫描目标在交接时改成了 V2，
+// 而 `ui-guard` 只验证 `/ui_old/` 的静态资源受界面开关约束 —— **没有一条断言碰过 V1 的接口前缀**。
+// 这个故障因此在线上存活了两天，直到逐文件通读才发现。
+//
+// 判据取"结构性"的两条，而不是"逐个端点列清单"（后者每次加接口都要同步维护）：
+//   ① 接口前缀只有一处字面量，且它就是 `/ui/api`；
+//   ② 全部 V1 前端源码里不出现 `/ui_old/api`（无论出现在代码还是注释里）。
+describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => {
+  const V1_DIR = 'public/ui_old';
+
+  function walkFiles(dir: string, ext: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...walkFiles(full, ext));
+      else if (entry.name.endsWith(ext)) out.push(full);
+    }
+    return out;
+  }
+
+  it('接口前缀只有一处字面量，且指向 /ui/api', () => {
+    expect(API_BASE).toBe('/ui/api');
+  });
+
+  it('URL 构造：单条记录的路径逐段编码，前缀不再被页面挂载点带偏', () => {
+    const item = { type: 'Text', hash: 'ABCDEF' };
+    expect(itemPath(item)).toBe('/ui/api/history/Text/ABCDEF');
+    expect(api.dataUrl(item)).toBe('/ui/api/history/Text/ABCDEF/data');
+    expect(api.dataUrl(item, { download: true })).toBe('/ui/api/history/Text/ABCDEF/data?download=1');
+    // hash 里的 `#`/`?` 会把裸拼的查询串截断（协议只禁止路径分隔符）
+    expect(itemPath({ type: 'Text', hash: 'A#B?C' })).toBe('/ui/api/history/Text/A%23B%3FC');
+  });
+
+  it('V1 前端源码里不出现 /ui_old/api（含注释）', () => {
+    const offenders: string[] = [];
+    const files = walkFiles(join(V1_DIR, 'js'), '.js');
+    // 空集合会让这条断言永远为真：先把「扫到了东西」本身钉住（枚举有效性）
+    expect(files.length, '没扫到 V1 的 JS 文件（守卫可能失效）').toBeGreaterThan(15);
+    for (const file of files) {
+      const text = readFileSync(file, 'utf8');
+      if (text.includes('/ui_old/api')) offenders.push(file);
+    }
+    // 两张页面同样不该出现（例如写死的接口地址）
+    for (const page of ['index.html', 'login.html']) {
+      const text = readFileSync(join(V1_DIR, page), 'utf8');
+      if (text.includes('/ui_old/api')) offenders.push(join(V1_DIR, page));
+    }
+    expect(
+      offenders,
+      '以下文件里出现了 /ui_old/api —— 服务端没有这个命名空间，界面会停在骨架屏上：',
+    ).toEqual([]);
+  });
+
+  it('两页的提示条键名一致（关闭状态跨页生效）', () => {
+    // 提示条的关闭逻辑在两个入口模块里各写了一份（理由见 js/main.js 的注释）。
+    // 一份实现、两处键名，就必须有一条断言钉住"两处一致"——不然在登录页关掉、进列表页又冒出来。
+    const readKey = (file: string) =>
+      /const NOTICE_KEY = '([^']+)'/.exec(readFileSync(join(V1_DIR, file), 'utf8'))?.[1] ?? null;
+    const inList = readKey('js/main.js');
+    const inLogin = readKey('js/login.js');
+    expect(inList, 'js/main.js 未声明 NOTICE_KEY').not.toBeNull();
+    expect(inLogin, 'js/login.js 未声明 NOTICE_KEY').toBe(inList);
+  });
+
+  it('两张页面引用的本地资源都存在（死引用 = 一次 404）', () => {
+    const missing: string[] = [];
+    let checked = 0;
+    for (const page of ['index.html', 'login.html']) {
+      const html = readFileSync(join(V1_DIR, page), 'utf8');
+      for (const m of html.matchAll(/(?:href|src)="(\/ui_old\/[^"]+)"/g)) {
+        const rel = m[1]!.replace('/ui_old/', '');
+        checked += 1;
+        if (!existsSync(join(V1_DIR, rel))) missing.push(`${page} → ${m[1]}`);
+      }
+    }
+    expect(checked, '没扫到任何本地资源引用（守卫可能失效）').toBeGreaterThan(20);
+    expect(missing, '页面引用了不存在的本地资源：').toEqual([]);
+  });
+
+  // 2026-09-18：文案表改成**两版共用一份**（V2 的 `public/ui/js/messages.js`）。
+  // 这条断言钉住"共用"这件事本身：一旦有人把 V1 的 import 换回本地副本，
+  // 两版就会各自漂移（此前删除确认的语义句、"搜索词过长"的翻译都各写了一份）。
+  it('V1 的文案来自两版共用的那一份，而不是本地副本', () => {
+    const main = readFileSync(join(V1_DIR, 'js/main.js'), 'utf8');
+    expect(main, 'V1 的 main.js 未引用共用文案表').toContain("from '../../ui/js/messages.js'");
+    expect(existsSync('public/ui/js/messages.js'), '共用文案表不存在').toBe(true);
   });
 });

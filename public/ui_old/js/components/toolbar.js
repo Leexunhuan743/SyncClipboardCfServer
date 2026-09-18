@@ -8,7 +8,7 @@
 import { el, svg, debounce } from '../dom.js';
 import { iconPaths } from '../icons.js';
 import { PAGE_SIZES, toDateInput, fromDateInput } from '../filters.js';
-import { setPending } from './toast.js';
+import { setPending, isPending } from './toast.js';
 
 const TYPE_OPTIONS = [
   ['All', '全部'],
@@ -207,6 +207,8 @@ export function createToolbar({
       // 刷新期间按钮自己转起来：整块列表只是变淡，光靠它读不出「正在取」还是「卡住了」
       onclick: async (event) => {
         const button = event.currentTarget;
+        // 与 confirm.js 的确认按钮同理：`pointer-events: none` 只挡鼠标，键盘 Enter 仍会重入
+        if (isPending(button)) return;
         setPending(button, true);
         try {
           await onRefresh();
@@ -224,7 +226,7 @@ export function createToolbar({
     // 窄屏下这一组整行独占（layout.css 的窄屏块），顺序因此同时也是移动端的阅读顺序。
     el('div', { class: 'toolbar__group toolbar__group--search' }, [
       el('div', { class: 'search' }, [
-        svg(iconPaths('search'), { size: 15, class: 'search__icon' }),
+        svg(iconPaths('search'), { size: 16, class: 'search__icon' }),
         searchInput,
         clearButton,
         keyHint,

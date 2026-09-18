@@ -9,7 +9,7 @@
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint public/ui/js",
+    "lint": "eslint public/ui/js public/ui_old/js",
     "check": "npm run typecheck && npm run lint",
     "test": "vitest run --no-file-parallelism",
     "test:watch": "vitest"

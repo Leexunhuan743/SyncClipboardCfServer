@@ -29,7 +29,6 @@ export const PAGE_SIZES = [20, 50, 100, 200, 500];
 const TYPES = new Set(['All', 'Text', 'Image', 'File', 'Group']);
 const SORTS = new Set(['createTime', 'lastModified', 'lastAccessed', 'size', 'type', 'id']);
 const RANGES = new Set(['all', 'today', '7d', '30d', 'custom']);
-const DAY_MS = 86_400_000;
 
 function clampInt(raw, fallback, min, max) {
   if (raw === null || raw === undefined || raw === '') return fallback;
@@ -45,15 +44,28 @@ export function startOfDay(ms) {
   return date.getTime();
 }
 
+/**
+ * 按**日历日**偏移，而不是 `± n × 86400000`。
+ * 为什么：常数 24 小时在跨夏令时切换的时区里会落偏一小时 —— `startOfDay(now) - 6 * 86400000`
+ * 可能指向前一天的 23:00，于是「近 7 天」从半天中间开始、两端各差一小时。`setDate()` 是
+ * 日历运算，时区规则交给运行时。本项目的目标用户所在时区没有夏令时，但这里没有理由
+ * 留一个"只在别人的时区里错"的算法。
+ */
+function addDays(ms, days) {
+  const date = new Date(ms);
+  date.setDate(date.getDate() + days);
+  return date.getTime();
+}
+
 /** 预设范围 → [after, before) 的毫秒边界；null 表示该侧不设限。 */
 export function rangeBounds(filters, now = Date.now()) {
   switch (filters.range) {
     case 'today':
       return { after: startOfDay(now), before: null };
     case '7d':
-      return { after: startOfDay(now) - 6 * DAY_MS, before: null };
+      return { after: addDays(startOfDay(now), -6), before: null };
     case '30d':
-      return { after: startOfDay(now) - 29 * DAY_MS, before: null };
+      return { after: addDays(startOfDay(now), -29), before: null };
     case 'custom':
       return { after: filters.after ?? null, before: filters.before ?? null };
     default:
@@ -83,7 +95,7 @@ export function fromDateInput(value, edge) {
   // Date 构造函数对越界分量是**滚动**而不是报错（`2026-13-99` → 2027-04-09），
   // 故必须回读校验：解析出的年月日与输入一致才算合法日期。
   if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
-  return edge === 'end' ? date.getTime() + DAY_MS : date.getTime();
+  return edge === 'end' ? addDays(date.getTime(), 1) : date.getTime();
 }
 
 export function filtersFromUrl(search = location.search) {
@@ -160,16 +172,4 @@ export function syncUrl(filters, { push = false } = {}) {
   if (`${location.pathname}${location.search}` === url) return;
   if (push) history.pushState(null, '', url);
   else history.replaceState(null, '', url);
-}
-
-export function isDefaultFilters(filters) {
-  return (
-    filters.types === DEFAULT_FILTERS.types &&
-    !filters.starred &&
-    filters.search === '' &&
-    filters.range === DEFAULT_FILTERS.range &&
-    !filters.deleted &&
-    filters.sort === DEFAULT_FILTERS.sort &&
-    filters.order === DEFAULT_FILTERS.order
-  );
 }

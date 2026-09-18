@@ -30,6 +30,10 @@ export function el(tag, props = {}, children = []) {
 }
 
 // 用常量路径数据构造 SVG（路径来自 icons.js 的静态表，不含用户输入）
+//
+// 尺寸规则（2026-09-18 收敛）：行内/控件内用 **12 / 14 / 16**，空状态与对话框插图用 **32**，
+// 品牌标识 26 是唯一的例外（它是 logo，不是图标）。此前实际用到 11–34 共十一档，
+// 多出来的那些（11/13/15/34）视觉上分不出来，只是让"这个图标该多大"每次都要重新决定。
 export function svg(pathData, { size = 16, class: classNames = '' } = {}) {
   const node = document.createElementNS(SVG_NS, 'svg');
   node.setAttribute('viewBox', '0 0 24 24');

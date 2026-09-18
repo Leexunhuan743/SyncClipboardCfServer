@@ -8,10 +8,18 @@
 import { api, handleAuthError, redirectToLogin } from './api.js';
 import { createStore } from './store.js';
 import { filtersFromUrl, filtersToApi, syncUrl, DEFAULT_FILTERS } from './filters.js';
-import { writeText, writeImage } from './clipboard.js';
+import { writeText, writeImage, itemIsImage } from './clipboard.js';
+import { typeLabel } from './format.js';
 import { debounce } from './dom.js';
 import { createLatestGate } from './latest.js';
 import { createPushChannel } from './signalr.js';
+// ===== 两版共用的**文案表**（2026-09-18）=====
+// 确认框的语义句、列表错误的人话翻译、剪贴板失败的原因句曾经在 V1 与 V2 各写一份，
+// 而它们逐字对齐服务端语义（例如"带数据文件的记录软删时会立即清掉数据文件"）——
+// 两份必然漂移。现在只有一份：V2 的 `messages.js`，V1 从这里引它。
+// 代价是 V1 的模块图多两个文件（messages.js 与它依赖的 V2 format.js，都很小），
+// 换来的是"改一句话不会只改一半"。`test/ui-guard.test.ts` 有断言钉住这条路径。
+import { deleteConfirmSpec, batchDeleteConfirmSpec, clearHistorySpec, describeListError, clipboardFailureHint } from '../../ui/js/messages.js';
 import { createHeader } from './components/header.js';
 import { createStats } from './components/stats.js';
 import { createToolbar } from './components/toolbar.js';
@@ -19,7 +27,7 @@ import { createList } from './components/list.js';
 import { createPagination } from './components/pagination.js';
 import { createPreview } from './components/preview.js';
 import { createConfirm } from './components/confirm.js';
-import { createToasts } from './components/toast.js';
+import { createToasts, setPending, flashSuccess, isPending } from './components/toast.js';
 import { createInfo } from './components/info.js';
 
 // 可见 10s / 隐藏 30s：一次轮询是一次 D1 读 + 一次 Workers 请求，
@@ -64,6 +72,8 @@ const info = createInfo({
   getClockOffsetMs: () => clockOffsetMs,
   getLastChangeMs: () => lastChangeMs,
   getPushState: () => pushChannel.state,
+  // 首屏取不到部署信息时的「重试」：再走一次同一条路径（成功就用新数据重绘对话框）
+  onRetry: () => openInfo(),
 });
 
 // 实时推送（后端能力评估 §2.1）：连上后把轮询降到看门狗间隔，断线自动回到 10 秒轮询。
@@ -107,19 +117,21 @@ function setStale(stale) {
 async function copyPlainText(text, label = '内容') {
   const ok = await writeText(text);
   if (ok) toasts.info(`已复制${label}`);
-  else toasts.error('浏览器拒绝了剪贴板访问，请手动选择复制');
+  else toasts.error(clipboardFailureHint(window.isSecureContext, '可以手动选中文本后复制。'));
   return ok;
 }
 
 // 列表里的正文是截断过的：要复制/预览全文必须先取单条，否则用户拿到的是被砍掉一半的内容。
 // 取不到（网络/401）返回 null，由调用方决定降级路径。
-async function fetchFull(item) {
+// `retry`（可选 thunk）：失败时把"重试刚才那一步"放进提示条 —— 调用方知道自己要做的是什么
+// （复制那一条 / 预览那一条），这个函数不知道。
+async function fetchFull(item, retry = null) {
   if (!item.textTruncated) return item;
   try {
     return await api.get(item);
   } catch (error) {
     if (handleAuthError(error)) return null;
-    toasts.error(`取全文失败：${error.message}`);
+    toasts.error(`取全文失败：${error.message}`, retry ? { action: { label: '重试', run: retry } } : {});
     return null;
   }
 }
@@ -209,6 +221,7 @@ const actions = {
   onBatchDelete: batchDelete,
   onBatchFlag: batchFlag,
   onBatchRestore: batchRestore,
+  onBatchCopy: batchCopy,
   onEmptyTrash: emptyTrash,
 };
 
@@ -216,6 +229,7 @@ const header = createHeader({
   onToggleTheme: toggleTheme,
   onLogout: logout,
   onInfo: openInfo,
+  onCopyLatest: copyLatest,
 });
 const stats = createStats();
 const toolbar = createToolbar({
@@ -249,6 +263,8 @@ function syncHeader() {
     version: state.version,
     theme: state.theme,
     pushState: pushChannel.state,
+    // 「复制最近一条」在没有记录时隐藏：那时它没有任何可做的事（不是"禁用"，是不存在）
+    canCopyLatest: state.total > 0,
   });
 }
 
@@ -280,6 +296,16 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 已有更新的请求在飞：这次的结果作废，**绝不能**写回 store
     // （写回就是「列表显示的内容与筛选控件不一致」——实测复现过的缺陷）。
     if (!listGate.isCurrent(ticket)) return;
+    // 越界页：删掉一整页、清空回收站、把每页条数调大之后，当前页码可能已经超过总页数。
+    // 服务端不夹取（`src/ui/query.ts` 直接 offset=(page-1)*pageSize），于是这里会拿到
+    // 一页空数据，而分页条仍按旧页码渲染 —— 实测文案是「第 101–100 条，共 70 条」
+    // 「第 3 / 2 页」，同时列表显示空状态。夹回最后一页重新取一次即可。
+    // 用 replace 而不是 push：这是界面的自我修正，不该进浏览器的后退历史。
+    const lastPage = Math.max(1, Math.ceil(page.total / state.filters.pageSize));
+    if (state.filters.page > lastPage) {
+      setFilters({ page: lastPage }, { push: false });
+      return;
+    }
     setStale(false);
     const flashKeys = flash
       ? new Set(page.items.filter((item) => !previousKeys.has(item.key)).map((item) => item.key))
@@ -300,17 +326,17 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
     setStale(true);
-    // 400 基本只有一个来源：搜索词超过服务端上限（48 字节，约 16 个汉字；协议与界面共用同一判定）。
-    // 把服务端的校验串翻译成用户能懂的话，否则会看到「无法读取历史记录：SearchText must be at most 48 bytes」。
-    const message =
-      error.status === 400 && store.get().filters.search !== ''
-        ? '搜索词过长：服务端上限 48 字节（约 16 个汉字），缩短后再试'
-        : `无法读取历史记录：${error.message}`;
+    // 翻译成人话的那几条（400 搜索词过长 / 429 限速 / 其余原样）在**两版共用**的文案表里：
+    // 此前 V1 与 V2 各写一份，症状是"同一件事两个界面说不同的话"。
+    const message = describeListError(error, store.get().filters.search);
     if (store.get().items.length === 0) {
       // 首屏失败：给出可操作的错误态，而不是把骨架屏永远留在那里
       list.showError(message, () => refresh());
     } else {
-      toasts.error(message);
+      // 已经有内容时保留旧数据 + 一条提示。带上「重试」：网络抖动这类瞬时故障占多数，
+      // 而重试的成本正好是刚刚失败的那一次列表请求 —— 此前只能让用户自己再点一次刷新。
+      // 400（搜索词过长 / 筛选值非法）不给重试：那是输入问题，重试必然再失败。
+      toasts.error(message, error.status === 400 ? {} : { action: { label: '重试', run: () => void refresh() } });
     }
   } finally {
     // 已被取代时不要清 busy：那面“正在取”的旗子归更新的那次请求管
@@ -345,6 +371,61 @@ async function refreshStats() {
   const current = store.get();
   stats.update(current.stats);
   toolbar.update({ filters: current.filters, byType: countsForView(current) });
+}
+
+// ===== 首屏合成快照（`/ui/api/overview`，2026-09-18）=====
+// 一次往返拿到：存量统计 + 类型计数 + 变更标记 + 部署信息（含清理状态/保留策略）+ 服务端时间。
+// 它取代了首屏的 `refreshStats()` 与"第一次 poll 的顺带观测"，于是首屏从三次请求（list +
+// statistics + poll）变成两次（list + overview）；而「时钟差 / 最近一次同步 / 清理状态」
+// 这三样排障要看的东西也随它一起到手 —— 否则它们只在用户主动打开部署信息时才取。
+//
+// 失败**不阻断首屏**：列表那一份是单独取的，统计条与排障条留空即可（下一次轮询会把
+// 后两样补齐）；也不打开失联横幅 —— 那件事由列表与轮询自己报，不该由一张锦上添花的快照
+// 把整页标成"可能不是最新"。
+async function refreshOverview() {
+  try {
+    const snapshot = await api.overview({ deleted: store.get().filters.deleted });
+    store.set({
+      stats: {
+        ...(snapshot.stats ?? {}),
+        view: store.get().filters.deleted,
+        byType: snapshot.byType ?? null,
+        byTypeActive: snapshot.byTypeActive ?? null,
+      },
+      info: snapshot.info ?? store.get().info,
+    });
+    if (typeof snapshot.serverTime === 'string') {
+      const server = Date.parse(snapshot.serverTime);
+      if (!Number.isNaN(server)) clockOffsetMs = server - Date.now();
+    }
+    const changeMs = Number(snapshot.marker?.lastModified);
+    if (Number.isFinite(changeMs) && changeMs > 0) lastChangeMs = changeMs;
+    // 变更标记也一起种下：否则第一次 poll 会把「首屏已经看过的这一份」当成一次新变更，白刷一遍列表
+    if (snapshot.marker) marker = `${snapshot.marker.count}:${snapshot.marker.lastModified}`;
+
+    setStale(false);
+    const current = store.get();
+    stats.update(current.stats);
+    stats.setHealth(healthSnapshot());
+    toolbar.update({ filters: current.filters, byType: countsForView(current) });
+  } catch (error) {
+    if (handleAuthError(error)) return;
+    console.warn(`[ui] overview 快照获取失败：${error.message}`);
+  }
+}
+
+// 排障面的三个数（首屏与轮询都要刷新）：最近一次同步、本机与服务端的时钟差、
+// 清理任务的最近一次运行与失败。前两样来自 poll/overview 的顺带观测，第三样来自
+// 同一个快照里的部署信息（`info.cleanup`）。
+function healthSnapshot() {
+  // 变量名不能叫 `info`：那会遮蔽模块级的**部署信息对话框组件**（`const info = createInfo(...)`），
+  // 正是 eslint 的 `no-shadow` 在守的那类事故（refreshStats 的注释里记过一次同源的坑）。
+  const deployment = store.get().info;
+  return {
+    lastChangeMs,
+    clockOffsetMs,
+    cleanup: deployment?.cleanup ?? null,
+  };
 }
 
 // ===== 活动趋势（借自 V2 的 `/ui/api/activity`）=====
@@ -395,22 +476,16 @@ async function toggleFlag(item, field, value) {
 }
 
 async function deleteItem(item) {
-  // 文案口径（与实现逐条对齐，见 docs/ui.md §5 第 4 条）：
+  // 文案口径与实现逐条对齐，而且**只有一份**（两版共用的 `messages.js`）：
   //   带数据文件 → 软删**立即清掉 R2 数据文件**（不可恢复），只有 D1 元数据保留 30 天；
   //   无数据文件（内联文本）→ 内容就在这一行里，30 天内可从回收站恢复。
   // 两者写成同一句话会骗人：说「30 天后才彻底清除」让人以为内容还在（对前者是错的），
   // 而说「不可恢复」又会让后者的用户白白放弃一次可用的恢复。
-  const what =
-    item.type === 'Text'
-      ? `「${(item.text ?? '').slice(0, 40)}…」`
-      : `「${item.dataName ?? item.type}」`;
-  const after =
-    item.hasData
-      ? '服务端会立即清除数据文件（不可恢复），仅元数据保留 30 天后彻底清除。'
-      : '这条记录没有数据文件，30 天内还能从回收站恢复。';
+  const spec = deleteConfirmSpec(item);
   const ok = await confirm.ask({
-    title: '删除这条记录？',
-    message: `将删除 ${what}。所有同步设备上的这条记录也会被删除；${after}`,
+    title: spec.title,
+    message: spec.message,
+    confirmLabel: spec.confirmLabel,
     // 删除在对话框内完成：请求期间按钮转圈，失败留在原地显示原因（不必重新确认一遍）
     action: async () => {
       await api.patch(item, { isDelete: true });
@@ -455,27 +530,45 @@ async function restoreItem(item) {
 }
 
 // ===== 批量操作 =====
-// 四个批量动作（收藏 / 置顶 / 删除 / 恢复）共用这一条骨架：确认 → 一次请求 → 就地更新界面。
-// 差别只在确认文案与「成功后怎么收行」，故不各写一遍请求与失败处理。
-async function runBatch({ update, title, message, confirmLabel, applyLocally }) {
+// 四个批量动作（收藏 / 置顶 / 删除 / 恢复）共用这一条骨架：一次请求 → 就地更新界面。
+// 差别只在"要不要先问一句"与"成功后怎么收行"，故不各写一遍请求与失败处理。
+//
+// 2026-09-18：**只有销毁性的两个（删除、清空回收站）过确认框**。收藏/置顶/恢复是可逆的
+// 低风险动作，让用户为"收藏这 12 条"再确认一次是纯多出来的一步（评审结论）；
+// 而删除要付出的代价（数据文件立即清除）必须当面说清，那条摩擦保留。
+async function runBatch({ update, title, message, confirmLabel, applyLocally, destructive = true }) {
   const items = [...store.get().selection.values()];
   if (items.length === 0) return false;
-  const ok = await confirm.ask({
-    title,
-    message,
-    confirmLabel,
-    action: async () => {
-      const result = await api.batchUpdate(items, update);
-      // 失败项留在对话框里报出数量：静默跳过会让用户以为全部做成了
-      if (result.failed) {
-        throw new Error(`有 ${result.failed} 条未生效（可能已被其他设备修改），请刷新后重试`);
-      }
-      applyLocally(items);
-      store.set({ selection: new Map() });
-      list.updateSelection(new Map());
-      await refreshStats();
-    },
-  });
+
+  const apply = async () => {
+    const result = await api.batchUpdate(items, update);
+    // 失败项必须报出来：静默跳过会让用户以为全部做成了
+    if (result.failed) {
+      throw new Error(`有 ${result.failed} 条未生效（可能已被其他设备修改），请刷新后重试`);
+    }
+    applyLocally(items);
+    store.set({ selection: new Map() });
+    list.updateSelection(new Map());
+    await refreshStats();
+  };
+
+  if (!destructive) {
+    try {
+      await apply();
+    } catch (error) {
+      if (handleAuthError(error)) return false;
+      // 没有对话框可承载错误，故走提示条；并照样对账一次（批量是服务端逐条判定的，
+      // 失败时也可能有一部分已经生效，停在旧状态比慢一点更糟）。
+      toasts.error(`批量操作失败：${error.message}`);
+      await refresh({ silent: true });
+      return false;
+    }
+    await refresh({ silent: true });
+    list.restoreFocus();
+    return true;
+  }
+
+  const ok = await confirm.ask({ title, message, confirmLabel, action: apply });
   // 无论成败都对账一次：批量是服务端**逐条**判定的，失败时也可能有一部分已经生效，
   // 界面停在旧状态比慢一点更糟。
   await refresh({ silent: true });
@@ -498,6 +591,8 @@ async function batchFlag(action) {
     title: `${verb}选中的 ${chosen.length} 条？`,
     message: '这个状态会同步到所有设备，并在当前列表里就地更新。',
     confirmLabel: `${verb} ${chosen.length} 条`,
+    // 可逆、无数据损失：不问，直接做（错了再点一次即可反向）
+    destructive: false,
     applyLocally: (items) => {
       for (const item of items) list.patchItem({ ...item, [field]: value });
     },
@@ -516,6 +611,8 @@ async function batchRestore() {
     // 这句话必须说在前面——否则用户会以为失败是 bug，而不是服务端的既定语义。
     message: '没有数据文件的记录会回到历史列表；数据文件已随删除清除的会被服务端拒绝（未生效条数会如实显示）。',
     confirmLabel: `恢复 ${chosen.length} 条`,
+    // 恢复同样可逆（再删一次即可），且失败条数会在提示条里如实报出
+    destructive: false,
     applyLocally: (items) => {
       for (const item of items) list.removeItem(item.key);
     },
@@ -524,15 +621,65 @@ async function batchRestore() {
   return ok;
 }
 
+// 批量复制（2026-09-18）：一次 batch-meta 拿到**完整正文**（列表里的正文被服务端截断到
+// 500 字符，直接拼列表值等于把几条剪贴板各砍一半），单次 100 条的上限由 api.batchMeta 分片。
+// 只复制**文本**记录：非文本记录的 text 是文件名，拼进去只会得到一串 .bin；
+// 跳过的条数在提示里如实报出，而不是静默少给几条。
+async function batchCopy() {
+  const chosen = [...store.get().selection.values()];
+  if (chosen.length === 0) return false;
+
+  let full;
+  try {
+    full = await api.batchMeta(chosen);
+  } catch (error) {
+    if (handleAuthError(error)) return false;
+    toasts.error(`取全文失败：${error.message}`, {
+      action: { label: '重试', run: () => void batchCopy() },
+    });
+    return false;
+  }
+
+  // 服务端按 D1 的行序返回（`readBatchMeta` 没有 ORDER BY），这里按**选中顺序**重排 ——
+  // 用户拼出来的选择顺序就是他要粘贴的顺序。
+  const byKey = new Map(full.map((item) => [item.key, item]));
+  const texts = [];
+  let skipped = 0;
+  for (const picked of chosen) {
+    const item = byKey.get(picked.key);
+    // 取全文的这段时间里被别的设备删了：少给这一条，不计入"跳过"（那不是类型问题）
+    if (!item) continue;
+    if (item.type === 'Text' && (item.text ?? '') !== '') texts.push(item.text);
+    else skipped += 1;
+  }
+  if (texts.length === 0) {
+    toasts.error(`选中的 ${chosen.length} 条里没有可复制的文本内容`);
+    return false;
+  }
+
+  // 多条之间空一行：粘到聊天框/编辑器里还分得开，而不是连成一句
+  const payload = texts.join('\n\n');
+  if (!(await writeText(payload))) {
+    toasts.error(clipboardFailureHint(window.isSecureContext, '可以在预览里逐条复制。'));
+    return false;
+  }
+  toasts.info(
+    `已复制 ${texts.length} 条文本（${payload.length} 个字符` +
+      `${skipped > 0 ? `，跳过 ${skipped} 条非文本` : ''}）`,
+  );
+  return true;
+}
+
 async function batchDelete() {
   const chosen = [...store.get().selection.values()];
   if (chosen.length === 0) return false;
+  // 逐条差异（哪些带数据文件）在批量场景下列举不过来，故共用文案把两种后果**都说出来**
+  const spec = batchDeleteConfirmSpec(chosen.length);
   const ok = await runBatch({
     update: { isDelete: true },
-    title: `删除选中的 ${chosen.length} 条记录？`,
-    message:
-      '这些记录会从所有同步设备上消失；带数据文件的会立即清除数据文件（不可恢复），无数据文件的（内联文本）30 天内可从回收站恢复。仅元数据保留 30 天后彻底清除。',
-    confirmLabel: `删除 ${chosen.length} 条`,
+    title: spec.title,
+    message: spec.message,
+    confirmLabel: spec.confirmLabel,
     applyLocally: (items) => {
       for (const item of items) list.removeItem(item.key);
     },
@@ -544,10 +691,11 @@ async function batchDelete() {
 // 清空回收站：服务端用一条 DELETE 批量清掉全部已删除记录（不是逐条走写路径）。
 // 这**不可逆**——回收站的前提就是「30 天内还能恢复」，所以文案必须把代价说清。
 async function emptyTrash() {
+  const spec = clearHistorySpec('trash');
   const ok = await confirm.ask({
-    title: '清空回收站？',
-    message: '回收站里的记录会被彻底删除（元数据不再保留，无法恢复）。活跃记录不受影响。',
-    confirmLabel: '彻底删除',
+    title: spec.title,
+    message: spec.message,
+    confirmLabel: spec.confirmLabel,
     action: async () => {
       await api.clear('trash');
       store.set({ selection: new Map() });
@@ -563,11 +711,11 @@ async function emptyTrash() {
 
 // 清空全部历史（活跃 + 回收站 + 数据文件）：部署信息对话框里的危险区调它。
 async function clearAll() {
-  const total = store.get().stats?.totalCount ?? 0;
+  const spec = clearHistorySpec('all');
   const ok = await confirm.ask({
-    title: '清空全部历史？',
-    message: `将删除全部 ${total} 条记录及其数据文件（含回收站），无法恢复；各设备上的官方客户端会在下一次同步时同步这次清空。`,
-    confirmLabel: '清空全部',
+    title: spec.title,
+    message: spec.message,
+    confirmLabel: spec.confirmLabel,
     action: async () => {
       const result = await api.clear('all');
       store.set({ selection: new Map() });
@@ -595,7 +743,7 @@ async function previewItem(item) {
   }
   // 长文本要一次额外往返：先把壳打开并说明在做什么，避免「点了没反应」
   preview.open(item, { loading: true });
-  const full = await fetchFull(item);
+  const full = await fetchFull(item, () => void previewItem(item));
   if (!full) {
     preview.close();
     return false;
@@ -628,7 +776,7 @@ async function copyItem(item, knownText) {
   try {
     let text = knownText;
     if (text === undefined) {
-      const full = await fetchFull(item);
+      const full = await fetchFull(item, () => void copyItem(item));
       if (!full) return false;
       text = full.text;
     }
@@ -636,7 +784,11 @@ async function copyItem(item, knownText) {
       toasts.info(`已复制 ${text.length} 个字符`);
       return true;
     }
-    toasts.error('浏览器拒绝了剪贴板访问，已打开预览供手动复制');
+    // 带"重试"：剪贴板写入失败多半是权限/焦点这类瞬时原因，让用户能在原地再来一次，
+    // 而不是先关掉预览、再去列表里找那一行（那正是刚刚失败的那一步）。
+    toasts.error(clipboardFailureHint(window.isSecureContext, '已打开预览，可手动选中复制。'), {
+      action: { label: '重试', run: () => void copyItem(item, text) },
+    });
     preview.open(item, { text });
     return false;
   } catch {
@@ -651,10 +803,13 @@ async function copyImage(item) {
     const response = await fetch(api.dataUrl(item), { credentials: 'same-origin' });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
+      // `data_missing` 是终态（对象确实不在服务器上了）→ 不给重试；其余是瞬时故障 → 给
+      const retry = payload?.error === 'data_missing' ? {} : { action: { label: '重试', run: () => void copyImage(item) } };
       toasts.error(
         payload?.error === 'data_missing'
           ? '数据不可用：服务器上已找不到这张图片'
           : `读取图片失败（${response.status}）`,
+        retry,
       );
       return false;
     }
@@ -666,13 +821,63 @@ async function copyImage(item) {
     toasts.error(
       result.status === 'unsupported'
         ? '当前环境不支持复制图片（剪贴板写入需要 https 或 localhost），已打开预览'
-        : `复制图片失败：${result.reason ?? '浏览器拒绝写入'}，已打开预览`,
+        : `${clipboardFailureHint(window.isSecureContext, '已打开预览。')}（${result.reason ?? '浏览器拒绝写入'}）`,
+      // 环境不支持重试也没用；"被拒绝"（权限/焦点）值得再来一次
+      result.status === 'unsupported' ? {} : { action: { label: '重试', run: () => void copyImage(item) } },
     );
     preview.open(item);
     return false;
   } catch (error) {
     toasts.error(`复制图片失败：${error.message}`);
     return false;
+  }
+}
+
+// 「复制最近一条」（2026-09-18）：网页端最需要的一条捷径 —— 真实场景是"我在手机上复制了东西，
+// 现在想在电脑上粘出来"。此前要先找到那一行（还得知道排序是创建时间倒序）再点它的复制键；
+// 这个入口把那条路径压成一次点击，且**不受当前筛选/排序影响**（取的是全库最新的一条）。
+// 非文本的记录分两种处置：图片走同一套「复制图片」实现（复用它的权限/降级分支），
+// 文件与文件夹则说清"该用行内下载" —— 不发明一个"复制文件"的动作。
+async function copyLatest(button) {
+  if (isPending(button)) return false;
+  setPending(button, true);
+  try {
+    const item = await api.latest();
+    if (!item) {
+      toasts.error('服务器上还没有任何记录');
+      return false;
+    }
+    if (item.type !== 'Text') {
+      if (itemIsImage(item)) return await copyImage(item);
+      toasts.error(
+        `最近一条是${typeLabel(item.type)}（${item.dataName ?? '无文件名'}），请在列表里用行内的「下载」取回。`,
+      );
+      return false;
+    }
+    // 列表端点会把正文截断，故先补一次单条取全文（与行内复制走的是同一条路径）
+    const full = item.textTruncated ? await api.get(item) : item;
+    const text = full?.text ?? '';
+    if (text === '') {
+      toasts.error('最近一条是空文本，没有可复制的内容');
+      return false;
+    }
+    if (await writeText(text)) {
+      flashSuccess(button, { label: '已复制' });
+      toasts.info(`已复制最近一条（${text.length} 个字符）`);
+      return true;
+    }
+    toasts.error(clipboardFailureHint(window.isSecureContext, '可以在列表里打开那一行手动复制。'), {
+      action: { label: '重试', run: () => void copyLatest(button) },
+    });
+    return false;
+  } catch (error) {
+    if (handleAuthError(error)) return false;
+    toasts.error(`取最近一条失败：${error.message}`, {
+      action: { label: '重试', run: () => void copyLatest(button) },
+    });
+    return false;
+  } finally {
+    setPending(button, false);
   }
 }
 
@@ -685,6 +890,10 @@ async function downloadItem(item) {
         payload?.error === 'data_missing'
           ? '数据不可用：服务器上已找不到这个文件'
           : `下载失败（${response.status}）`,
+        // 对象确实不在了就不给重试（终态）；其余按瞬时故障处理
+        payload?.error === 'data_missing'
+          ? {}
+          : { action: { label: '重试', run: () => void downloadItem(item) } },
       );
       return false;
     }
@@ -705,15 +914,26 @@ async function downloadItem(item) {
 }
 
 async function openInfo() {
-  const state = store.get();
-  if (!state.info) {
-    try {
-      store.set({ info: await api.info() });
-    } catch (error) {
-      handleAuthError(error);
-    }
+  // 这个对话框里**全是会变的状态**：清理任务的最近一次运行 / 上次失败 / 续跑游标、
+  // 服务端时间与本机时钟差、存储占用。此前只在 `!state.info` 时取一次 —— 于是第二次
+  // 打开看到的是首屏那一刻的快照（打开两次的间隔里清理可能已经跑过一轮）。
+  // 现在的顺序是：有快照就先开壳（不必等一次往返），拿到新数据再覆盖重绘。
+  const cached = store.get().info;
+  if (cached) info.open(cached);
+  try {
+    const fresh = await api.info();
+    store.set({ info: fresh });
+    // 清理状态/上次失败就在这份 info 里，顺手把排障条刷新一次（用户正在填表单时不重绘对话框）
+    stats.setHealth(healthSnapshot());
+    // 这一次往返（本地 ~10ms，线上可能上百毫秒）里用户可能已经在填「保留策略」那两个输入框：
+    // 重绘会整块 replaceChildren，把刚敲进去的值清掉。正在输入时不覆盖，下次打开自然会是最新的。
+    const editing = document.activeElement instanceof HTMLInputElement;
+    if (!editing) info.open(fresh);
+  } catch (error) {
+    if (handleAuthError(error)) return;
+    // 首屏就失败（没有任何快照）：仍然开壳，open(null) 会指出「暂时取不到部署信息」
+    if (!cached) info.open(null);
   }
-  info.open(store.get().info);
 }
 
 // theme-color 要跟随**生效**主题（应用内开关），不能只靠 media 查询跟随系统
@@ -749,6 +969,11 @@ async function logout() {
 // 只取一个 (行数, 最大 LastModified) 的变更信号，比每次拉整页便宜得多。
 let marker = null;
 let pollTimer = 0;
+// 后台标签里"错过了变更"的旗子（2026-09-18）：后台轮询照样在跑，但刷新被 visibility 挡住
+// （省一次 D1 读 + 一次渲染）。此前只是**照样推进 marker** —— 于是切回前台时比较结果是
+// "没变"，列表就停在离开时的样子，直到下一次写入或手动刷新。现在把"错过"记下来，
+// 回前台补一次刷新；没变化时不多发任何请求。
+let missedWhileHidden = false;
 
 async function pollOnce() {
   const ticket = pollGate.begin();
@@ -765,13 +990,20 @@ async function pollOnce() {
       if (!Number.isNaN(server)) clockOffsetMs = server - Date.now();
     }
     if (typeof next.lastModified === 'number') lastChangeMs = next.lastModified;
+    // 这两个数就是排障条上「最近同步 / 时钟差」的来源，故每次轮询顺手重画一次
+    // （只改文本，不发请求；失联时它们保持不变，横幅负责说明为什么）。
+    stats.setHealth(healthSnapshot());
     const signature = `${next.count}:${next.lastModified}`;
     const changed = marker !== null && signature !== marker;
     marker = signature;
-    if (changed && document.visibilityState === 'visible') {
-      await refresh({ silent: true, flash: true });
-      // 有写入才可能改变某根柱子的高度（见 refreshActivity 的说明）
-      void refreshActivity();
+    if (changed) {
+      if (document.visibilityState === 'visible') {
+        await refresh({ silent: true, flash: true });
+        // 有写入才可能改变某根柱子的高度（见 refreshActivity 的说明）
+        void refreshActivity();
+      } else {
+        missedWhileHidden = true;
+      }
     }
   } catch (error) {
     if (ticket.signal.aborted) return;
@@ -870,7 +1102,9 @@ async function boot() {
   document.getElementById('pagination').replaceWith(pagination.el);
 
   render();
-  await Promise.all([refresh(), refreshStats()]);
+  // 首屏两次请求：列表 + 合成快照（见 refreshOverview 的说明）。
+  // 快照落地后统计条、变更标记与排障面一起就位，故这里不再单独调 refreshStats()。
+  await Promise.all([refresh(), refreshOverview()]);
   // 趋势晚一拍：先让列表落地，再补这张锦上添花的图
   void refreshActivity();
   await pollOnce();
@@ -900,6 +1134,13 @@ async function boot() {
   // 隐藏期间交给既有的 30 秒轮询兜着，回前台再重连。
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
+      // 后台期间错过的变更在这里补上（见 missedWhileHidden 的说明）。顺序放在 pollOnce 之前：
+      // 先让列表追上，轮询那一次只是刷新 marker 与"最近同步"显示。
+      if (missedWhileHidden) {
+        missedWhileHidden = false;
+        void refresh({ silent: true, flash: true });
+        void refreshActivity();
+      }
       void pollOnce();
       pushChannel.start();
       schedulePoll();

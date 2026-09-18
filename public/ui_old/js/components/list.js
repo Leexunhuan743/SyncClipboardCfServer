@@ -77,11 +77,22 @@ function actionButton({ action, label, icon, run, successLabel = null, disabled 
   return button;
 }
 
+// 固定槽位的占位：某个动作对这一行不适用时，用一个等宽的 span 把位置占住。
+// 为什么是 `<span aria-hidden>` 而不是 `visibility: hidden` 的按钮：前者从一开始就不在
+// 可访问性树里、不可聚焦、不响应指针，语义上就是"这里什么都没有"；后者要靠 CSS 才能
+// 达到同样效果，而 `visibility` 一旦被某条媒体查询改回来就会多出一个不可用的按钮。
+function actionSlot(button) {
+  return button ?? el('span', { class: 'row-actions__slot', 'aria-hidden': 'true' });
+}
+
 function buildActions(item, actions) {
   // 回收站里的行只做一件事：恢复。能否恢复由**服务端的守卫**决定——已删除且数据文件名为空
   // （transferDataFile === ''）才允许把 IsDeleted 置回 0；带数据文件的记录在软删时已清掉数据，
   // 服务端会返回 404，故这里直接禁用并说明原因，不让用户白点一次。
   if (item.isDeleted) {
+    // 回收站同样用四个槽位，但"恢复"固定在**槽 1**（与活跃视图的"预览"同位）：
+    // `.row-actions` 是 `justify-content: flex-end`，只放一个按钮的话它会贴到最右 ——
+    // 那正是活跃视图里"删除"所在的位置，肌肉记忆会在切换视图后一次误按就把记录恢复出去。
     return el('div', { class: 'row-actions' }, [
       actionButton({
         action: 'restore',
@@ -92,72 +103,95 @@ function buildActions(item, actions) {
         disabled: item.hasData,
         title: item.hasData ? '数据文件已随删除清除，不可恢复' : '恢复到历史记录',
       }),
+      actionSlot(null),
+      actionSlot(null),
+      actionSlot(null),
     ]);
   }
 
-  const buttons = [
-    actionButton({
-      action: 'preview',
-      label: '预览',
-      icon: 'eye',
-      run: () => actions.onPreview(item),
-    }),
-  ];
+  // ===== 四个**固定槽位**：预览 / 复制 / 下载 / 删除（2026-09-18）=====
+  // 此前动作是按类型追加的（文本 3 个、图片 4 个），又整体右对齐 —— 于是"下载在哪一列"
+  // 逐行不同：鼠标沿行间下移时按钮在跳，每次都要重新找。现在槽位恒定，该类记录没有的
+  // 动作放一个等宽占位（`.row-actions__slot`：span，不进可访问性树、不可聚焦）。
+  const preview = actionButton({
+    action: 'preview',
+    label: '预览',
+    icon: 'eye',
+    run: () => actions.onPreview(item),
+  });
 
-  if (item.type === 'Text') {
-    buttons.push(
-      actionButton({
-        action: 'copy',
-        label: '复制内容',
-        icon: 'copy',
-        run: () => actions.onCopy(item),
-        successLabel: '已复制',
-      }),
-    );
-  } else {
-    // 图片（或文件名是图片的 File/Group）可以复制到系统剪贴板——clipserver 的行内复制即按此分发
-    if (itemIsImage(item)) {
-      buttons.push(
-        actionButton({
-          action: 'copy-image',
-          label: '复制图片',
+  // 图片（或文件名是图片的 File/Group）可以复制到系统剪贴板——clipserver 的行内复制即按此分发
+  const copy =
+    item.type === 'Text'
+      ? actionButton({
+          action: 'copy',
+          // 文案统一（2026-09-18）：动作标签一律"动词 + 对象"——复制文本 / 复制图片 /
+          // 复制地址 / 复制选中。此前同一件事有三个名字（行内"复制内容"、预览里"复制全文"、
+          // 部署信息里"复制"），读者会以为是三种不同的行为。
+          label: '复制文本',
           icon: 'copy',
-          run: () => actions.onCopyImage(item),
+          run: () => actions.onCopy(item),
           successLabel: '已复制',
+        })
+      : itemIsImage(item)
+        ? actionButton({
+            action: 'copy-image',
+            label: '复制图片',
+            icon: 'copy',
+            run: () => actions.onCopyImage(item),
+            successLabel: '已复制',
+            disabled: !item.hasData,
+            title: item.hasData ? '复制图片' : '数据不可用，无法复制',
+          })
+        : null;
+
+  // 文本不给"下载"：内联文本就在这一行里，下载它没有意义；长文本（有数据文件）的全文
+  // 同样能从预览里复制，多一个入口只会让"下载"这个动作变得暧昧。
+  const download =
+    item.type === 'Text'
+      ? null
+      : actionButton({
+          action: 'download',
+          label: '下载',
+          icon: 'download',
+          run: () => actions.onDownload(item),
+          successLabel: '已下载',
           disabled: !item.hasData,
-          title: item.hasData ? '复制图片' : '数据不可用，无法复制',
-        }),
-      );
-    }
-    buttons.push(
-      actionButton({
-        action: 'download',
-        label: '下载',
-        icon: 'download',
-        run: () => actions.onDownload(item),
-        successLabel: '已下载',
-        disabled: !item.hasData,
-        title: item.hasData ? '下载' : '数据不可用，无法下载',
-      }),
-    );
-  }
+          title: item.hasData ? '下载' : '数据不可用，无法下载',
+        });
 
-  buttons.push(
-    actionButton({
-      action: 'delete',
-      label: '删除',
-      icon: 'trash',
-      run: () => actions.onDelete(item),
-    }),
-  );
+  const remove = actionButton({
+    action: 'delete',
+    label: '删除',
+    icon: 'trash',
+    run: () => actions.onDelete(item),
+  });
 
-  return el('div', { class: 'row-actions' }, buttons);
+  return el('div', { class: 'row-actions' }, [
+    preview,
+    actionSlot(copy),
+    actionSlot(download),
+    remove,
+  ]);
 }
 
 export function createList(actions) {
   const headInfo = el('span', { class: 'results__count' });
+  // 一键复位筛选（2026-09-18）：此前"清除筛选条件"只在**空结果**的空状态里给 ——
+  // 有结果、但只是筛得太窄时，用户只能逐项点掉（类型/收藏/时间范围…）。
+  // 只在真的有筛选时出现（排序不算筛选：它不改变结果集，只改变顺序）。
+  const headClear = el(
+    'button',
+    {
+      class: 'btn btn--quiet',
+      type: 'button',
+      hidden: true,
+      onclick: () => actions.onClearFilters(),
+    },
+    [svg(iconPaths('close'), { size: 14 }), el('span', { class: 'btn__label', text: '清除筛选' })],
+  );
   const headSelection = el('div', { class: 'results__selection', hidden: true });
-  const head = el('div', { class: 'results__head' }, [headInfo, headSelection]);
+  const head = el('div', { class: 'results__head' }, [headInfo, headClear, headSelection]);
 
   const selectAll = el('input', { class: 'checkbox', type: 'checkbox', 'aria-label': '全选本页' });
   selectAll.addEventListener('change', () => actions.onSelectAll(selectAll.checked));
@@ -288,7 +322,9 @@ export function createList(actions) {
     if (filtered || recycle) {
       buttons.push(
         el('button', { class: 'btn', type: 'button', onclick: () => actions.onClearFilters() }, [
-          el('span', { class: 'btn__label', text: recycle ? '返回历史记录' : '清除筛选条件' }),
+          // 文案与结果区头栏那个一键复位**逐字一致**（2026-09-18）：同一个动作在同一屏两处
+          // 两个名字（"清除筛选条件" vs "清除筛选"）会让人以为是两件事。
+          el('span', { class: 'btn__label', text: recycle ? '返回历史记录' : '清除筛选' }),
         ]),
       );
     }
@@ -299,7 +335,7 @@ export function createList(actions) {
     );
 
     return [
-      svg(iconPaths('clipboard'), { size: 34, class: 'empty__icon' }),
+      svg(iconPaths('clipboard'), { size: 32, class: 'empty__icon' }),
       el('p', { class: 'empty__title', text: title }),
       el('p', { class: 'empty__hint', text: hint }),
       el('div', { class: 'empty__actions' }, buttons),
@@ -471,18 +507,43 @@ export function createList(actions) {
         : filtered
           ? `筛选中 · 共 ${total} 条`
           : `共 ${total} 条记录`;
+      // 有筛选时才给"一键复位"；选中态那一行已被批量按钮占满，故那时也收起
+      headClear.hidden = !filtered;
       return;
     }
+    headClear.hidden = true;
 
     // 批量按钮的文案随选区**当前状态**反过来：选中的都已收藏时给的是「取消收藏」。
     // 固定写「收藏」会让用户对着已收藏的记录点一个看起来没反应的按钮（服务端确实写了一次，
     // 状态却不变）——这类「点了没反应」正是要避免的。
     const chosen = [...selected.values()];
     const batchButton = (action, label, icon, handler) =>
-      el('button', { class: action === 'delete' ? 'btn btn--danger' : 'btn', type: 'button', onclick: handler }, [
-        svg(iconPaths(icon), { size: 15 }),
-        el('span', { class: 'btn__label', text: label }),
-      ]);
+      // 销毁性动作（删除选中 / 清空回收站）用**填色红**，与"取消选择"等中性按钮分开。
+      // 2026-09-18 统一：此前 V1 有两档危险样式（描边红 `--danger` 与填色红 `--danger-solid`），
+      // 同一个动作在"选择条"里是描边、在它弹出的确认框里是填色，看起来像两个不同的动作；
+      // V2 本来就只有一档（填色），现在 V1 也是。
+      el(
+        'button',
+        {
+          class: action === 'delete' ? 'btn btn--danger-solid' : 'btn',
+          type: 'button',
+          // 进行中态 + 重入守卫（2026-09-18）：批量复制可能发 N 个分片请求（每片 100 条），
+          // 批量写也要逐条走服务端 —— 没有 pending 态的按钮在这几秒里读起来就是"点了没反应"。
+          // `isPending` 那道守卫与确认框同一个理由：`pointer-events: none` 只挡鼠标、挡不住键盘 Enter。
+          onclick: async (event) => {
+            const button = event.currentTarget;
+            if (isPending(button)) return;
+            setPending(button, true);
+            try {
+              await handler();
+            } finally {
+              // 批量成功后选择集被清空、这条按钮随之被移除：对已 detach 的节点收尾是无害的
+              setPending(button, false);
+            }
+          },
+        },
+        [svg(iconPaths(icon), { size: 16 }), el('span', { class: 'btn__label', text: label })],
+      );
 
     const buttons = recycleMode
       ? [
@@ -490,6 +551,8 @@ export function createList(actions) {
           batchButton('delete', '清空回收站', 'trash', () => actions.onEmptyTrash()),
         ]
       : [
+          // 复制在最前：它是这个页面最高频的动作（与工具栏把搜索放最前是同一条理由）。
+          batchButton('copy', '复制选中', 'copy', () => actions.onBatchCopy()),
           batchButton(
             'star',
             chosen.every((item) => item.starred) ? '取消收藏' : '收藏',
@@ -623,7 +686,7 @@ export function createList(actions) {
       table.hidden = true;
       empty.hidden = false;
       empty.replaceChildren(
-        svg(iconPaths('warning'), { size: 34, class: 'empty__icon' }),
+        svg(iconPaths('warning'), { size: 32, class: 'empty__icon' }),
         el('p', { class: 'empty__title', text: '加载失败' }),
         el('p', { class: 'empty__hint', text: message }),
         el('div', { class: 'empty__actions' }, [
@@ -704,9 +767,12 @@ export function createList(actions) {
     // 目标链：相邻行里的同一个操作 → 空状态的主按钮 → 表头全选框。
     // 不做这件事的后果是实测过的：焦点随被移除的按钮一起消失、落到 <body>，
     // 键盘用户得从页面开头重新 Tab。
+    //
+    // 2026-09-18：批量收藏/置顶不再过确认框（见 main.js 的 runBatch），它们不会移除任何行，
+    // 于是 `pendingFocus` 是空的 —— 这时不要再直接返回，否则"选择条隐藏 → 焦点落到 <body>"
+    // 会在每次批量操作后发生。没有来源记录时按 index 0 落点，最终由下面那条链退回全选框。
     restoreFocus() {
-      if (!pendingFocus) return;
-      const { action, index } = pendingFocus;
+      const { action, index } = pendingFocus ?? { action: null, index: 0 };
       pendingFocus = null;
       const survivors = [...tbody.children].filter((row) => row.dataset.leaving !== 'true');
       const neighbor = survivors[index] ?? survivors[index - 1] ?? null;

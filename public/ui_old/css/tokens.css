@@ -61,13 +61,19 @@
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", "Courier New", monospace;
 
-  /* 字号阶梯：正文 14 → 微标签 12 → 标题 20 → 数字 30，跨度足够撑起层级 */
+  /* 字号阶梯（2026-09-18 收敛为四档正文级 + 一个数字档）：
+   *   13px（--fs-sm）元信息、徽标、说明、时间列
+   *   14px（--fs-body）正文与控件
+   *   16px（--fs-h2）区块标题      18px（--fs-h1）页面标题
+   *   20–30px（--fs-stat）统计条的数字
+   * 此前 `--fs-xs` 是 12px，而它被 chip/meta/note/标签用了 20 处 —— 中文 12px 偏小，
+   * 且与 13px 的 --fs-sm 只差 1px（一个只有 1px 区分的档位等于把层级做糊）。
+   * 现在 12px 整档抬到 13px，两档合并为 --fs-sm。 */
   --fs-stat: clamp(1.5rem, 1.25rem + 0.9vw, 1.875rem);
   --fs-h1: 1.125rem;
   --fs-h2: 1rem;
   --fs-body: 0.875rem;
   --fs-sm: 0.8125rem;
-  --fs-xs: 0.75rem;
   --lh-tight: 1.25;
   --lh-body: 1.55;
 
@@ -77,6 +83,10 @@
   --sp-3: 12px;
   --sp-4: 16px;
   --sp-5: 24px;
+  /* 2026-09-18 补：此前这一档是空的（24 直接跳到 48），而 32px 在样式里是要用到的
+   * （搜索框为图标留的左侧内边距就是 32px，写的是裸值）。V2 的令牌表里有 --sp-6: 32px，
+   * 两版对齐后，"32px" 不再是某个文件里的一个魔法数字。 */
+  --sp-6: 32px;
   --sp-7: 48px;
   --sp-8: 64px;
 

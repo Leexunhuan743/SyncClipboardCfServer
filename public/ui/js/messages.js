@@ -9,6 +9,11 @@
 // 而不是靠人去读 `boot.js` 里那一段被包在请求逻辑中间的字符串。
 //
 // 本模块**不碰 DOM、不碰网络、不碰状态**：入参是数据，出参是字符串。
+//
+// ⚠️ **这个文件被两个界面共用**（2026-09-18）：V2（`/ui/`）直接 import，V1（`/ui_old/`）
+// 经 `../../ui/js/messages.js` import（见 `public/ui_old/README.md`）。改这里的任何一句
+// 等于同时改两个界面 —— 这正是它存在的意义（此前两版各写一份，删除确认的语义句与
+// "搜索词过长"的翻译各有一份，漂移过）。`test/ui-guard.test.ts` 有一条断言钉住这条共用路径。
 import { typeLabel } from './format.js';
 
 /** 删除确认里"删的是哪一条"：文本给正文开头，其余给文件名/类型名。 */
@@ -77,6 +82,15 @@ export function describeListError(error, search) {
     return '搜索词过长：服务端上限 48 字节（约 16 个汉字），缩短后再试';
   }
   if (error?.status === 400) return `筛选条件不被服务端接受：${error.message}`;
+  // 429 = 认证失败限速（src/rateLimit.ts：窗口内失败到阈值就封锁）。服务端的响应体是纯文本
+  // （`Too Many Requests`），真正有用的信息在 `Retry-After` 头里（`src/auth.ts` 的 tooManyRequests），
+  // 而 `api.js` 已把它带进 `error.retryAfterSeconds`。不看这一条，用户会对着英文猜还要等多久。
+  if (error?.status === 429) {
+    const seconds = Number(error.retryAfterSeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return '请求过于频繁，请稍后再试。';
+    if (seconds < 60) return `请求过于频繁：请在 ${seconds} 秒后重试。`;
+    return `请求过于频繁：请在约 ${Math.ceil(seconds / 60)} 分钟后重试。`;
+  }
   return `无法读取历史记录：${error?.message ?? '未知错误'}`;
 }
 

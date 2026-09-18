@@ -23,6 +23,11 @@ const RETRY_MAX_MS = 60_000;
 // 每 ≤60 秒重试一次的代价是 ≈1.4k 请求/天 —— 与它取代的轮询同量级，白花。
 // 计数在**握手成功**时清零；页面切回前台会重新 start()（同时清零），故不会永久失效。
 const MAX_CONSECUTIVE_FAILURES = 5;
+// 达到失败上限后的**冷却**时长：不再快速重试，但也不是永久放弃（见 scheduleRetry）。
+// 取 10 分钟的理由：它与「用户还有多少耐心」无关，而是要覆盖那类会自愈的中断
+// ——笔记本休眠唤醒、代理重启、网络切换。此前这里是永久停手，唯一的恢复路径是
+// 切一次标签页（只有那时才会重新 start()），于是"连续断 5 次"等于这个页面永久退回轮询档。
+const RETRY_COOLDOWN_MS = 10 * 60 * 1000;
 
 /** 把一个 WebSocket 帧拆成若干条消息（RS 分隔；尾部/连续分隔符不算消息）。 */
 export function parseFrames(text) {
@@ -54,6 +59,7 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
   let socket = null;
   let heartbeat = 0;
   let retryTimer = 0;
+  let cooldownTimer = 0;
   let retryDelay = RETRY_MIN_MS;
   let state = 'offline';
   let stopped = false;
@@ -73,10 +79,23 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
     heartbeat = 0;
     clearTimeout(retryTimer);
     retryTimer = 0;
+    clearTimeout(cooldownTimer);
+    cooldownTimer = 0;
   }
 
   function scheduleRetry() {
-    if (stopped || retryTimer || failures >= MAX_CONSECUTIVE_FAILURES) return;
+    if (stopped || retryTimer || cooldownTimer) return;
+    if (failures >= MAX_CONSECUTIVE_FAILURES) {
+      // 不再快速重试，但**不是永久放弃**：冷却一段时间后清零，再试一次。
+      // （此前这里直接 return —— 标签页一直可见时"连续断 5 次"就再也没有自愈路径了。）
+      cooldownTimer = setTimeout(() => {
+        cooldownTimer = 0;
+        failures = 0;
+        retryDelay = RETRY_MIN_MS;
+        open();
+      }, RETRY_COOLDOWN_MS);
+      return;
+    }
     const delay = retryDelay;
     retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
     retryTimer = setTimeout(() => {
@@ -165,6 +184,11 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
       }
       stopped = false;
       failures = 0;
+      // 手动 start（boot / 切回前台）与冷却计时器是两条通往 open() 的路：留着计时器的话，
+      // 它会在我们已经重连之后再触发一次（open() 自身有 socket/pending 守卫，不会建出第二条
+      // 连接，但没必要留一个定时器）。
+      clearTimeout(cooldownTimer);
+      cooldownTimer = 0;
       open();
     },
     stop() {

@@ -53,7 +53,7 @@ concurrency:
 
 jobs:
   quality:
-    # 真正的质量门：typecheck + lint + **全部 20 个套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
+    # 真正的质量门：typecheck + lint + **全部 22 个套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
     # 黑盒套件需要服务器：这里用 wrangler dev（miniflare）起一个本地实例，
     # 不触碰任何线上资源、也不需要 Cloudflare 凭据。
     # 单独成 job 有两个好处：与部署进程隔离（dev server 不残留），且失败即不部署。
@@ -349,8 +349,9 @@ jobs:
         # ② 已认证 /api/version → 200 且 body 等于 wrangler.toml 的 VERSION：凭据可用 **且**这次部署真生效
         # ③ 已认证 /api/history/statistics → 200 JSON：D1 绑定与查询路径可用
         # ④ 已认证 /SyncClipboard.json → 200 JSON：Meta /「当前 profile」读路径可用
-        # ⑤ /ui/ 按 UI_ENABLED 断言：true → 200 HTML + 一个子资源 200（守住 run_worker_first +
-        #    ASSETS 转发这条链路，它是 2026-09-15 新增的，坏了界面就整片 404）；false → 404
+        # ⑤ 界面可达性按 UI_ENABLED 断言：true → 两个挂载点（/ui/ 与 /ui_old/）的页面与入口 JS
+        #    各 200，且 Content-Type 对得上（守住 run_worker_first + ASSETS 转发链路 ——
+        #    它坏了界面就整片 404）；false → 两个挂载点都必须 404
         # 未配置 USERNAME/PASSWORD secrets 时 ②③④ 降级为 ::notice:: 跳过（本仓库按 README「方式 A」
         # 把凭据只放在 Cloudflare —— 那是预期状态，不该让部署变红）。
         env:
@@ -415,31 +416,51 @@ jobs:
           fi
 
           # ⑤ 界面可达性：按 UI_ENABLED 的实际生效值断言（无副作用，只是 GET）
+          #
+          # 断言的单位是「页面 + 入口 JS」**成对**（两个挂载点各一对），且**校验 Content-Type**：
+          # 模块脚本拿到 HTML 错误页时状态码可能仍是 200，但浏览器解析会失败、整张模块图挂掉
+          # （表现为页面停在骨架屏）—— 只看状态码抓不到这一种。
+          #
+          # ⚠️ **入口名必须跟着界面走**：2026-09-16 的 V2 重做把入口从 `js/main.js` 换成了
+          # `js/boot.js`，而这条断言仍写着旧名 ⇒ 连续两次流水线在冒烟步骤变红（`wrangler deploy`
+          # 其实成功了，红的是这条断言）。V1 那一对是 2026-09-17 补的：/ui_old/ 重新纳入维护后，
+          # 它同样要有真实可达的页面与模块。
+          check_asset() { # $1=路径 $2=说明 $3=期望的 Content-Type 前缀
+            local p="$1" what="$2" want="$3" code ctype
+            read -r code ctype <<<"$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "$base$p" || echo '000 -')"
+            if [ "$code" != "200" ]; then
+              echo "::error::$p → $code，期望 200（$what）"
+              return 1
+            fi
+            case "$ctype" in
+              "$want"*)
+                echo "✓ $p → 200（$what，Content-Type: $ctype）"
+                ;;
+              *)
+                echo "::error::$p 的 Content-Type 是 '$ctype'，期望以 '$want' 开头（$what）"
+                return 1
+                ;;
+            esac
+          }
+
           if [ "${UI_ENABLED:-true}" = "false" ]; then
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$base/ui/" || echo 000)
-            if [ "$code" = "404" ]; then
-              echo "✓ UI_ENABLED=false：/ui/ → 404（界面已关闭）"
-            else
-              echo "::error::UI_ENABLED=false 时 /ui/ 期望 404，实际 $code"
-              fail=1
-            fi
+            # 关掉界面时**两个挂载点都必须 404** —— 否则"关掉界面"会留下一个仍可访问的旧界面，
+            # 那正是这个开关要消除的东西（与 test/ui-guard.test.ts 的同名断言对应）。
+            for p in /ui/ /ui_old/; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "$base$p" || echo 000)
+              if [ "$code" = "404" ]; then
+                echo "✓ UI_ENABLED=false：$p → 404（界面已关闭）"
+              else
+                echo "::error::UI_ENABLED=false 时 $p 期望 404，实际 $code"
+                fail=1
+              fi
+            done
           else
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$base/ui/" || echo 000)
-            if [ "$code" = "200" ]; then
-              echo "✓ /ui/ → 200（界面可达）"
-            else
-              echo "::error::/ui/ → $code，期望 200：界面不可达。"
-              echo "　常见原因：wrangler.toml 的 [assets] run_worker_first / binding = \"ASSETS\" 被改动，"
-              echo "　或入口按 UI_ENABLED 做转发的那段逻辑坏了（见 src/index.ts 与 test/ui-guard.test.ts）。"
-              fail=1
-            fi
-            asset=$(curl -s -o /dev/null -w '%{http_code}' "$base/ui/js/main.js" || echo 000)
-            if [ "$asset" = "200" ]; then
-              echo "✓ /ui/js/main.js → 200（静态资源经 ASSETS 转发仍可达）"
-            else
-              echo "::error::/ui/js/main.js → $asset，期望 200（静态资源转发链路断了）"
-              fail=1
-            fi
+            check_asset '/ui/' '界面入口（V2 的跳转页）' 'text/html' || fail=1
+            check_asset '/ui/app/' 'V2 应用本体' 'text/html' || fail=1
+            check_asset '/ui/js/boot.js' 'V2 模块（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
+            check_asset '/ui_old/' 'V1 备用界面入口' 'text/html' || fail=1
+            check_asset '/ui_old/js/main.js' 'V1 模块（由边缘直出）' 'text/javascript' || fail=1
           fi
 
           if [ "$fail" != "0" ]; then exit 1; fi

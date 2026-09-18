@@ -1,5 +1,5 @@
 // 登录页：一个表单、一处错误位、一个 pending 态。
-import { api, ApiError } from './api.js';
+import { api, ApiError, rateLimitMessage } from './api.js';
 import { resolveNext } from './next-target.js';
 
 // 顶部提示条：与列表页（js/main.js）共用同一个 localStorage 键与同一套行为。
@@ -80,6 +80,13 @@ form.addEventListener('submit', async (event) => {
     }
     if (error instanceof ApiError && error.status === 500) {
       showError('服务端没有配置凭据（USERNAME / PASSWORD），请先在部署端设置。');
+      return;
+    }
+    // 429 = 认证失败限速（src/rateLimit.ts：15 分钟内失败 10 次就封锁 15 分钟）。
+    // 服务端的响应体是纯文本，`statusText` 是英文的 "Too Many Requests" —— 直接端出去
+    // 用户既看不懂原因、也不知道要等多久，故这里翻译成中文并带上 Retry-After。
+    if (error instanceof ApiError && error.status === 429) {
+      showError(rateLimitMessage(error));
       return;
     }
     showError(`登录失败：${error.message}`);

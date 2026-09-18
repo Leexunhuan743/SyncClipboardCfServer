@@ -10,13 +10,13 @@ export function createPagination({ onPage }) {
   const prev = el(
     'button',
     { class: 'btn', type: 'button', disabled: true, onclick: () => onPage(currentPage - 1) },
-    [svg(iconPaths('chevronLeft'), { size: 15 }), el('span', { class: 'btn__label', text: '上一页' })],
+    [svg(iconPaths('chevronLeft'), { size: 16 }), el('span', { class: 'btn__label', text: '上一页' })],
   );
 
   const next = el(
     'button',
     { class: 'btn', type: 'button', disabled: true, onclick: () => onPage(currentPage + 1) },
-    [el('span', { class: 'btn__label', text: '下一页' }), svg(iconPaths('chevronRight'), { size: 15 })],
+    [el('span', { class: 'btn__label', text: '下一页' }), svg(iconPaths('chevronRight'), { size: 16 })],
   );
 
   const jump = el('input', {
@@ -60,7 +60,11 @@ export function createPagination({ onPage }) {
       const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
       const to = Math.min(page * pageSize, total);
 
-      range.textContent = total === 0 ? '没有可显示的记录' : `第 ${from}–${to} 条，共 ${total} 条`;
+      // 防御性夹取：真正的修法在 main.js（fetch 落地后把越界页码夹回末页，见那里的注释）。
+      // 这一条是第二道保险 —— 万一将来有别的路径把越界页码送进来，也不该渲染出
+      // 「第 101–100 条」这种起点大于终点的区间。取值只是让文案自洽，不代表该页真有数据。
+      const safeFrom = total === 0 ? 0 : Math.min(from, total);
+      range.textContent = total === 0 ? '没有可显示的记录' : `第 ${safeFrom}–${to} 条，共 ${total} 条`;
       pageLabel.textContent = `第 ${page} / ${totalPages} 页`;
       prev.disabled = page <= 1;
       next.disabled = page >= totalPages;

@@ -132,11 +132,11 @@ cp .dev.vars.example .dev.vars     # 填入 USERNAME / PASSWORD
 npm run dev                        # → http://127.0.0.1:8787
 ```
 
-运行测试（20 个套件）：
+运行测试（22 个套件）：
 
 ```bash
 npm run typecheck                  # tsc --noEmit（src + test）
-npm run lint                       # eslint（零构建前端 public/ui/js——它不在 tsc 的 include 里）
+npm run lint                       # eslint（两份零构建前端；它们不在 tsc 的 include 里）
 npm run check                      # 上面两条
 
 # 单元/数据层套件（无需服务器）
@@ -205,7 +205,7 @@ npm run deploy
 - **注意**：`deploy` job 需要下方两个 Secret，**未配置时该 job 会失败并列出缺少的名称**
   （`quality` job 不需要凭据，其协议/界面/文档/单元用例仍会照常运行并通过）
 - **流程**：两个 job
-  1. **`quality`**：`typecheck` + `lint` + **全部 20 个套件**。黑盒套件由 CI 自行用
+  1. **`quality`**：`typecheck` + `lint` + **全部 22 个套件**。黑盒套件由 CI 自行用
      `wrangler dev`（miniflare）起一个本地实例来跑 —— **不接触线上资源，也不需要 Cloudflare 凭据**，
      D1 用 `--local` 初始化，凭据用 `--var` 临时注入。
   2. **`deploy`**（`needs: quality`，质量门失败则不部署）：
@@ -461,7 +461,7 @@ src/
 └── durable/            SyncClipboardHub.ts（Hub）+ signalr.ts（协议编解码）
 public/                 静态资源：robots.txt（站点根）+ ui/（原生 ES 模块，无构建步骤）
                         文件清单以 docs/ui.md §3 为准（避免四处各列一份、加文件时漏更新）
-test/                   全部 20 个套件 + live-signalr.mjs（线上验证脚本）
+test/                   全部 22 个套件 + live-signalr.mjs（线上验证脚本）
 tools/                  ab-upstream-probe.ps1（与**官方服务端发布件**逐条 A/B 对照的探针/守卫）
 docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md / upstream-parity.md / upstream-defects.md / backend-gaps.md
 schema.sql              D1 建表语句

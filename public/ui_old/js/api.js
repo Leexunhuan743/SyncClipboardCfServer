@@ -18,37 +18,84 @@ import { typeName } from './format.js';
 export const API_BASE = '/ui/api';
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, { retryAfterSeconds = null } = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    // 限速（429）时服务端会带 Retry-After（见 src/auth.ts 的 tooManyRequests）：
+    // 把它带出来，文案才说得出「还要等多久」。其余错误为 null。
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
-async function request(path, { method = 'GET', body, signal } = {}) {
-  const response = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
+// 单次请求的默认上限。为什么需要它：此前只有列表/统计/轮询带 signal，而
+// info / integrity / settings / hubTicket / login 都没有取消路径 —— 连接半开
+// （既无响应、也无 RST）时 fetch 永不 settle，调用方的 `setPending` 便永远清不掉：
+// 按钮一直转圈，而 `.btn[data-loading="true"]` 的 `pointer-events: none` 让人点不动它。
+// 30 秒远高于最慢的合法请求（integrity 要列举一遍 R2，实测秒级）。
+const REQUEST_TIMEOUT_MS = 30_000;
 
-  const text = await response.text();
-  let payload = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = {};
+async function request(path, { method = 'GET', body, signal, timeout = REQUEST_TIMEOUT_MS } = {}) {
+  // 内部 controller：把「调用方取消」与「超时」合成一个 signal 交给 fetch。
+  // 不用 `AbortSignal.any` —— 那要求较新的内核，而这里是零构建、要能跑在旧浏览器上。
+  const controller = new AbortController();
+  let timer = 0;
+  if (timeout > 0) {
+    timer = setTimeout(
+      () => controller.abort(new Error(`请求超时（${Math.round(timeout / 1000)} 秒）`)),
+      timeout,
+    );
+  }
+  const relayAbort = () => controller.abort(signal.reason);
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener('abort', relayAbort, { once: true });
+  }
+
+  try {
+    const response = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    // 计时器要留到**读完 body** 才清：否则「响应头到了、body 永远不来」这种半开连接
+    // 照样能把调用方挂住，而那正是这条超时要防的东西。
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = {};
+      }
     }
-  }
 
-  if (!response.ok) {
-    const message = (payload && (payload.detail || payload.error)) || response.statusText || '请求失败';
-    throw new ApiError(response.status, message);
+    if (!response.ok) {
+      const message = (payload && (payload.detail || payload.error)) || response.statusText || '请求失败';
+      const raw = Number(response.headers.get('retry-after'));
+      throw new ApiError(response.status, message, {
+        retryAfterSeconds: Number.isFinite(raw) && raw > 0 ? Math.round(raw) : null,
+      });
+    }
+    return payload;
+  } finally {
+    clearTimeout(timer);
+    // 一次性的监听器在正常路径上不会自己摘掉（只 abort 时才触发），故这里显式移除：
+    // 轮询每 10 秒一次，不摘就是在 signal 上挂一辈子的闭包。
+    signal?.removeEventListener('abort', relayAbort);
   }
-  return payload;
+}
+
+// 限速（429）的用户可见文案。服务端的响应体是纯文本（`Too Many Requests`）、
+// 真正有用的信息在 Retry-After 头里，故这里统一成一句中文，登录页与列表页共用。
+export function rateLimitMessage(error) {
+  const seconds = error?.retryAfterSeconds ?? null;
+  if (!Number.isFinite(seconds) || seconds <= 0) return '尝试次数过多，请稍后再试。';
+  if (seconds < 60) return `尝试次数过多，请在 ${seconds} 秒后重试。`;
+  return `尝试次数过多，请在约 ${Math.ceil(seconds / 60)} 分钟后重试。`;
 }
 
 // 导出给测试（test/ui-logic.test.ts）：归一化与查询串构造是「界面显示错了」的两个源头，
@@ -99,6 +146,16 @@ export const api = {
     return normalizeItem(raw);
   },
 
+  // 全库最新的一条（按创建时间倒序取 1 条）：给「复制最近一条」这个入口用。
+  // 刻意**不用当前列表的第一行** —— 列表可能被筛选或改过排序，而"最近一条"指的是全库最新的那条。
+  async latest(signal) {
+    const raw = await request(
+      `${API_BASE}/history?${buildQuery({ page: 1, pageSize: 1, sort: 'createTime', order: 'desc' })}`,
+      { signal },
+    );
+    return (raw?.items ?? []).map(normalizeItem).filter(Boolean)[0] ?? null;
+  },
+
   async patch(item, fields) {
     const raw = await request(itemPath(item), { method: 'PATCH', body: fields });
     return normalizeItem(raw);
@@ -142,6 +199,35 @@ export const api = {
     const query = buildQuery({ deleted: deleted ? 'true' : '' });
     return request(`${API_BASE}/statistics${query ? `?${query}` : ''}`, { signal });
   },
+
+  // 首屏的**合成快照**（2026-09-18）：一次往返拿到 存量统计 + 类型计数 + 变更标记 +
+  // 部署信息 + 服务端时间。此前首屏要发 list + statistics + poll 三次请求，现在是两次
+  // （overview 里没有列表项），而且「时钟差 / 最近一次同步 / 清理状态」这三样**排障时要看的**
+  // 东西随它一起到手 —— 否则它们只在用户主动打开部署信息（`/ui/api/info`）时才取。
+  overview: ({ deleted = false, signal } = {}) =>
+    request(`${API_BASE}/overview${deleted ? '?deleted=true' : ''}`, { signal }),
+
+  // 批量取记录（含**完整正文**）：列表里的正文被服务端截断到 500 字符，
+  // 「选中多条 → 一起复制」必须拿全文，而逐条走单条端点是 O(N) 次请求。
+  // 服务端单次上限 100 条（`BATCH_META_MAX_ITEMS`），超出部分在这里分片串行。
+  async batchMeta(items) {
+    const CHUNK = 100;
+    const out = [];
+    for (let i = 0; i < items.length; i += CHUNK) {
+      const raw = await request(`${API_BASE}/history/batch-meta`, {
+        method: 'POST',
+        body: {
+          items: items.slice(i, i + CHUNK).map((item) => ({ type: item.type, hash: item.hash })),
+        },
+      });
+      for (const entry of raw?.items ?? []) {
+        const item = normalizeItem(entry);
+        if (item) out.push(item);
+      }
+    }
+    return out;
+  },
+
   info: () => request(`${API_BASE}/info`),
   poll: (signal) => request(`${API_BASE}/poll`, { signal }),
 

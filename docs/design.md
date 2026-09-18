@@ -482,7 +482,8 @@ npm run deploy
 > `docs/progress.md` §44；它只覆盖**框架/路由/绑定层**，涉及 `GroupProfile`/`TextProfile`/
 > `HistoryManagerHelper`（基线与本发布件差异最大的文件）的行为不适用。
 
-**套件清单**（`npm test` = 20 套件）：`hash`、`fixes`（数据层，用 node:sqlite 建真实 SQLite）、
+**套件清单**（`npm test` = 22 套件）：`ui-input`（延迟输入取消与提交）、`ui-activity`（活动趋势的按天分桶：
+毫秒时间戳必须换算成秒，否则 `strftime(..., 'unixepoch')` 返回 NULL、接口恒为全 0）、`hash`、`fixes`（数据层，用 node:sqlite 建真实 SQLite）、
 `protocol`、`fix-regressions`、`cleanup`、`query-filters`、`signalr`、`transports`、`ui`（Web 界面的
 `/ui/api/*`：会话生命周期、双通道鉴权、列表过滤与排序白名单、写操作、数据端点语义、回收站视图与恢复）、
 `docs`（文档口径
@@ -534,7 +535,7 @@ SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历�
 （曾发生「孤儿判定键形式不一致 → 每小时清空 history/」的生产事故，而当时只有数据层单测）。
 
 **CI 执行策略**（`.github/workflows/deploy.yml` 的 `quality` job）：
-`typecheck` + `lint` + **全部 20 个套件**。黑盒套件由 CI 自行起 `wrangler dev --local`（miniflare）——
+`typecheck` + `lint` + **全部 22 个套件**。黑盒套件由 CI 自行起 `wrangler dev --local`（miniflare）——
 D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需要 Cloudflare 凭据、也不接触线上资源**；
 `deploy` job 通过 `needs: quality` 依赖它，质量门失败即不部署。
 

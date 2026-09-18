@@ -104,7 +104,7 @@ function retentionText(retention) {
 // 免得让格式化函数同时接受两种表示（数字会被 `Date.parse` 拒掉、原样返回成裸毫秒串）。
 const isoOf = (ms) => new Date(ms).toISOString();
 
-export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastChangeMs, getPushState }) {
+export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastChangeMs, getPushState, onRetry }) {
   const title = el('h2', { class: 'dialog__title', id: 'info-title', text: '部署信息' });
   const body = el('div', { class: 'dialog__body' });
 
@@ -133,6 +133,8 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
   document.body.append(dialog);
 
   // 复制按钮：成功就地显示「已复制」，而不是只弹一条提示（提示条会和其他消息互相顶掉）
+  // `label` 只用于"复制的是什么"（提示条文案）；按钮自己的名字统一叫「复制地址」——
+  // 动作标签一律"动词 + 对象"（见 list.js 的说明），这里唯一的对象就是上面那个服务器地址。
   function copyButton(getText, label) {
     const button = el(
       'button',
@@ -149,7 +151,7 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
           }
         },
       },
-      [svg(iconPaths('copy'), { size: 15 }), el('span', { class: 'btn__label', text: '复制' })],
+      [svg(iconPaths('copy'), { size: 16 }), el('span', { class: 'btn__label', text: '复制地址' })],
     );
     return button;
   }
@@ -300,7 +302,7 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
     const button = el(
       'button',
       { class: 'btn', type: 'button' },
-      [svg(iconPaths('refresh'), { size: 15 }), el('span', { class: 'btn__label', text: '开始检查' })],
+      [svg(iconPaths('refresh'), { size: 16 }), el('span', { class: 'btn__label', text: '开始检查' })],
     );
     button.addEventListener('click', async () => {
       if (isPending(button)) return;
@@ -327,8 +329,9 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
   function dangerSection() {
     const button = el(
       'button',
-      { class: 'btn btn--danger', type: 'button' },
-      [svg(iconPaths('trash'), { size: 15 }), el('span', { class: 'btn__label', text: '清空全部历史' })],
+      // 与确认框里的同一个动作保持同一档强度（2026-09-18 统一，理由见 components.css 的说明）
+      { class: 'btn btn--danger-solid', type: 'button' },
+      [svg(iconPaths('trash'), { size: 16 }), el('span', { class: 'btn__label', text: '清空全部历史' })],
     );
     button.addEventListener('click', async () => {
       if (await onClearAll()) dialog.close();
@@ -345,8 +348,39 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
   return {
     open(info) {
       if (!info) {
-        body.replaceChildren(el('p', { text: '暂时取不到部署信息。' }));
-        dialog.showModal();
+        // 首屏就失败时的错误态（2026-09-18 补「重试」）：此前只有一句"暂时取不到"，
+        // 而这条路径几乎全是网络/权限类的瞬时故障 —— 让用户关掉再打开一次是没必要的成本。
+        const retry = el(
+          'button',
+          {
+            class: 'btn btn--primary',
+            type: 'button',
+            onclick: async (event) => {
+              const button = event.currentTarget;
+              if (isPending(button)) return;
+              setPending(button, true);
+              try {
+                // 重试成功时 `onRetry`（main.js 的 openInfo）会用新数据重绘本对话框；
+                // 再失败则本函数会带着新的错误态重新进来（对话框已打开，不会重复 showModal）。
+                await onRetry?.();
+              } finally {
+                setPending(button, false);
+              }
+            },
+          },
+          [svg(iconPaths('refresh'), { size: 16 }), el('span', { class: 'btn__label', text: '重试' })],
+        );
+        body.replaceChildren(
+          el('p', { text: '暂时取不到部署信息。' }),
+          el('span', {
+            class: 'note',
+            text: '服务器没有返回部署信息（网络或权限问题）。重试一次通常就好；持续失败时看浏览器控制台与 wrangler tail。',
+          }),
+          el('div', { class: 'panel__actions' }, [retry]),
+        );
+        // 已经有快照的调用方会先开壳、再在刷新失败时用 open(null) 覆盖它 ——
+        // 对一个已经打开的 <dialog> 再调 showModal() 会抛 InvalidStateError，故必须判开合状态。
+        if (!dialog.open) dialog.showModal();
         return;
       }
 

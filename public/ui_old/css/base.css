@@ -134,15 +134,6 @@ textarea {
   letter-spacing: -0.01em;
 }
 
-/* 微标签（eyebrow）：12px + 字距，给区块身份而不额外加一级标题 */
-.eyebrow {
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--ink-muted);
-  font-weight: 600;
-}
-
 /* 关闭 JavaScript 时的提示：走类而不是内联 style，这样 CSP 可以保持 `style-src 'self'` */
 .noscript {
   padding: var(--sp-5);
@@ -153,7 +144,7 @@ textarea {
  * 于是「部署信息」里那段说明在列表页**完全没有样式**（实测计算值 font-size 14px、padding 0）。
  * 通用说明类不该住在某个页面的命名空间里。 */
 .note {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--ink-faint);
   line-height: 1.6;
 }

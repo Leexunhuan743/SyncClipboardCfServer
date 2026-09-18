@@ -20,11 +20,35 @@ export function createToasts(container) {
     setTimeout(() => node.remove(), LEAVE_MS);
   }
 
-  function show(message, { error = false, duration = 2600 } = {}) {
+  function show(message, { error = false, duration = 2600, action = null } = {}) {
+    // `action`（2026-09-18）：把"重试"这一类补救动作**放在提示条里**。
+    // 为什么值得：失败路径此前只有两种结局 —— 对话框内失败可原地重试（好），
+    // 而提示条类失败（复制/下载/取全文/批量）只能让用户自己重来一遍，
+    // 而"重来"的成本正好是刚刚失败的那一步（再去找到那一行、再点一次）。
+    // 带动作时把停留时间拉长到 10 秒：2.6 秒既读不完也来不及点。
+    const timeout = action ? Math.max(duration, 10_000) : duration;
     const node = el(
       'div',
       { class: `toast${error ? ' toast--error' : ''}`, role: error ? 'alert' : 'status' },
-      [svg(iconPaths(error ? 'warning' : 'info'), { size: 14 }), el('span', { text: message })],
+      [
+        svg(iconPaths(error ? 'warning' : 'info'), { size: 14 }),
+        el('span', { text: message }),
+        action
+          ? el(
+              'button',
+              {
+                class: 'toast__action',
+                type: 'button',
+                // 提示条容器是 `pointer-events: none`（不挡页面），动作按钮自己打开命中区
+                onclick: () => {
+                  dismiss(node);
+                  action.run();
+                },
+              },
+              [el('span', { text: action.label })],
+            )
+          : null,
+      ],
     );
     container.append(node);
     // 超出上限先收掉最早的：窄屏上堆到第五条会把列表底部的操作整片盖住。
@@ -35,12 +59,16 @@ export function createToasts(container) {
     if (excess > 0) {
       for (const stale of [...container.children].slice(0, excess)) stale.remove();
     }
-    setTimeout(() => dismiss(node), duration);
+    setTimeout(() => dismiss(node), timeout);
   }
 
   return {
     info: (message) => show(message),
-    error: (message) => show(message, { error: true, duration: 4000 }),
+    /**
+     * 错误提示。`action`（可选）形如 `{ label, run }` —— 带上它就有了"重试"入口，
+     * 停留时间自动拉长到 10 秒（见 show 的说明）。
+     */
+    error: (message, options = {}) => show(message, { error: true, duration: 4000, ...options }),
   };
 }
 
