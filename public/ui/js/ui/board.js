@@ -343,9 +343,17 @@ export function createBoard(handlers) {
         // 内容没变：**原样复用节点**（保住缩略图、焦点、正在进行的按钮状态）
         row = existing.row;
       } else if (existing && existing.row.isConnected) {
-        // 内容变了（别的设备改了这条）：就地换内容 + 闪一次
+        // 内容变了（别的设备改了这条）：就地换内容 + 闪一次。
+        // `fillRow` 会把**操作列整段重建**，而用户此刻的焦点可能正落在这一行的按钮上
+        // （刚点完收藏、等下一次轮询回来看结果，是最常见的姿势）。所以先记下"焦点是哪个控件"，
+        // 换完再还给它 —— 与 `patchItem` 同一条判据。
+        // ⚠️ 这一层下面那句 `restoreFocus(root, focus)` 只在**整段重挂**时才跑
+        // （`!sameFrames(tbody, frames)`），而这里节点身份没变 ⇒ 它不会触发 ⇒
+        // 不在这里显式搬回焦点，键盘用户就会在轮询刷新时被扔回 `<body>`。
         row = existing.row;
+        const rowFocus = captureFocus(row);
         fillRow(row, rowSpec(item, selected));
+        restoreFocus(row, rowFocus);
         row.setAttribute('data-flashing', '');
         setTimeout(() => row.removeAttribute('data-flashing'), 1300);
       } else {

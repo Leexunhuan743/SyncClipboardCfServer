@@ -117,9 +117,15 @@ export function createDrawer(handlers) {
 
   // ④ 保留策略：在线可调（Meta 覆盖优先、env 回落）。
   //    这里必须显示**来源** —— 否则用户改了这里却在想"为什么没生效"（值可能来自部署变量）。
-  const retentionInput = el('input', { class: 'input', type: 'number', min: '0', 'aria-label': '保留天数' });
-  const maxCountInput = el('input', { class: 'input', type: 'number', min: '0', 'aria-label': '最多保留条数' });
-  const retentionSource = el('span', { class: 'row__hint' });
+  // 上下界与 `src/ui/maintenance.ts` 同值（那里按**分钟**，这里按**天** ⇒ 525600 / 1440 = 365）。
+  // 写在客户端是为了让越界**在本地就说清**，而不是发出去换回一个 `invalid_request`（服务端仍是唯一裁判）。
+  const RETENTION_DAYS_MAX = 365;
+  const MAX_SAVED_HISTORY_COUNT_MAX = 1_000_000;
+  const retentionInput = el('input', { class: 'input', type: 'number', min: '0', step: '1', max: String(RETENTION_DAYS_MAX), 'aria-label': '保留天数', 'aria-describedby': 'retention-status' });
+  const maxCountInput = el('input', { class: 'input', type: 'number', min: '0', step: '1', max: String(MAX_SAVED_HISTORY_COUNT_MAX), 'aria-label': '最多保留条数', 'aria-describedby': 'retention-status' });
+  // `role="status"`：这一行同时是"当前生效值"的说明与**错误出口**（两个输入框的 `aria-describedby`
+  // 目标），错误只改文字而不被播报的话，读屏用户听不到（与 `components.md` §2 的 error 格同一条要求）。
+  const retentionSource = el('span', { class: 'row__hint', role: 'status', id: 'retention-status' });
   // ⚠️ 这个按钮**必须自己带文字**（2026-09-16 修的缺陷）：它原来是一个
   // `<button class="btn btn--sm btn--primary" data-icon="check"></button>` ——
   // 既没有文字、也没有图标子节点、还没有 `aria-label`，而 CSS 里也没有任何
@@ -133,15 +139,43 @@ export function createDrawer(handlers) {
     className: 'btn btn--sm btn--primary',
     async onClick(button) {
       if (button.hasAttribute('data-loading')) return;
+      // 每次尝试保存先清掉上一次的字段级标记（`aria-invalid` 不是"曾经错过"的历史记录）
+      retentionInput.removeAttribute('aria-invalid');
+      maxCountInput.removeAttribute('aria-invalid');
+      // 只接受**非负整数字符串**。此前用的是裸 `Number.parseInt`，两种错法都能被用户自己填出来：
+      //   · `1.5` → `parseInt` 得 1 ⇒ 用户以为存了 1.5 天，实际存了 1 天；
+      //   · `e` / `1e3` → `NaN` ⇒ `NaN * 1440` 经 `JSON.stringify` 变成 **null**，
+      //     而 null 的语义是"清除 Meta 覆盖"，与用户想做的**正好相反**（静默改了配置）。
+      // V1 的 `components/info.js` 一直有这套校验（`/^\d+$/` + 越界就地提示），V2 此前漏了。
+      const parseInteger = (input) => {
+        const raw = input.value.trim();
+        if (raw === '') return null;
+        return /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+      };
+      const days = parseInteger(retentionInput);
+      const count = parseInteger(maxCountInput);
+      const bounds = [
+        ['保留天数', days, RETENTION_DAYS_MAX, retentionInput],
+        ['最多条数', count, MAX_SAVED_HISTORY_COUNT_MAX, maxCountInput],
+      ];
+      const bad = bounds.find(
+        ([, value, max]) => value !== null && (!Number.isSafeInteger(value) || value < 0 || value > max),
+      );
+      if (bad) {
+        // 说出**哪一栏**错，并把焦点送过去（这一段的错误只有一行文案，用户得自己找是哪个框）
+        const [label, , max, input] = bad;
+        input.setAttribute('aria-invalid', 'true');
+        input.focus();
+        retentionSource.textContent = `${label}只能填 0–${max} 之间的整数；留空表示回落到部署时的环境变量。`;
+        return;
+      }
       setPending(button, true);
       try {
-        const days = Number.parseInt(retentionInput.value, 10);
-        const count = Number.parseInt(maxCountInput.value, 10);
         // 空输入 = 清除覆盖（回落部署环境变量）；**0 是合法值**，含义是"关闭该阶段"。
         // 把空串当 0 会让"清除覆盖"变成"关掉清理" —— 语义正好相反（V1 的注释记过这个坑）。
         await handlers.onSaveSettings({
-          retentionMinutes: retentionInput.value === '' ? null : days * 1440,
-          maxSavedHistoryCount: maxCountInput.value === '' ? null : count,
+          retentionMinutes: days === null ? null : days * 1440,
+          maxSavedHistoryCount: count,
         });
       } finally {
         setPending(button, false);

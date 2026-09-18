@@ -129,8 +129,15 @@ export function createDialog(spec) {
       for (const button of spec.foot ? spec.foot(ctx) : []) foot.append(button);
 
       dialog.showModal();
-      // 焦点落在主操作上：键盘用户按回车就能完成最常见的那件事
-      (foot.querySelector('.btn--primary') ?? body.querySelector('input, textarea, button'))?.focus();
+      // 焦点：`[data-autofocus]` 优先（销毁性确认框用它把焦点放在**取消**上 —— 键盘用户的 Enter
+      // 应当是安全的选择），其次主操作 / 危险操作，最后才退到正文里的第一个可编辑元素。
+      // ⚠️ 此前只找 `.btn--primary`，而确认框的确认键是 `.btn--danger`、正文里又只有一个 `<p>` ——
+      // 结果**谁都没被聚焦**（焦点按浏览器默认留在头部的关闭键上），与"焦点落在主操作上"这句注释相反。
+      (
+        foot.querySelector('[data-autofocus]') ??
+        foot.querySelector('.btn--primary, .btn--danger') ??
+        body.querySelector('input, textarea, button')
+      )?.focus();
 
       return new Promise((resolve) => {
         resolver = resolve;
@@ -161,12 +168,14 @@ export function createConfirm() {
   const dialog = createDialog({
     title: '确认操作',
     body: () => el('div'),
-    // 取消在前、确认在后：Tab 的默认落点是被聚焦的那个（主按钮），但误按 Tab 时先经过取消
+    // 取消在前、确认在后，且**初始焦点落在取消上**：销毁性操作里 Enter 的默认结果应当是安全的那个
+    // （V1 的 `confirm.js` 是同一套约定：原生 dialog 会把焦点给第一个可聚焦元素，也就是右上角的关闭键）。
     foot: (ctx) => {
       const cancel = el('button', {
         class: 'btn btn--ghost',
         type: 'button',
         text: '取消',
+        'data-autofocus': '',
         onclick: () => ctx.close(false),
       });
       const confirm = el('button', {

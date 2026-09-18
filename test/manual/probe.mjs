@@ -180,14 +180,24 @@ try {
     overviewTotalLabel: document.querySelector('.overview__stat .overview__label')?.textContent ?? null,
     overviewSize: [...document.querySelectorAll('.overview__stat')].at(-1)?.querySelector('.overview__value')?.textContent ?? null,
     kinds: [...document.querySelectorAll('.kinds__item')].map((n) => n.textContent.trim()),
+    // 趋势图：条数只证明 DOM 在，**不等于看得见** —— 2026-09-18 的缺陷正是
+    // "14 根柱都在、可见高度 0"（基础规则的 .main > .overview 前缀压过了窄屏那档媒体查询）。
+    // 故把渲染盒一起量出来：中屏/桌面上它应当让位（h=0），窄屏应当独占一行（h>0）。
     sparkBars: document.querySelectorAll('.overview__spark rect').length,
+    sparkBox: (() => {
+      const box = document.querySelector('.overview__spark')?.getBoundingClientRect();
+      return box ? { w: Math.round(box.width), h: Math.round(box.height) } : null;
+    })(),
     syncState: document.querySelector('.sync')?.dataset.state ?? null,
     syncLabel: document.querySelector('.sync__label')?.textContent ?? null,
     noticeHidden: document.getElementById('notice')?.hidden ?? null,
     daymarks: [...document.querySelectorAll('.daymark')].map((n) => n.textContent.trim()),
     firstRowKind: document.querySelector('.item__kind')?.dataset.type ?? null,
     firstRowMeta: document.querySelector('.entry__meta')?.textContent ?? null,
-    firstRowOps: [...document.querySelectorAll('.item:first-of-type .rowops .icon-btn')].map((b) => b.dataset.icon),
+    // ⚠️ 取"第一行"必须按**类**取，不能按 tr:first-of-type：默认排序（createTime）下
+    // tbody 的第一个 tr 是**分组小标题**（.daymark），tr:first-of-type 命中的是它 ⇒
+    // 这一项会恒为空数组（看起来像"行内没有操作按钮"，实测 2026-09-18）。
+    firstRowOps: [...(document.querySelector('.item')?.querySelectorAll('.rowops .icon-btn') ?? [])].map((b) => b.dataset.icon),
     pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
   })`);
   console.log('STATE  ', state);

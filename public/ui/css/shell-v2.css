@@ -166,6 +166,17 @@
   grid-column: 2;
 }
 
+/* 趋势图在中屏与桌面都**让位**：概览带在 `--content-max` 下只占两列布局的右半
+ * （见上面 `.main > .overview { grid-column: 2 }`），实测内容宽度 ≈ 614px 而可用约 588px ——
+ * 塞进一条 132px 的图会把「存储占用」与右端的 `›` 挤出胶囊。窄屏反而有位置：
+ * 那时概览带折成两行、图独占一行（见文件末尾 `<720` 那一档）。
+ *
+ * ⚠️ 选择器带 `.main > .overview` 前缀（特异性 **0,3,0**），这是**有意**的 ——
+ * 但它同时意味着末尾那档 `@media (max-width: 720px)` 的裸类规则（0,1,0）**永远压不过它**。
+ * 2026-09-18 实测：这一条 + 中屏那档 + 窄屏那档 + `overview.js` 的渲染一共 4 处都在，
+ * 而趋势图的可见高度恒为 0px（规则写了、图永远不显示）。故窄屏那档必须**同样带前缀**。
+ * 守卫：`test/manual/probe.mjs` 的 `sparkBars` 只数 DOM 里的 `<rect>`（`display:none` 时照样是 14），
+ * 所以它证明不了"看得见" —— 改动这一条后请用 `getBoundingClientRect().height > 0` 复核。 */
 .main > .overview .overview__spark {
   display: none;
 }
@@ -694,7 +705,9 @@
     display: none;
   }
 
-  .overview__spark {
+  /* 前缀必须与上面那条基础规则**完全同形**（0,3,0）：裸类规则会被它压掉，
+   * 症状是"图有数据、有 DOM、就是看不见"。 */
+  .main > .overview .overview__spark {
     display: block; /* 窄屏反而**留**趋势图：它一行就够，比数字更省地方 */
     flex: 1 1 100%;
     order: 10;
