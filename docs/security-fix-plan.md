@@ -94,7 +94,7 @@ res.headers.set('content-disposition',
 2. 计数与封锁：**主存储在已有的 Durable Object**（`env.HUB`）里维护计数器，**快路径用 isolate 内存 Map**（零 I/O，正常同步路径零额外往返），只在**失败时**异步投递一次 DO（`ctx.waitUntil`）；维度按 **IP** 与 **凭据（用户名）** 分别封锁，另加**全局阈值仅用于告警**（绝不用它封锁，否则攻击者可用垃圾请求锁死合法用户）。
    - 阈值示例：IP 15 分钟 10 次失败 → 429 + `Retry-After`；成功即清零。
    - **明确不做**：失败路径上不写 D1（免费额度 10 万写/天，与爆破量级同阶 ⇒ 攻击者可用错口令请求烧掉写入额度、并让每次失败多一次 D1 往返）。DO 侧持久化也走低频（每 N 次或 alarm 落盘）。
-3. 备选（更省，但需先升级工具链）：Cloudflare Rate Limiting 规则，不消耗 Worker 调用；注意本仓 `wrangler 3.114.17` 低于该 binding 所需 4.36.0，需先升 wrangler。
+3. 备选（更省，但需先升级工具链）：Cloudflare Rate Limiting 规则，不消耗 Worker 调用；该 binding 需 wrangler ≥ 4.36.0 —— 仓库已于 2026-09-15 升到 `wrangler ^4`（4.131.2），此项前提已满足。
 
 > **封锁是 best-effort / 最终一致，不是全局硬保证**：isolate 内存是每实例的，失败上报是 `waitUntil` fire-and-forget，DO 被驱逐后计数还可能回退；缺 `cf-connecting-ip` 的**不可归因**流量不进入可锁桶（归因制：拿不到该头就不启用 IP 维度）。
 > 验收口径：**同一 isolate 内连续 N 次失败返回 429；跨 isolate 为最终一致（不保证即时全局封锁）**。

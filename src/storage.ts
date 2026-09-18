@@ -7,6 +7,10 @@ import { ProfileType } from './types';
 const TEMP_PREFIX = 'file/';
 const HISTORY_PREFIX = 'history/';
 
+// R2 单次 delete 调用可带的 key 上限（与列举的 1000 键/页同量级）。清理任务据此分块，
+// 而 storage 层只做断言 —— 分块与子请求记账属于调用方的职责（它才知道预算还剩多少）。
+export const R2_DELETE_BATCH = 1000;
+
 export function tempKey(name: string): string {
   return `${TEMP_PREFIX}${name}`;
 }
@@ -20,9 +24,18 @@ function assertHashForPath(hash: string): void {
   }
 }
 
-export function workingDirPrefix(type: ProfileType, hash: string): string {
+// 工作目录名（`{Type}_{hash}/`）。**不带 `history/` 前缀** —— 与 `listHistoryObjectsByDir()` 的键、
+// `listHistoryWorkingDirs()` 的产物、`db.listActiveWorkingDirs()` 的产物保持同一形式：几处集合比较
+// 必须同构，形式不一致会让比较恒不命中（历史上正是这类不一致导致每小时清空一次 history/，见 F33）。
+// 需要构造完整 key/前缀时用 `workingDirPrefix()`（= `history/` + 本函数）。
+export function workingDirName(type: ProfileType, hash: string): string {
   assertHashForPath(hash);
-  return `${HISTORY_PREFIX}${ProfileType[type]}_${hash}/`;
+  return `${ProfileType[type]}_${hash}/`;
+}
+
+// 带 `history/` 前缀的完整工作目录前缀（R2 key 构造与前缀清理用）
+export function workingDirPrefix(type: ProfileType, hash: string): string {
+  return `${HISTORY_PREFIX}${workingDirName(type, hash)}`;
 }
 
 export function historyKey(type: ProfileType, hash: string, fileName: string): string {
@@ -106,22 +119,6 @@ export class R2Storage {
   }
 
 
-  // 列出 history/ 下的工作目录前缀（{Type}_{hash}/），用于孤儿对象清理
-  async listHistoryWorkingDirs(): Promise<string[]> {
-    const dirs = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      const listed = await this.bucket.list({ prefix: HISTORY_PREFIX, cursor });
-      for (const obj of listed.objects) {
-        const rest = obj.key.slice(HISTORY_PREFIX.length);
-        const slash = rest.indexOf('/');
-        if (slash > 0) dirs.add(rest.slice(0, slash + 1));
-      }
-      cursor = listed.truncated ? listed.cursor : undefined;
-    } while (cursor);
-    return [...dirs];
-  }
-
   // 列出 history/ 下的**全部对象 key**（数据完整性自检的 R2 一侧；期望 key 由 DB 记录算出后求差集）。
   // 分页列举而不是逐条 HEAD：Free 计划单次调用的内部服务子请求上限是 1000（本仓库按它设了
   // SUBREQUEST_BUDGET = 800，见 src/cleanup.ts:28-31），本机记录总数 2000+ 逐条 HEAD 一次调用即触顶；
@@ -135,6 +132,41 @@ export class R2Storage {
       cursor = listed.truncated ? listed.cursor : undefined;
     } while (cursor);
     return keys;
+  }
+
+  // 列出 history/ 下的全部对象并**按工作目录分组**（`{Type}_{hash}/` → 该目录下的 key）。
+  // 清理任务用它把「逐条记录删自己的目录」换成「每批一次批量删」—— 成本从**每条 2 次 R2 调用**
+  // （列举 + 删除，见 deletePrefix）降到**每轮一次列举 + 每批一次删除**，这是清理吞吐的关键：
+  // 逐条删除时每条记录 3 次子请求，500 条/批就是 1500 次，已经超过平台单次调用 1000 的上限。
+  // 返回 pages：列举的分页数（1000 键/页），供调用方按**实际**调用数记账（不靠猜页数）。
+  async listHistoryObjectsByDir(): Promise<{ groups: Map<string, string[]>; pages: number }> {
+    const groups = new Map<string, string[]>();
+    let pages = 0;
+    let cursor: string | undefined;
+    do {
+      const listed = await this.bucket.list({ prefix: HISTORY_PREFIX, cursor });
+      pages++;
+      for (const obj of listed.objects) {
+        const rest = obj.key.slice(HISTORY_PREFIX.length);
+        const slash = rest.indexOf('/');
+        if (slash <= 0) continue;
+        const dir = rest.slice(0, slash + 1);
+        const owned = groups.get(dir);
+        if (owned) owned.push(obj.key);
+        else groups.set(dir, [obj.key]);
+      }
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+    return { groups, pages };
+  }
+
+  // 删掉**一批** key。R2 单次 delete 调用上限是 1000 个 key（与列举同量级），故分块；
+  // 调用方保证一次传入不超过 1000 个（清理任务自己分块，以便在块与块之间检查子请求预算）。
+  async deleteHistoryKeys(keys: string[]): Promise<void> {
+    if (keys.length > R2_DELETE_BATCH) {
+      throw new Error(`deleteHistoryKeys: 一次最多 ${R2_DELETE_BATCH} 个 key，收到 ${keys.length}`);
+    }
+    await this.bucket.delete(keys);
   }
 
   // 只删**给定集合**里的工作目录（传入 `workingDirPrefix()` 的产物，即 `history/Type_hash/`）：
@@ -161,11 +193,6 @@ export class R2Storage {
       if (keys.length > 0) await this.bucket.delete(keys);
       cursor = listed.truncated ? listed.cursor : undefined;
     } while (cursor);
-  }
-
-  // 删除指定工作目录前缀（传入 "Type_hash/" 形式）
-  async deleteHistoryPrefix(workingDir: string): Promise<void> {
-    await this.deletePrefix(`${HISTORY_PREFIX}${workingDir}`);
   }
 
   // 历史数据总字节数（statistics.totalFileSizeMB 用）

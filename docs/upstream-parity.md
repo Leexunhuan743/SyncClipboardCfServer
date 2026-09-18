@@ -145,7 +145,9 @@
 
 保留期四条件（`!IsDeleted && !Stared && !Pinned && LastModified<cutoff && LastAccessed<cutoff`）、
 `MAX(LastModified,LastAccessed)` 排序、条数上限排除收藏/置顶、30 天硬删、孤儿目录差集 —— 全部等价。
-周期（10min/12h → 每小时）与批次（500 → 200）不同，是 CF 子请求预算下的**已登记**偏离。
+软删单批现为 **500 条（与上游一致）**；周期是 **20 分钟 vs 上游的 10 分钟**，差异只在"积压收敛速度"
+（本实现另有平台单次调用的子请求预算与游标续跑机制，见 `design.md` §9）。实测（本地 miniflare，
+真实 Cron 触发）：300 条过期记录与 500 条超量都在**一轮内**处理完，单轮子请求 508/800。
 
 ### 3.5 鉴权与实时
 
@@ -189,7 +191,7 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 |---|---|---|---|
 | U1 | CI 不创建 D1/R2 资源 | 中 | `deploy.yml` 只 `d1 execute` 已存在的库；全新账号首次部署必须照 README 手工 `d1 create`/`r2 bucket create`。写进 README 已有，但 CI 不会给出可诊断的提示 |
 | U2 | 冒烟检查只断言未认证请求 = 401 | 中 | 能间接发现「凭据未配置」（那种情况返回 500），但**不能**证明凭据可用、历史读写打通。建议后续加一步带凭据的 `/api/history/statistics` |
-| U3 | 本地 `compatibility_date` 与生产不一致 | 低-中 | `wrangler.toml` 写 `2025-09-01`，而仓库锁定的 `wrangler ^3.80`（当前解析到 3.114）本地运行时最高支持 `2025-07-18` ⇒ **本地/CI 与生产跑在不同 compat date 上**（本地日志明确提示 fallback）。生产侧被平台支持，故不影响上线；要消除差异需升级 wrangler 4 |
+| U3 | ~~本地 `compatibility_date` 与生产不一致~~ → **已修复（2026-09-15）** | 低-中 | 原状：`wrangler.toml` 写 `2025-09-01`，而仓库锁定的 `wrangler ^3.80`（3.114.17）本地运行时最高支持 `2025-07-18` ⇒ 本地/CI 与生产跑在不同 compat date 上。**处置**：wrangler 升到 **4.131.2**（连带 `@cloudflare/workers-types` 4 → 5，wrangler 4 的 peer 要求），本地起 dev server 不再 fallback、CI 质量门与部署工具链同为 v4；全量 20 套件 / 325 例在新运行时下复跑通过 |
 | U4 | 无日志级别配置 | 低 | 上游 `Logging:LogLevel` 在 Workers 上没有等价物（console 即日志流）。需要时可加 `[observability]` |
 | U5 | 版本事实源三处不同 | 低 | 上游 `VersionPrefix=3.2.0`、`Changes.md` 最新条目 `v3.2.1`、本仓库 `VERSION=3.2.1` + `package.json 1.19.2`。功能无影响（客户端只比较 `≥3.1.1`），但对外报的版本比真实上游服务器**高一个补丁号** |
 

@@ -60,9 +60,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -105,7 +105,9 @@ jobs:
 
       - name: Upload dev server log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        # v4 也是 Node 20 运行时（实测 action.yml 的 runs.using），只在 quality 失败时才加载，
+        # 因此它不会出现在成功运行的注解里——但真失败时同样会触发弃用警告。一并升到 v7（Node 24）。
+        uses: actions/upload-artifact@v7
         with:
           name: wrangler-dev-log
           path: /tmp/wrangler-dev.log
@@ -116,7 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check required secrets
         # 未配置凭据时给出可诊断的指引，而不是让后续 wrangler 步骤以
@@ -138,7 +140,55 @@ jobs:
           fi
           echo "secrets 已配置"
 
-      - uses: actions/setup-node@v4
+      - name: Check Cloudflare resources exist
+        # 为什么有这一步：D1 的 `database_id` 与 R2 的 `bucket_name` 都写死在 wrangler.toml 里，
+        # 而 CI 不创建、也无法创建资源（`database_id` 必须写回仓库文件）。全新账号 / fork 之后
+        # 第一次部署时，缺资源会一直到后面的 `d1 execute` 或 `wrangler deploy` 才以 wrangler 的
+        # 英文报错暴露出来。这里提前判定，改用**状态码**说话（不解析 wrangler 的 CLI 输出，
+        # 免得输出格式一变就误判）：
+        #   404  → 资源确实不在该账号里 → 打印中文指引并 fail fast
+        #   其它 → 无法判定（权限不足、API 变化等）→ 只警告、不阻断
+        # ——绝不因为一个探针把本来能成功的部署挡掉。
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -uo pipefail
+          d1_id=$(grep -m1 '^database_id' wrangler.toml | sed -E 's/.*"(.*)".*/\1/')
+          bucket=$(grep -m1 '^bucket_name' wrangler.toml | sed -E 's/.*"(.*)".*/\1/')
+          echo "wrangler.toml 声明：database_id=$d1_id  bucket=$bucket"
+
+          MISSING=""
+          probe() {  # $1 = 描述，$2 = API URL
+            local code
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$2" || echo 000)
+            case "$code" in
+              200) echo "✓ $1 存在" ;;
+              404) MISSING="$MISSING
+          · $1 不存在（HTTP 404）" ;;
+              *)   echo "::warning::$1 预检无法判定（HTTP $code），本项跳过（可能是令牌权限不含该资源的读权限）" ;;
+            esac
+          }
+
+          probe "D1 数据库 $d1_id" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$d1_id"
+          probe "R2 存储桶 $bucket" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/r2/buckets/$bucket"
+
+          if [ -n "$MISSING" ]; then
+            echo "缺少本次部署所需的 Cloudflare 资源：$MISSING"
+            echo ""
+            echo "请按 README「部署 → 方式 A」一次性创建，并把输出填回配置："
+            echo "  1) npx wrangler d1 create syncclipboard          # 把输出的 database_id 填进 wrangler.toml 的 [[d1_databases]]"
+            echo "  2) npx wrangler r2 bucket create syncclipboard   # 名称须与 wrangler.toml 的 bucket_name 一致"
+            echo "  3) npx wrangler d1 execute syncclipboard --remote --file=./schema.sql"
+            echo "  4) npx wrangler secret put USERNAME / PASSWORD"
+            echo ""
+            echo "本步骤只做判定、不自动创建：database_id 必须写进仓库里的 wrangler.toml。"
+            exit 1
+          fi
+          echo "资源预检通过"
+
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -153,7 +203,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy Worker
-        uses: cloudflare/wrangler-action@v3
+        id: deploy
+        # 版本选择（2026-09-15）：
+        #   ① action 用 v4：它是 Node 24 运行时（v3 是 Node 20，GitHub 已发弃用警告）；
+        #   ② **不再钉 wrangler 版本**：仓库的 devDependency 已升到 `wrangler ^4`，action v4 的默认
+        #      wrangler 也是 v4 ⇒ 「测试用的」与「部署用的」是同一个大版本（此前仓库锁 v3、action 默认 v4，
+        #      必须显式钉住 3.114.17 以免分叉；工具链升级后这个钉子已无必要，反而会锁住升级）。
+        #      将来若再出现 devDependency 与 action 默认不一致，请显式钉回 devDependency 的版本。
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -185,13 +242,76 @@ jobs:
           printf '%s' "$AUTH_PASSWORD" | npx wrangler secret put PASSWORD
           echo "credentials synced to Worker"
 
-      - name: Smoke check
-        # 仓库变量 DEPLOY_URL 未设置时自动跳过（避免把个人部署地址写进仓库）
-        if: ${{ vars.DEPLOY_URL != '' }}
+      - name: Smoke check（只读）
+        # 目标地址：优先仓库变量 DEPLOY_URL（自定义域名场景），否则用**上一步部署输出的地址**。
+        # 后者是 wrangler-action 的 `deployment-url` 输出 ⇒ 不再依赖手工配置，因此每次部署都会真跑
+        # （旧版这一步挂在 `if: vars.DEPLOY_URL != ''` 上，而该变量从未设置 ⇒ 一直静默跳过）。
+        #
+        # 断言全是**只读**的。**绝不** PUT /SyncClipboard.json —— 那会把线上当前剪贴板换掉。
+        # ① 未认证 /api/version → 401：鉴权中间件在（500 则明确报「凭据未配置」并失败）
+        # ② 已认证 /api/version → 200 且 body 等于 wrangler.toml 的 VERSION：凭据可用 **且**这次部署真生效
+        # ③ 已认证 /api/history/statistics → 200 JSON：D1 绑定与查询路径可用
+        # ④ 已认证 /SyncClipboard.json → 200 JSON：Meta /「当前 profile」读路径可用
+        # 未配置 USERNAME/PASSWORD secrets 时 ②③④ 降级为 ::notice:: 跳过（本仓库按 README「方式 A」
+        # 把凭据只放在 Cloudflare —— 那是预期状态，不该让部署变红）。
+        env:
+          DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+          DEPLOYED_URL: ${{ steps.deploy.outputs.deployment-url }}
+          SYNC_USER: ${{ secrets.USERNAME }}
+          SYNC_PASS: ${{ secrets.PASSWORD }}
         run: |
-          sleep 5
-          code=$(curl -s -o /dev/null -w "%{http_code}" "${{ vars.DEPLOY_URL }}/api/version" || true)
-          if [ "$code" != "401" ]; then
-            echo "unexpected status $code (401 expected: auth required)"; exit 1
+          set -uo pipefail
+          base="${DEPLOY_URL:-${DEPLOYED_URL:-}}"
+          base="${base%/}"
+          if [ -z "$base" ]; then
+            echo "::error::既没有 DEPLOY_URL 变量、也没有部署步骤输出的地址，冒烟无法执行。"
+            echo "　部署本身已成功；把仓库变量 DEPLOY_URL 设为 Worker 地址即可让本步骤恢复。"
+            exit 1
           fi
-          echo "smoke ok: unauthenticated /api/version -> 401"
+          echo "冒烟目标：$base"
+          expected=$(grep -m1 '^VERSION' wrangler.toml | sed -E 's/.*"(.*)".*/\1/')
+          echo "wrangler.toml 的 VERSION = $expected"
+          fail=0
+
+          sleep 3
+          code=$(curl -s -o /tmp/unauth.txt -w '%{http_code}' "$base/api/version" || echo 000)
+          case "$code" in
+            401) echo "✓ 未认证 /api/version → 401（鉴权生效）" ;;
+            500) echo "::error::未认证 /api/version → 500：$(head -c 200 /tmp/unauth.txt)"
+                 echo "　按设计，凭据未配置时本服务端 fail-closed 返回 500；请确认 USERNAME/PASSWORD secret 已设置。"
+                 fail=1 ;;
+            *)   echo "::error::未认证 /api/version → 期望 401，实际 $code：$(head -c 200 /tmp/unauth.txt)"
+                 fail=1 ;;
+          esac
+
+          if [ -n "${SYNC_USER:-}" ] && [ -n "${SYNC_PASS:-}" ]; then
+            AUTH=(-u "$SYNC_USER:$SYNC_PASS")
+            body=$(curl -s "${AUTH[@]}" "$base/api/version" || true)
+            if [ "$body" = "$expected" ]; then
+              echo "✓ 已认证 /api/version → $body（凭据可用，且这次部署的版本已生效）"
+            else
+              echo "::error::已认证 /api/version 返回 '$body'，期望 '$expected'（凭据错，或本次部署未生效）"
+              fail=1
+            fi
+
+            code=$(curl -s -o /tmp/stats.json -w '%{http_code}' "${AUTH[@]}" "$base/api/history/statistics" || echo 000)
+            if [ "$code" = "200" ] && head -c 1 /tmp/stats.json | grep -q '{'; then
+              echo "✓ 已认证 /api/history/statistics → 200 JSON（D1 绑定与查询路径可用）"
+            else
+              echo "::error::/api/history/statistics → $code $(head -c 200 /tmp/stats.json)"
+              fail=1
+            fi
+
+            code=$(curl -s -o /tmp/profile.json -w '%{http_code}' "${AUTH[@]}" "$base/SyncClipboard.json" || echo 000)
+            if [ "$code" = "200" ] && head -c 1 /tmp/profile.json | grep -q '{'; then
+              echo "✓ 已认证 /SyncClipboard.json → 200 JSON（Meta /「当前 profile」读路径可用）"
+            else
+              echo "::error::/SyncClipboard.json → $code $(head -c 200 /tmp/profile.json)"
+              fail=1
+            fi
+          else
+            echo "::notice::未配置 USERNAME/PASSWORD secrets，跳过三条已认证断言（版本比对 / statistics / SyncClipboard.json）。按 README「方式 A」凭据只存在于 Cloudflare，这是预期状态；要启用它们，把两个值配成仓库 secrets 即可。"
+          fi
+
+          if [ "$fail" != "0" ]; then exit 1; fi
+          echo "冒烟通过（全部只读，未修改线上任何数据）"

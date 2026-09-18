@@ -330,17 +330,23 @@ CREATE TABLE IF NOT EXISTS Meta (
 | CleanDeletedHistoryTask | 12 小时 | 硬删 `IsDeleted` 且 `LastModified < now-30d` | 同一 Cron 批次 |
 | CleanOrphanedFoldersTask | 12 小时 | 删无活记录引用的 `{Type}_{hash}` 目录 | 同一 Cron 批次 |
 
-- 触发：`wrangler.toml [triggers] crons = ["17 * * * *"]`（CF 侧统一每小时一次批量执行）
+- 触发：`wrangler.toml [triggers] crons = ["7,27,47 * * * *"]`（CF 侧统一**每 20 分钟**一次批量执行；
+  上游是"10min / 12h / 12h"三个独立后台任务，本实现合成一条 Cron）
 - 配置：`MAX_SAVED_HISTORY_COUNT`（默认 1000）、`HISTORY_RETENTION_MINUTES`（默认 10080 = 7 天）
 - 保留规则：过期的**未收藏/未置顶/未删除**记录才删；条数裁剪按 `MAX(LastModified, LastAccessed)` 升序软删最旧的，收藏/置顶豁免
 - 每次删除同步清理 R2 工作目录，并广播 `RemoteHistoryChanged`（与上游逐条通知一致）
+- 吞吐与批次（2026-09-15 起）：软删单批 **500 条**（对齐上游 `HistoryManagerHelper.BatchSize`）；
+  目录清扫改为"每轮一次列举 + 每批一次批量删"，于是**每条记录只花 1 次子请求**（广播；硬删 0 次），
+  而不是旧实现的 3 次（R2 列举 + R2 删除 + 广播）。实测：300 条过期 / 500 条超量都在**一轮内**处理完
+  （旧实现分别为 105 / 115 条每轮）。约束仍是平台单次调用的 1,000 次内部子请求上限（本项目按 800 计预算）。
 - 实现：`src/cleanup.ts`（`runCleanup`）+ `src/index.ts` 的 `scheduled` handler + `db.ts`/`storage.ts` 数据层方法
 
 > **孤儿判定的键形式契约（曾因此出一小时清空一次的生产事故）**：
-> `R2Storage.listHistoryWorkingDirs()` 返回**带尾斜杠**的目录名（由 R2 key 截取，形如 `File_ABC/`），
-> 因此 `HistoryDb.listActiveWorkingDirs()` 必须返回**同一形式**，否则集合比较恒不命中 →
-> 把所有历史数据目录当孤儿删除。尾斜杠同时是 `deletePrefix` 的正确性所需
-> （`history/File_AB` 会误匹配 `history/File_ABC/…`）。
+> 目录名一律用 `{Type}_{hash}/`（**不带 `history/` 前缀**、**带尾斜杠**）这一种形式 ——
+> `R2Storage.listHistoryObjectsByDir()` 的键、`db.listActiveWorkingDirs()` 的产物、以及清理时构造的
+> 待删目录名（`storage.ts` 的 `workingDirName()`）必须**同构**，否则集合比较恒不命中 →
+> 把所有历史数据目录当孤儿删除。构造完整 R2 key 时才用 `workingDirPrefix()`（= `history/` + 目录名）；
+> 尾斜杠同时是 `deletePrefix` 的正确性所需（`history/File_AB` 会误匹配 `history/File_ABC/…`）。
 > 回归守卫：`test/fixes.test.ts` 的 F33（内存 bucket 驱动**真实** `R2Storage` + 真实 `runCleanup`）。
 
 ## 9.1 输入校验策略（对齐上游模型绑定）

@@ -455,7 +455,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | 并发 | 单进程信号量串行 | `(UserId,Type,Hash)` UNIQUE 索引 + 唯一冲突按 ShouldUpdate 合并 + `updateEntityIfVersion` 乐观锁 | 语义等价（多设备并发实测无重复行/丢更新） |
 | `/api/history/statistics.totalFileSizeMB` | 遍历本地目录 | 按 R2 对象 size 求和 | 等价（R2 list 最终一致，存在短暂窗口） |
 | 缓存 | 内存缓存 + 显式失效 | 无缓存（D1/R2 直读） | 等价（更强一致） |
-| 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h） | Cron Trigger 每小时批量执行同类语义 | 等价（周期不同；软删/硬删/孤儿判定一致） |
+| 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h），软删单批 500、无批次上限 | Cron Trigger **每 20 分钟**批量执行同类语义；软删单批 **500**（对齐上游）、受单次调用子请求预算截断并以游标续跑 | 等价（周期 20min vs 10min；批一致；软删/硬删/孤儿判定与广播一致。差异只在"积压收敛速度"与平台预算机制，见 design.md §9） |
 | Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | 46 项常见扩展 + `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type |
 | 错误响应体 | `BadRequest()` 空体 / ProblemDetails | 统一文本（状态码一致） | 官方客户端只判状态码 |
 | 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed（带 `Allow` 头） | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |

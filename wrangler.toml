@@ -35,9 +35,21 @@ MAX_SAVED_HISTORY_COUNT = "1000"
 HISTORY_RETENTION_MINUTES = "10080"
 
 # 保留/清理定时任务（对齐上游 HistoryCleaner：保留期+条数上限 10 分钟、已删硬删+孤儿目录 12 小时）
-# CF 侧统一为每小时一次批量执行（见 src/cleanup.ts）
+# CF 侧统一为**每 20 分钟**一次批量执行（见 src/cleanup.ts）。取 20 分钟而不是上游的 10 分钟：
+# 每轮吞吐已提到"批 500、每条只花 1 次子请求（广播）"，20 分钟一轮的收敛速度已与上游同量级；
+# 再快只会增加 Cron 调用与日志噪音（每轮 5 行 [cleanup]）。分钟位取 7/27/47（避开整点/整十分）。
 [triggers]
-crons = ["17 * * * *"]
+crons = ["7,27,47 * * * *"]
+
+# ============ 可观测性（Workers Logs）============
+# Cloudflare 侧没有"日志级别"概念（上游的 Logging:LogLevel 在此无对应物）；日志的可查询面就是 Workers Logs：
+# 声明 enabled 后，console.* 与平台调用日志会写入账户，可在控制台 Workers & Pages → 选 Worker → Observability
+# 按 Worker/时间/文本查询，保留 7 天。**显式声明**而不是依赖"新建 Worker 默认已开"这一平台默认
+# （默认会变，日志丢了不会报错）。head_sampling_rate 保持默认 1 = 全量；按本仓库规模（单个官方客户端的
+# 探活就有 ~17.3k 请求/天 ⇒ 调用日志 ≲1M 条/月）远在 2000 万条/月的免费额度内。
+# 另注：日志里不出现剪贴板正文（见 README「日志与排障」）。
+[observability]
+enabled = true
 
 # ============ 静态资源（Web UI）============
 # public/ui/ 下的文件由 Cloudflare 直接托管、不经过 Worker：

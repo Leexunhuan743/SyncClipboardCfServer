@@ -263,6 +263,34 @@ npm run deploy
 > 界面与客户端**共用同一套凭据**。请务必改成强密码——默认口令 + 公开的 `*.workers.dev`
 > 地址意味着任何人都能读到你的全部剪贴板历史。
 
+## 日志与排障
+
+Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel` 在此没有对应物）：`console.*` 的输出
+要么进实时流，要么进 [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)。
+本项目两处都用：
+
+- **实时**：`npx wrangler tail`（可加 `--status error` 只看失败、`--search '[cleanup]'` 按文本过滤、
+  `--format json` 便于管道处理）
+- **回看**：控制台 → Workers & Pages → 选本 Worker → **Observability**，按 Worker/时间/文本查询，**保留 7 天**。
+  `wrangler.toml` 已显式声明 `[observability] enabled = true` —— 不写就依赖"新建 Worker 默认开启"这一平台
+  默认（默认会变，而日志丢了不会报错）；采样率 `head_sampling_rate` 保持默认 1（全量），按本仓库规模
+  （见下节容量提示）远在 2000 万条/月的免费额度内，成本为 0
+- **不依赖日志的可观测面**：`GET /ui/api/info` 的 `cleanup: { lastRunAt, lastError, cursors }` 是清理任务
+  每轮写进 D1 `Meta` 的状态，界面「部署信息」直接展示 —— **日志只是补充，不是唯一信息源**（超过 7 天的
+  清理历史只有 Meta 这一份）
+
+**日志约定**（改日志前先读）：
+
+| 前缀 | 位置 | 内容 |
+|---|---|---|
+| `[cleanup]` | `src/cleanup.ts`、`src/index.ts` | 每阶段一行（`phase= status= processed= batches= truncated= cursor= subrequests= ms=`）+ 每轮一行汇总；失败另写 `[cleanup] error stage=…`，并落进 Meta 的 `cleanup:lastError` |
+| `[DO] broadcast` | `src/durable/SyncClipboardHub.ts` | 每次写操作的广播（含在线连接数）；长轮询队列溢出另有一行 |
+| `[HISTORY …]` | `src/routes/history.ts` | 历史上传被拒的原因（如 `hash is required`、`Hash contains invalid path characters`） |
+| `[security]` | `src/auth.ts`、`src/rateLimit.ts` | 弱凭据告警（每个 isolate 一次）、认证失败突发告警 |
+
+**隐私**：日志里**不出现剪贴板正文** —— 只有阶段名、计数、hash、文件名与错误消息（共 12 处 `console.*`
+调用点，逐处核过）。新增日志时请沿用这条约定。
+
 ## 容量提示
 
 - **Workers 免费版每天 10 万请求**。官方客户端即使在事件驱动模式下，也在每 10 秒跑一次
@@ -318,6 +346,12 @@ npm run deploy
   未连上时 10 秒一次、页面隐藏时 30 秒一次；环境不支持或被稳定阻断时**连续失败 5 次后不再重试**
   （避免在坏环境里每 ≤60 秒白试一次），回前台会重新尝试
 - Web 界面的图片缩略图依赖数据文件存在：对象已被清理的记录会显示占位与「数据不可用」
+- **清理任务有吞吐上限，只在"批量场景"才可能被看见**：保留期/条数上限与孤儿回收由 Cron **每 20 分钟**
+  跑一轮（软删单批 **500 条**，与上游一致）。日常使用（每天几十条剪贴板）每轮只处理 0~5 条，**完全无感**；
+  但三种批量情形会看到"延迟"：把 `MAX_SAVED_HISTORY_COUNT` 调小、把保留期调短、换机后客户端一次重传几千条历史
+  —— 等待期内这些记录仍算**活跃**（统计数字与客户端历史面板都还看得到），它们的数据文件也仍占 R2。
+  实测 300 条过期记录与 500 条超量都是**一轮内**处理完，故延迟量级是"≤20 分钟 + 若干轮"。
+  上限来自平台单次调用的内部子请求上限（本项目按 800 计预算，见 `src/cleanup.ts` 的记账模型）
 - **大文件的内存占用高于上游**：上游 `PUT /SyncClipboard.json` 用 `File.Move`（不读数据），
   本实现因 R2 无 move/rename 必须把暂存对象**读入内存**再重传到 `history/`；`POST /api/history`
   则整体读入请求体后解析（上游是 `MultipartReader` 流式）。峰值内存 ≈ 文件大小。

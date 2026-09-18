@@ -90,10 +90,14 @@ class CountingD1 {
 // R2：对象表 + list(prefix)/cursor 语义（与真实 R2 的分页行为同构：cursor 是"已返回条数"）
 class CountingBucket {
   objects = new Map<string, number>();
+  /** 分别计数列举/删除调用：清理的"批内一次清扫"要守住"R2 调用数与批内条数无关" */
+  listCalls = 0;
+  deleteCalls = 0;
 
   constructor(readonly meter: SubrequestMeter) {}
 
   async list(opts: { prefix?: string; cursor?: string } = {}) {
+    this.listCalls++;
     this.meter.charge();
     const keys = [...this.objects.keys()].filter((k) => k.startsWith(opts.prefix ?? '')).sort();
     const start = opts.cursor ? Number(opts.cursor) : 0;
@@ -107,6 +111,7 @@ class CountingBucket {
   }
 
   async delete(keyOrKeys: string | string[]): Promise<void> {
+    this.deleteCalls++;
     this.meter.charge();
     for (const k of Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]) this.objects.delete(k);
   }
@@ -245,27 +250,33 @@ afterEach(() => {
 });
 
 describe('F11 · 清理任务的子请求预算', () => {
-  it('饱和积压：四个阶段都执行、被截断的阶段明确记账为待续跑，总子请求不超预算', async () => {
+  it('饱和积压：四个阶段都执行；软删阶段受广播成本限制被记账为待续跑，硬删/孤儿一轮跑完', async () => {
     const f = fixture({ expired: 1200, recent: 400, hardDeletable: 900, orphanDirs: 60, maxCount: 400 });
     const logs = captureConsole();
 
     const result = await cronRun(f);
 
-    // ① 阶段不再被静默跳过：饱和积压下四个阶段都被预算截断，但都真实推进了工作
+    // ① 阶段不再被静默跳过：饱和积压下四个阶段都真实推进了工作
     expect(result.expired).toBeGreaterThan(0);
     expect(result.trimmed).toBeGreaterThan(0);
     expect(result.hardDeleted).toBeGreaterThan(0);
     expect(result.orphans).toBeGreaterThan(0);
+    // ② 软删阶段每条记录要付一次广播子请求 ⇒ 仍会被预算截断，并留下非 0 游标
     expect(result.truncated).toContain('retention');
-    expect(result.truncated).toContain('hardDelete');
-    expect(result.truncated).toContain('orphans');
+    // ③ 硬删/孤儿的每批成本自 2026-09-15 起是**常数**（不广播、目录按批一次清扫），
+    //    同样的积压下它们能在本轮内跑完 —— 旧实现这两个阶段同样被截断（这正是本轮要改掉的东西）。
+    //    断言"跑完"而不只是"有进度"，是为了把这个能力钉住：退回逐条删目录就会立刻变红。
+    expect(result.truncated).not.toContain('hardDelete');
+    expect(result.truncated).not.toContain('orphans');
+    expect(result.hardDeleted).toBe(900);
+    expect(result.orphans).toBe(60);
     // 每个阶段一行 [cleanup] 结构化日志（阶段名/处理数/是否被截断）
     for (const phase of CLEANUP_PHASES) {
       expect(logs.lines.some((l) => l.startsWith(`[cleanup] phase=${phase} `)), `缺 ${phase} 的日志行`).toBe(true);
     }
     expect(logs.lines.some((l) => l.includes('phase=hardDelete') && l.includes('processed=0'))).toBe(false);
 
-    // ② 预算：实现自记账与桩独立测得的总数都在预算内，且两者同量级（记账模型没漏算外部调用）
+    // ④ 预算：实现自记账与桩独立测得的总数都在预算内，且两者同量级（记账模型没漏算外部调用）
     expect(result.subrequests).toBeLessThanOrEqual(SUBREQUEST_BUDGET);
     const measured = measuredSubrequests(f);
     expect(measured).toBeLessThanOrEqual(SUBREQUEST_BUDGET);
@@ -273,19 +284,45 @@ describe('F11 · 清理任务的子请求预算', () => {
     expect(measured).toBeLessThanOrEqual(PLATFORM_SUBREQUEST_LIMIT);
     expect(result.failures.filter((m) => m.includes('Too many subrequests'))).toEqual([]);
     expect(measured).toBeLessThanOrEqual(result.subrequests);
-    // 实现自记账**保守**（不会少于实际）：容差来自孤儿扫描按 5 页 R2 列举记账（页数不可知）。
+    // 实现自记账**保守**（不会少于实际）：容差来自每批预留的一次批量删（批内无对象时不会真花出去）
     expect(result.subrequests - measured).toBeLessThanOrEqual(8);
     expect(result.failures).toEqual([]);
 
-    // 被截断阶段在 Meta 里留下非 0 游标（= 待续跑的 sweep 进度），没有失败的键为空串
+    // 被截断阶段的游标非 0（= 待续跑的 sweep 进度）；跑完的两个阶段游标为 0；没有失败时 lastError 为空串
     const meta = metaRows(f.sqlite);
     expect(Number(meta[CLEANUP_META_KEYS.cursors.retention])).toBeGreaterThan(0);
-    expect(Number(meta[CLEANUP_META_KEYS.cursors.hardDelete])).toBeGreaterThan(0);
+    expect(meta[CLEANUP_META_KEYS.cursors.hardDelete]).toBe('0');
+    expect(meta[CLEANUP_META_KEYS.cursors.orphans]).toBe('0');
     expect(meta[CLEANUP_META_KEYS.lastError]).toBe('');
   });
 
+  it('批内一次清扫：一轮吃下整批 500 条，且 R2 调用数与批内条数无关', async () => {
+    // 这条守住"500 条/批"能成立的地基：旧实现每条记录要 2 次 R2 调用（列举 + 删除所删目录），
+    // 500 条 = 1000 次 R2 调用（外加 500 次广播）⇒ 物理上超过平台单次调用上限，只能退到 200/批并被
+    // 预算压到约 105 条。现在目录清扫是"一轮一次列举 + 每批一次批量删"，与批内条数无关。
+    const f = fixture({ expired: 500, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: 1_000_000 });
+    captureConsole();
+
+    const result = await cronRun(f);
+
+    expect(result.expired).toBe(500); // 一轮吃完（旧实现一轮 105 条）
+    expect(result.truncated).toEqual([]);
+    expect(f.bucket.listCalls).toBe(1); // 一次列举（history/ 全部对象，1 页）
+    expect(f.bucket.deleteCalls).toBe(1); // 一次批量删（500 个 key ≤ 1000）
+    // 500 条被软删记录的数据目录确实被清掉；只剩两条豁免记录（STAR0/PIN0，fixture 默认各 1 条）的数据
+    expect([...f.bucket.objects.keys()].filter((k) => k.includes('_EXP'))).toEqual([]);
+    expect([...f.bucket.objects.keys()].sort()).toEqual([
+      'history/Text_PIN0/PIN0.bin',
+      'history/Text_STAR0/STAR0.bin',
+    ]);
+    expect(measuredSubrequests(f)).toBeLessThanOrEqual(result.subrequests);
+    expect(result.failures).toEqual([]);
+  });
+
   it('Meta 键集合：六个键每轮都写入，游标跨轮累计，收敛后回到 0', async () => {
-    const f = fixture({ expired: 400, recent: 60, hardDeletable: 0, orphanDirs: 0, maxCount: MAX_COUNT });
+    // 2400 条过期记录：单轮能吃掉约 739 条（批 500 + 余量 239），故需要多轮才收敛 ——
+    // 正好覆盖"游标跨轮累计"与"收敛后归零"两条路径。
+    const f = fixture({ expired: 2400, recent: 60, hardDeletable: 0, orphanDirs: 0, maxCount: MAX_COUNT });
     captureConsole();
 
     const first = await cronRun(f);
