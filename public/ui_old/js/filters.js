@@ -22,8 +22,7 @@ export const DEFAULT_FILTERS = {
   order: 'desc',
 };
 
-// 页大小档位。上限 500 来自服务端白名单（`src/ui/query.ts` 的 UI_MAX_PAGE_SIZE）：
-// 档位里必须包含它，否则 URL 写 `pageSize=500` 时下拉会落到空选——读起来像缺陷。
+// 页大小档位。上限 500 来自服务端白名单（`src/ui/query.ts` 的 UI_MAX_PAGE_SIZE）。
 export const PAGE_SIZES = [20, 50, 100, 200, 500];
 
 const TYPES = new Set(['All', 'Text', 'Image', 'File', 'Group']);
@@ -35,6 +34,22 @@ function clampInt(raw, fallback, min, max) {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
+}
+
+/**
+ * 把 `pageSize` **吸附到最近的档位**（V2 的 `filters.js` 用同一个 `nearest` 策略）。
+ *
+ * `pageSize` 是手写可达的（`?pageSize=37`），而工具栏的下拉只有 `PAGE_SIZES` 那几个档位 ——
+ * 不吸附时下拉会遇到"值不在选项里"，于是**落到空选**（下拉显示空白），读起来像缺陷。
+ * 这里只保证"URL 里的档位是合法档位"，不做别的解释（`?pageSize=500` 仍然合法）。
+ */
+function nearestPageSize(raw) {
+  const n = clampInt(raw, DEFAULT_FILTERS.pageSize, 1, 500);
+  let best = PAGE_SIZES[0];
+  for (const size of PAGE_SIZES) {
+    if (Math.abs(size - n) < Math.abs(best - n)) best = size;
+  }
+  return best;
 }
 
 // 本地日界：用户说「今天」指的是自己时区里的今天，不是 UTC 的今天。
@@ -114,7 +129,7 @@ export function filtersFromUrl(search = location.search) {
       : DEFAULT_FILTERS.range;
   return {
     page: clampInt(params.get('page'), 1, 1, 1_000_000),
-    pageSize: clampInt(params.get('pageSize'), DEFAULT_FILTERS.pageSize, 1, 500),
+    pageSize: nearestPageSize(params.get('pageSize')),
     types,
     starred: params.get('starred') === '1',
     search: (params.get('search') ?? '').slice(0, 200),

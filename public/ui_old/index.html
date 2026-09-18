@@ -35,7 +35,8 @@
     <!-- 模块预载：零构建的代价是依赖要按层发现——实测瀑布是 main(20ms) → 第二层(39ms) → icons/format(50-60ms)，
          到最后一层要花两个额外往返，而 icons.js 是首屏渲染必需的。入口之外的模块全部列在这里，
          浏览器在解析 main.js 之前就能并行拉取，瀑布压成一层。
-         清单必须与该页的 import 闭包**完全一致**（多了浪费一个请求、少了留一段瀑布），守卫见 test/ui-contract.test.ts。 -->
+         清单必须与该页的 import 闭包**完全一致**（多了浪费一个请求、少了留一段瀑布）。
+         守卫：V2 → test/ui-contract.test.ts；V1 → test/ui-guard.test.ts（"预载清单 == import 闭包"）。 -->
     <link rel="modulepreload" href="/ui_old/js/api.js" />
     <link rel="modulepreload" href="/ui_old/js/store.js" />
     <link rel="modulepreload" href="/ui_old/js/filters.js" />
@@ -44,6 +45,7 @@
     <link rel="modulepreload" href="/ui_old/js/latest.js" />
     <link rel="modulepreload" href="/ui_old/js/signalr.js" />
     <link rel="modulepreload" href="/ui_old/js/format.js" />
+    <link rel="modulepreload" href="/ui_old/js/messages.js" />
     <link rel="modulepreload" href="/ui_old/js/icons.js" />
     <link rel="modulepreload" href="/ui_old/js/components/header.js" />
     <link rel="modulepreload" href="/ui_old/js/components/stats.js" />
@@ -55,12 +57,6 @@
     <link rel="modulepreload" href="/ui_old/js/components/confirm.js" />
     <link rel="modulepreload" href="/ui_old/js/components/toast.js" />
     <link rel="modulepreload" href="/ui_old/js/components/info.js" />
-    <!-- 两版共用的**文案表**（V2 的那一份）：确认框语义句、列表错误的人话翻译、剪贴板失败原因。
-         2026-09-18 起 V1 不再自己抄一份 —— 抄一份的代价是"改一句话只改一半"。
-         它是可选的优化项：多两个预载（messages.js 与它依赖的 V2 format.js），
-         换掉第一次交互时才去拉这两个文件的一段瀑布。 -->
-    <link rel="modulepreload" href="/ui/js/messages.js" />
-    <link rel="modulepreload" href="/ui/js/format.js" />
     <!-- 首帧主题：阻塞式经典脚本（不是 module）。外链而非内联，见文件头注释（CSP） -->
     <script src="/ui_old/js/theme-init.js"></script>
   </head>
@@ -103,7 +99,7 @@
         <!-- 结果区挂载点：js/components/list.js 会把它替换成真正的表格/空状态 -->
         <div id="results-mount">
           <section class="results" aria-label="剪贴板历史">
-            <div class="skeleton" id="skeleton">
+            <div class="skeleton">
               <div class="skeleton__row"></div>
               <div class="skeleton__row"></div>
               <div class="skeleton__row"></div>

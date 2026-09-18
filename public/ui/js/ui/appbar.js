@@ -16,9 +16,9 @@ export function createAppbar({ onToggleTheme, onLogout, onOpenDrawer, onFocusSea
   const mark = el('span', { class: 'brand__mark', 'aria-hidden': 'true' }, [
     svg(iconPaths('clipboard'), { size: 17 }),
   ]);
-  // 品牌名就是这一页的 `<h1>`：整个应用只有一个页面级标题，而"剪贴板历史"正是它。
-  // 用 `<h1>` 而不是 `<span>` 是**可访问性**要求（每页恰好一个一级标题），
-  // 而它的视觉大小由 `.brand__name` 决定，与语义层级解耦（h1 不必是页面上最大的字）。
+  // 品牌名**不是**这一页的 `<h1>`：整页唯一的一级标题由工作区提供
+  // （`public/ui/app/index.html` 的 `.workspace-heading__title`「剪贴板历史」）。
+  // 这里刻意用 `<span>`：顶栏是跨页共用的外壳，让它承载文档级标题会与工作区争同一个层级。
   const name = el('span', { class: 'brand__name', text: 'SyncClipboard' });
   const meta = el('span', { class: 'brand__meta', text: '' });
   const brand = el('div', { class: 'brand' }, [

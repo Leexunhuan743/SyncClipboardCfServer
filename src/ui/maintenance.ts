@@ -8,11 +8,13 @@
 // 注册到 guarded 之前，端点照常工作但**不再要求凭据**（静默失效）。test/ui-guard.test.ts 的遍历式回归守着这条不变式。
 import { Hono } from 'hono';
 import { Bindings } from '../env';
-import { HistoryDb, basename } from '../db';
-import { R2Storage, historyKey } from '../storage';
+import { basename } from '../db';
+import { stores } from '../stores';
+import { historyKey } from '../storage';
 import { drainRequestBody } from '../auth';
 import { toIso } from '../serialization';
 import { ProfileType } from '../types';
+import { truncateText } from './query';
 import { readRetentionSettings, SETTINGS_META_KEYS } from '../cleanup';
 
 // 自检清单的条数上限：完整计数走 missingCount，这里只截断清单。
@@ -50,24 +52,11 @@ function parseSettingInput(raw: unknown, max: number): SettingInput {
   return { kind: 'invalid' };
 }
 
-// 截断到 limit 个字符，且不留半截代理对（半截代理对是非法字符串，JSON 序列化与前端渲染都会出问题）。
-// src/ui/query.ts 有同款私有函数（truncateText），但它不导出；这三行复制比为一个字段扩大导出面便宜。
-function snippet(text: string, limit: number): string {
-  if (text.length <= limit) return text;
-  let cut = text.slice(0, limit);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  return cut;
-}
+// 截断（`query.ts` 的 `truncateText`）：不再在本地复制一份 —— 同一个"不留半截代理对"的规则
+// 有两处实现时，只会有一处被测试覆盖（审计 R-03）。
 
 export function createUiMaintenanceRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });
-
-  // 与 routes.ts 的同名局部函数一致：两个无状态薄封装，每次请求新建，不缓存绑定
-  const stores = (c: { env: Bindings }) => ({
-    db: new HistoryDb(c.env.DB),
-    storage: new R2Storage(c.env.R2),
-  });
 
   // GET /ui/api/integrity —— 数据完整性自检：DB 声明有数据、R2 里却没有对应对象的记录清单。
   // 判定方式是「目录级差集」，不是逐条 HEAD（理由与成本写在 src/storage.ts 的 listHistoryObjectKeys 注释里）：
@@ -93,7 +82,7 @@ export function createUiMaintenanceRoutes(): Hono<{ Bindings: Bindings }> {
         missing.push({
           type: ProfileType[r.type],
           hash: r.hash,
-          text: snippet(r.text, SNIPPET_LIMIT),
+          text: truncateText(r.text, SNIPPET_LIMIT),
           createTime: toIso(r.createTime),
           size: r.size,
         });

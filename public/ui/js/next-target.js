@@ -18,7 +18,9 @@ export function resolveNext(raw, origin, fallback = '/ui/app/') {
   }
   if (url.origin !== origin) return fallback;
   const path = `${url.pathname}${url.search}${url.hash}`;
-  // 解析成功但指向本站**登录页自身**时也要回落：否则登录成功后会再次落到登录页（死循环）
-  if (url.pathname === '/ui/login.html' || url.pathname === '/ui/app/login.html') return fallback;
+  // 解析成功但指向本站**登录页自身**时也要回落：否则登录成功后会再次落到登录页（死循环）。
+  // 判据只列**这一版真实存在**的登录页：`/ui/app/login.html`。
+  // （V1 的登录页在 `/ui_old/login.html`，那是另一个应用、不归这条判定管。）
+  if (url.pathname === '/ui/app/login.html') return fallback;
   return path;
 }

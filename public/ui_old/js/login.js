@@ -1,5 +1,5 @@
 // 登录页：一个表单、一处错误位、一个 pending 态。
-import { api, ApiError, rateLimitMessage } from './api.js';
+import { api, ApiError, rateLimitMessage, PAGE_BASE } from './api.js';
 import { resolveNext } from './next-target.js';
 
 // 顶部提示条：与列表页（js/main.js）共用同一个 localStorage 键与同一套行为。
@@ -38,7 +38,7 @@ const passwordInput = document.getElementById('password');
 
 // `?next=` 只在**同源**时才用作跳转目标（判定实现见 next-target.js：前缀比较挡不住
 // `/\evil.example` 这类反斜杠变体）。解析失败或跨源一律回落站内默认页。
-const nextUrl = resolveNext(new URLSearchParams(location.search).get('next'), location.origin) ?? '/ui_old/';
+const nextUrl = resolveNext(new URLSearchParams(location.search).get('next'), location.origin) ?? `${PAGE_BASE}/`;
 
 // 错误必须**挂在出错的那个字段上**（`aria-invalid` + `aria-describedby`）并把焦点交回去 ——
 // 这是 `components.md` §2 状态矩阵里 error 那一格的要求（"message adjacent to the control,

@@ -470,9 +470,9 @@ function boot() {
     if (viewChanged) void refreshOverview();
   }
 
-  function resetFilters() {
+  function resetFilters({ keepView = false } = {}) {
     store.patch({ selection: new Map() });
-    setFilters({ ...DEFAULT_FILTERS }, { push: true, scroll: true });
+    setFilters({ ...DEFAULT_FILTERS, deleted: keepView && state().filters.deleted }, { push: true, scroll: true });
   }
 
   function scrollToResults() {
@@ -547,14 +547,14 @@ function boot() {
   /** 概览（合并端点）：统计 + 部署信息 + 变更标记 + 服务端时间 + 活动趋势。 */
   async function refreshOverview() {
     const ticket = overviewGate.begin();
+    const view = viewOf(state().filters);
     try {
-      const data = await api.overview(ticket.signal);
+      const data = await api.overview(ticket.signal, { deleted: state().filters.deleted });
       if (!overviewGate.isCurrent(ticket)) return;
 
       // 服务端时间与本机的差：官方客户端在 |差| > 5 分钟时**中止历史同步**，
       // 而这是"同步不动"最常见的根因之一 —— 此前界面上任何地方都看不到它。
       const skew = data.serverTime ? Date.now() - Date.parse(data.serverTime) : state().clockOffsetMs;
-      const view = viewOf(state().filters);
 
       store.patch({
         stats: {
@@ -565,7 +565,10 @@ function boot() {
         },
         info: data.info ?? state().info,
         marker: data.marker ?? state().marker,
-        activity: data.activity ?? state().activity,
+        // 这里**不设** `activity`：`/ui/api/overview` 的响应里没有这个键（返回的是
+        // stats/byType/byTypeActive/marker/info/serverTime），原先那句
+        // `data.activity ?? state().activity` 是一次恒为 undefined 的死读取。
+        // 活动数据由列表落地后的那次独立请求写入（见本文件的 fetchActivity）。
         clockOffsetMs: skew,
         version: data.info?.version ?? state().version,
         lastSyncMs: markerToMs(data.marker) ?? state().lastSyncMs,

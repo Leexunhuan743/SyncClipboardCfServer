@@ -7,7 +7,7 @@
 // G2：readSession 只验签、不检查凭据是否已配置 —— 未配置时 sessionKey 的 IKM 退化为空串
 //     （无任何秘密输入），任何第三方都能用同一份公开算法离线签出一个「有效」令牌，
 //     让 /ui/api/session 报告 authenticated:true。修复：readSession 前置 fail-closed。
-//     本文件用**与 src/ui/session.ts 完全相同的派生管线**伪造空口令令牌，证明它现在被拒；
+//     本文件用**生产导出的同一套派生原语**（signSessionToken）伪造空口令令牌，证明它现在被拒；
 //     并用「正确口令签发的同形令牌」作阳性对照 —— 否则「一律返回 null」也能骗过测试。
 //
 // G6：SearchText 超过 D1 的 LIKE 模式字节上限时查询报错，表现为未处理的 500。
@@ -17,33 +17,17 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SEARCH_BYTES, normalizeSearchText } from '../src/serialization';
 import { parseUiHistoryQuery } from '../src/ui/query';
-import { readSession, SESSION_COOKIE } from '../src/ui/session';
+import { readSession, signSessionToken, SESSION_COOKIE } from '../src/ui/session';
 import { createHistoryRoutes } from '../src/routes/history';
 import type { Bindings } from '../src/env';
 
-// ---------- G2：伪造管线（与 session.ts 同算法：HKDF-SHA256 → HMAC-SHA256）----------
-const HKDF_SALT = 'syncclipboard-cf-server';
-const HKDF_INFO = 'ui-session-cookie-v1';
-const enc = new TextEncoder();
-
-function base64Url(bytes: Uint8Array): string {
-  let s = '';
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-async function forgeSessionCookie(password: string, payload: { u: string; exp: number }): Promise<string> {
-  const material = await crypto.subtle.importKey('raw', enc.encode(password), 'HKDF', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt: enc.encode(HKDF_SALT), info: enc.encode(HKDF_INFO) },
-    material,
-    256,
-  );
-  const key = await crypto.subtle.importKey('raw', bits, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const encoded = base64Url(enc.encode(JSON.stringify(payload)));
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(encoded));
-  return `${encoded}.${base64Url(new Uint8Array(sig))}`;
-}
+// ---------- G2：伪造令牌 ----------
+//
+// **直接用生产导出的纯派生原语**，不再在测试里复制一份管线。原因（T-01）：复制品在生产侧
+// 换算法/换盐/换编码之后**不会跟着变**，测试会继续用旧算法伪造，于是"空口令令牌被拒"
+// 变成一条**假的绿灯**。这里的"伪造"指"绕过 isAuthConfigured 守卫、用任意口令签发"，
+// 而算法本身必须与生产逐字相同 —— 那正是 `signSessionToken` 的语义。
+const forgeSessionCookie = signSessionToken;
 
 const cookieRequest = (token: string) =>
   new Request('https://sync.example.com/ui/api/session', {

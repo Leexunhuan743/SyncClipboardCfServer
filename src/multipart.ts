@@ -5,7 +5,6 @@
 
 export interface MultipartPart {
   name: string;
-  filename?: string;
   content: Uint8Array; // 字段值（文本部分）或二进制内容（文件部分）
   text: string; // 文本字段的 UTF-8 解码值（文件部分为空）
 }
@@ -83,14 +82,9 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
     const content = bytes.subarray(pos, bodyEnd);
     pos = bodyEnd + 2 + delimBytes.length; // \r\n--boundary
 
-    const disposition = parseContentDisposition(headerBlock);
-    if (disposition) {
-      parts.push({
-        name: disposition.name,
-        filename: disposition.filename,
-        content,
-        text: '',
-      });
+    const name = parseContentDisposition(headerBlock);
+    if (name !== null) {
+      parts.push({ name, content, text: '' });
     }
 
     // 结束符 --boundary-- 或下一个部分
@@ -130,17 +124,14 @@ function makeResult(parts: MultipartPart[]): MultipartResult {
 
 // Content-Disposition: form-data; name="hash"; filename="x.bin"
 // 兼容无引号：name=hash
-function parseContentDisposition(headerBlock: string): { name: string; filename?: string } | null {
+// 只取 `name`：`filename` 从无人消费（上传路径按 part 名与内容区分，见 src/routes/history.ts）。
+function parseContentDisposition(headerBlock: string): string | null {
   const lines = headerBlock.split(CRLF);
   for (const line of lines) {
     const lower = line.toLowerCase();
     if (!lower.startsWith('content-disposition:')) continue;
     const paramsStr = line.slice(line.indexOf(':') + 1);
-    // 提取 name / filename 参数（引号或无引号）
-    const name = extractParam(paramsStr, 'name');
-    if (name === null) return null;
-    const filename = extractParam(paramsStr, 'filename');
-    return { name, filename: filename ?? undefined };
+    return extractParam(paramsStr, 'name');
   }
   return null;
 }

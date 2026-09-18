@@ -62,6 +62,35 @@ async function deriveKey(password: string): Promise<CryptoKey> {
   ]);
 }
 
+// ===== 无守卫的纯派生原语（**唯一的消费者是测试**）=====
+//
+// 为什么导出：`test/hardening.test.ts` 的 G2 用例要"用生产的同一套管线伪造一个空口令令牌"，
+// 证明它会被拒。若测试自己复制一份管线，生产侧一旦换算法/换盐/换编码，测试会**继续用旧算法伪造**，
+// 于是给出"空口令令牌被拒"的**错误结论**——这条安全用例的判别力就成了人工同步下的赌注。
+//
+// 边界（很重要）：只导出**纯原语**。**不要**导出 `issueSession` 这类带 `isAuthConfigured`
+// 守卫、或直接读 `env.PASSWORD` 的高层函数——未配置 env 时测试就造不出攻击令牌，
+// 那条用例会从"fail-closed 生效"退化成"令牌本来就无效"（判别力被削弱）。
+export async function deriveSessionKey(password: string): Promise<CryptoKey> {
+  return deriveKey(password);
+}
+
+// 与 `issueSession` 产出的令牌**同形**（`<payload>.<sig>`，不含 Cookie 属性）。
+export async function signSessionToken(
+  password: string,
+  payload: SessionPayload,
+): Promise<string> {
+  return signPayload(await deriveSessionKey(password), payload);
+}
+
+async function signPayload(key: CryptoKey, payload: SessionPayload): Promise<string> {
+  const encoded = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+  const signature = new Uint8Array(
+    await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(encoded)),
+  );
+  return `${encoded}.${toBase64Url(signature)}`;
+}
+
 function toBase64Url(bytes: Uint8Array): string {
   let binary = '';
   for (const b of bytes) binary += String.fromCharCode(b);
@@ -97,11 +126,7 @@ export async function issueSession(
   username: string,
 ): Promise<string> {
   const payload: SessionPayload = { u: username, exp: Date.now() + SESSION_TTL_MS };
-  const encoded = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
-  const signature = new Uint8Array(
-    await crypto.subtle.sign('HMAC', await sessionKey(env), new TextEncoder().encode(encoded)),
-  );
-  const token = `${encoded}.${toBase64Url(signature)}`;
+  const token = await signPayload(await sessionKey(env), payload);
   return `${SESSION_COOKIE}=${token}; ${cookieAttributes(request, Math.floor(SESSION_TTL_MS / 1000))}`;
 }
 

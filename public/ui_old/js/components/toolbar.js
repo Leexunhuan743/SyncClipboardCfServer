@@ -124,7 +124,6 @@ export function createToolbar({
   const searchInput = el('input', {
     class: 'input input--search',
     type: 'search',
-    id: 'search',
     placeholder: '搜索记录内容…',
     'aria-label': '搜索记录内容',
     autocomplete: 'off',

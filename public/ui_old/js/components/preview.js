@@ -21,7 +21,7 @@ import { setPending, flashSuccess, isPending } from './toast.js';
 
 export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onClose }) {
   const title = el('h2', { class: 'dialog__title', id: 'preview-title' });
-  const meta = el('span', { class: 'dialog__meta', id: 'preview-meta' });
+  const meta = el('span', { class: 'dialog__meta' });
   // 类型徽标也放进标题行：同一句「内容」在不同类型下是完全不同的东西
   // （文本能复制、图片能存图、文件只能下载），徽标让"我现在看的是什么"不必靠猜测。
   const typeChipLabel = el('span');

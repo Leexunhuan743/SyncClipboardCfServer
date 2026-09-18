@@ -8,8 +8,8 @@
 // 「哪些是客户端依赖的」变得无法机械判定。
 import { Hono } from 'hono';
 import { Bindings } from '../env';
-import { HistoryDb, basename } from '../db';
-import { R2Storage } from '../storage';
+import { basename } from '../db';
+import { stores } from '../stores';
 import { isAuthConfigured, verifyCredentials, drainRequestBody } from '../auth';
 import { issueSession, clearSession } from './session';
 import { uiAuthMiddleware, authenticateUi } from './guard';
@@ -27,11 +27,12 @@ import {
   parseUiHistoryQuery,
   toUiItem,
 } from './query';
-import type { BatchMetaItem } from './query';
+import type { BatchMetaItem, UiTypeCounts } from './query';
 import { fileHeaders } from '../contentTypes';
 import { AVAILABLE_TRANSPORTS, HUB_PATH, issueConnectionToken } from '../hub';
 import { notFoundPage } from './notFound';
 import { isValidProfileHash, HistoryRecordUpdateDto } from '../types';
+import type { HistoryStatisticsDto } from '../types';
 import { CLEANUP_META_KEYS, CLEANUP_PHASES, readRetentionSettings } from '../cleanup';
 import { createUiMaintenanceRoutes } from './maintenance';
 
@@ -64,22 +65,44 @@ function readIntParam(raw: string | null, fallback: number, min: number, max: nu
 }
 
 /**
- * 部署信息的**唯一**实现：`/ui/api/info` 与 `/ui/api/overview` 共用。
+ * 部署信息的**统计层**：一次 R2 全桶扫描（体积）+ 两条 D1 聚合（官方统计、按类型计数）。
  *
- * 抽出来的理由不只是少写一遍：两处各写一份时，「清理状态」「保留策略来源」这类字段
- * 迟早只在其中一处更新，于是概览带与部署信息对话框会显示两个不同的值。
+ * 为什么单独成层（审计 O-01）：这一层是 `/ui/api/overview` 与 `/ui/api/info` 共同需要的，
+ * 而 `overview` 还要在它之上叠元信息。**不能**把它做成 `deploymentInfo` 的必填参数 ——
+ * 那样 `/ui/api/info` 那一路也得先自己算一遍，等于没省。
+ * 原先 `overview` 是把这一层跑两遍（自己跑一次 + `deploymentInfo` 内部再跑一次），
+ * 于是单次首屏 = 2×R2 全桶列举 + 2×statistics + 2×countByTypeViews。
  */
-async function deploymentInfo(env: Bindings, origin: string) {
-  const db = new HistoryDb(env.DB);
-  const storage = new R2Storage(env.R2);
+async function deploymentStats(env: Bindings): Promise<{
+  bytes: number;
+  stats: HistoryStatisticsDto;
+  views: { byActive: UiTypeCounts; byDeleted: UiTypeCounts };
+}> {
+  const { db, storage } = stores({ env });
   const bytes = await storage.totalHistorySize();
-  const [stats, views, meta, retention] = await Promise.all([
+  const [stats, views] = await Promise.all([
     db.statistics(historySizeMB(bytes)),
     countByTypeViews(env.DB),
-    db.getMetaValues(CLEANUP_META_KEY_LIST),
-    readRetentionSettings(db, env),
   ]);
-  // 清理侧：键在「从未跑过清理」时不存在，故全部容忍缺省（D1 报错与上面几个查询同样向上抛，
+  return { bytes, stats, views };
+}
+
+/**
+ * 部署信息的**元信息层**：清理可观测面、保留策略、版本、Hub 传输。
+ *
+ * 与统计层同出于一个 `deploymentInfo`（理由不只是少写一遍：两处各写一份时，
+ * 「清理状态」「保留策略来源」这类字段迟早只在其中一处更新，于是概览带与部署信息对话框
+ * 会显示两个不同的值）。
+ */
+async function deploymentMeta(
+  env: Bindings,
+  origin: string,
+  ds: Awaited<ReturnType<typeof deploymentStats>>,
+) {
+  const { db } = stores({ env });
+  const meta = await db.getMetaValues(CLEANUP_META_KEY_LIST);
+  const retention = await readRetentionSettings(db, env);
+  // 清理侧：键在「从未跑过清理」时不存在，故全部容忍缺省（D1 报错与统计层同样向上抛，
   // 不在这里特殊化——诊断面整体失败比"部分字段静默为默认值"更容易被发现）。
   const lastError = meta.get(CLEANUP_META_KEYS.lastError) ?? '';
   return {
@@ -97,13 +120,13 @@ async function deploymentInfo(env: Bindings, origin: string) {
       maxCountSource: retention.maxCountSource,
       retentionSource: retention.retentionSource,
     },
-    storage: { totalBytes: bytes, totalFileSizeMB: stats.totalFileSizeMB },
+    storage: { totalBytes: ds.bytes, totalFileSizeMB: ds.stats.totalFileSizeMB },
     counts: {
-      total: stats.totalCount,
-      active: stats.activeCount,
-      starred: stats.starredCount,
-      deleted: stats.deletedCount,
-      byType: views.byActive,
+      total: ds.stats.totalCount,
+      active: ds.stats.activeCount,
+      starred: ds.stats.starredCount,
+      deleted: ds.stats.deletedCount,
+      byType: ds.views.byActive,
     },
     // 清理可观测性（F11）：lastRunAt=null 说明从来没跑过；lastError=null 说明上轮无失败
     // （cleanup 正常时写空串，这里归一化）；游标非 0 = 该阶段本轮没跑完、下轮续跑。
@@ -118,6 +141,30 @@ async function deploymentInfo(env: Bindings, origin: string) {
       ),
     },
   };
+}
+
+// `/ui/api/info` 的入口：统计层 + 元信息层
+async function deploymentInfo(env: Bindings, origin: string) {
+  return deploymentMeta(env, origin, await deploymentStats(env));
+}
+
+/**
+ * `deleted` 查询参数的统一解析：非法值 → 400（而不是 500）。
+ *
+ * 列表、统计、概览三个端点共用同一套映射；任何一处漏掉 try/catch，
+ * `?deleted=maybe` 就会在那里变成未处理的 500（审计 §11 #14）。
+ */
+function readDeletedFlagOr400(
+  params: URLSearchParams,
+): { ok: true; value: boolean } | { ok: false; response: Response } {
+  try {
+    return { ok: true, value: parseDeletedFlag(params) };
+  } catch (err) {
+    if (err instanceof UiQueryError) {
+      return { ok: false, response: Response.json({ error: err.message }, { status: 400 }) };
+    }
+    throw err;
+  }
 }
 
 interface UiCredentials {
@@ -190,11 +237,6 @@ function resolveRange(spec: RangeSpec, size: number): { start: number; end: numb
 
 export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });
-
-  const stores = (c: { env: Bindings }) => ({
-    db: new HistoryDb(c.env.DB),
-    storage: new R2Storage(c.env.R2),
-  });
 
   // 缓存策略（后端能力评估 §3.2）：`/ui/api/*` 的 JSON 响应一律 `no-store`。
   // 列表/统计/变更信号都是「随时会变」的私有数据，被浏览器缓存住只会让界面显示陈旧内容
@@ -529,14 +571,9 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   //                        在软删时就已删除，把那行换成已删计数会与"存储占用"这个标题对不上。
   guarded.get('/ui/api/statistics', async (c) => {
     const { db, storage } = stores(c);
-    let deleted = false;
-    try {
-      deleted = parseDeletedFlag(new URL(c.req.url).searchParams);
-    } catch (err) {
-      // 与列表端点同一套映射：非法值 → 400（不是 500）
-      if (err instanceof UiQueryError) return Response.json({ error: err.message }, { status: 400 });
-      throw err;
-    }
+    const flag = readDeletedFlagOr400(new URL(c.req.url).searchParams);
+    if (!flag.ok) return flag.response;
+    const deleted = flag.value;
     const bytes = await storage.totalHistorySize();
     const [stats, views] = await Promise.all([
       db.statistics(historySizeMB(bytes)),
@@ -580,21 +617,23 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   //
   // 只读、无副作用。`activity` 不在这里返回：它是独立的一天粒度查询，
   // 首屏让它阻塞列表可见不值得（前端在列表落地后单独拉，见 boot.js）。
+  //
+  // 统计层**只算一次**（O-01）：`deploymentStats()` 的结果同时喂给响应的 `stats` 与 `info`。
+  // 此前这里先自己跑一遍统计、再由 `deploymentInfo` 内部跑第二遍，单次请求要列举两遍 R2 全桶。
   guarded.get('/ui/api/overview', async (c) => {
-    const { db, storage } = stores(c);
-    const deleted = parseDeletedFlag(new URL(c.req.url).searchParams);
-    const bytes = await storage.totalHistorySize();
-    const [stats, views, marker, info] = await Promise.all([
-      db.statistics(historySizeMB(bytes)),
-      countByTypeViews(c.env.DB),
+    const flag = readDeletedFlagOr400(new URL(c.req.url).searchParams);
+    if (!flag.ok) return flag.response;
+    const deleted = flag.value;
+    const [ds, marker] = await Promise.all([
+      deploymentStats(c.env),
       readChangeMarker(c.env.DB),
-      deploymentInfo(c.env, new URL(c.req.url).origin),
     ]);
+    const info = await deploymentMeta(c.env, new URL(c.req.url).origin, ds);
     return Response.json({
-      stats,
+      stats: ds.stats,
       // 两个计数口径不同（理由与 /ui/api/statistics 一致）：`byType` 随视图走，`byTypeActive` 恒活跃
-      byType: deleted ? views.byDeleted : views.byActive,
-      byTypeActive: views.byActive,
+      byType: deleted ? ds.views.byDeleted : ds.views.byActive,
+      byTypeActive: ds.views.byActive,
       marker,
       info,
       serverTime: new Date().toISOString(),

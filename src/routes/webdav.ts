@@ -1,8 +1,7 @@
 // WebDAV 兼容端点（docs/protocol.md §4；行为对照 SyncClipboardController）
 import { Hono } from 'hono';
 import { Bindings } from '../env';
-import { HistoryDb, basename, BadRequestError } from '../db';
-import { R2Storage } from '../storage';
+import { basename, BadRequestError } from '../db';
 import { putSyncProfile, NotFoundError, PayloadTooLargeError } from '../profile';
 import { parseProfileDto, profileDtoToJson, classifyStoredProfile } from '../serialization';
 import type { StoredProfileHealth } from '../serialization';
@@ -13,6 +12,7 @@ import { multistatusXml, xmlResponse } from '../webdavXml';
 import { isUiEnabled } from '../uiEnabled';
 import { maxRequestBodyBytes } from '../requestLimits';
 import { contentTypeOf, fileHeaders } from '../contentTypes';
+import { stores } from '../stores';
 
 function invalidFileName(name: string): boolean {
   return name.includes('\\') || name.includes('/');
@@ -20,11 +20,6 @@ function invalidFileName(name: string): boolean {
 
 export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false }) // 尾斜杠容忍：对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 /）;
-
-  const handlers = (c: { env: Bindings }) => ({
-    db: new HistoryDb(c.env.DB),
-    storage: new R2Storage(c.env.R2),
-  });
 
   // GET / —— 浏览器访问站点根时引导到 Web UI；其余调用方（含官方客户端的探活）保持原响应。
   // 官方客户端从不 GET 根路径：Test() 与 GetFolderSubList() 都是 PROPFIND（WebDavBase.cs:271/321），
@@ -51,7 +46,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   });
 
   app.on('PROPFIND', '/file', async (c) => {
-    const { storage } = handlers(c);
+    const { storage } = stores(c);
     const objects = await storage.listTempObjects();
     return xmlResponse(
       multistatusXml([
@@ -72,7 +67,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // 三个降级出口逐字对齐上游 GetSyncProfile：无存储值 / 存储值损坏 → 空 TextProfile dto
   // （hash=SHA256("")、size=0）；存储值为字面 `null` → `new ProfileDto()`（hash=""、size 省略键）。
   app.get('/SyncClipboard.json', async (c) => {
-    const { db } = handlers(c);
+    const { db } = stores(c);
     const json = await db.getCurrentProfileJson();
     // null 存储值 = 上游「文件不存在」分支
     const health: StoredProfileHealth | 'missing' =
@@ -108,7 +103,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
 
   // PUT /SyncClipboard.json —— 上传剪贴板（含历史复用/新建+数据校验+广播）
   app.put('/SyncClipboard.json', async (c) => {
-    const { db, storage } = handlers(c);
+    const { db, storage } = stores(c);
     let dto: ProfileDto;
     try {
       dto = parseProfileDto(await c.req.text());
@@ -142,7 +137,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
 
   // GET/HEAD /file/{fileName} —— 历史查找下载（GetRecentTransferFile 语义）
   app.on(['GET', 'HEAD'], '/file/:fileName', async (c) => {
-    const { db, storage } = handlers(c);
+    const { db, storage } = stores(c);
     const fileName = c.req.param('fileName')!;
     if (invalidFileName(fileName)) {
       return c.text('Bad Request', 400);
@@ -160,7 +155,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
 
   // PUT /file/{fileName} —— 暂存数据文件（不校验）
   app.put('/file/:fileName', async (c) => {
-    const { storage } = handlers(c);
+    const { storage } = stores(c);
     const fileName = c.req.param('fileName')!;
     if (invalidFileName(fileName)) {
       return c.text('Bad Request', 400);
@@ -176,14 +171,14 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
 
   // DELETE /file —— 清空暂存区
   app.delete('/file', async (c) => {
-    const { storage } = handlers(c);
+    const { storage } = stores(c);
     await storage.clearTempFolder();
     return c.body(null, 200);
   });
 
   // DELETE /file/{fileName} —— 删除单个暂存文件
   app.delete('/file/:fileName', async (c) => {
-    const { storage } = handlers(c);
+    const { storage } = stores(c);
     const fileName = c.req.param('fileName')!;
     if (invalidFileName(fileName)) {
       return c.text('Bad Request', 400);

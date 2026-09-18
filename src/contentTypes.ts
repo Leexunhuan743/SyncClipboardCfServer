@@ -70,11 +70,12 @@ export function contentTypeOf(name: string): string {
 
 // 会被浏览器当作可执行内容渲染的类型。附件与 API 同源，而浏览器会为同源请求自动附带
 // 已缓存的 Basic 凭据 → 直接打开此类附件可读取全部剪贴板历史（存储型 XSS 面）。
+// 注：`CONTENT_TYPES` 里没有任何扩展名映射到 `text/xml`（`xml` → `application/xml`、
+// `xhtml` → `application/xhtml+xml`），所以它不可能被命中，不列在此处。
 const RENDERABLE_TYPES = new Set([
   'text/html',
   'application/xhtml+xml',
   'image/svg+xml',
-  'text/xml',
   'application/xml',
 ]);
 

@@ -16,6 +16,12 @@
 export { startOfDay } from './format.js';
 import { startOfDay } from './format.js';
 
+/** 空结果先解释筛选条件，再解释所在视图。 */
+export function emptyStateKind(filters) {
+  const filtered = filters.types !== 'All' || filters.starred || filters.search !== '' || filters.range !== 'all';
+  return filtered ? 'filter' : filters.deleted ? 'trash' : 'empty';
+}
+
 export const DEFAULT_FILTERS = {
   page: 1,
   pageSize: 50,

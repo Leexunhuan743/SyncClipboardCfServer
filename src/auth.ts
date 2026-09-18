@@ -7,7 +7,6 @@
 import { Bindings } from './env';
 import { checkAuthRateLimit, noteAuthFailure, noteAuthSuccess } from './rateLimit';
 import type { WaitUntil } from './rateLimit';
-import type { Context, Next } from 'hono';
 
 const AUTH_HEADER = 'Authorization';
 const WWW_AUTHENTICATE = 'Basic realm="SyncClipboard"';
@@ -198,11 +197,3 @@ export async function drainRequestBody(request: Request): Promise<void> {
   }
 }
 
-// Hono 中间件：校验 Basic Auth，失败返回 401
-export const basicAuthMiddleware = (env: Bindings) =>
-  async (c: Context<{ Bindings: Bindings }>, next: Next) => {
-    if (!checkBasicAuth(env, c.req.raw)) {
-      return unauthorized();
-    }
-    await next();
-  };

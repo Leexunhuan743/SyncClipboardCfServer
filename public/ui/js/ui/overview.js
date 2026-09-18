@@ -147,12 +147,6 @@ export function createOverview({ onOpenDrawer }) {
       };
       paint();
     },
-
-    /** 粗粒度更新（轮询里只拿到 lastSyncMs 时用它，不重画整条）。 */
-    setLastSync(ms) {
-      current.lastSyncMs = ms;
-      paint();
-    },
   };
 }
 

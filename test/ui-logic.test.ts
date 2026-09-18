@@ -376,6 +376,23 @@ describe('messages · 用户文案对齐服务端语义', () => {
     expect(describeListError(null, '')).toContain('未知错误');
   });
 
+  // 429 的两条精细文案（"请在 N 秒后重试"）需要 `error.retryAfterSeconds` 才可达。
+  // 这条断言存在的意义：`api.js` 曾经**从不填**这个字段（`ApiError` 构造只带三个参数），
+  // 于是这两条文案是不可达的死分支，用户对着"请求过于频繁"猜还要等多久。
+  // 只测 `messages.js` 这一侧的话，两边可以各自"正确"却永远接不上 —— 所以还要有
+  // `test/ui-input.test.ts` 那条"从响应头带出 retryAfterSeconds"的断言。
+  it('列表错误翻译：429 带 retryAfterSeconds 时给出等待时长，缺失时退回通用文案', () => {
+    expect(describeListError({ status: 429, message: 'Too Many Requests', retryAfterSeconds: 30 }, '')).toBe(
+      '请求过于频繁：请在 30 秒后重试。',
+    );
+    expect(describeListError({ status: 429, message: 'Too Many Requests', retryAfterSeconds: 600 }, '')).toBe(
+      '请求过于频繁：请在约 10 分钟后重试。',
+    );
+    // 缺字段 / 非法值：退回通用文案，而不是显示 "NaN 秒"
+    expect(describeListError({ status: 429, message: 'Too Many Requests' }, '')).toBe('请求过于频繁，请稍后再试。');
+    expect(describeListError({ status: 429, retryAfterSeconds: 0 }, '')).toBe('请求过于频繁，请稍后再试。');
+  });
+
   it('剪贴板失败：http 站点要点名"不是 https"，安全上下文才说"权限"', () => {
     expect(clipboardFailureHint(false, '请手动复制。')).toContain('不是 https');
     expect(clipboardFailureHint(true, '请手动复制。')).toContain('剪贴板权限');

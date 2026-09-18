@@ -217,8 +217,9 @@ export interface UiHistoryListItem extends UiHistoryItem {
 
 export const UI_LIST_TEXT_LIMIT = 500;
 
-// 代价极小的截断：先用 slice，再处理代理对边界（半截代理对是非法字符串）
-function truncateText(text: string, limit: number): string {
+// 代价极小的截断：先用 slice，再处理代理对边界（半截代理对是非法字符串）。
+// 导出给 `src/ui/maintenance.ts` 的自检摘要复用（此前它复制了一份同名实现，见审计 R-03）。
+export function truncateText(text: string, limit: number): string {
   if (text.length <= limit) return text;
   let cut = text.slice(0, limit);
   const last = cut.charCodeAt(cut.length - 1);

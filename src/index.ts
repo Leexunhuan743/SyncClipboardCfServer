@@ -29,6 +29,14 @@ function stripDefaultPort(host: string, proto: string): string {
   return lower.endsWith(suffix) ? lower.slice(0, -suffix.length) : lower;
 }
 
+// 尾斜杠归一（保留根路径 `/`）。
+// 用途：Hono 的 `strict: false` 让 `/ui/api/login/` 与 `/ui/api/login` 落到同一个 handler，
+// 于是所有"按路径字面量做判定"的中间件都必须先归一，否则会留下一条绕过该判定的等价路径
+// （限速那条就是实例）。此前这段表达式在两个中间件里各写一遍（审计 O-08a）。
+function normalizePath(path: string): string {
+  return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+}
+
 // Host 头 → 主机名（IPv6 字面量保留方括号）
 function hostWithoutPort(host: string): string {
   if (host.startsWith('[')) {
@@ -71,7 +79,7 @@ app.use('*', async (c, next) => {
 // 落库那步整包读回内存（见 src/profile.ts 的 PayloadTooLargeError），把上限统一在入口，
 // "任何单个传输对象都 ≤ 上限"才是可解释的不变式（真实护栏仍是落库时按对象实际大小的判定）。
 app.use('*', async (c, next) => {
-  const path = c.req.path.length > 1 && c.req.path.endsWith('/') ? c.req.path.slice(0, -1) : c.req.path;
+  const path = normalizePath(c.req.path);
   const limited =
     (c.req.method === 'PUT' && (path === '/SyncClipboard.json' || path.startsWith('/file/'))) ||
     (c.req.method === 'POST' && (path === '/api/history' || path === '/ui/api/login')) ||
@@ -124,8 +132,7 @@ app.use('/ui/api/*', async (c, next) => {
   // 带 Basic 头的 /ui/api/* 请求同样纳入 IP 维度（凭据维度由协议路径与 login 覆盖）。
   // 路径按尾斜杠归一：Hono 的 strict:false 让 `/ui/api/login/` 也落到同一个 handler，
   // 不归一就会留下一条绕过限速的等价路径。
-  const normalized =
-    c.req.path.length > 1 && c.req.path.endsWith('/') ? c.req.path.slice(0, -1) : c.req.path;
+  const normalized = normalizePath(c.req.path);
   const isLogin = method === 'POST' && normalized === '/ui/api/login';
   if (!isLogin && c.req.header('authorization') === undefined) return next();
   let username: string | null = null;

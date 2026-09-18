@@ -350,13 +350,153 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
     expect(missing, '页面引用了不存在的本地资源：').toEqual([]);
   });
 
-  // 2026-09-18：文案表改成**两版共用一份**（V2 的 `public/ui/js/messages.js`）。
-  // 这条断言钉住"共用"这件事本身：一旦有人把 V1 的 import 换回本地副本，
-  // 两版就会各自漂移（此前删除确认的语义句、"搜索词过长"的翻译都各写了一份）。
-  it('V1 的文案来自两版共用的那一份，而不是本地副本', () => {
-    const main = readFileSync(join(V1_DIR, 'js/main.js'), 'utf8');
-    expect(main, 'V1 的 main.js 未引用共用文案表').toContain("from '../../ui/js/messages.js'");
-    expect(existsSync('public/ui/js/messages.js'), '共用文案表不存在').toBe(true);
+  // ===== 模块图与自包含（2026-09-18 补）=====
+  //
+  // 下面三条此前**都不存在**（V2 有同类的"预载清单 == import 闭包"，V1 一直没有）：
+  //   ① V1 的 modulepreload 清单是人工维护的，多一项白拉一个文件、少一项留下一段依赖瀑布，
+  //      两者都不会报错。2026-09-18 给 V1 新增 `js/messages.js` 时正需要它。
+  //   ② 自包含断言原先只查 `js/main.js` 与 `index.html` 两个文件，且其中的
+  //      `from '../ui/` 是从 `public/ui_old/js/` 出发的**空断言** —— `../ui/` 指向不存在的
+  //      `public/ui_old/ui/`，真正要拦的是 `../../ui/`。现在改成"解析后是否逃出 V1 目录"的结构性判据。
+  //   ③ `messages.js` 是 V1 自己的副本（产品面必须自包含，见该文件头），
+  //      "两份必然漂移"由这条对等守卫兜住，而不是靠人工 review。
+
+  /** 剥注释。判据与 `test/ui-contract.test.ts` 一致：块注释只认**行首**，
+   *  否则注释里的 `/ui/*` 这类通配写法会被当成块注释起点、吃掉整屏正代码。 */
+  function stripJsComments(source: string): string {
+    return source
+      .replace(/(^|\n)([ \t]*)\/\*[\s\S]*?\*\//g, '$1')
+      .replace(/(^|\s)\/\/[^\n]*/g, '$1');
+  }
+
+  /** V1 目录内的模块 id（`js/main.js` 形式）。 */
+  function moduleId(file: string): string {
+    return file.replace(/\\/g, '/').replace(/^public\/ui_old\//, '');
+  }
+
+  /** 把 `spec` 相对 `id` 解析成模块 id；逃出目录时保留前导 `..`（供调用方判定）。 */
+  function resolveFrom(id: string, spec: string): string {
+    const stack = id.split('/').slice(0, -1);
+    for (const part of spec.split('/')) {
+      if (part === '' || part === '.') continue;
+      if (part === '..') {
+        if (stack.length > 0) stack.pop();
+        else stack.push('..');
+      } else stack.push(part);
+    }
+    return stack.join('/');
+  }
+
+  function rawSpecifiers(id: string): string[] {
+    const source = stripJsComments(readFileSync(join(V1_DIR, id), 'utf8'));
+    return [...source.matchAll(/import\s+(?:[\s\S]*?\sfrom\s+)?['"]([^'"]+)['"]/g)].map((m) => m[1]!);
+  }
+
+  function localImportsOf(id: string): string[] {
+    return rawSpecifiers(id)
+      .filter((spec) => spec.startsWith('.'))
+      .map((spec) => resolveFrom(id, spec));
+  }
+
+  /** 入口的传递闭包（不含入口自身），元素为模块 id。 */
+  function importClosure(entry: string): string[] {
+    const seen = new Set<string>();
+    const walk = (id: string): void => {
+      for (const dep of localImportsOf(id)) {
+        if (seen.has(dep)) continue;
+        seen.add(dep);
+        walk(dep);
+      }
+    };
+    walk(entry);
+    return [...seen].sort();
+  }
+
+  it('每张页面的 modulepreload 清单 == 该页入口的 import 闭包（去掉入口自身）', () => {
+    for (const page of [
+      { name: 'index.html', entry: 'js/main.js' },
+      { name: 'login.html', entry: 'js/login.js' },
+    ]) {
+      const html = readFileSync(join(V1_DIR, page.name), 'utf8');
+      const preload = [...html.matchAll(/<link rel="modulepreload" href="\/ui_old\/([^"]+)"/g)]
+        .map((m) => m[1]!)
+        .sort();
+      const closure = importClosure(moduleId(page.entry));
+      // 空集合会让这条断言永远为真：先把「抽取器确实在工作」本身钉住
+      // （登录页的闭包很小 —— 只有 api/format/next-target 三项）
+      expect(preload.length, `${page.name} 没扫到 modulepreload 清单`).toBeGreaterThan(2);
+      expect(closure.length, `${page.name} 的 import 闭包`).toBeGreaterThan(2);
+      expect(preload, `${page.name} 的 modulepreload 清单 != import 闭包`).toEqual(closure);
+    }
+  });
+
+  it('V1 前端是完全自包含的：没有任何模块逃出 public/ui_old，页面也不引用 /ui/ 下的资源', () => {
+    const ids = walkFiles(join(V1_DIR, 'js'), '.js').map(moduleId);
+    expect(ids.length, '没扫到 V1 的 JS 文件（守卫可能失效）').toBeGreaterThan(20);
+    const offenders: string[] = [];
+    for (const id of ids) {
+      for (const spec of rawSpecifiers(id)) {
+        if (!spec.startsWith('.')) continue;
+        if (resolveFrom(id, spec).startsWith('..')) offenders.push(`${id} → ${spec}`);
+      }
+    }
+    // 两张页面也不得把 `/ui/` 下的东西当**子资源**引用（它是开发测试版，随时可能被破坏性重构或删除）。
+    // 注意范围：只查 `<script src>` 与 `<link href>`，**不查** `<a href>` ——
+    // 提示条里指向开发测试版入口 `/ui/app/` 的**导航链接**是有意的（见 index.html 的 notice-bar）。
+    for (const page of ['index.html', 'login.html']) {
+      const html = readFileSync(join(V1_DIR, page), 'utf8');
+      for (const m of html.matchAll(/<(?:script|link)\b[^>]*?(?:src|href)="(\/ui\/[^"]*)"/g)) {
+        offenders.push(`${page} → ${m[1]!}`);
+      }
+    }
+    expect(offenders, '以下引用跨到了 public/ui —— 产品面（V1）必须自包含：').toEqual([]);
+  });
+
+  it('V1 的 messages.js 与 V2 的 messages.js 逐字一致（自包含的对等守卫）', () => {
+    // 自包含的代价是"两份必然漂移"，而这里漂移的后果是**删除语义被写错**
+    // （"带数据文件的记录软删时立即清数据文件"这条最不能错）。守卫从 import 行起逐字比对，
+    // 因此也覆盖了两版共有的私有函数 `describeTarget`。V2 真被删掉时，连这条守卫一起删。
+    const ANCHOR = "import { typeLabel } from './format.js';";
+    // 归一换行：本守卫管的是"文案是否一致"，不是"行尾是 CRLF 还是 LF"
+    // （不同编辑器的保存行为会让后者无意义地红）。
+    const body = (text: string, label: string): string => {
+      const at = text.indexOf(ANCHOR);
+      expect(at, `${label} 里找不到锚点 \`${ANCHOR}\`（守卫可能失效）`).toBeGreaterThan(-1);
+      return text.slice(at).replace(/\r\n/g, '\n');
+    };
+    const v1 = body(readFileSync(join(V1_DIR, 'js/messages.js'), 'utf8'), 'V1 的 messages.js');
+    const v2 = body(readFileSync('public/ui/js/messages.js', 'utf8'), 'V2 的 messages.js');
+    expect(v1, 'V1 与 V2 的 messages.js 已漂移 —— 改文案时两版都要改').toBe(v2);
+  });
+
+  it('挂载点字面量只有一处常量 + 一处有理由的例外', () => {
+    // 2026-09-15 的事故有两半：接口前缀被批量改写（已由上一节的 `API_BASE` 守住），
+    // 以及**挂载点**引用散落在多处（`redirectToLogin` / 登录页默认落点 / 登出跳转）。
+    // 后者此前没有任何守卫 —— 同一次改名照样能改错，症状是"跳到 404"，比接口前缀更难查。
+    // 白名单只有两项，出现第三处就必须先改这里（逼作者说明理由）：
+    const ALLOWED = [
+      { id: 'js/api.js', test: /export const PAGE_BASE = ['"]\/ui_old['"]/ },
+      {
+        id: 'js/next-target.js',
+        test: /u\.pathname === ['"]\/ui_old\/login\.html['"]/,
+        // 该模块刻意不 import `api.js`（要保住"纯函数、可被测试直接覆盖"，见其文件头），
+        // 所以这一处字面量无法引用 PAGE_BASE。
+      },
+    ];
+    const offenders: string[] = [];
+    let hits = 0;
+    for (const id of walkFiles(join(V1_DIR, 'js'), '.js').map(moduleId)) {
+      stripJsComments(readFileSync(join(V1_DIR, id), 'utf8'))
+        .split('\n')
+        .forEach((line, index) => {
+          if (!/['"`]\/ui_old/.test(line)) return;
+          hits += 1;
+          if (ALLOWED.some((entry) => entry.id === id && entry.test.test(line))) return;
+          offenders.push(`${id}:${index + 1} → ${line.trim()}`);
+        });
+    }
+    expect(hits, '没扫到任何 /ui_old 字面量（守卫可能失效）').toBeGreaterThan(0);
+    expect(offenders, '挂载点字面量出现在未登记的位置 —— 改名/搬目录时会漏改：').toEqual([]);
   });
 });
 

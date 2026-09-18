@@ -89,7 +89,11 @@ export function createFilters(handlers) {
     type: 'button',
     text: '清除筛选',
     hidden: true,
-    onclick: handlers.onClearFilters,
+    // 包一层再调：`onClearFilters` 的签名是 `({ keepView } = {})`，
+    // 直接把处理器挂上去会让**浏览器传进来的 MouseEvent** 被当选项对象解构——
+    // `keepView` 恒为 undefined，于是回收站里这个按钮会把人踢回活跃列表，
+    // 与空状态里那个「清除筛选」（`keepView: true`）行为不一致。
+    onclick: () => handlers.onClearFilters(),
   });
 
   const refreshBtn = iconButton({

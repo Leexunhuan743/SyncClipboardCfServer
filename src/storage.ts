@@ -1,5 +1,5 @@
 // R2 访问层（docs/design.md §5.2）
-import { ProfileType } from './types';
+import { ProfileType, isValidProfileHash } from './types';
 
 // key 布局：
 //   暂存:   file/{dataName}
@@ -18,8 +18,10 @@ export function tempKey(name: string): string {
 // 最后防线（对齐上游 `Profile.GetWorkingDirName` 在 key 构造处抛 ArgumentException）：
 // 路由层已把含路径分隔符的 hash 拒为 400，此处断言确保将来新增写路径若漏校验会**快速失败**，
 // 而不是静默产生跨目录的 R2 key（那会让孤儿清理的目录判定与实际 key 结构不同构）。
+// 判据复用 `types.ts` 的 `isValidProfileHash`：**分层保留**（路由层给 400、这里抛错），
+// 但判据表达式只应有一处（审计 R-07）。
 function assertHashForPath(hash: string): void {
-  if (hash.includes('/') || hash.includes('\\')) {
+  if (!isValidProfileHash(hash)) {
     throw new Error(`Hash contains invalid path characters: ${hash}`);
   }
 }

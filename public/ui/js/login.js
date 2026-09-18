@@ -68,7 +68,6 @@ form.addEventListener('submit', async (event) => {
     return;
   }
 
-  clearError();
   submit.setAttribute('data-loading', '');
   submit.setAttribute('aria-busy', 'true');
   submit.disabled = true;

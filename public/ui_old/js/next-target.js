@@ -16,5 +16,9 @@ export function resolveNext(raw, origin) {
     return null;
   }
   if (u.origin !== origin) return null;
+  // 解析成功但指向**登录页自身**时同样回落：否则登录成功后会再落到登录页（多一跳、看起来像死循环）。
+  // 只列本版真实存在的登录页。这个字面量在本模块里不可避免（文件头说明了它刻意不 import
+  // `api.js` 的 `PAGE_BASE` —— 保持"纯函数、可被测试直接覆盖"），守卫只要求它出现一次。
+  if (u.pathname === '/ui_old/login.html') return null;
   return u.pathname + u.search + u.hash;
 }

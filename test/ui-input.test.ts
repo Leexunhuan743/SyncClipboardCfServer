@@ -5,6 +5,19 @@ import { debounce } from '../public/ui/js/dom.js';
 import { api } from '../public/ui/js/api.js';
 // @ts-expect-error Native browser modules are checked by ESLint.
 import { createOmnibox } from '../public/ui/js/ui/omnibox.js';
+// @ts-expect-error Native browser modules are checked by ESLint.
+import { emptyStateKind, DEFAULT_FILTERS } from '../public/ui/js/filters.js';
+
+describe('empty result explanations', () => {
+  it('distinguishes an empty library from an empty trash', () => {
+    expect(emptyStateKind(DEFAULT_FILTERS)).toBe('empty');
+    expect(emptyStateKind({ ...DEFAULT_FILTERS, deleted: true })).toBe('trash');
+  });
+  it('does not call a filtered trash empty', () => {
+    expect(emptyStateKind({ ...DEFAULT_FILTERS, deleted: true, search: 'missing' })).toBe('filter');
+    expect(emptyStateKind({ ...DEFAULT_FILTERS, deleted: true, types: 'Image' })).toBe('filter');
+  });
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -134,6 +147,12 @@ describe('delayed input commits', () => {
 });
 
 describe('UI network recovery and full text', () => {
+  it('requests trash counts for the trash view instead of relabelling active counts', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({}));
+    vi.stubGlobal('fetch', fetch);
+    await api.overview(undefined, { deleted: true, tz: -480 });
+    expect(new URL(fetch.mock.calls[0]?.[0], 'http://localhost').searchParams.get('deleted')).toBe('true');
+  });
   it('loads text attachments from the data endpoint, preserving Unicode and newlines', async () => {
     const text = '完整正文\n中文🙂\n'.repeat(150);
     const fetch = vi.fn().mockResolvedValue(new Response(text));
@@ -171,5 +190,25 @@ describe('UI network recovery and full text', () => {
     const request = expect(api.list({}, controller.signal)).rejects.toMatchObject({name: 'AbortError'});
     controller.abort();
     await request;
+  });
+
+  // 429 的"还要等多久"来自 `Retry-After` 头。这里守的是**接线**：
+  // `messages.js` 那侧的精细文案读 `error.retryAfterSeconds`，只测消息侧会让两边各自"正确"
+  // 却永远接不上（此前 `ApiError` 根本不带这个字段，那两条文案就是死分支）。
+  it('carries Retry-After into retryAfterSeconds so 429 messages can say how long to wait', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '45' } }),
+    ));
+    await expect(api.session()).rejects.toMatchObject({ status: 429, retryAfterSeconds: 45 });
+  });
+
+  it('leaves retryAfterSeconds null when Retry-After is absent or not a positive number', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('Too Many Requests', { status: 429 })));
+    await expect(api.session()).rejects.toMatchObject({ status: 429, retryAfterSeconds: null });
+    // 非法值（HTTP-date 或 0）同样归一为 null —— 界面要显示的是秒数，不能显示 NaN
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response('Too Many Requests', { status: 429, headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } }),
+    ));
+    await expect(api.session()).rejects.toMatchObject({ status: 429, retryAfterSeconds: null });
   });
 });

@@ -9,7 +9,7 @@ import {
   ProfileTypeFilter,
   HistoryStatisticsDto,
 } from './types';
-import { toIso, entityToDto, entityToUpdateDto, fromIso } from './serialization';
+import { fromIso } from './serialization';
 import { HistoryRecordUpdateDto } from './types';
 
 // ===== 本模块负责的共享原语 =====
@@ -571,5 +571,3 @@ export class HistoryDb {
     await this.db.prepare(`DELETE FROM Meta WHERE Key IN (${placeholders})`).bind(...keys).run();
   }
 }
-
-export { entityToDto, entityToUpdateDto, toIso };

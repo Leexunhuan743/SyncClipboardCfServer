@@ -53,8 +53,8 @@
 | D14 | `motion-web` 技能的取用**限于设计系统与打磨层**，不走它的页面蓝图路径 | 该技能自述范围是创意/营销页并明确排除 dashboard/admin UI，而本界面正落在排除侧。取用其令牌层、组件方言与状态矩阵、生产打磨与动效令牌；不生成 hero/分节文案/编造指标 | 已定（2026-09-13） |
 | D15 | **不实现 `/dav` 前缀别名**（另一个实现 `clipserver` 的端点前缀） | 本项目 WebDAV 端点在站点根，`PROPFIND` 的 `href` 从根计算。让前缀可用必须改写协议输出（href 前缀），为一个迁移便利碰协议保真不值得；迁移只需把客户端地址改成站点根（界面「部署信息」直接给出可复制地址） | 已定（2026-09-13） |
 | D16 | **界面是可关闭的**：`UI_ENABLED`（GitHub 仓库变量，默认开）关闭后 `/ui` 与 `/ui/api/*` 一律 404，根路径不再跳转；协议面不受影响。实现上必须让界面请求**先进 Worker**（`[assets] binding = "ASSETS"` + `run_worker_first`），否则平台在 Worker 之前就把静态资源托管掉了，开关无从生效 | 只想要"纯协议后端"的使用者（把服务端给别人的场景、不想暴露登录页）应当能一键关掉界面，而不是去改仓库或删资源。**不改协议面**是这个开关的硬边界：官方客户端不碰 `/ui/*`，因此开关对客户端零影响 | 已定（2026-09-15） |
-| D17 | **默认界面 = V1**（`public/ui_old/`，挂载点 `/ui_old/`）；站点根 `GET /` 的浏览器分支与 `/ui/` 的目录索引都指向它。V2（`public/ui/`，本体 `/ui/app/`）降为**开发测试版**，进去后顶栏版本号与登录页副标题都标着"开发测试版" | 用户 2026-09-18 的定位：V1 经过 2026-09-17～18 的多轮完善（密度、移动端、对比度、状态矩阵、按下反馈）后功能与质量都更完整，而 V2 是零构建方案的实验场（新的模块划分、状态矩阵、探针都先在那边试）。**物理目录名不动**：V1 的资源前缀是写死的 `/ui_old/*`，把它搬到 `/ui/` 要同时改写全部前缀，而 2026-09-15 的改名事故已经付过一次学费 —— 变的只是入口 | 已定（2026-09-18） |
-| D17 | **请求体上限默认 48 MiB、可调到 64 MiB**；并且**不用两个独立上限**，而是"合计工作集预算 96 MiB + 随请求体动态收缩的 zip 解压预算"（`src/requestLimits.ts`、`src/hash.ts` 的 `groupZipDecompressionCap`） | isolate 内存 128 MiB 被**所有并发请求共享**，而 Group 上传时"压缩体 + 解压内容"同时占内存 ⇒ 两个上限各自贴顶会变成 48+64 甚至 80+64，直接顶穿 isolate（OOM 会让并发中的其他请求一起 503，比 413 严重得多）。默认值贴"实际会发生的大小"（客户端默认 20 MB、线上最大 29.0 MiB），上限贴"能承受的极限"。完整推导见 §7.1 | 已定（2026-09-15；沿革 32 → 64 → 48） |
+| D17 (界面定位) | **默认界面 = V1**（`public/ui_old/`，挂载点 `/ui_old/`）；站点根 `GET /` 的浏览器分支与 `/ui/` 的目录索引都指向它。V2（`public/ui/`，本体 `/ui/app/`）降为**开发测试版**，进去后顶栏版本号与登录页副标题都标着"开发测试版" | 用户 2026-09-18 的定位：V1 经过 2026-09-17～18 的多轮完善（密度、移动端、对比度、状态矩阵、按下反馈）后功能与质量都更完整，而 V2 是零构建方案的实验场（新的模块划分、状态矩阵、探针都先在那边试）。**物理目录名不动**：V1 的资源前缀是写死的 `/ui_old/*`，把它搬到 `/ui/` 要同时改写全部前缀，而 2026-09-15 的改名事故已经付过一次学费 —— 变的只是入口 | 已定（2026-09-18，提交 `f114242`） |
+| D17 (请求体上限) | **请求体上限默认 48 MiB、可调到 64 MiB**；并且**不用两个独立上限**，而是"合计工作集预算 96 MiB + 随请求体动态收缩的 zip 解压预算"（`src/requestLimits.ts`、`src/hash.ts` 的 `groupZipDecompressionCap`） | isolate 内存 128 MiB 被**所有并发请求共享**，而 Group 上传时"压缩体 + 解压内容"同时占内存 ⇒ 两个上限各自贴顶会变成 48+64 甚至 80+64，直接顶穿 isolate（OOM 会让并发中的其他请求一起 503，比 413 严重得多）。默认值贴"实际会发生的大小"（客户端默认 20 MB、线上最大 29.0 MiB），上限贴"能承受的极限"。完整推导见 §7.1。注：历史提交中该决策与上述「界面定位」同获编号 D17，两者按主题并立 | 已定（2026-09-15；沿革 32 → 64 → 48） |
 | D18 | **推送后不等 CI**（2026-09-18 用户要求）：`git push` 成功即**结束这一轮**。**禁止** `gh run watch`、`gh run watch --exit-status` 以及任何"轮询到跑完为止"的等待；要确认它有没有起跑，最多允许**一次**非阻塞快照 `gh run list --limit 1` | 本仓库的质量门在**本地**：D10 的协议级套件 + `npm run check`，且 D11 已规定"推送前跑全量套件且用真门禁"。CI 是**兜底**，不是我的判据；而 `deploy` 作业还要真的部署到 Cloudflare，一趟 2–3 分钟 —— 阻塞等待只是把用户晾在对话里，等一个与本轮结论无关的状态。跑失败不会丢：GitHub 自己会通知，下一次改动也会撞见 | 已定（2026-09-18） |
 
 ## 3. 架构总览
@@ -118,15 +118,20 @@ SyncClipboardCfServer/
 │   ├── protocol.md             # 协议契约（精确到端点与字段）
 │   ├── ui.md                   # Web 历史界面：来源、边界、模块、API、设计系统
 │   └── progress.md             # 开发进度追踪
-├── public/                     # 静态资源（由 Cloudflare 直接托管，不走 Worker）
+├── public/                     # 静态资源（由 Cloudflare 托管，run_worker_first 优先进 Worker 以支持 UI_ENABLED 开关）
 │   ├── robots.txt              # 必须放站点根（爬虫只读根路径）
 │   ├── _headers                # 响应头：CSP/安全头 + js/css 的短 TTL 与 stale-while-revalidate
-│   └── ui/
-│       ├── index.html / login.html / manifest.webmanifest
-│       ├── favicon.svg / favicon-32.png / apple-touch-icon.png
-│       ├── css/                # tokens / base / layout / components / motion / auth
-│       └── js/                 # api / clipboard / dom / filters / format / icons / latest / login / main / next-target / store / theme-init
-│           └── components/     # confirm / header / info / list / pagination / preview / stats / toast / toolbar
+│   ├── ui_old/                 # 默认界面 V1（2026-09-18 起接手默认入口 /ui_old/；详见其 README.md）
+│   │   ├── index.html / login.html / manifest.webmanifest
+│   │   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
+│   │   ├── css/                # tokens / base / layout / components / motion / auth / archive
+│   │   └── js/                 # api / clipboard / dom / filters / format / icons / latest / login / main / messages / next-target / signalr / store / theme-init
+│   │       └── components/     # confirm / header / info / list / pagination / preview / row-content / stats / toast / toolbar
+│   └── ui/                     # 开发测试版 V2（挂载在 /ui/app/；详见 docs/ui-v2-design.md）
+│       ├── index.html          # 跳转页（重定向到 /ui_old/）
+│       ├── app/                # V2 应用本体（index.html / login.html）
+│       ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
+│       └── js/                 # api / boot / clipboard / dom / filters / focus / format / icons / keys / latest / login / menus / messages / next-target / push / redirect-hash / spark / state / theme / theme-init / ui/*
 ├── src/
 │   ├── index.ts                # Worker 入口：Hono 装配、中间件、Hub 转发、Cron
 │   ├── env.ts                  # 绑定类型（D1/R2/HUB/Vars/Secrets）
@@ -155,7 +160,8 @@ SyncClipboardCfServer/
 │   │   ├── guard.ts            # 会话或 Basic 鉴权 + 失败路径排空请求体
 │   │   ├── query.ts            # 列表查询层：参数解析、白名单排序、截断、变更信号
 │   │   ├── routes.ts           # /ui/api/* 路由装配
-│   │   └── notFound.ts         # /ui/* 的 404 页
+│   │   ├── maintenance.ts      # 后台维护与自检：完整性自检 GET /ui/api/integrity 与在线保留策略 PUT /ui/api/settings
+│   │   └── notFound.ts         # /ui/* 与 /ui_old/* 的 404 页
 │   └── durable/
 │       ├── SyncClipboardHub.ts # Durable Object：WS/SSE/长轮询三传输 + 广播 + 心跳
 │       └── signalr.ts          # SignalR JSON 协议消息编解码
@@ -188,7 +194,7 @@ CREATE TABLE IF NOT EXISTS HistoryRecords (
   TransferDataFile TEXT NOT NULL DEFAULT '',
   TransferDataSha256 TEXT NOT NULL DEFAULT '',
   TransferDataMd5 TEXT NOT NULL DEFAULT '',
-  FilePaths TEXT NOT NULL DEFAULT '[]',-- JSON 数组（业务未用，保留镜像）
+  FilePaths TEXT NOT NULL DEFAULT '[]',-- JSON 数组（**活跃列**：src/profile.ts 写入，src/serialization.ts 用它推导 DTO 的 hasData；对外协议与前端 DTO 均不含该字段名）
   Hash TEXT NOT NULL,
   CreateTime INTEGER NOT NULL,         -- epoch 毫秒（UTC）
   LastAccessed INTEGER NOT NULL,       -- epoch 毫秒（UTC）
@@ -429,7 +435,7 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
   - **该值 = 上游基线编译后真实会返回的串**，不是本仓库的版本号：上游 `src/Directory.Build.props`
     的 `<VersionPrefix>3.2.0</VersionPrefix>` 是唯一事实源，`SyncClipboardProperty.AppVersion` 取
     程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `28c7e596` 报 `3.2.0`。
-  - **两套编号互不相干**：`package.json` 的版本（如 `1.21.3`）是**迁移项目自身**的版本；
+  - **两套编号互不相干**：`package.json` 的版本（当前 `1.25.2`）是**迁移项目自身**的版本；
     `VERSION` 是**对外协议的自我描述**。不要把两者"对齐"（这是本轮显式决定的坑，见 `progress.md` §43）。
   - **跟版规则**：仅当上游改动版本事实源（bump `<VersionPrefix>` / 换版本来源）才改 `VERSION`，
     并同步 `protocol.md` §10 的登记行与本节。

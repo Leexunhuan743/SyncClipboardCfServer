@@ -5,7 +5,7 @@
 //
 // 约定：**actions 返回结果，组件呈现结果**。行内按钮的「进行中 → 成功」状态由组件自己管，
 // 靠的是 action 的返回值（`true` 才算做成）——「发过请求」不等于「做成了」。
-import { api, handleAuthError, redirectToLogin } from './api.js';
+import { api, handleAuthError, redirectToLogin, PAGE_BASE } from './api.js';
 import { createStore } from './store.js';
 import { filtersFromUrl, filtersToApi, syncUrl, DEFAULT_FILTERS } from './filters.js';
 import { writeText, writeImage, itemIsImage } from './clipboard.js';
@@ -13,13 +13,15 @@ import { typeLabel, downloadNameForText, safeFileName } from './format.js';
 import { debounce } from './dom.js';
 import { createLatestGate } from './latest.js';
 import { createPushChannel } from './signalr.js';
-// ===== 两版共用的**文案表**（2026-09-18）=====
-// 确认框的语义句、列表错误的人话翻译、剪贴板失败的原因句曾经在 V1 与 V2 各写一份，
-// 而它们逐字对齐服务端语义（例如"带数据文件的记录软删时会立即清掉数据文件"）——
-// 两份必然漂移。现在只有一份：V2 的 `messages.js`，V1 从这里引它。
-// 代价是 V1 的模块图多两个文件（messages.js 与它依赖的 V2 format.js，都很小），
-// 换来的是"改一句话不会只改一半"。`test/ui-guard.test.ts` 有断言钉住这条路径。
-import { deleteConfirmSpec, batchDeleteConfirmSpec, clearHistorySpec, describeListError, clipboardFailureHint } from '../../ui/js/messages.js';
+// 文案（删除/批量删除/清空/列表错误/剪贴板失败）在 V1 自己的 `./messages.js` 里：
+// 产品面必须自包含，不得跨目录依赖开发测试版 V2（见该文件头的说明与对等守卫）。
+import {
+  deleteConfirmSpec,
+  batchDeleteConfirmSpec,
+  clearHistorySpec,
+  describeListError,
+  clipboardFailureHint,
+} from './messages.js';
 import { createHeader } from './components/header.js';
 import { createStats } from './components/stats.js';
 import { createToolbar } from './components/toolbar.js';
@@ -508,7 +510,7 @@ async function toggleFlag(item, field, value) {
 }
 
 async function deleteItem(item) {
-  // 文案口径与实现逐条对齐，而且**只有一份**（两版共用的 `messages.js`）：
+  // 文案口径与实现逐条对齐，且由 `messages.js` 单点承载（V1 自己那份，可与 V2 的对等守卫比对）：
   //   带数据文件 → 软删**立即清掉 R2 数据文件**（不可恢复），只有 D1 元数据保留 30 天；
   //   无数据文件（内联文本）→ 内容就在这一行里，30 天内可从回收站恢复。
   // 两者写成同一句话会骗人：说「30 天后才彻底清除」让人以为内容还在（对前者是错的），
@@ -1041,7 +1043,7 @@ async function logout() {
   } catch {
     /* 即便请求失败也要回登录页 */
   }
-  location.replace('/ui_old/login.html');
+  location.replace(`${PAGE_BASE}/login.html`);
 }
 
 // ===== 轮询 =====

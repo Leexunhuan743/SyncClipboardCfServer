@@ -14,7 +14,7 @@ import { el, svg, clear, replayAnimation } from '../dom.js';
 import { iconPaths } from '../icons.js';
 import { dayGroup } from '../format.js';
 import { captureFocus, restoreFocus, describeFocusable } from '../focus.js';
-import { SORT_FIELDS, PAGE_SIZES } from '../filters.js';
+import { SORT_FIELDS, PAGE_SIZES, emptyStateKind } from '../filters.js';
 import { iconButton, labelButton } from './button.js';
 import { renderRow, fillRow, signature } from './row.js';
 import { renderBlank, renderFailure } from './blank.js';
@@ -404,11 +404,11 @@ export function createBoard(handlers) {
   }
 
   function renderEmpty(filters) {
-    const kind = filters.deleted ? 'trash' : anyFilter(filters) ? 'filter' : 'empty';
+    const kind = emptyStateKind(filters);
     return el('div', { class: 'board' }, [
       renderBlank(kind, {
         onAction(key) {
-          if (key === 'clear') handlers.onClearFilters();
+          if (key === 'clear') handlers.onClearFilters({ keepView: true });
           else if (key === 'back') handlers.onExitTrash();
           else handlers.onOpenDrawer();
         },
@@ -497,10 +497,6 @@ export function createBoard(handlers) {
       }
       applySelectAllState(selectAll, items ?? lastItems, selection);
     },
-
-    focusFirst() {
-      tbody.querySelector('.check, .icon-btn')?.focus();
-    },
   };
 }
 
@@ -535,15 +531,6 @@ function neighborButton(row, action) {
     if (button) return button;
   }
   return null;
-}
-
-function anyFilter(filters) {
-  return (
-    filters.types !== 'All' ||
-    filters.starred ||
-    filters.search !== '' ||
-    filters.range !== 'all'
-  );
 }
 
 function countGroups(items) {

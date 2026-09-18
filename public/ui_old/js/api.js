@@ -17,6 +17,15 @@ import { typeName } from './format.js';
 //  "V1 源码里不出现它"，把正确答案与错误答案并列写在同一个文件里只会让守卫自相矛盾。）
 export const API_BASE = '/ui/api';
 
+// 挂载点前缀（**本目录里唯一允许出现 `/ui_old` 字面量的地方**）。
+//
+// 上面那条历史事故还有另一半：接口前缀被批量改写的时候，界面里的**挂载点**引用
+// （回登录页、登录成功后的默认落点）同样是写死的字面量。接口前缀后来收成了 `API_BASE` 并配了守卫，
+// 挂载点却一直散在三处 —— 同一次改名照样能改错，而且症状更难查（跳到一个 404）。
+// 三处引用：本文件的 `redirectToLogin`、`js/login.js` 的默认落点、`js/main.js` 的登出跳转。
+// 守卫见 `test/ui-guard.test.ts` 的「挂载点字面量只有一处」。
+export const PAGE_BASE = '/ui_old';
+
 export class ApiError extends Error {
   constructor(status, message, { retryAfterSeconds = null } = {}) {
     super(message);
@@ -267,7 +276,7 @@ export function itemPath(item) {
 // 会话过期时统一回登录页（保留当前位置，登录后跳回）
 export function redirectToLogin() {
   const next = encodeURIComponent(`${location.pathname}${location.search}`);
-  location.replace(`/ui_old/login.html?next=${next}`);
+  location.replace(`${PAGE_BASE}/login.html?next=${next}`);
 }
 
 export function handleAuthError(error) {

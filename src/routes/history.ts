@@ -1,8 +1,8 @@
 // 官方历史 API（docs/protocol.md §5；行为对照 HistoryController + HistoryService）
 import { Hono } from 'hono';
 import { Bindings } from '../env';
-import { HistoryDb, basename, BadRequestError } from '../db';
-import { R2Storage } from '../storage';
+import { basename, BadRequestError } from '../db';
+import { stores } from '../stores';
 import { addRecordDto, NotFoundError, ProfileDataInvalidError, IncomingRecord } from '../profile';
 import {
   entityToDto,
@@ -222,14 +222,9 @@ async function parseFormBody(c: FormRequest, allowUrlEncoded: boolean): Promise<
 export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false }) // 尾斜杠容忍：对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 /）;
 
-  const handlers = (c: { env: Bindings }) => ({
-    db: new HistoryDb(c.env.DB),
-    storage: new R2Storage(c.env.R2),
-  });
-
   // GET /api/history/statistics —— 先于 :profileId 注册（Hono 同段静态优先，注册顺序保险）
   app.get('/api/history/statistics', async (c) => {
-    const { db, storage } = handlers(c);
+    const { db, storage } = stores(c);
     const bytes = await storage.totalHistorySize();
     const stats = await db.statistics(historySizeMB(bytes));
     return c.json(stats, 200);
@@ -237,7 +232,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
 
   // GET /api/history/{profileId} —— 单条记录元数据
   app.get('/api/history/:profileId', async (c) => {
-    const { db } = handlers(c);
+    const { db } = stores(c);
     const parsed = parseProfileId(c.req.param('profileId')!);
     if (!parsed) {
       return c.text("Invalid profileId format. Expected format: 'Type-Hash'", 400);
@@ -251,7 +246,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
 
   // GET /api/history/{profileId}/data —— 记录数据文件
   app.get('/api/history/:profileId/data', async (c) => {
-    const { db, storage } = handlers(c);
+    const { db, storage } = stores(c);
     const parsed = parseProfileId(c.req.param('profileId')!);
     // 上游此端点的 profileId 解析失败走 `GetTransferDataFileByProfileId` 返回 null → **404**
     // （与 GET /api/history/{profileId} 的 400 不同：那是控制器自己校验格式）
@@ -284,7 +279,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
 
   // POST /api/history/query —— 分页查询（multipart 表单）
   app.post('/api/history/query', async (c) => {
-    const { db } = handlers(c);
+    const { db } = stores(c);
     // 上游此端点只有 [FromForm]：multipart 与 urlencoded 都接受
     const parsed = await parseFormBody(c, true);
     if (parsed instanceof Response) return parsed;
@@ -310,7 +305,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
 
   // POST /api/history —— 历史上传（multipart；data 文件部分）
   app.post('/api/history', async (c) => {
-    const { db, storage } = handlers(c);
+    const { db, storage } = stores(c);
     // 上游此端点有显式 [Consumes("multipart/form-data")]：非 multipart 一律 415
     const parsed = await parseFormBody(c, false);
     if (parsed instanceof Response) return parsed;

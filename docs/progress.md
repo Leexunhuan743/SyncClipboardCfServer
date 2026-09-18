@@ -5251,5 +5251,28 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 **对报告口径的连带影响**：不再把"CI 绿"当成交付物的一部分。要做也只是在最后一句话里附一次快照的
 结果（例："已推送；`gh run list` 一眼显示 in_progress"），并且**不能**为了写这句话去等它完成。
 
+## 81. V2 回收站状态解释修正与全文档切合校准（2026-09-18）
+
+### 81.1 V2 回收站筛选与概览同源收口
+1. **回收站空状态误报修正**：在回收站视图（`deleted=true`）下输入未命中的搜索词或类型过滤时，界面原先直接根据 `filters.deleted` 判定回显「回收站为空」，导致用户误判内容已被彻底删除。在 `public/ui/js/filters.js` 抽象并导出 `emptyStateKind(filters)`：优先解释筛选条件（`filter`），未过滤时才解释所在视图（回收站为 `trash`，普通视图为 `empty`）。
+2. **清除筛选保持所在视图**：空状态下的清除筛选动作改为传递 `{ keepView: true }`，`boot.js` 的 `resetFilters({ keepView = false })` 保留 `deleted: keepView && state().filters.deleted`，避免从回收站清空筛选时意外跳出回收站。
+3. **概览端点（`/ui/api/overview`）视图同源**：`api.overview(signal, { tz, deleted })` 支持透传 `deleted` 标志；`boot.js` 的 `refreshOverview()` 传递 `state().filters.deleted`，确保概览带的统计芯片与工具栏在回收站视图下使用已删除记录的同源口径。
+4. **标题层级归位**：`public/ui/app/index.html` 补上工作区主标题（`.workspace-heading__title` 的 `<h1>`「剪贴板历史」），使每页恰好一个一级标题；顶栏品牌名仍是 `<span>`（跨页共用的外壳不承载文档级标题）。注：`appbar.js` 里品牌名与 `h1` 的**解耦**出自 `27826ed`（V2 重做那轮），不在本轮的改动范围内。
+5. **测试与探针补强**：`test/ui-input.test.ts` 补充空状态解释与 overview 参数单元测试；`test/manual/states.mjs` 补齐回收站空搜索状态、清空筛选保留视图、首屏失败重试恢复、每行 5 控件 Tab 停靠点（可点击预览）以及登录页空提交定位断言。
+6. **彻底解除 V1 对 V2 的跨目录依赖与兼容层**：V1（`public/ui_old/`）作为主流界面必须完全自包含，移除此前尝试跨目录引用 `../../ui/js/messages.js` 的耦合代码及 preloads，所有删除/清空/错误翻译文案收回 V1 内部本地实现；守卫改为断言 V1 严禁跨目录依赖 `public/ui`，杜绝开发测试版改动或移除时对主流界面的任何影响。
+
+### 81.2 全文档系统性校准（切合真实代码）
+1. **`protocol.md`**：修正 §4 WebDAV 端点表中 `GET /` 浏览器导航重定向目标为真实的 `→ 302 /ui_old/`（`src/routes/webdav.ts:38`），杜绝经 `/ui/` 的多余中间跳跃。
+2. **`design.md`**：
+   - 消歧 ADR 表中历史提交中并立的两个 D17 编号（`D17 (界面定位)` 对应 `f114242`，`D17 (请求体上限)` 对应 `1.25.2` 重构）；
+   - 更新 §4 目录结构：`public/` 修正为由 Worker 优先拦截（`run_worker_first`），补全 `ui_old/` 与 `ui/` 的实际双界面布局；`src/ui/` 补齐遗漏的 `maintenance.ts`；
+   - §10 更新 `package.json` 版本号为当前真实的 `1.25.2`。
+3. **`ui.md`**：
+   - §2 修正关于 Hub 连接的陈旧描述（Web 界面自 2026-09-14 起已通过 `/ui/api/hub-ticket` 接入 SignalR WebSocket 实时推送，保留 60s 轮询看门狗）；
+   - §3.1 消除 `preview.js` 的重复行，补全遗漏的 `css/archive.css`（V1 顶部提示条样式）。
+4. **`README.md`**：
+   - 目录结构与文档索引补全 `public/ui_old/` 默认界面说明及 `ui-v2-design.md`、`ui-v2-audit.md`、`frontend-checklist.md` 索引。
+
+
 
 

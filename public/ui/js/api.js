@@ -6,46 +6,60 @@
 import { typeName } from './format.js';
 
 export class ApiError extends Error {
-  constructor(status, message, payload = null) {
+  constructor(status, message, payload = null, retryAfterSeconds = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.payload = payload;
+    // 429 时服务端在 `Retry-After` 头里给出"还要等多久"（`src/auth.ts` 的 tooManyRequests）。
+    // **必须带出来**：`messages.js` 的精细文案（"请在 N 秒后重试"）读的就是这个字段，
+    // 不带它 → `Number(undefined)` 是 NaN → 那两条文案永远是死分支。
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
-async function request(path, { method = 'GET', body, signal, textResponse = false } = {}) {
+async function request(
+  path,
+  { method = 'GET', body, signal, textResponse = false, timeoutMs = 20_000 } = {},
+) {
   const controller = new AbortController();
   const cancel = () => controller.abort(signal?.reason);
   if (signal?.aborted) cancel();
   signal?.addEventListener('abort', cancel, { once: true });
-  const timer = setTimeout(() => controller.abort(new Error('请求超时，请检查连接后重试。')), 20_000);
+  const timer = setTimeout(() => controller.abort(new Error('请求超时，请检查连接后重试。')), timeoutMs);
   try {
     const response = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: controller.signal,
-  });
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
 
-  const text = textResponse && response.ok ? await readTextBody(response) : await response.text();
-  if (textResponse && response.ok) return text;
-  let payload = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      if (response.ok) throw new ApiError(502, '服务器返回了无法读取的数据，请刷新后重试。');
-      payload = {};
+    const text = textResponse && response.ok ? await readTextBody(response) : await response.text();
+    if (textResponse && response.ok) return text;
+    let payload = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        if (response.ok) throw new ApiError(502, '服务器返回了无法读取的数据，请刷新后重试。');
+        payload = {};
+      }
     }
-  }
 
-  if (!response.ok) {
-    const message = (payload && (payload.detail || payload.error)) || response.statusText || '请求失败';
-    throw new ApiError(response.status, message, payload);
-  }
-  return payload;
+    if (!response.ok) {
+      const message = (payload && (payload.detail || payload.error)) || response.statusText || '请求失败';
+      // `Retry-After` 是**秒数**（RFC 9110 也允许 HTTP-date，本服务端发的是秒数，见 tooManyRequests）
+      const retryAfter = Number(response.headers.get('retry-after'));
+      throw new ApiError(
+        response.status,
+        message,
+        payload,
+        Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null,
+      );
+    }
+    return payload;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', cancel);
@@ -172,24 +186,15 @@ export const api = {
     return { updated, failed };
   },
 
-  /**
-   * 批量取元数据（含**完整正文**）。用于"选中多条 → 一起复制"这类聚合动作；
-   * 目前界面没有这个入口，故**不导出**（需要时再加回来，服务端端点一直在）。
-   * 单次 ≤100 条；更多由调用方分片。
-   */
-  async batchMeta(items) {
-    const raw = await request('/ui/api/history/batch-meta', {
-      method: 'POST',
-      body: { items: items.map((item) => ({ type: item.type, hash: item.hash })) },
-    });
-    return (raw?.items ?? []).map(normalizeItem).filter(Boolean);
-  },
-
   /** 清空历史：`scope='trash'` 只清回收站、`'all'` 清全部。服务端各用一条批量语句，不逐条广播。 */
   clear: (scope) => request('/ui/api/history/clear', { method: 'POST', body: { scope } }),
 
-  /** 数据完整性自检：只在用户点「检查」时调用（服务端要列举一遍 R2，不属于每次加载都该付的成本）。 */
-  integrity: () => request('/ui/api/integrity'),
+  /**
+   * 数据完整性自检：只在用户点「检查」时调用（服务端要列举一遍 R2，不属于每次加载都该付的成本）。
+   * **单独放宽超时**：服务端要把 history 前缀整轮列出来，对象多时实测秒级，默认 20s 偏紧；
+   * 而全局调大默认值会让 `test/ui-input.test.ts` 的 20s 超时用例永远等不到 reject。
+   */
+  integrity: () => request('/ui/api/integrity', { timeoutMs: 60_000 }),
 
   /** 保留策略写入（Meta 覆盖；`0` = 关闭该阶段，`null` = 回落到部署环境变量）。 */
   updateSettings: (patch) => request('/ui/api/settings', { method: 'PUT', body: patch }),
@@ -203,8 +208,8 @@ export const api = {
    * 内部还要跑三条查询（`docs/backend-gaps.md` §3.1）。V2 的概览带需要的是它们**合并后的
    * 一个快照**，且概览带与列表必须在同一次往返里对齐（否则数字与列表可能来自两个瞬间）。
    */
-  overview: (signal, { tz = tzOffset() } = {}) =>
-    request(`/ui/api/overview?${buildQuery({ tz })}`, { signal }),
+  overview: (signal, { tz = tzOffset(), deleted = false } = {}) =>
+    request(`/ui/api/overview?${buildQuery({ tz, deleted })}`, { signal }),
 
   /**
    * 活动趋势：每天有多少条记录（按**客户端时区**切分「一天」）。

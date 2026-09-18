@@ -55,7 +55,7 @@ flowchart LR
     C2["官方客户端 B"] -->|HTTP Basic| W
     C3["WebDAV 客户端"] -->|HTTP Basic| W
     B["浏览器"] -->|会话 Cookie 或 Basic| W
-    B -.静态资源.-> AS["Cloudflare 静态资源<br/>public/ui/**"]
+    B -.静态资源.-> AS["Cloudflare 静态资源<br/>public/**"]
 
     subgraph W["Cloudflare Worker（Hono）"]
         AUTH[鉴权中间件]
@@ -83,7 +83,7 @@ flowchart LR
 | **D1**（SQLite） | 历史记录与当前 Profile 元数据 |
 | **R2** | 剪贴板数据文件（`file/` 暂存区 + `history/` 持久区） |
 | **Durable Objects** | SignalR 兼容 Hub：持有 WebSocket 连接、心跳、全员广播 |
-| **静态资源**（`public/ui_old/**` = 默认界面 V1、`public/ui/**` = 开发测试版 V2） | 两个界面面都由 Cloudflare 托管，但请求**先进 Worker**（`run_worker_first` 覆盖 `/ui*` 与 `/ui_old*`）——入口据此判断界面开关（`UI_ENABLED`），开着转回 `env.ASSETS.fetch()`，关着一律 404 |
+| **静态资源**（`public/ui_old/**` = 默认界面 V1、`public/ui/**` = 开发测试版 V2） | 两个界面都由 Cloudflare 托管，但请求**先进 Worker**（`run_worker_first` 覆盖 `/ui*` 与 `/ui_old*`）——入口据此判断界面开关（`UI_ENABLED`），开着转回 `env.ASSETS.fetch()`，关着一律 404 |
 
 协议面与界面面**严格分离**：`/api/history/*`、`/SyncClipboard.json`、`/file/*` 是客户端依赖的契约，
 界面只读同一套数据（另开 `/ui/api/*` 表达页大小、排序、选择集等界面需要），写操作与官方 `PATCH`
@@ -415,9 +415,9 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 > 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
 > 客户端与 WebDAV/R2 工具的账号配置（否则表现为"同步无声坏掉"）。
 
-安全审计的完整账目在 `.audits/cfserver-audit-003/`（`report.md` 为报告）；修复计划见 [`docs/security-fix-plan.md`](security-fix-plan.md)，
-其中**同时属于上游 SyncClipboard 的问题**整理为 [`docs/upstream-issues.md`](upstream-issues.md)（15 条，附 `文件:行` 证据与复现）；
-而「上游缺陷与怪癖在本实现里如何处置」逐条列在 [`docs/upstream-defects.md`](upstream-defects.md)（16 条已复刻 + 5 条未复刻）。
+安全审计的完整账目在 `.audits/cfserver-audit-003/`（`report.md` 为报告）；修复计划见 [`docs/security-fix-plan.md`](docs/security-fix-plan.md)，
+其中**同时属于上游 SyncClipboard 的问题**整理为 [`docs/upstream-issues.md`](docs/upstream-issues.md)（15 条，附 `文件:行` 证据与复现）；
+而「上游缺陷与怪癖在本实现里如何处置」逐条列在 [`docs/upstream-defects.md`](docs/upstream-defects.md)（16 条已复刻 + 5 条未复刻）。
 
 ## 已知限制
 
@@ -460,11 +460,11 @@ src/
 ├── routes/             webdav.ts / history.ts
 ├── ui/                 Web 界面的服务端面：session / guard / query / routes / maintenance / notFound
 └── durable/            SyncClipboardHub.ts（Hub）+ signalr.ts（协议编解码）
-public/                 静态资源：robots.txt（站点根）+ ui/（原生 ES 模块，无构建步骤）
+public/                 静态资源：robots.txt + _headers + ui_old/（默认界面 V1）+ ui/（开发测试版 V2）
                         文件清单以 docs/ui.md §3 为准（避免四处各列一份、加文件时漏更新）
 test/                   全部 22 个套件 + live-signalr.mjs（线上验证脚本）
 tools/                  ab-upstream-probe.ps1（与**官方服务端发布件**逐条 A/B 对照的探针/守卫）
-docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md / upstream-parity.md / upstream-defects.md / backend-gaps.md
+docs/                   design.md / protocol.md / ui.md / progress.md / security-fix-plan.md / upstream-issues.md / upstream-parity.md / upstream-defects.md / backend-gaps.md / ui-v2-design.md / ui-v2-audit.md / frontend-checklist.md
 schema.sql              D1 建表语句
 ```
 
@@ -484,6 +484,9 @@ schema.sql              D1 建表语句
 | [docs/upstream-parity.md](docs/upstream-parity.md) | 与上游 `28c7e596` 的逐文件对照报告：文件映射总表、差异与修复清单、风险分级、待确认项、上线结论 |
 | [docs/upstream-defects.md](docs/upstream-defects.md) | **上游缺陷与怪癖的复刻清单**：16 条已复刻（契约/缺陷/结构性消除三分类）+ 5 条未复刻，逐条给处置决定与"为什么不能顺手改好" |
 | [docs/backend-gaps.md](docs/backend-gaps.md) | 后端能力缺口与可完善项评估：已建未接（§1）/ 可新增（§2）/ 效率欠账（§3），附建议顺序与复核记录 |
+| [docs/ui-v2-design.md](docs/ui-v2-design.md) | Web 界面 V2 设计与实现记录：骨架线框、设计令牌、组件词汇表、API 契约与验证记录 |
+| [docs/ui-v2-audit.md](docs/ui-v2-audit.md) | Web 界面 V2 系统性审计报告：设计系统体检、类名契约、跨端交互与状态矩阵验证 |
+| [docs/frontend-checklist.md](docs/frontend-checklist.md) | 前端质量检查清单：关注点、判据与落地指导原则 |
 
 ## 许可证
 
@@ -496,5 +499,6 @@ schema.sql              D1 建表语句
 ## 致谢
 
 - [SyncClipboard](https://github.com/Jeric-X/SyncClipboard) —— 客户端与服务端协议定义
+- [clipserver](https://github.com/ting1e/clipserver) —— 同类服务端的参考实现与 Web 历史界面灵感来源
 - [Hono](https://hono.dev/) —— 轻量 Workers Web 框架
 - [fflate](https://github.com/101arrowz/fflate) —— 纯 JS zip 解压（Workers 兼容）

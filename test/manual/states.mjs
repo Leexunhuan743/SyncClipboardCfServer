@@ -1212,7 +1212,7 @@ try {
     press('Home');
     const home = describe();
 
-    // Tab 顺序没有被改动：每行仍然是 4 个可聚焦控件（方向键是**增量**，不是 roving tabindex）
+    // 预览内容本身也是按钮：每行 5 个控件，方向键仍可跳到下一行同类控件。
     const tabbables = [...rows[0].querySelectorAll('button, input, a, [tabindex]')]
       .filter((n) => n.tabIndex >= 0).length;
 
@@ -1224,7 +1224,76 @@ try {
   expect('ArrowUp 回到上一行', ap.up.icon === 'star' && ap.up.rowIndex === 0, JSON.stringify(ap.up));
   expect('End 到末行', ap.end.rowIndex === ap.lastRowIndex && ap.end.icon === 'star', JSON.stringify(ap.end));
   expect('Home 回首行', ap.home.rowIndex === 0 && ap.home.icon === 'star', JSON.stringify(ap.home));
-  expect('每行仍是 4 个 Tab 停靠点（方向键是增量，没有减少 Tab）', ap.tabbablesPerRow === 4, `实测 ${ap.tabbablesPerRow} 个`);
+  expect('每行 5 个 Tab 停靠点（含可点击预览）', ap.tabbablesPerRow === 5, `实测 ${ap.tabbablesPerRow} 个`);
+
+  // 发布回归：首屏会话请求失败，重试必须恢复整个启动流程（含实时连接）。
+  const faultScript = await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      const original = window.fetch.bind(window);
+      let first = true;
+      window.fetch = (...args) => {
+        if (first && String(args[0]).includes('/ui/api/session')) {
+          first = false;
+          return Promise.reject(new TypeError('release-test: session unavailable'));
+        }
+        return original(...args);
+      };
+    })();`,
+  });
+  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await wait(1500);
+  const retryStartup = JSON.parse(await evaluate(`(async () => {
+    const failed = document.querySelector('.blank')?.dataset.kind === 'error';
+    document.querySelector('.blank button')?.click();
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && !document.querySelector('.sync[data-state="live"]')) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return JSON.stringify({failed, rows:document.querySelectorAll('tr.item').length,
+      live:!!document.querySelector('.sync[data-state="live"]')});
+  })()`));
+  record('首屏失败后重试', JSON.stringify(retryStartup));
+  expect('首屏错误可见且重试恢复列表与推送', retryStartup.failed && retryStartup.rows > 0 && retryStartup.live, JSON.stringify(retryStartup));
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: faultScript.identifier });
+
+  await send('Page.navigate', { url: `${BASE}/ui/app/?deleted=1&search=release-no-match-92748` });
+  await wait(1500);
+  const trashSearch = JSON.parse(await evaluate(`(async () => {
+    const kind = document.querySelector('.blank')?.dataset.kind;
+    document.querySelector('.blank button')?.click();
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !document.querySelector('tr.item')) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const query = new URLSearchParams(location.search);
+    const statistics = await (await fetch('/ui/api/statistics?deleted=1')).json();
+    const chipTotal = Number(document.querySelector('.chips .chip__num')?.textContent);
+    // 按类型的四个 chip 才是**真正**受 overview 的 `deleted` 参数影响的东西
+    // （它们读 `stats.byType`，而「全部」那个 chip 读的是 total）。只比「全部」的话，
+    // 即使 overview 完全忽略 `deleted`、把活跃口径的计数发下来，断言照样通过 —— 见下一条 expect。
+    const chipByKind = {};
+    for (const chip of document.querySelectorAll('.chips .chip[data-kind]')) {
+      chipByKind[chip.dataset.kind] = Number(chip.querySelector('.chip__num')?.textContent);
+    }
+    return JSON.stringify({kind, keptTrash:query.get('deleted') === '1', cleared:!query.has('search'),
+      rows:document.querySelectorAll('tr.item').length, chipTotal, chipByKind,
+      typeCounts:statistics.byType,
+      expected:Object.values(statistics.byType).reduce((a,b) => a+b, 0)});
+  })()`));
+  record('回收站筛选清空与计数', JSON.stringify(trashSearch));
+  expect('回收站的空搜索不能谎报回收站为空', trashSearch.kind === 'filter', JSON.stringify(trashSearch));
+  expect('清除筛选保留回收站且恢复记录', trashSearch.keptTrash && trashSearch.cleared && trashSearch.rows > 0, JSON.stringify(trashSearch));
+  expect('回收站类型计数使用删除记录口径', trashSearch.chipTotal === trashSearch.expected, JSON.stringify(trashSearch));
+  // 上面那条只覆盖「全部」chip（它读 total，与视图无关的那条聚合）。这条覆盖**按类型的四个 chip**：
+  // 它们的数字来自 overview 的 `byType`，只有 overview 真的透传了 `deleted` 才会等于
+  // `statistics?deleted=1` 的口径 —— 这正是本次修复的核心。
+  expect(
+    '回收站按类型 chip 用的是删除记录口径（overview 必须透传 deleted）',
+    ['Text', 'Image', 'File', 'Group'].every(
+      (k) => trashSearch.chipByKind[k] === (trashSearch.typeCounts[k] ?? 0),
+    ),
+    JSON.stringify(trashSearch),
+  );
 
   // ── 12. 登录页（核心页面之一，此前只有一张截图、零断言）──────────
   //
@@ -1282,16 +1351,16 @@ try {
       url: location.pathname,
       text: box?.textContent ?? null,
       hidden: box?.hidden ?? null,
-      ariaInvalid: document.getElementById('password')?.getAttribute('aria-invalid') ?? null,
+      ariaInvalid: document.getElementById('username')?.getAttribute('aria-invalid') ?? null,
       focus: document.activeElement?.id ?? null,
     });
   })()`);
   record('登录页空提交', emptySubmit);
   const es = JSON.parse(emptySubmit);
-  expect('空提交被本地拦住并给出原因', es.hidden === false && /用户名与密码/.test(es.text ?? ''), `提示「${es.text}」`);
+  expect('空提交被本地拦住并给出原因', es.hidden === false && /请填写用户名/.test(es.text ?? ''), `提示「${es.text}」`);
   // 登录页的规范路径是 `/ui/app/login`（worker 会把 .html 也映射过去），故判据用 /login 而不是文件名
   expect('空提交不发请求、不离开登录页', /\/login\b/.test(es.url), `跑到了 ${es.url}`);
-  expect('出错后把焦点放回可改的字段', es.focus === 'password' && es.ariaInvalid === 'true', `焦点 ${es.focus}`);
+  expect('出错后把焦点放回第一个缺失字段', es.focus === 'username' && es.ariaInvalid === 'true', `焦点 ${es.focus}`);
   await shoot('18-state-login-error');
 
   // 已登录访问登录页 = 多一步，必须直接送去列表页（把会话 Cookie 装回去）
