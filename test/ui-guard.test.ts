@@ -615,7 +615,8 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
 //   · `src/index.ts` 的 `isUiAsset` —— 漏一处 ⇒ 那一面关不掉；多一处 ⇒ 永不命中的死分支；
 //   · `public/_headers` 的规则 —— 漏一处 ⇒ 那一面退回平台默认缓存策略（见本文件末尾那节）。
 // 判据一律把挂载点**从 `public/` 动态发现**（不写死清单），否则"新增挂载点却忘了同步"会双双漏网 ——
-// 2026-09-19 复查时这三处里有两处正是写死的常量清单。
+// 2026-09-19 复查时的实况：`run_worker_first` 的断言写的是六个固定模式、`isUiAsset` **根本没有守卫**，
+// 而 `_headers` 判据② 上一轮（`d32631b`）刚改成动态 ⇒ 这份"动态发现"当时只覆盖了三处里的一处。
 describe('界面挂载点的事实源（run_worker_first / isUiAsset / _headers）', () => {
   // UI_ENABLED=false 必须是**真的关掉**：界面前缀若不进 run_worker_first，边缘命中静态资源就
   // 直接返回，请求根本到不了 Worker，`src/index.ts` 里那段 `isUiAsset` 的 404 判定永远不执行 ——
@@ -625,7 +626,7 @@ describe('界面挂载点的事实源（run_worker_first / isUiAsset / _headers�
   //
   // ⚠️ 2026-09-19 复查（第二轮）：原判据把"三个挂载点"写成**常量数组**，于是**只防改名、不防新增** ——
   // 将来加 `/ui_v3` 而忘了同步配置时，六个老模式仍在、断言照绿，而那正是本守卫诞生要防的同型失效
-  // （同一次复查已在 `_headers` 判据② 上改过一遍）。现在挂载点从 `public/` **动态发现**，
+  // （上一轮 `d32631b` 已在 `_headers` 判据② 上改过一遍）。现在挂载点从 `public/` **动态发现**，
   // 与 `_headers` 判据②、下面的 `isUiAsset` 判据共用同一份事实。
   const uiMountPoints = readdirSync('public', { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && entry.name.startsWith('ui'))
@@ -660,7 +661,7 @@ describe('界面挂载点的事实源（run_worker_first / isUiAsset / _headers�
     expect(dead, 'run_worker_first 里的模式指向不存在的路径（改名/搬目录时漏改了它）：').toEqual([]);
   });
 
-  // 同一份事实的**第三处副本**：Worker 入口的 `isUiAsset` 决定"哪些前缀按界面开关 404"。
+  // 同一份事实的**第二处副本**：Worker 入口的 `isUiAsset` 决定"哪些前缀按界面开关 404"。
   // 它必须与 `public/` 下的挂载点集合**完全相等**：少了 ⇒ 那一面关不掉（静默失效）；
   // 多了 ⇒ 一个永不命中的死分支（改名漏改的经典形态）。代码侧保持显式列举（路由判定要可读），
   // 但由这条断言把它与文件系统钉在一起 —— 将来新增挂载点时会红，逼迫三处一起改。

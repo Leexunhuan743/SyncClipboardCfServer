@@ -213,7 +213,7 @@
 
 | # | 内容 |
 |---|---|
-| ① | 共 25 处替换（`docs/ui.md` 21、`docs/design.md` 3、`docs/ui-v2-design.md` 1），归并为 18 类地名/计数订正 |
+| ① | 改动量按 `git diff --numstat`：`docs/ui.md` +23/−22、`docs/design.md` +3/−3、`docs/ui-v2-design.md` +1/−1；归并为 **19 类**地名/计数订正（逐类明细见 `progress.md` §92.1 的表） |
 | ② | 守卫的"防新增"只改了一半：§8 已把 `_headers` 判据②改成动态发现，而 `run_worker_first` 的断言与 `src/index.ts` 的 `isUiAsset` 仍是**硬编码三前缀** ⇒ 本轮三处统一为"从 `public/` 动态发现"，各补反向断言（死模式 / 集合相等）；三条判据另从「V1 的样式层契约」describe 里**摘出来单独成组**（原先失败信息会指向样式层）。变异实验 4/4 见 `progress.md` §92.2 |
 | ③ | `test/manual/probe.mjs` 的 `kinds` 读 `.kinds__item`（**无生产者**）⇒ 探针在空转，改读筛选条 chips |
 

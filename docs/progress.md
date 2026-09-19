@@ -5844,26 +5844,34 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 §90/§91 扫的是**文件路径 / 运行时 URL / 配置里的死路径**。而 `docs/ui.md` §2（架构与边界）与
 `docs/design.md` §5 里还有一批**句子里的地名**被同一次替换打偏 —— 它们不是路径引用，所以扫不到：
 
-| 位置 | 改名前（正确） | 改名后（错） | 真值 |
+| 位置 | 改名前 | 改名后 | 真值 |
 |---|---|---|---|
 | `ui.md` §2 图 | `GET /ui/** → public/ui/**` | 写成 `public/ui_v2/**` | `/ui/**` 是**跳转壳**（2 个文件） |
 | `ui.md` §2 图 | `run_worker_first = ["/ui", "/ui/*", "/ui_old", "/ui_old/*"]` | `["/ui", "/ui_v2/*", "/ui_v1", "/ui_v1/*"]`（缺两项、归属错） | `wrangler.toml:96` 的 6 个模式 |
 | `ui.md` §2.1 | `["/ui", "/ui/*"]`（09-15 的历史值） | `["/ui", "/ui_v2/*"]` | 当时还没有 `ui_v2` 这个名字 |
-| `ui.md` §2.1 表 | `/ui/`、V1、`/ui_old/` 各自一行 | `/ui` 与 `/ui_v2/*` 都被记成 **V2** | 三个前缀各一面 |
-| `ui.md` §2.1 | 「**两个**挂载点都在 `run_worker_first` 里」 | 同左 | 三个（守卫用例名早已改成三个） |
-| `ui.md` §2.1 | CI 冒烟示例 | `/ui_v2/`（"V2 的跳转索引"） | 冒烟打 `/ui/`、`/ui_v1/`、`/ui_v1/js/main.js`、`/ui_v2/app/`、`/ui_v2/js/boot.js` —— **`public/ui_v2/index.html` 不存在** |
+| `ui.md` §2.1 | **一行并列两面**：`/ui`、`/ui/`、`/ui/js/*`（V2）与 `/ui_old/`、`/ui_old/js/*`（V1） | `/ui` 与 `/ui_v2/*` 都被记成 **V2** | 三个前缀各一面 |
+| `ui.md` §2.1 | 「**两个**挂载点都在 `run_worker_first` 里」 | 同左 | 三个（守卫用例名早已改成"每个挂载点"） |
+| `ui.md` §2.1 | 冒烟打 `/ui/`（"V2 的跳转索引"）、`/ui/app/`、`/ui/js/boot.js`、`/ui_old/`、`/ui_old/js/main.js` | 被替换成 `/ui_v2/`（"V2 的跳转索引"）、`/ui_v2/app/`、`/ui_v2/js/boot.js`… | 冒烟打 `/ui/`、`/ui_v1/`、`/ui_v1/js/main.js`、`/ui_v2/app/`、`/ui_v2/js/boot.js` —— **`public/ui_v2/index.html` 不存在** |
 | `ui.md` §2 不变式 3 | 所有资源都在 `/ui/` 下 | 同位置写 `/ui_v2/` | 三个挂载点 |
-| `ui.md` §2 末 | `[assets]`「只声明 directory 与 not_found_handling」 | 同左 | 还声明 `binding` 与 `run_worker_first` |
+| `ui.md` §2 末 | `[assets]`「只声明 directory 与 not_found_handling」⚠️ **这句改名前就已失实**（09-18 起 `[assets]` 就有四项） | 同左（改名没动它） | 还声明 `binding` 与 `run_worker_first` |
+| `ui.md` §2.1 沿革 | 「2026-09-18 补上 `/ui_old` 与 `/ui_old/*`」 | 被替换成「补上 `/ui_v1` 与 `/ui_v1/*`」——**历史里的名字被改成后来的名字**（提交 `a4b8967` 补的就是 `ui_old`）〔本轮复核新查出〕 | 09-18 补的是 `ui_old`；`/ui_v1` 是 09-19 改名后的写法 |
 | `ui.md` §3.1 / §9.2 | `notFound.ts` 服务 `/ui/*` | `/ui_v2/*` | 三个前缀共用同一条回落链 |
 | `ui.md` §3.2 引注 | `/ui/` 的目录索引（`public/ui/index.html`） | `/ui_v2/` 的目录索引（`public/ui_v2/index.html`） | 真身是 `public/ui/index.html` |
 | `ui.md` §6.1 | 同一应用被 `/ui` 与 `/ui/` 两个 URL 加载 | `/ui` 与 `/ui_v2/` | 现在等价的一对是 `/ui_v2/app` 与 `/ui_v2/app/`（V1 同理 `/ui_v1` 与 `/ui_v1/`） |
-| `ui.md` §7 末 / §11 | 默认页 `/ui_v2/`、登录页 `/ui_v2/login.html` | 同左 | `/ui_v2/app/`、`/ui_v2/app/login.html` |
+| `ui.md` §7 末 / §11 | 默认页 `/ui/`、登录页 `/ui/login.html` | `/ui_v2/`、`/ui_v2/login.html`（漏了 `app/`） | `/ui_v2/app/`、`/ui_v2/app/login.html` |
 | `ui.md` §9.2 | `/ui` 由静态资源层重定向到 `/ui/` | 到 `/ui_v2/` | `/ui` 307 → `/ui/`（壳）→ `/ui_v1/` |
-| `ui.md` §11 表 | 「eslint 只覆盖 `public/ui_v2/js`」 | 同左 | 两个目录（`package.json` 的 `lint`） |
-| `ui.md` §3.3 文件表 | `_headers`「这批文件不经过 Worker」 | 同左 | 响应头由静态资源层施加，而 `/ui*` 的请求**先进 Worker** |
+| `ui.md` §11 表 | 「eslint 只覆盖 `public/ui/js`」 | 被替换成 `public/ui_v2/js`（仍只覆盖一版） | 两个目录（`package.json` 的 `lint`） |
+| `ui.md` §3.3 文件表 | `_headers`「这批文件不经过 Worker」⚠️ **主语是站点根那 2 个文件，本身不算错** | 同左（但改名后易被读成"界面资源不经 Worker"） | 响应头由静态资源层施加，而 `/ui*` 的请求**先进 Worker** |
+| `security-fix-plan.md`（`?next=` 验收例） | `?next=/ui/?x=1` | 同左 —— `/ui/` 还活着，所以没被任何一轮扫出来 | `/ui_v2/app/?x=1`（应用本体在 `app/` 下） |
 | `design.md` ADR D17 | `/ui/` 的目录索引 | `/ui_v2/` 的目录索引 | 同 `ui.md` §3.2 |
 | `design.md` §5 | `/ui/*` 由边缘直接托管 | `/ui_v2/*` 同句 | 三个前缀都在 `run_worker_first` 里 |
 | `ui-v2-design.md` §7 树 | `_headers`「边缘直出，不经过 Worker」 | 同左 | 同上（规则不由 Worker 执行，但资源经 Worker 转发） |
+
+> 表中带 ⚠️ 的两行**不是改名造成的**（改名前那半句就已失实 / 主语本就指站点根那 2 个文件），
+> 是同一轮复核顺手改掉的；`security-fix-plan.md` 那行同理（`/ui/` 没死，只是语义已变）。
+> 全表 **19 类**：18 类是改名漂移，1 类是"没死但语义已变"。
+> ⚠️ 本表第一版是**凭印象**填的，逐行取 `git show e3858cd^:` 对照后订正了 5 行（§2.1 表、CI 冒烟、
+> §7 末/§11、§11 表 eslint、`[assets]`）—— 凡是"改名前"列，都必须能从 git 取到。
 
 **为什么两轮都没扫到**：这些句子读起来像"历史叙述"（§2.1 本就在讲 09-15/09-18 的沿革），而替换工具与
 人工都只盯着"带引号的路径"。**教训**：改名/搬目录之后，除了查"引用"，还要按**地名**把散文捞一遍
@@ -5931,9 +5939,9 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 - 起 8787 dev server 后 `vitest run --no-file-parallelism`：**22 套件 / 413 用例全过（exit=0）**
   （406 → 413：`ui-guard` +2、`ui-logic` +5）。
 - V2 探针与 V1 探针（1440×900）：**零 console 错误、零失败请求**；V1 仍报 `AUDIT findings=0`。
-- 改动只落在 `docs/`（ui / design / ui-v2-design）、`AGENTS.md`、`test/`（ui-guard / ui-logic / manual）、
-  `src/index.ts` 的注释与 `public/ui_v1/js/format.js` 的注释 —— **无行为变更**；即便如此，
-  "改前端要跑真实浏览器"这条也照跑了（两版探针）。
+- 改动只落在 `docs/`（ui / design / ui-v2-design / ui-rename-v1-v2 / progress / security-fix-plan）、
+  `AGENTS.md`、`test/`（ui-guard / ui-logic / manual）、`src/index.ts` 的注释与
+  `public/ui_v1/js/format.js` 的注释 —— **无行为变更**；即便如此，"改前端要跑真实浏览器"这条也照跑了（两版探针）。
 
 ### 92.6 方法论（下一轮照这个顺序）
 
@@ -5947,3 +5955,9 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
    仍漏了 `ui.md:452` 的 `?next=/ui/?x=1` —— 因为 `/ui/`（跳转壳）本身就在白名单里，脚本
    分不清"壳的正确引用"与"该指 V2 却仍写 `/ui/`"。用户要求"一个一个确认"时，逐条读原文又抓出
    两处（另一处是我改完 471 行后句子接不上）。**脚本适合做穷举，判"这句指哪一面"要人读。**
+6. **自己写的"对照表"也要拿 git 复核**：§92.1 那张表的"改名前"列第一版是凭印象填的，5 行填错
+   （把改名**后**的值当成了改名前的）。凡是写"之前 / 原来 / 历史值"的地方，都得能从
+   `git show <改名前的提交>:<文件>` 里读出来 —— 表里最危险的一列，恰恰是"我以为我记得"的那一列。
+   同一次复核还发现另外两处同型问题：`ui.md` §2.1 的沿革句被改名替换打偏（历史上补的是 `ui_old`，
+   被写成了后来的 `/ui_v1`）、`ui-rename-v1-v2.md` §9① 的"21 处"与 `git diff --numstat` 的
+   +23/−22 对不上 —— 三处都已订正。
