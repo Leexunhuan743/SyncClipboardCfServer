@@ -16,7 +16,7 @@ export type UiSortOrder = 'asc' | 'desc';
 // 两套命名只会让对照（以及将来的排查）变难。
 export interface UiHistoryItem extends HistoryRecordDto {
   id: number; // D1 行 ID，仅用于前端 key/展示（记录的身份始终是 type + hash）
-  dataName: string | null; // 数据文件名（无数据为 null），用于“下载/预览”的展示名
+  dataName: string | null; // 数据文件名（无数据为 null），用于"下载/预览"的展示名
 }
 
 export interface UiHistoryQuery {
@@ -219,6 +219,11 @@ export const UI_LIST_TEXT_LIMIT = 500;
 
 // 代价极小的截断：先用 slice，再处理代理对边界（半截代理对是非法字符串）。
 // 导出给 `src/ui/maintenance.ts` 的自检摘要复用（此前它复制了一份同名实现，见审计 R-03）。
+//
+// ⚠️ 与前端 `public/ui_v{1,2}/js/format.js` 的 `truncateText` **同名但不同义**，别去"统一"：
+// 那一边量的是**用户看到的字符**（`Intl.Segmenter` 字素簇，emoji 算 1 个），这一边量的是
+// **UTF-16 码元**——因为这里的 500 是**协议上限**（约束 JSON 体积），不是展示口径。
+// 差异的登记处是 `docs/AUDIT-v1-v2-divergence.md` §5.3。
 export function truncateText(text: string, limit: number): string {
   if (text.length <= limit) return text;
   let cut = text.slice(0, limit);

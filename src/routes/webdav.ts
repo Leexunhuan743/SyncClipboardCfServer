@@ -19,7 +19,9 @@ function invalidFileName(name: string): boolean {
 }
 
 export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
-  const app = new Hono<{ Bindings: Bindings }>({ strict: false }) // 尾斜杠容忍：对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 /）;
+  // `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
+  // （此前这句写在声明行行尾，把分号一起注释掉了 —— 语句只是靠 ASI 才成立。）
+  const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
   // GET / —— 浏览器访问站点根时引导到 Web UI；其余调用方（含官方客户端的探活）保持原响应。
   // 官方客户端从不 GET 根路径：Test() 与 GetFolderSubList() 都是 PROPFIND（WebDavBase.cs:271/321），

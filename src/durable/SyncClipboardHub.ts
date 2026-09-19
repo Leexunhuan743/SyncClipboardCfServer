@@ -49,6 +49,9 @@ const TOKEN_PREFIX = 'tok:';
 // 长轮询单连接队列上限（F9 第四类封顶）：无上限时一次写可让 N 条连接各积压整条消息
 // （实测 30 连接 × 1.6MB = 48MB，单连接累积 4.5MB）。超限按「服务端关闭」语义结束该连接
 // （下一次轮询 204，客户端据此停止轮询），不发明新的状态码。
+// ⚠️ `MAX_QUEUED_BYTES` 判的是**UTF-16 码元数**（`message.length`，见 `LongPollClient.queuedBytes`
+// 的字段注释），它是体积的保守代理——1 码元 ≤ 2 字节，故实际占用不会超过这里的两倍。
+// 名字沿用"字节"是因为它表达的是「队列体积上限」这个意图，改名字要连 test/rate-limit.test.ts 一起改。
 export const MAX_QUEUED_MESSAGES = 64;
 export const MAX_QUEUED_BYTES = 1_000_000;
 
@@ -172,7 +175,6 @@ export class SyncClipboardHub {
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       return this.handleWebSocket(request);
     }
-
 
     switch (request.method) {
       case 'GET':

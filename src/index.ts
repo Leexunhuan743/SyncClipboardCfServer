@@ -54,7 +54,9 @@ function readUsername(value: unknown): string | null {
   return typeof username === 'string' && username !== '' ? username : null;
 }
 
-const app = new Hono<{ Bindings: Bindings }>({ strict: false }) // 尾斜杠容忍：对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 /）;
+// `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
+// （此前这句写在声明行的行尾，把行尾的分号一起注释掉了 —— 语句只是靠 ASI 才成立。）
+const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
 // F8：明文（x-forwarded-proto: http）且 host 不是 loopback → 301 升级到同路径 https；
 // 经 https（x-forwarded-proto: https 或存在 cf-ray）的响应一律带 HSTS。
@@ -159,8 +161,9 @@ app.use('/ui/api/*', async (c, next) => {
 // 全局 Basic Auth（所有端点，含 /api/version、/api/time —— 上游 [Authorize] 类级）
 app.use('*', async (c, next) => {
   // 界面三面（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）是本站页面自己的面，鉴权由 src/ui/guard.ts 负责
-  // （会话 Cookie 或 Basic）。注意静态那两面由外层 fetch 直接走了静态资源、根本到不了这里，
-  // 这条跳过真正覆盖的是 `/ui/api/*`（它的守卫在 src/ui/routes.ts）。
+  // （会话 Cookie 或 Basic）。三个挂载点下的**静态资源**都已在外层 fetch 处理掉（开关开着时转
+  // `ASSETS.fetch()` 直接返回、关着时 404），根本走不到这个中间件 —— 因此这条 `startsWith('/ui/')`
+  // 跳过真正覆盖的就是 `/ui/api/*`（它的守卫在 src/ui/routes.ts 里逐条注册）。
   // 若走这里的 Basic-only 中间件，浏览器拿 Cookie 打进来的每个请求都会被 401。
   //
   // 根路径的**浏览器导航**同样放行：否则打开站点会被弹原生凭据框，

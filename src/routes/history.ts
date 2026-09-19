@@ -220,7 +220,9 @@ async function parseFormBody(c: FormRequest, allowUrlEncoded: boolean): Promise<
 }
 
 export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
-  const app = new Hono<{ Bindings: Bindings }>({ strict: false }) // 尾斜杠容忍：对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 /）;
+  // `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
+  // （此前这句写在声明行行尾，把分号一起注释掉了 —— 语句只是靠 ASI 才成立。）
+  const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
   // GET /api/history/statistics —— 先于 :profileId 注册（Hono 同段静态优先，注册顺序保险）
   app.get('/api/history/statistics', async (c) => {
@@ -262,7 +264,8 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     if (!obj) {
       return c.text('Not Found', 404);
     }
-    // 出口统一编码（与 contentTypes.ts:92 / ui/routes.ts:168 同款）：写路径不拦控制字符
+    // 出口统一编码（与 `contentTypes.ts` 的 `fileHeaders()`、`ui/routes.ts` 的数据端点同款）：
+    // 写路径不拦控制字符
     // （既有坏数据也必须可下载），因此 dataName 可能含 CR/LF/NUL——原样拼进头值会让
     // Response 构造抛 TypeError，使该条记录的 /data 恒 500（F5）。
     //   filename=   ASCII 兜底串（控制字符与非 ASCII → `_`；去掉会破坏引号串的 `"` 与 `\`）
