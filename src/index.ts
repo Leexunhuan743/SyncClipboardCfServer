@@ -224,6 +224,9 @@ export default {
     // （关闭态它返回与 routes.ts 兜底同形的 JSON，见 src/uiEnabled.ts）。
     const path = url.pathname;
     const isUiApi = path.startsWith('/ui/api/');
+    // ⚠️ 这份前缀清单**不是**唯一事实源：`public/` 下的 `ui*` 目录才算数，`wrangler.toml` 的
+    // run_worker_first、`public/_headers` 的规则是另外两处副本。三处由 `test/ui-guard.test.ts` 钉在一起
+    // （判据：前缀集合 == `public/` 的挂载点集合）—— 新增/改名挂载点时三处必须一起改，否则会红。
     const isUiAsset =
       path === '/ui' ||
       path.startsWith('/ui/') ||

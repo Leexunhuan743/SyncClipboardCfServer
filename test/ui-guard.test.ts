@@ -606,22 +606,76 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
     expect(rootRedirect).toBe('/ui_v1/');
   });
 
+});
+
+// ===== 界面挂载点的事实源：三处副本必须一致（`wrangler.toml` / `src/index.ts` / `public/_headers`）=====
+//
+// 这三处各自写死"有哪些界面挂载点"，是同一条事实的三份副本：
+//   · `wrangler.toml` 的 `run_worker_first` —— 漏一处 ⇒ 那一面不进 Worker，`UI_ENABLED` 静默失效；
+//   · `src/index.ts` 的 `isUiAsset` —— 漏一处 ⇒ 那一面关不掉；多一处 ⇒ 永不命中的死分支；
+//   · `public/_headers` 的规则 —— 漏一处 ⇒ 那一面退回平台默认缓存策略（见本文件末尾那节）。
+// 判据一律把挂载点**从 `public/` 动态发现**（不写死清单），否则"新增挂载点却忘了同步"会双双漏网 ——
+// 2026-09-19 复查时这三处里有两处正是写死的常量清单。
+describe('界面挂载点的事实源（run_worker_first / isUiAsset / _headers）', () => {
   // UI_ENABLED=false 必须是**真的关掉**：界面前缀若不进 run_worker_first，边缘命中静态资源就
   // 直接返回，请求根本到不了 Worker，`src/index.ts` 里那段 `isUiAsset` 的 404 判定永远不执行 ——
   // 开关静默失效（V1 从 2026-09-18 起是默认界面，这条就成了承重问题）。
   // 这条守卫是 `docs/ui.md` 里"若哪天有人删掉 run_worker_first，关闭态会静默失效 —— 测试即红"那句话
   // 的兑现：此前**没有任何测试**在读这个配置。
-  it('三个界面挂载点都在 run_worker_first 里（否则 UI_ENABLED 静默失效）', () => {
+  //
+  // ⚠️ 2026-09-19 复查（第二轮）：原判据把"三个挂载点"写成**常量数组**，于是**只防改名、不防新增** ——
+  // 将来加 `/ui_v3` 而忘了同步配置时，六个老模式仍在、断言照绿，而那正是本守卫诞生要防的同型失效
+  // （同一次复查已在 `_headers` 判据② 上改过一遍）。现在挂载点从 `public/` **动态发现**，
+  // 与 `_headers` 判据②、下面的 `isUiAsset` 判据共用同一份事实。
+  const uiMountPoints = readdirSync('public', { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('ui'))
+    .map((entry) => `/${entry.name}`)
+    .sort();
+
+  /** 解析 `wrangler.toml` 的 `run_worker_first`（模式数组）。 */
+  function runWorkerFirstPatterns(): string[] {
     const toml = readFileSync('wrangler.toml', 'utf8');
     const raw = /run_worker_first\s*=\s*\[([^\]]*)\]/.exec(toml)?.[1] ?? null;
     expect(raw, '没抽到 run_worker_first（守卫可能失效）').not.toBeNull();
-    const patterns = (raw ?? '')
+    return (raw ?? '')
       .split(',')
       .map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
       .filter((entry) => entry !== '');
-    for (const pattern of ['/ui', '/ui/*', '/ui_v1', '/ui_v1/*', '/ui_v2', '/ui_v2/*']) {
-      expect(patterns, `run_worker_first 缺少 ${pattern}：那一面的界面开关不会生效`).toContain(pattern);
+  }
+
+  it('每个界面挂载点都在 run_worker_first 里（否则 UI_ENABLED 静默失效）', () => {
+    expect(uiMountPoints.length, '没在 public/ 下发现任何界面挂载点目录（守卫可能失效）').toBeGreaterThan(0);
+    const patterns = runWorkerFirstPatterns();
+    for (const prefix of uiMountPoints) {
+      for (const pattern of [prefix, `${prefix}/*`]) {
+        expect(patterns, `run_worker_first 缺少 ${pattern}：那一面的界面开关不会生效`).toContain(pattern);
+      }
     }
+  });
+
+  it('run_worker_first 里没有指向不存在路径的死模式（改名/删目录漏改）', () => {
+    const dead = runWorkerFirstPatterns().filter(
+      (pattern) => !existsSync(`public${pattern.replace(/\/\*$/, '')}`),
+    );
+    expect(dead, 'run_worker_first 里的模式指向不存在的路径（改名/搬目录时漏改了它）：').toEqual([]);
+  });
+
+  // 同一份事实的**第三处副本**：Worker 入口的 `isUiAsset` 决定"哪些前缀按界面开关 404"。
+  // 它必须与 `public/` 下的挂载点集合**完全相等**：少了 ⇒ 那一面关不掉（静默失效）；
+  // 多了 ⇒ 一个永不命中的死分支（改名漏改的经典形态）。代码侧保持显式列举（路由判定要可读），
+  // 但由这条断言把它与文件系统钉在一起 —— 将来新增挂载点时会红，逼迫三处一起改。
+  it('入口 isUiAsset 的前缀集合 == public/ 下的界面挂载点集合', () => {
+    expect(uiMountPoints.length, '没在 public/ 下发现任何界面挂载点目录（守卫可能失效）').toBeGreaterThan(0);
+    const source = readFileSync('src/index.ts', 'utf8');
+    const block = /const isUiAsset =([\s\S]*?);/.exec(source)?.[1] ?? null;
+    expect(block, '没抽到 src/index.ts 的 isUiAsset 定义（守卫可能失效）').not.toBeNull();
+    const declared = [
+      ...new Set([...(block ?? '').matchAll(/'\/ui[^']*'/g)].map((m) => m[0].slice(1, -1).replace(/\/$/, ''))),
+    ].sort();
+    expect(declared.length, '没抽到任何前缀字面量（守卫可能失效）').toBeGreaterThan(0);
+    expect(declared, 'isUiAsset 的前缀与 public/ 下的挂载点不一致：新增/改名挂载点时三处要一起改').toEqual(
+      uiMountPoints,
+    );
   });
 });
 // ===== 静态资源的响应头配置（`public/_headers`）=====
