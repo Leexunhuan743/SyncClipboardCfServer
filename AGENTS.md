@@ -18,12 +18,12 @@
 | 你动了什么 | 同一次改动要同步的位置 |
 |---|---|
 | `src/ui/routes.ts` / `src/ui/maintenance.ts` 增删 `/ui/api/*` 端点 | `docs/ui.md` §5 端点表；`test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`（**18 条是权威口径**） |
-| `public/` 下增删任何文件 | `docs/ui.md` §3 的「共 N 个资源」总数与 V2 / V1 / 站点根三行分表；`docs/design.md` §4 目录树；`docs/ui-v2-design.md` §7 目录树 |
-| V2 增删 JS 模块 | `public/ui/app/index.html` 与 `login.html` 的 `modulepreload` 清单（**少一项留下依赖瀑布、多一项白拉一个文件，两者都不会报错**）；上面的资源数与目录树 |
+| `public/` 下增删任何文件 | `docs/ui.md` §3 的「共 N 个资源」总数与 V1 / V2 / 跳转壳 / 站点根分表；`docs/design.md` §4 目录树；`docs/ui-v2-design.md` §7 目录树 |
+| V2 增删 JS 模块 | `public/ui_v2/app/index.html` 与 `login.html` 的 `modulepreload` 清单（**少一项留下依赖瀑布、多一项白拉一个文件，两者都不会报错**）；上面的资源数与目录树 |
 | 增删测试套件 `test/*.test.ts` | 套件数出现在 `README.md`、`docs/design.md`、`docs/ui.md`、`.github/workflows/deploy.yml`；且 `docs/design.md` 的「**套件清单**」段要逐个列出套件名（名单与数字是两条独立断言） |
-| 改 `public/ui_old/js/messages.js` 或 `public/ui/js/messages.js` | **两份必须逐字一致**（`ui-guard` 的对等守卫会红，见 §3）；改 V1 时同时看 `docs/ui.md` §3.2 |
+| 改 `public/ui_v1/js/messages.js` 或 `public/ui_v2/js/messages.js` | **两份必须逐字一致**（`ui-guard` 的对等守卫会红，见 §3）；改 V1 时同时看 `docs/ui.md` §3.2 |
 | 要**截断**或**统计用户看到的字符数**（提示条「已复制 N 个字符」、删除确认里的正文开头、行内 `aria-label`） | 用各自 `format.js` 的 `truncateText()` / `charCount()`，**不要写 `slice(0, n)` / `.length`** —— 按 UTF-16 码元切会切出半个代理对（渲染成 `�`），`.length` 把 10 个 emoji 报成 20。两版各有一份同名实现（**不共享**），改其一要同时改另一版；口径与例外见 `docs/AUDIT-v1-v2-divergence.md` §5.3 |
-| 改 V1 结果区的**形态**（骨架 / 表格 / 空态）或**行高** | `public/ui_old/js/components/list.js` 的 `setView()` 是这三种形态的**唯一开关**（别处不要再直接写 `table.hidden` / `empty.hidden`）；`.skeleton__row` 的高度必须等于真实行高（`8+8+1+30 = 47px`，推导在 `components.css` 的 `.table td` 那条注释里）；`public/ui_old/index.html` 里那份静态骨架是**挂载前**的占位，与它同源；`docs/ui.md` §9.3 的 loading 行。**补/改一个"未知"档时要过一遍该组件的每一处出口**（`update` / `showError` / `removeItem` …）—— 2026-09-18 实测：只给 `update()` 加了骨架档，`showError()` 那条出口就把「正在加载…」和「加载失败」同时留在了屏幕上；同一个哨兵值（`total === 0`）还会在**别的组件**里各写一份（分页、统计条各有自己的判据，见 `docs/AUDIT-missing-states.md`） |
+| 改 V1 结果区的**形态**（骨架 / 表格 / 空态）或**行高** | `public/ui_v1/js/components/list.js` 的 `setView()` 是这三种形态的**唯一开关**（别处不要再直接写 `table.hidden` / `empty.hidden`）；`.skeleton__row` 的高度必须等于真实行高（`8+8+1+30 = 47px`，推导在 `components.css` 的 `.table td` 那条注释里）；`public/ui_v1/index.html` 里那份静态骨架是**挂载前**的占位，与它同源；`docs/ui.md` §9.3 的 loading 行。**补/改一个"未知"档时要过一遍该组件的每一处出口**（`update` / `showError` / `removeItem` …）—— 2026-09-18 实测：只给 `update()` 加了骨架档，`showError()` 那条出口就把「正在加载…」和「加载失败」同时留在了屏幕上；同一个哨兵值（`total === 0`）还会在**别的组件**里各写一份（分页、统计条各有自己的判据，见 `docs/AUDIT-missing-states.md`） |
 | 改协议行为（路由、状态码、字段、响应头、哈希） | `docs/protocol.md` §10 差异登记表 —— **它是协议差异的唯一登记处**，每条带上游 `文件:行`；同一差异不要重复登记 |
 | 做了设计取舍（新方案 / 换方案 / 决定不做） | `docs/design.md` §2 加一条 ADR（编号递增），实现处注明 D 号 |
 | 修缺陷、踩到坑、量出数字 | `docs/progress.md` 追加一节（编号递增 + 日期）；**被修的行为若还有测试断言在钉它，同一次改掉断言**——别让旧断言继续固化已被判定为缺陷的行为 |
@@ -42,7 +42,7 @@
 
 1. **类型**：`node node_modules/typescript/bin/tsc --noEmit` → 0 错。
    （`npm run <script>` 在本机 Git Bash 里会被安全策略拦，直接调 `node node_modules/...` 的 CLI 入口。）
-2. **静态检查**：`node node_modules/eslint/bin/eslint.js public/ui/js public/ui_old/js` → 0 告警。
+2. **静态检查**：`node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` → 0 告警。
 3. **全量套件**：先起 dev server（**端口必须 8787，测试里写死 `http://127.0.0.1:8787`**）
    `node node_modules/wrangler/bin/wrangler.js dev --test-scheduled --port 8787 --ip 127.0.0.1`，
    再 `node node_modules/vitest/vitest.mjs run --no-file-parallelism`。
@@ -50,7 +50,7 @@
 4. **文档同步**：§1 那张表逐行过了一遍。
 5. **改前端 ⇒ 用真实浏览器量一次**（DOM 在 ≠ 看得见）：
    V2 用 `node test/manual/probe.mjs --port <空闲端口> --width 1440 --height 900 --url /ui/app/`，
-   V1 用 `test/manual/probe-ui-old.mjs`；确认**零 console 错误、零失败请求**。
+   V1 用 `test/manual/probe-ui-v1.mjs`；确认**零 console 错误、零失败请求**。
    预算与判据见 `docs/ui.md` §11。
 
 **写文档的数字口径**：套件数可以写（它可从文件系统数出来，且守卫会盯住）；**用例数不要写进现状文档**
@@ -58,10 +58,14 @@
 
 ## 3. 两套前端：定位是硬约定
 
-| | `public/ui_old/` = **V1** | `public/ui/` = **V2** |
+| | `public/ui_v1/` = **V1** | `public/ui_v2/` = **V2** |
 |---|---|---|
-| 定位 | **默认界面 / 产品面**（根路径 302 到这里；挂载 `/ui_old/`） | **开发测试版**（挂载 `/ui/`、`/ui/app/`） |
+| 定位 | **默认界面 / 产品面**（根路径 302 到这里；挂载 `/ui_v1/`） | **开发测试版**（挂载 `/ui_v2/`；应用本体在 `/ui_v2/app/`） |
 | 能不能改 | 能改，改动要带走文档与守卫同步 | 允许以后**破坏性重构** |
+
+> `/ui_v2/`（`public/ui_v2/`）**只剩一层跳转壳**（`index.html` + `js/redirect-hash.js`），送到 `/ui_v1/`。
+> 它之所以还在，是因为 `/ui/api/*` 这个**两版共用的服务端接口**命名空间必须以 `/ui_v2/` 为前缀
+> （路由在 `src/ui/routes.ts`）。**别把接口前缀跟着改名** —— 2026-09-15 正是这样翻过一次车。
 
 - **不要删任何一版**，也不要为了"收敛"做连带改动。
 - **不要跨版抽公共模块**：V1 必须自包含（`ui-guard` 禁止它引用 `../../ui/`，产品面不依赖开发版）。

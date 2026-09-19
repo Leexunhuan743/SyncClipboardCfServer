@@ -1,4 +1,4 @@
-# Web 历史界面（`/ui/`）
+# Web 历史界面（`/ui_v2/`）
 
 本文件描述本项目的 Web 界面：它的来源、与协议面的边界、模块划分、鉴权模型、设计系统与验证记录。
 
@@ -45,10 +45,10 @@
 
 ```
 浏览器
-  │  GET /                 → Worker：302 → `/ui_old/`（默认界面；Accept: text/html 才跳）
-  │  GET /ui/**            → Cloudflare 静态资源（public/ui/**，V2 = 开发测试版）
-  │  GET /ui_old/**        → Cloudflare 静态资源（public/ui_old/**，V1 = 默认界面）
-  │      ↑ 两个面都先经过 Worker：`run_worker_first = ["/ui", "/ui/*", "/ui_old", "/ui_old/*"]`
+  │  GET /                 → Worker：302 → `/ui_v1/`（默认界面；Accept: text/html 才跳）
+  │  GET /ui/**            → Cloudflare 静态资源（public/ui_v2/**，V2 = 开发测试版）
+  │  GET /ui_v1/**        → Cloudflare 静态资源（public/ui_v1/**，V1 = 默认界面）
+  │      ↑ 两个面都先经过 Worker：`run_worker_first = ["/ui", "/ui_v2/*", "/ui_v1", "/ui_v1/*"]`
   │        + `binding = "ASSETS"` —— 入口据此判断界面开关（UI_ENABLED），开着才转回
   │        `env.ASSETS.fetch()`，关着直接 404
   │  GET/PATCH /ui/api/**  → Worker：src/ui/routes.ts（会话 Cookie 或 Basic 鉴权）
@@ -62,24 +62,24 @@ Worker
 ### 2.1 界面开关（`UI_ENABLED`，默认开）
 
 两个界面面原本都由 Cloudflare 直接托管、**不经过 Worker** —— 那样的话"关掉界面"就无从实现。
-2026-09-15 起 `[assets]` 增加了 `binding = "ASSETS"` 与 `run_worker_first = ["/ui", "/ui/*"]`；
-**2026-09-18 补上 `/ui_old` 与 `/ui_old/*`**（V1 成为默认界面后，这一面的开关必须真的生效：
+2026-09-15 起 `[assets]` 增加了 `binding = "ASSETS"` 与 `run_worker_first = ["/ui", "/ui_v2/*"]`；
+**2026-09-18 补上 `/ui_v1` 与 `/ui_v1/*`**（V1 成为默认界面后，这一面的开关必须真的生效：
 不在名单里时，边缘命中静态资源就直接返回，请求到不了 Worker，那段 404 判定永远不执行）。
 于是界面请求先到 `src/index.ts`，由它按 GitHub 仓库变量 `UI_ENABLED`（判定见 `src/uiEnabled.ts`）分流：
 
 | | 界面开着（默认） | `UI_ENABLED=false` |
 | --- | --- | --- |
-| `/ui`、`/ui/`、`/ui/js/*`（V2）与 `/ui_old/`、`/ui_old/js/*`（V1） | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
-| `/ui/不存在的路径` | 资源 404 后**回落 Hono**，拿到 `notFoundPage`（与平台自身回落一致） | 404 纯文本（不产生界面痕迹） |
+| `/ui`、`/ui_v2/`、`/ui_v2/js/*`（V2）与 `/ui_v1/`、`/ui_v1/js/*`（V1） | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
+| `/ui_v2/不存在的路径` | 资源 404 后**回落 Hono**，拿到 `notFoundPage`（与平台自身回落一致） | 404 纯文本（不产生界面痕迹） |
 | `/ui/api/*` | 照旧交给 Hono，守卫与业务不变 | **404 JSON** `{"error":"not_found"}` |
-| 根路径 `/`（`Accept: text/html`） | 302 → **`/ui_old/`**（默认界面，少一跳） | **200 `Server is running.`**（不再把人引到不存在的界面） |
+| 根路径 `/`（`Accept: text/html`） | 302 → **`/ui_v1/`**（默认界面，少一跳） | **200 `Server is running.`**（不再把人引到不存在的界面） |
 | 协议面 | 不受影响 | **不受影响**（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub 全照常） |
 
 三条不变式由 `test/ui-guard.test.ts` 的「UI 部署开关」用例守着：关闭态**一次都不访问**静态资源且全 404；
 开启态资源未命中必须回落出 404 页；**两个挂载点都在 `run_worker_first` 里**（2026-09-18 补的第三条 ——
 此前文档写着"删掉它会测试即红"，而实际上没有任何测试在读这份配置）。
 线上每次部署后由 CI 冒烟按开关断言两版的页面与入口 JS：
-`/ui/`（V2 的跳转索引）、`/ui/app/`、`/ui/js/boot.js`、`/ui_old/`、`/ui_old/js/main.js`。
+`/ui_v2/`（V2 的跳转索引）、`/ui_v2/app/`、`/ui_v2/js/boot.js`、`/ui_v1/`、`/ui_v1/js/main.js`。
 ```
 
 三条不变式：
@@ -89,7 +89,7 @@ Worker
 2. **写路径唯一**：界面上的收藏/置顶/删除都经 `src/historyOps.ts` 的 `applyHistoryUpdate`——
    与官方 `PATCH /api/history/{type}/{hash}` 是同一个实现（同一套版本判定、同一条广播、同一次 R2 清理）。
    这样「界面改了但客户端不知道」在结构上不可能发生。
-3. **静态资源不占协议路径**：`public/` 下不放 `index.html`，所有资源都在 `/ui/` 下；
+3. **静态资源不占协议路径**：`public/` 下不放 `index.html`，所有资源都在 `/ui_v2/` 下；
    根路径留给 `PROPFIND`（客户端的探活与目录列举）。
 
 `wrangler.toml` 的 `[assets]` 只声明 `directory` 与 `not_found_handling = "none"`：命中资源的请求由边缘
@@ -108,55 +108,56 @@ Worker
 | `query.ts` | 只读查询层：参数解析、白名单排序、LIKE 转义、分页、按类型计数、变更信号。拥有 `UiHistoryItem` / `UiListQuery` 等类型 |
 | `routes.ts` | 路由装配：把 HTTP 映射到上面三者 + 复用协议层的 `HistoryDb`/`R2Storage`/`applyHistoryUpdate` |
 | `maintenance.ts` | 维护面：数据完整性自检（R2 列举 × D1 期望目录差集）与保留策略的在线读写（写 Meta 覆盖，0 = 关闭该阶段，空 = 回落部署环境变量） |
-| `notFound.ts` | `/ui/*` 未匹配路径的 404 页（只覆盖 UI 命名空间，不碰协议 404 语义） |
+| `notFound.ts` | `/ui_v2/*` 未匹配路径的 404 页（只覆盖 UI 命名空间，不碰协议 404 语义） |
 
 共享层的小幅开放：`db.ts` 导出 `rowToEntity`/`DbRow`（界面按自己的排序读同一张表，若另写一份映射，
 两处对 NULL/布尔列的解释迟早分叉）；`contentTypes.ts` 从 `routes/webdav.ts` 抽出（`fileHeaders`
 现有两个真实调用方：WebDAV 附件与界面数据端点——少一道 `nosniff` 就是一个存储型 XSS 面）；
 `auth.ts` 抽出 `verifyCredentials`（Basic 头与登录表单共用）。
 
-### 3.2 前端（`public/ui_old/` = V1，真文件 + 原生 ES 模块，无构建步骤）
+### 3.2 前端（`public/ui_v1/` = V1，真文件 + 原生 ES 模块，无构建步骤）
 
 > **本节描述的是 V1，而 V1 从 2026-09-18 起就是默认界面。**
-> 站点根 `GET /` 的浏览器分支（`src/routes/webdav.ts`）与 `/ui/` 的目录索引
-> （`public/ui/index.html`，meta refresh + canonical）**都**指向 `/ui_old/`；两者必须一致，
+> 站点根 `GET /` 的浏览器分支（`src/routes/webdav.ts`）与 `/ui_v2/` 的目录索引
+> （`public/ui_v2/index.html`，meta refresh + canonical）**都**指向 `/ui_v1/`；两者必须一致，
 > 守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
-> V2（`public/ui/`，本体 `/ui/app/`）降为**开发测试版**：它进去后顶栏版本号与登录页副标题
+> V2（`public/ui_v2/`，本体 `/ui_v2/app/`）降为**开发测试版**：它进去后顶栏版本号与登录页副标题
 > 都标着"开发测试版"，设计与实现见 [`docs/ui-v2-design.md`](ui-v2-design.md)。
 > 本文件从 §3.2 到 §11 的内容描述的是 V1 的实现。
 >
-> 沿革：2026-09-15 界面曾由 V2 接管、V1 降为备用；2026-09-17 `public/ui_old/` 重新纳入维护
+> 沿革：2026-09-15 界面曾由 V2 接管、V1 降为备用；2026-09-17 `public/ui_v1/` 重新纳入维护
 > （接口前缀故障修复、密度与移动端重做、运行时可重复验证，见 `docs/progress.md` §53）；
 > 2026-09-18 用户定的新定位 —— **V1 是产品界面，V2 只是开发测试版**（见 §70）。
 >
-> 挂载点分工：**页面与静态资源在 `/ui_old/...`，服务端接口在 `/ui/api/...`**（与 V2 共用同一套），
-> 接口前缀只写在 `public/ui_old/js/api.js` 的 `API_BASE` 一处。
-> **V1 保持完全自包含**：消除对 `public/ui/` 的任何跨目录依赖（此前曾尝试跨目录共用 `messages.js` 的兼容层已彻底清除），V1 拥有完整独立的本地实现，避免因开发测试版（V2）的演进或移除造成任何破坏；守卫见 `test/ui-guard.test.ts` 的「V1 前端是完全自包含的」。
+> 挂载点分工：**页面与静态资源在 `/ui_v1/...`，服务端接口在 `/ui/api/...`**（与 V2 共用同一套），
+> 接口前缀只写在 `public/ui_v1/js/api.js` 的 `API_BASE` 一处。
+> **V1 保持完全自包含**：消除对 `public/ui_v2/` 的任何跨目录依赖（此前曾尝试跨目录共用 `messages.js` 的兼容层已彻底清除），V1 拥有完整独立的本地实现，避免因开发测试版（V2）的演进或移除造成任何破坏；守卫见 `test/ui-guard.test.ts` 的「V1 前端是完全自包含的」。
 > 自包含的代价是"两份必然漂移"，因此 V1 自己的 `js/messages.js` 与 V2 的同名文件由一条**对等守卫**钉住逐字一致（同上文件；V2 真被删掉时连守卫一起删）——这两份是**各自独立的副本**，不是共享模块。
 > 保留 V2 的三个理由：① 它是零构建前端的**对照基线**（新的模块划分、状态矩阵与探针都先在
 > 那边试）；② 开发期的实验场（改坏了不影响默认入口）；③ 它与协议端点
 > （`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）零关系，两版可以各自演进。
 
-`public/` 下共 89 个资源，分三部分：
+`public/` 下共 88 个资源，分四部分（2026-09-19 改名后）：
 
 | 部分 | 文件数 | 说明 |
 |---|---|---|
-| **V2**（`public/ui/`，**开发测试版**） | 49 | 3 个 HTML（`app/index.html`、`app/login.html`、`/ui/` 的跳转索引 `index.html`）+ 5 张样式表 + 37 个 JS（35 个模块 + 2 个经典脚本 `theme-init.js` / `redirect-hash.js`）+ `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest` |
-| **V1**（`public/ui_old/`，**默认界面**） | 38 | 默认入口；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`） |
-| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate`（每次回源验证）、图标/manifest 的长缓存——这批文件不经过 Worker，只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
+| **V1**（`public/ui_v1/`，**默认界面**） | 37 | 默认入口，挂载 `/ui_v1/`；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`）。2026-09-19 删掉顶部提示条后随之删掉 `css/archive.css`（它只为那条提示存在），38 → 37 |
+| **V2**（`public/ui_v2/`，**开发测试版**） | 47 | 3 处入口（`app/index.html`、`app/login.html`、以及 `js/*` 的模块图）+ 5 张样式表 + 35 个 JS 模块 + `theme-init.js` + `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest`；应用本体挂 `/ui_v2/app/` |
+| **跳转壳**（`public/ui/`） | 2 | 只剩 `index.html`（meta refresh + canonical + 外链脚本）与 `js/redirect-hash.js`（把 fragment 中继到目标）。它把 `/ui/`（老书签）送到 `/ui_v1/`；**保留这个前缀的真正原因是 `/ui/api/*`** —— 两版共用的服务端接口命名空间，路由在 `src/ui/routes.ts` |
+| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui_v2/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate`（每次回源验证）、图标/manifest 的长缓存——这批文件不经过 Worker，只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
 
 下表是 **V1** 的文件清单（供对照）：
 
 | 文件 | 职责 |
 |---|---|
-| `index.html` / `login.html` | 页面外壳与挂载点；主题在首帧前由阻塞式的 `/ui_old/js/theme-init.js` 定好（深色用户不会看到白闪）；预加载列表与 import 闭包对齐，完全自包含于 `/ui_old/` |
+| `index.html` / `login.html` | 页面外壳与挂载点；主题在首帧前由阻塞式的 `/ui_v1/js/theme-init.js` 定好（深色用户不会看到白闪）；预加载列表与 import 闭包对齐，完全自包含于 `/ui_v1/` |
 | `css/tokens.css` | 设计令牌：颜色（浅/深）、字号阶梯（13/14/16/18；12px 档已合并进 13px，`--fs-stat` 数字档已在 2026-09-18 删掉，见 `progress.md` §57.5）、间距（4/8/12/16/24/32/48/64）、圆角、阴影、时长与缓动 |
 | `css/base.css` | 重置、排版、`:focus-visible`、跳转链接、微标签 |
 | `css/layout.css` | 骨架：顶栏、统计条、工具栏、结果区、页脚 |
 | `css/components.css` | 组件：按钮、字段、分段控件、徽标、数据表、星标、复选框、对话框、提示、空状态、分页 |
 | `css/motion.css` | 动效集中处 + `prefers-reduced-motion` 的等价降级 |
 | `css/auth.css` | 登录页专属样式（列表页不加载） |
-| `css/archive.css` | 顶部提示条（`.notice-bar`，指出开发测试版在 `/ui/app/`；32px 高、可关闭并持久化至 localStorage） |
+| `css/archive.css` | 顶部提示条（`.notice-bar`，指出开发测试版在 `/ui_v2/app/`；32px 高、可关闭并持久化至 localStorage） |
 | `js/api.js` | `/ui/api` 调用封装、类型归一化、401 统一跳登录；**首屏合成快照** `overview()`、**批量取全文** `batchMeta()`（按服务端 100 条上限分片）、`latest()`（全库最新一条，供顶栏「复制最近一条」）、请求默认 30 秒超时（把调用方取消与超时合成一个 signal） |
 | `js/filters.js` | 筛选状态 ⇄ URL（可链接、可后退、刷新不丢） |
 | `js/store.js` | 状态容器：`get` / `set`，不掺 DOM 不掺网络。**刻意不提供订阅**——此前有过一个 `subscribe()` 而全仓无人调用；「看起来像响应式、实际全靠手动 `render()`」的接口只会误导下一个人（真要改成订阅驱动，得连同组件的重建策略一起设计） |
@@ -395,7 +396,7 @@ Worker
    第一行"，让它跟着置顶走会答非所问）。置顶的其余语义与上游一致：`Pinned` 与 `Stared` 一样豁免
    保留期软删与条数裁剪（`db.ts` 的两条 SQL 都带 `Pinned = 0`），但**不豁免**已删除记录的 30 天硬删，
    也不豁免「清空回收站」。界面侧：行内置顶成功后立刻静默对账一次，让这一行**当场**移到最前，
-   而不是等下一次轮询时自己跳走（`public/ui_old/js/main.js` 与 `public/ui/js/boot.js` 的同一条判据）。
+   而不是等下一次轮询时自己跳走（`public/ui_v1/js/main.js` 与 `public/ui_v2/js/boot.js` 的同一条判据）。
 
 ---
 
@@ -421,7 +422,7 @@ Worker
 
 ### 6.1 同一文档重复初始化（实测触发过）
 
-应用若被以 `/ui` 与 `/ui/` 两个 URL 同时加载，模块图会出现两份，`boot()` 被第二次求值时
+应用若被以 `/ui` 与 `/ui_v2/` 两个 URL 同时加载，模块图会出现两份，`boot()` 被第二次求值时
 挂载点已被上一次替换掉（`getElementById` 返回 null）→ 半渲染 + 报错。已在 `boot()` 开头用
 `document.documentElement.dataset.appBooted` 做幂等保护（3 行，实测拦住）。
 
@@ -438,7 +439,7 @@ Worker
   （不带 origin，跨源字符串没有漏出的路径）。**前缀比较不够**：浏览器（WHATWG URL）对 http/https
   这类 special scheme 把 `\` 视同 `/`，于是 `?next=/\evil.example` 与 `//evil.example` 一样是协议相对 URL
   而跳到站外——登录成功后与「已登录时打开登录页」两处 `location.replace` 都会中招。
-  按 origin 判定后 `//evil.example`、`/\evil.example`、`javascript:alert(1)` 全部落回站内默认页 `/ui/`，
+  按 origin 判定后 `//evil.example`、`/\evil.example`、`javascript:alert(1)` 全部落回站内默认页 `/ui_v2/`，
   站内目标（如 `?next=/ui/?x=1`）照常可用。回归用例见 `test/next-target.test.ts`。
 - **失败路径排空请求体**：受守卫的 `PATCH` / `batch-update` / `clear` 都带 body，一旦在未读完入站体时就发出响应，
   Workers 会抛 `Can't read from request stream after response has been sent.` 并让**本 isolate 的后续请求**
@@ -502,7 +503,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 
 ### 8.2 「到达并停住」：静止页面必须真的静止（2026-09-18）
 
-`handfeel.md` §7 的"跟随"那一族（相机/光标/导轨）在 V1 里**没有消费者**：`public/ui_old/js` 里
+`handfeel.md` §7 的"跟随"那一族（相机/光标/导轨）在 V1 里**没有消费者**：`public/ui_v1/js` 里
 没有 rAF、没有插值循环、没有弹簧解算（唯一的时间循环是 `signalr.js` 每 30 秒的保活心跳）。
 所有"动"都是 CSS 状态过渡 + 一次性 keyframes，停不停由终态负责 —— 这是零构建 ADR D12 的产物。
 
@@ -537,10 +538,10 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 
 ### 9.2 404 与爬虫
 
-- ✅ **设计过的 404**：`src/ui/notFound.ts` 服务 `/ui/*` 下未匹配的路径（协议命名空间仍是 JSON/文本 404，语义不动）。
+- ✅ **设计过的 404**：`src/ui/notFound.ts` 服务 `/ui_v2/*` 下未匹配的路径（协议命名空间仍是 JSON/文本 404，语义不动）。
 - ✅ `robots.txt` 放**站点根**（`public/robots.txt`，爬虫只读根路径）——`Disallow: /` 与页面里的 `noindex` 构成两道。
 - ⚠️ 不做 `sitemap.xml`：整站 noindex，站点地图没有意义。
-- ✅ 尾斜杠决策：`/ui` 由静态资源层重定向到 `/ui/`；协议路由用 Hono 的 `strict: false` 容忍（对齐 ASP.NET）。
+- ✅ 尾斜杠决策：`/ui` 由静态资源层重定向到 `/ui_v2/`；协议路由用 Hono 的 `strict: false` 容忍（对齐 ASP.NET）。
 
 ### 9.3 非快乐路径的状态
 
@@ -557,7 +558,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 
 ### 9.4 深色模式
 
-- ✅ 令牌层整体重映射（组件层一行未改，符合「level-2 token remap only」）+ 首帧前定主题（实测 5 次重载 `data-theme` 均在首帧前就位、CLS 全 0）。该脚本**本轮从内联外置**为 `/ui_old/js/theme-init.js`：外链才能让 CSP 保持 `script-src 'self'`（内联要么开 `'unsafe-inline'`、要么维护 hash）。它必须是**经典脚本**——`type="module"` 默认 defer，会晚于首帧。
+- ✅ 令牌层整体重映射（组件层一行未改，符合「level-2 token remap only」）+ 首帧前定主题（实测 5 次重载 `data-theme` 均在首帧前就位、CLS 全 0）。该脚本**本轮从内联外置**为 `/ui_v1/js/theme-init.js`：外链才能让 CSP 保持 `script-src 'self'`（内联要么开 `'unsafe-inline'`、要么维护 hash）。它必须是**经典脚本**——`type="module"` 默认 defer，会晚于首帧。
 - ✅ **`color-scheme` 跟随生效主题**（本轮修）：在 `tokens.css` 的 `:root` 与 `:root[data-theme="dark"]` 各声明一次。此前只有 `base.css` 里一句 `color-scheme: light dark`（跟随**系统**），于是浅色系统 + 应用内切深色时，原生 `<select>` 下拉、滚动条、数字输入的 spinner 仍是浅色。实测：改前两种 `data-theme` 下计算值都是 `light dark`，改后分别为 `light` / `dark`。
 - ⚠️ 偏离：没有改用 `light-dark()`。它能省掉一半令牌，但令牌的**派生项**（类型色、阴影）仍需成对书写；更关键的是不支持该函数的浏览器会丢掉整条声明、调色板直接失效，而当前写法在任何浏览器都成立。
 
@@ -641,8 +642,8 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 对比度（浅/深，9 类文本） | 全部 ≥ 4.5:1（修复了三级文本 2.92 / 4.05 两处不达标） |
 | 区块重叠 / 非预期裁切 | 0（几何断言） |
 | 浏览器交互（headless Chromium，真实浏览器引擎） | 登录流、筛选/搜索/排序/分页、星标往返、单选/全选、批量删除确认（取消路径）、文本与图片预览、Esc 关闭、空状态、部署信息、主题切换与持久化、`data_missing` 的**三处可达**表现（缩略图占位/预览空态/下载提示） |
-| 路由语义 | 匿名 `/ui/不存在` → 404 页；匿名 `/ui/api/*` → 401 JSON；带凭据 `/ui/api/未知` → 404 JSON；协议路径 404 语义不变 |
-| 登录跳转 `?next=`（headless Chromium 导航日志 + 纯函数用例） | 打开 `/ui/login.html?next=/%5Cevil.example`（反斜杠变体，浏览器解析为 `http://evil.example/`）时，**零交互**的已登录跳转落在 `/ui/`（同源），没有站外跳转；`//evil.example`、`javascript:alert(1)`、`https://evil.example`、空值同样落回默认页，`/ui/?x=1` 与 `/` 正常返回；页面零 console 错误。用例：`test/next-target.test.ts` |
+| 路由语义 | 匿名 `/ui_v2/不存在` → 404 页；匿名 `/ui/api/*` → 401 JSON；带凭据 `/ui/api/未知` → 404 JSON；协议路径 404 语义不变 |
+| 登录跳转 `?next=`（headless Chromium 导航日志 + 纯函数用例） | 打开 `/ui_v2/login.html?next=/%5Cevil.example`（反斜杠变体，浏览器解析为 `http://evil.example/`）时，**零交互**的已登录跳转落在 `/ui_v2/`（同源），没有站外跳转；`//evil.example`、`javascript:alert(1)`、`https://evil.example`、空值同样落回默认页，`/ui_v2/?x=1` 与 `/` 正常返回；页面零 console 错误。用例：`test/next-target.test.ts` |
 | 窄屏行布局（触屏模拟） | 内容列 84px → **239px@375 / 278px@414**、行高 170px → **106px**、操作按钮 **44×44**（独占整行、换行确定）、元信息「类型 · 时间」可见、表头排序保留、溢出 0 |
 | 桌面（1440） | 行 55px、七列齐全、`.cell-content__meta` 隐藏——窄屏改动对桌面零影响 |
 | 触屏命中区（`pointer: coarse`） | `.btn`/`.select` 44px、`.icon-btn` 44×44（含 `flex: none`）、星标 44×44、分段控件 40px、**`.th-sort` 42×44 / `.search__clear` 44×44**（本轮补） |
@@ -653,7 +654,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 当轮门禁（A 批，历史的数字不改写） | `npx tsc --noEmit` 干净；`npm test` 全部套件通过（当轮为 19 个测试文件；用例数见命令输出，含当轮新增的 `clipboard`） |
 | **系统性完善轮**（2026-09-13，详见 `docs/progress.md` §34） | 时间范围：预设 `range=today` 请求携带本地日界 `after`、自定义区间带 `after/before`（`?range=custom&after=1788969600000` → API `after=1788969600000`）；回收站：`?deleted=1` → API `deleted=true`、行内只剩「恢复」（带数据文件的图片记录全部 `disabled` 且 tooltip 说明原因）、恢复一条后计数 −1 且行就地消失并提示「已恢复」；**类型计数与视图同源**：回收站工具栏 `全部 1064 / 文本 667`（已删口径），同一屏的存储明细仍是 `文本 742`（活跃口径）；切回活跃视图 `1009 / 742`；快速切换 6 次两个方向都正确；星标一条后统计条「已收藏」251 → **252 就地更新**（不再等列表刷新）；选择列在回收站隐藏（`display: none`）；失联横幅全程 `hidden`；工具栏在 1440 / 375 两档无横向溢出（自定义日期行独占一行，桌面 36 → 84px）；新元素对比度 —— 统计条回收站入口 **5.47（浅）/ 6.62（深）**、失联横幅 **5.66 / 5.44**（均 ≥ 4.5:1）；登录页在外置主题脚本 + CSP 下三条路径全通过（空提交本地校验、错口令 401 文案、成功登录回列表），零异常 |
 | **本轮静态投递**（`_headers`） | 实测响应头：`content-security-policy`（`default-src 'none'` + 逐项白名单）、`x-content-type-options: nosniff`、`referrer-policy: same-origin`、`cache-control: public, no-cache, must-revalidate`（js/css）；页面在**零 CSP 违规**下加载（CDP `Log.entryAdded` + `Runtime.exceptionThrown` 全量采集，0 条） |
-| **前端 lint**（`npm run lint`，eslint 只覆盖 `public/ui/js`——该目录不在 `tsc` 的 include 里） | 首次运行抓到 `buildActions(item, actions, ref)` 的 `ref` 从未使用（既有代码）；复核轮加上 `no-shadow` 后又抓到一处**真缺陷的成因**（见 §10 末的复核记录）：`refreshStats` 的局部 `const stats = await api.statistics(...)` 遮蔽了模块级组件实例，`stats.update(...)` 每次都抛 TypeError 被 catch 吞掉 |
+| **前端 lint**（`npm run lint`，eslint 只覆盖 `public/ui_v2/js`——该目录不在 `tsc` 的 include 里） | 首次运行抓到 `buildActions(item, actions, ref)` 的 `ref` 从未使用（既有代码）；复核轮加上 `no-shadow` 后又抓到一处**真缺陷的成因**（见 §10 末的复核记录）：`refreshStats` 的局部 `const stats = await api.statistics(...)` 遮蔽了模块级组件实例，`stats.update(...)` 每次都抛 TypeError 被 catch 吞掉 |
 | **主世界错误采集**（CDP `Runtime.exceptionThrown` + `Log.entryAdded`） | 遍历改筛选 / 翻页 / 换排序（三条视图过渡路径）后 **0 异常**。采集方式说明：`page.on('console')` 在本 harness 抓不到任何条目（合成 `console.log` 亦无输出），隔离世界的 `window.onerror` 也看不到主世界——**只有 CDP 这条路可信**；本轮据此发现并修掉一个真实缺陷（见下） |
 
 **本轮修掉的两处「状态是死的」缺陷**（都不影响功能、只影响可信度，正因如此长期无人发现）：

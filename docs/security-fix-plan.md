@@ -49,7 +49,7 @@
 
 ### P1 · F3 —— 登录页 `?next=` 开放重定向
 
-**现状**：`public/ui/js/login.js:11-14` 的 `safeNext()` 只拒绝 `//` 前缀；`/\evil.example` 通过校验，浏览器按 WHATWG 把反斜杠视同斜杠 ⇒ `location.replace` 跳到站外（登录后 `:49` 与已登录加载时 `:67-70` 两处）。
+**现状**：`public/ui_v2/js/login.js:11-14` 的 `safeNext()` 只拒绝 `//` 前缀；`/\evil.example` 通过校验，浏览器按 WHATWG 把反斜杠视同斜杠 ⇒ `location.replace` 跳到站外（登录后 `:49` 与已登录加载时 `:67-70` 两处）。
 
 **修复**：按 origin 判定，而不是前缀字符串比较：
 

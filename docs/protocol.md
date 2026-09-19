@@ -107,9 +107,9 @@
 | PROPFIND | `/` | **207 multistatus**（列自身）；上游为 200 空体，客户端按 2xx 判定 |
 | PROPFIND | `/file` | **207 multistatus**（目录自身 + 暂存对象，`D:href` 逐段 URL 编码）——客户端 `PreciseDelete` 的 `GetFolderSubList` 会 `XmlDocument.LoadXml` 解析，空体会抛异常 |
 | MKCOL | `/file` | 200 空体（上游 `Ok()`） |
-| GET | `/` | 200 文本 `"Server is running."`；**浏览器导航**（`Accept` 含 `text/html`）且界面开启（`UI_ENABLED!=false`）→ 302 `/ui_old/`（**默认界面**入口；2026-09-18 起直接跳到 `/ui_old/`，省去一次从 `/ui/` 的跳跃）。客户端从不 GET 根路径（`Test()` 与 `GetFolderSubList()` 都是 PROPFIND），故该分支不影响协议行为 |
+| GET | `/` | 200 文本 `"Server is running."`；**浏览器导航**（`Accept` 含 `text/html`）且界面开启（`UI_ENABLED!=false`）→ 302 `/ui_v1/`（**默认界面**入口；2026-09-18 起直接跳到 `/ui_v1/`，省去一次从 `/ui_v2/` 的跳跃）。客户端从不 GET 根路径（`Test()` 与 `GetFolderSubList()` 都是 PROPFIND），故该分支不影响协议行为 |
 
-> **非协议路径**：`/ui/*`（静态资源 + `/ui/api/*`）是本实现附带的 Web 界面，**不属于协议契约**——
+> **非协议路径**：`/ui_v2/*`（静态资源 + `/ui/api/*`）是本实现附带的 Web 界面，**不属于协议契约**——
 > 它用会话 Cookie 或 Basic 鉴权（401 不带 `WWW-Authenticate`）、响应形状可随版本调整。
 > 对照实现时可以完全忽略它，但不要把它当成客户端依赖的端点。
 >
@@ -500,7 +500,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Group zip 的重复条目 | 内容「首次落盘优先」，但 `topLevelFiles`/条目列表**不去重**（`GroupProfile.cs:644-648`）⇒ 重复条目被计入 hash 与 `totalSize` 两次 | 同名条目只取首个，且条目集与顶层条目都**去重**（`src/hash.ts:112-116`、`185-200`） | **有意偏离**：含重复条目的 zip 上两侧 hash 与 size **必然不同**。官方客户端恒不写重复条目，不可达（见 README「已知限制」第 2 条） |
 | 落库 hash 的大小写 | 原样存（`Profile.cs:86`、`TextProfile.cs:55`） | 统一 `.toUpperCase()` 落库 | 对外不可见（查询恒大小写不敏感）；避免同内容在不同设备上于 Linux 生成两个 R2 工作目录（上游在大小写敏感文件系统上会双份存储） |
 | `/api/version` 的**取值** | 版本唯一事实源是 `src/Directory.Build.props` 的 `<VersionPrefix>3.2.0</VersionPrefix>`（`<VersionSuffix>` 为空）；`SyncClipboardProperty.AppVersion` 取程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `28c7e596` **返回字符串 `3.2.0`**。（上游 `Changes.md` 顶部已写 `v3.2.1`，但该基线位于 `v3.2.0` 标签之后 14 个提交、版本号尚未 bump——上游是"发版时才 bump"。） | `wrangler.toml` 的 `[vars] VERSION = "3.2.0"`，**逐字对齐** | **本轮对齐**（2026-09-15，此前报 `3.2.1`）。两边响应形状本就一致（纯文本、三段、无引号，见 §3.1）。功能上无任何差别：客户端下限是 `Env.RequestServerVersion = "3.1.1"`，且 `AppVersion.TryParse` 失败时该检查**被静默跳过**（`OfficialAdapter.cs:151-160` 的 `if` 无 `else`）——改的是**自我描述的真实性**。跟版规则与"两套编号互不相干"的说明见 `design.md` §10 |
-| 路径**字面段**的大小写 | ASP.NET Core 路由对字面段**不区分**大小写：`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate` 全部 **200** | **同左**：`src/pathCase.ts` 在入口最前面按**位置**归一**字面段**（取值原样保留） | **本轮对齐（2026-09-15，A/B 实测驱动）**：此前 Hono 精确匹配 ⇒ 上述路径 404/400。归一表只覆盖协议面（`/ui/*` 与静态资源不在其内——静态资源由 Cloudflare 直接托管、不经 Worker），且只动字面段：`/file/Statistics` 是**取值**，绝不能被改成 `statistics`。表漏项由 `test/protocol.test.ts` 的守卫（遍历 `app.routes` 断言字面段全覆盖）兜住 |
+| 路径**字面段**的大小写 | ASP.NET Core 路由对字面段**不区分**大小写：`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate` 全部 **200** | **同左**：`src/pathCase.ts` 在入口最前面按**位置**归一**字面段**（取值原样保留） | **本轮对齐（2026-09-15，A/B 实测驱动）**：此前 Hono 精确匹配 ⇒ 上述路径 404/400。归一表只覆盖协议面（`/ui_v2/*` 与静态资源不在其内——静态资源由 Cloudflare 直接托管、不经 Worker），且只动字面段：`/file/Statistics` 是**取值**，绝不能被改成 `statistics`。表漏项由 `test/protocol.test.ts` 的守卫（遍历 `app.routes` 断言字面段全覆盖）兜住 |
 | `GET /api/time` 的格式 | `DateTimeOffset.Now` ⇒ **本机偏移**，7 位小数（`"2026-09-15T19:39:00.8230566+08:00"`） | UTC `Z`，3 位小数（`"2026-09-15T11:39:00.982Z"`） | 同一时刻、都是 ISO8601；客户端 `DateTimeOffset` 两种都能解析（实测对照） |
 | `GET /file/{name}` 的历史查找口径 | 只按历史查（暂存文件不算）→ 未命中 **404** | 同左 → **404** | **实测一致**（`PUT /file/x` 后才 `GET` 仍 404，两边相同） |
 

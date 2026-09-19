@@ -1,7 +1,7 @@
 // 前端（零构建的原生 ES 模块）的跨文件契约守卫。
-// 扫描目标是 **V2**（`public/ui/**`）—— 见下面 `PAGES` 的构造：只列了 `public/ui/app/` 的两个页面。
+// 扫描目标是 **V2**（`public/ui_v2/**`）—— 见下面 `PAGES` 的构造：只列了 `public/ui_v2/app/` 的两个页面。
 //
-// ⚠️ V1（`public/ui_old/**`）从 **2026-09-17 起重新纳入维护**（此前是冻结存档），
+// ⚠️ V1（`public/ui_v1/**`）从 **2026-09-17 起重新纳入维护**（此前是冻结存档），
 // 但它的契约守卫**不在这个文件**，而在 `test/ui-guard.test.ts`：接口前缀只有一处字面量、
 // 挂载点字面量只有一处、两页的提示条键名一致、页面引用的本地资源都存在（死引用 = 一次 404）、
 // **每页的 modulepreload 清单 == 该页入口的 import 闭包**、完全自包含、
@@ -38,8 +38,8 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
-// @ts-expect-error TS7016：`public/ui_old/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 clipboard.test.ts）
-import { createLatestGate } from '../public/ui/js/latest.js';
+// @ts-expect-error TS7016：`public/ui_v1/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 clipboard.test.ts）
+import { createLatestGate } from '../public/ui_v2/js/latest.js';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
@@ -65,7 +65,7 @@ function listFiles(relative: string, ext: string): string[] {
 //
 // ⚠️ 2026-09-15 修掉一个**真缺陷**（V2 落地时暴露）：原先的块注释判据是
 // `/\/\*[\s\S]*?\*\//g`，即「任何位置的一对 `/*` … `*/`」。而注释里出现**通配写法**
-// （`/ui/*`、`public/ui/js/*.js` —— 这个仓库的注释里到处都是）时，那个 `/` 后面的 `*`
+// （`/ui_v2/*`、`public/ui_v2/js/*.js` —— 这个仓库的注释里到处都是）时，那个 `/` 后面的 `*`
 // 会被当成块注释的开始，于是它到**下一个** `*/` 之间的全部内容被删掉。
 // 后果不是"少剥了一段注释"，而是把**整整一屏的正代码吃掉**：`boot.js` 的 import 全段
 // 落在那个区间里，`importClosure` 于是只读到入口自己（1 个模块），
@@ -82,15 +82,15 @@ function stripComments(source: string): string {
 
 // ===== 模块图 =====
 // 扫描目标 = **当前实际发布的那一份界面**。
-// 2026-09-15 的 V1→V2 交接：V1 冻结存档到 `public/ui_old/`（挂载点 `/ui_old/`，见该目录的
-// README.md），V2 落在 `public/ui/`。本套件现在守 V2 —— 存档目录**不再受约束**（它是冻结的，
+// 2026-09-15 的 V1→V2 交接：V1 冻结存档到 `public/ui_v1/`（挂载点 `/ui_v1/`，见该目录的
+// README.md），V2 落在 `public/ui_v2/`。本套件现在守 V2 —— 存档目录**不再受约束**（它是冻结的，
 // 对它报死规则只会逼人动一份刻意不动的代码）。
 //
 // V2 的布局与 V1 有两处不同，读下面的常量时要记得：
-//   · 两页在 `public/ui/app/` 下（`/ui/` 这个路径留给目录索引，应用本体在 `/ui/app/`）；
-//   · 资源（`css/`、`js/`）在 `public/ui/` 下，两页共享。
-const JS_FILES = listFiles('public/ui/js', '.js');
-const CSS_FILES = listFiles('public/ui/css', '.css');
+//   · 两页在 `public/ui_v2/app/` 下（`/ui_v2/` 这个路径留给目录索引，应用本体在 `/ui_v2/app/`）；
+//   · 资源（`css/`、`js/`）在 `public/ui_v2/` 下，两页共享。
+const JS_FILES = listFiles('public/ui_v2/js', '.js');
+const CSS_FILES = listFiles('public/ui_v2/css', '.css');
 
 const IMPORT_RE = /import\s+(?:[\s\S]*?\sfrom\s+)?['"]([^'"]+)['"]/g;
 
@@ -144,7 +144,7 @@ type Page = {
   modules: string[];
 };
 
-const PAGES: Page[] = ['public/ui/app/index.html', 'public/ui/app/login.html'].map((html) => {
+const PAGES: Page[] = ['public/ui_v2/app/index.html', 'public/ui_v2/app/login.html'].map((html) => {
   const source = read(html);
   const attr = (rel: string): string[] =>
     [...source.matchAll(new RegExp(`<link[^>]+rel="${rel}"[^>]+href="([^"]+)"`, 'g'))].map(
@@ -231,7 +231,7 @@ describe('public/ui 的模块图契约', () => {
 
   it('检查器对自己不命中：被扫描的集合里没有 test/** 的文件', () => {
     expect([...JS_FILES, ...CSS_FILES].some((file) => file.includes('test/'))).toBe(false);
-    expect(importClosure('public/ui/js/boot.js').some((file) => file.includes('test/'))).toBe(false);
+    expect(importClosure('public/ui_v2/js/boot.js').some((file) => file.includes('test/'))).toBe(false);
   });
 });
 
@@ -296,7 +296,7 @@ describe('public/ui 的模块必须能被浏览器直接解析', () => {
       'const bad = [];',
       'for (const file of files) {',
       '  try { await import(file); } catch (error) {',
-      "    if (error instanceof SyntaxError) bad.push(file.split('/ui/js/')[1] + ' → ' + error.message);",
+      "    if (error instanceof SyntaxError) bad.push(file.split('/ui_v2/js/')[1] + ' → ' + error.message);",
       '  }',
       '}',
       'console.log(JSON.stringify(bad));',

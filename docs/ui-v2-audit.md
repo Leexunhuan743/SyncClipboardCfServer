@@ -1,9 +1,9 @@
 # V2 前端系统性审计（2026-09-16）
 
-> 对象：`public/ui/**`（零构建原生 ES 模块的 Web 界面，挂载 `/ui/app/`）。
-> `public/ui_old/**` **不在本审计范围内** —— 这里要更新一句：它 2026-09-17 起不再冻结，
+> 对象：`public/ui_v2/**`（零构建原生 ES 模块的 Web 界面，挂载 `/ui_v2/app/`）。
+> `public/ui_v1/**` **不在本审计范围内** —— 这里要更新一句：它 2026-09-17 起不再冻结，
 > 2026-09-18 起更是**默认界面**（ADR D17，`docs/design.md`），它自己的审计与守卫在
-> `public/ui_old/README.md`、`docs/frontend-checklist.md` 与 `test/ui-guard.test.ts`。
+> `public/ui_v1/README.md`、`docs/frontend-checklist.md` 与 `test/ui-guard.test.ts`。
 > 本文件仍然只审 V2（当时的审计对象），结论按 2026-09-16 的口径保留。
 > 设计与实现的正史是 [`docs/ui-v2-design.md`](ui-v2-design.md)；本文件是一次**审计**，
 > 记录"发现了什么、按什么顺序修、修完怎么验证"。审计条目编号 `A-nn` 供其它文档引用。
@@ -27,13 +27,13 @@
 
 **做得好、不该动的部分**（审计确认，非假设）：
 
-- **注入面基本为零**：`public/ui/**` 里 `innerHTML` / `outerHTML` / `insertAdjacentHTML` /
+- **注入面基本为零**：`public/ui_v2/**` 里 `innerHTML` / `outerHTML` / `insertAdjacentHTML` /
   `srcdoc` / `document.write` / `eval` / `new Function` **各 0 处**（`dom.js` 根本不提供插 HTML 的路径）。
   剪贴板内容完全不可信（任何同步设备都能推任意文本/文件名），而它们只流向
   `textContent` / `title` / `aria-label`；按钮图标来自常量表，从不拼接数据。
 - **CSP 严格且确实下发**：`default-src 'none'` + `script-src 'self'`，**没有 `unsafe-inline`/`unsafe-eval`**，
-  且补了常被漏掉的 `object-src` / `base-uri` / `frame-ancestors`。实测在 `/ui/app/`、
-  `/ui/js/*`、`/ui/` 上都带全套安全头（`run_worker_first` 经过 Worker 也保留了 `_headers`）。
+  且补了常被漏掉的 `object-src` / `base-uri` / `frame-ancestors`。实测在 `/ui_v2/app/`、
+  `/ui_v2/js/*`、`/ui_v2/` 上都带全套安全头（`run_worker_first` 经过 Worker 也保留了 `_headers`）。
 - **状态与 URL 经过白名单校验**：`filtersFromUrl` 校验 `types/sort/range`、夹取 `page/pageSize`、
   截断 `search`；服务端再校验一次（`sort=constructor` 这类原型链陷阱用 `Object.hasOwn` 关掉了）。
 - **竞态守卫是真的**：`createLatestGate` 会 abort 上一个请求并丢弃过期响应；轮询/推送/概览各持一个。
@@ -154,8 +154,8 @@
 | 错误区 `role="alert"` 且初始隐藏；提交按钮有可读文字 | ✅ |
 | 打开即聚焦用户名（页面上唯一的下一步）；`<noscript>` 兜底存在 | ✅ |
 | 空提交**在本地**拦住（不发请求、不离开本页）、给出原因、把焦点交回可改的字段并置 `aria-invalid` | ✅ 实测提示「请填写用户名与密码。」 |
-| 已登录时访问登录页**直接跳列表页**（不让人白填一遍） | ✅ `/ui/app/` |
-| `?next=` 白名单：同源深链接照办；`https://evil.example`、`//evil.example`、`/\evil.example`、指向登录页自身 —— 四种一律回落到 `/ui/app/` | ✅ 4 种跨源/自环全部回落 |
+| 已登录时访问登录页**直接跳列表页**（不让人白填一遍） | ✅ `/ui_v2/app/` |
+| `?next=` 白名单：同源深链接照办；`https://evil.example`、`//evil.example`、`/\evil.example`、指向登录页自身 —— 四种一律回落到 `/ui_v2/app/` | ✅ 4 种跨源/自环全部回落 |
 
 **一个刻意的测试设计**：这一节**不打失败密码**。服务端对登录失败有速率限制（429），
 而冒烟脚本要被反复运行 —— 用"错密码"验错误文案，跑几次就会把本机 IP 关进小黑屋，
@@ -203,7 +203,7 @@
 
 | 项 | 结果 |
 |---|---|
-| 登录流程（页面内真实提交） | ✅ 跳 `/ui/app/`，`147 条记录`，右上角 `admin`，`实时同步中 · 47 分钟前` |
+| 登录流程（页面内真实提交） | ✅ 跳 `/ui_v2/app/`，`147 条记录`，右上角 `admin`，`实时同步中 · 47 分钟前` |
 | 列表渲染 | ✅ 50 行，首行元数据 `053B38DB… · 154 B · 1 小时前`，每行 3 个操作（主操作/收藏/`⋯`） |
 | 抽屉 | ✅ 打开，`aria-labelledby=drawer-title`，**保存按钮文字「保存保留策略」**（A-04 的修复在线上生效），区块顺序＝视图偏好/自定义时间范围/保留策略/活动趋势/清理任务/部署信息/维护 |
 | 行菜单 | ✅ 预览/复制内容/置顶/删除 四项齐全，`disabled` 状态正确 |
@@ -224,7 +224,7 @@
 **新加的静态模块不会立刻被 `wrangler dev` 提供**：`public/` 的资源清单在启动时构建，
 运行中新增文件会返回 **404**（已存在的文件改动则会热更新）。
 症状很吓人：页面完全没有行、`booted` 为 null、控制台**零错误**（模块 404 在模块图上表现为整图加载失败）。
-**规则：新增（而不是修改）`public/ui/**` 下的文件之后，重启 dev server 再判断页面。**
+**规则：新增（而不是修改）`public/ui_v2/**` 下的文件之后，重启 dev server 再判断页面。**
 
 ## 8. 未验证项（明确声明）
 

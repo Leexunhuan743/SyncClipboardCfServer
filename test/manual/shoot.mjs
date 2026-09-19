@@ -199,9 +199,9 @@ try {
 
   const wants = (name) => !ONLY || ONLY.split(',').includes(name);
 
-  // 这是 **V2** 的出图脚本：应用本体在 `/ui/app/`。
-  // （`/ui/` 是只做跳转的目录索引，2026-09-18 起它指向**默认界面 V1** `/ui_old/` ——
-  //   V1 自己的出图在 probe-ui-old.mjs 的 `--shots`。）
+  // 这是 **V2** 的出图脚本：应用本体在 `/ui_v2/app/`。
+  // （`/ui_v2/` 是只做跳转的目录索引，2026-09-18 起它指向**默认界面 V1** `/ui_v1/` ——
+  //   V1 自己的出图在 probe-ui-v1.mjs 的 `--shots`。）
   const APP = `${BASE}/ui/app/`;
 
   await goto(APP);
@@ -254,7 +254,7 @@ try {
     await shoot('06-notfound');
   }
   if (wants('old')) {
-    await goto(`${BASE}/ui_old/`);
+    await goto(`${BASE}/ui_v1/`);
     await new Promise((r) => setTimeout(r, 1200));
     await shoot('07-ui-old');
   }

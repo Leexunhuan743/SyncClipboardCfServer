@@ -1358,7 +1358,7 @@ try {
   record('登录页空提交', emptySubmit);
   const es = JSON.parse(emptySubmit);
   expect('空提交被本地拦住并给出原因', es.hidden === false && /请填写用户名/.test(es.text ?? ''), `提示「${es.text}」`);
-  // 登录页的规范路径是 `/ui/app/login`（worker 会把 .html 也映射过去），故判据用 /login 而不是文件名
+  // 登录页的规范路径是 `/ui_v2/app/login`（worker 会把 .html 也映射过去），故判据用 /login 而不是文件名
   expect('空提交不发请求、不离开登录页', /\/login\b/.test(es.url), `跑到了 ${es.url}`);
   expect('出错后把焦点放回第一个缺失字段', es.focus === 'username' && es.ariaInvalid === 'true', `焦点 ${es.focus}`);
   await shoot('18-state-login-error');
@@ -1369,15 +1369,15 @@ try {
   await wait(2500);
   const redirected = JSON.parse(await evaluate(`JSON.stringify({ path: location.pathname + location.search })`));
   record('已登录访问登录页', JSON.stringify(redirected));
-  expect('已登录时登录页直接跳列表页', redirected.path === '/ui/app/', `跳到了 ${redirected.path}`);
+  expect('已登录时登录页直接跳列表页', redirected.path === '/ui_v2/app/', `跳到了 ${redirected.path}`);
 
   // `?next=` 白名单：同源深链接要照办，跨源一律回落到列表页
   const nextCases = [
-    { next: '/ui/app/?types=Image', want: '/ui/app/?types=Image', why: '同源深链接照办' },
-    { next: 'https://evil.example/x', want: '/ui/app/', why: '绝对跨源回落' },
-    { next: '//evil.example/x', want: '/ui/app/', why: '协议相对回落' },
-    { next: '/\\evil.example/x', want: '/ui/app/', why: '反斜杠（浏览器视同 /）回落' },
-    { next: '/ui/app/login.html', want: '/ui/app/', why: '指向登录页自身（防死循环）回落' },
+    { next: '/ui_v2/app/?types=Image', want: '/ui_v2/app/?types=Image', why: '同源深链接照办' },
+    { next: 'https://evil.example/x', want: '/ui_v2/app/', why: '绝对跨源回落' },
+    { next: '//evil.example/x', want: '/ui_v2/app/', why: '协议相对回落' },
+    { next: '/\\evil.example/x', want: '/ui_v2/app/', why: '反斜杠（浏览器视同 /）回落' },
+    { next: '/ui_v2/app/login.html', want: '/ui_v2/app/', why: '指向登录页自身（防死循环）回落' },
   ];
   for (const testCase of nextCases) {
     await send('Page.navigate', { url: `${BASE}/ui/app/login.html?next=${encodeURIComponent(testCase.next)}` });

@@ -104,9 +104,10 @@ describe('文档口径与仓库实际一致', () => {
     }
   });
 
-  // `public/` 下现在有三部分：V2（`public/ui/`，开发测试版）、V1（`public/ui_old/`，
-  // 2026-09-18 起是默认界面）、站点根的两个文件。docs/ui.md 的「共 N 个资源」声明的是**这个总数** ——
-  // 判据不变（数字必须能从文件系统数出来），分母的含义随两次定位调整（V1→V2→V1）变过两次。
+  // `public/` 下现在有四部分（2026-09-19 改名后）：V1（`public/ui_v1/`，默认界面）、
+  // V2（`public/ui_v2/`，开发测试版）、`/ui/` 的跳转壳（`public/ui/`，只有 index.html 与
+  // 它的 fragment 中继脚本）、站点根的两个文件。docs/ui.md 的「共 N 个资源」声明的是**这个总数** ——
+  // 判据不变（数字必须能从文件系统数出来），分母的含义随三次结构调整（V1→V2→V1→三挂载点）变过三次。
   it('docs/ui.md 里声明的资源数与 public/ 下实际文件数一致', () => {
     const claims = assetClaims(read('docs/ui.md'));
     expect(claims.length, 'docs/ui.md 未声明资源数').toBeGreaterThan(0);

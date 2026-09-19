@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN" data-app="login">
+  <head>
+    <meta charset="utf-8" />
+    <!-- viewport-fit=cover：刘海屏/圆角屏上让 env(safe-area-inset-*) 拿到真实内边距，
+         overlay-v2.css 用它把悬浮的批量条与提示条推出 Home Indicator。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>登录 · 剪贴板历史（开发测试版）</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta
+      name="description"
+      content="登录到自托管 SyncClipboard 服务器的 Web 界面，查看与搜索跨设备同步的剪贴板历史。"
+    />
+    <link rel="icon" href="/ui_v2/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/ui_v2/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/ui_v2/apple-touch-icon.png" />
+    <meta name="theme-color" content="#f5f2ee" />
+
+    <link rel="stylesheet" href="/ui_v2/css/tokens-v2.css" />
+    <link rel="stylesheet" href="/ui_v2/css/base-v2.css" />
+    <link rel="stylesheet" href="/ui_v2/css/overlay-v2.css" />
+
+    <!-- 登录页的 import 闭包：login.js → api.js → format.js / paths.js；login.js → next-target.js -->
+    <link rel="modulepreload" href="/ui_v2/js/api.js" />
+    <link rel="modulepreload" href="/ui_v2/js/format.js" />
+    <link rel="modulepreload" href="/ui_v2/js/next-target.js" />
+    <link rel="modulepreload" href="/ui_v2/js/paths.js" />
+
+    <script src="/ui_v2/js/theme-init.js"></script>
+  </head>
+  <body>
+    <main class="auth">
+      <div class="auth__panel">
+        <div class="auth__brand">
+          <span class="auth__mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+              stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="8" y="3" width="8" height="4" rx="1.5" />
+              <path d="M16 5h2.5A1.5 1.5 0 0 1 20 6.5v13A1.5 1.5 0 0 1 18.5 21h-13A1.5 1.5 0 0 1 4 19.5v-13A1.5 1.5 0 0 1 5.5 5H8" />
+              <path d="M8.5 12h7M8.5 16h4.5" />
+            </svg>
+          </span>
+          <div class="auth__titles">
+            <h1 class="auth__title">剪贴板历史</h1>
+            <!-- 「开发测试版」是常驻标记（2026-09-18 起默认界面是 V1 `public/ui_v1/`）：
+                 两份界面长得像，登录页必须自己说清是哪一版，否则"为什么这里和刚才不一样"无解。 -->
+            <p class="auth__sub">开发测试版 · 登录以查看这台服务器上的同步记录</p>
+          </div>
+        </div>
+
+        <!-- role="alert"：登录失败必须被读屏立刻播报，而且它是**这个页面的主要结果**，
+             与列表页那条"持续状态"的 notice 语义不同（那条用 role="status"）。 -->
+        <p class="auth__error" id="login-error" role="alert" hidden></p>
+
+        <form class="auth__form" id="login-form" novalidate>
+          <div class="field">
+            <label class="field__label" for="username">用户名</label>
+            <input
+              class="input"
+              id="username"
+              name="username"
+              type="text"
+              autocomplete="username"
+              autocapitalize="off"
+              spellcheck="false"
+              required
+            />
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="password">密码</label>
+            <div class="password-field">
+            <input
+              class="input"
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+              <button class="password-field__toggle" id="password-toggle" type="button" aria-label="显示密码" aria-pressed="false">显示</button>
+            </div>
+          </div>
+
+          <button class="btn btn--primary auth__submit" id="login-submit" type="submit">
+            <span class="btn__label">登录</span>
+          </button>
+        </form>
+
+        <div class="auth__foot">
+          <p class="note">
+            使用与 SyncClipboard 客户端相同的用户名和密码。
+          </p>
+          <p class="note">
+            登录有效期为 24 小时。请只在信任的设备上登录，使用完毕后可随时退出。
+          </p>
+        </div>
+      </div>
+    </main>
+
+    <noscript>
+      <p class="noscript">本页面需要 JavaScript 才能登录。请启用 JavaScript，或改用官方客户端。</p>
+    </noscript>
+
+    <script type="module" src="/ui_v2/js/login.js"></script>
+  </body>
+</html>

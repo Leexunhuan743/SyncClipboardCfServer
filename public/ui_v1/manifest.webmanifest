@@ -1,0 +1,17 @@
+{
+  "name": "剪贴板历史 · SyncClipboard",
+  "short_name": "剪贴板历史",
+  "description": "自托管 SyncClipboard 服务器的 Web 界面：查看、搜索、预览与下载跨设备同步的剪贴板历史。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/ui_v1/",
+  "scope": "/ui_v1/",
+  "display": "standalone",
+  "background_color": "#faf8f5",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "/ui_v1/favicon-32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/ui_v1/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/ui_v1/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

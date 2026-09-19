@@ -7,18 +7,22 @@
     <meta name="color-scheme" content="light dark" />
     <!-- 私有实例，不该被搜索引擎收录。这一页只是跳转，没有任何内容。 -->
     <meta name="robots" content="noindex, nofollow" />
-    <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/ui_v2/favicon.svg" type="image/svg+xml" />
     <!-- 静态资源层会以 307 把 `/ui` 补成 `/ui/`，于是**这个文件**是 `/ui/` 的响应。
-         它唯一的职责是把人送到**默认界面**的应用本体（`/ui_old/`，即 V1）。
+         它唯一的职责是把人送到**默认界面**（`/ui_v1/`，即 V1）。
 
-         2026-09-18 定位调整：V1（`public/ui_old/`）成为默认界面，V2（`public/ui/app/`）降为
-         开发测试版。这一页因此改指 `/ui_old/` —— 站点根（`GET /` 的浏览器分支）也直接 302 到
-         `/ui_old/`，两处**必须指向同一个地方**，守卫见 `test/ui-guard.test.ts`。
+         2026-09-19 结构：三个挂载点各司其职 —— `/ui_v1/`（V1，默认界面）、
+         `/ui_v2/`（V2，开发测试版，本体在 `/ui_v2/app/`）、`/ui/`（**就是这一层壳**）。
+         站点根（`GET /` 的浏览器分支）直接 302 到 `/ui_v1/`，与本页**必须指向同一个地方**，
+         守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
 
-         为什么保留这一层跳转而不是让 `/ui/` 直接服务 V1：V2 的资源挂在 `/ui/js|css/*` 下
-         （它自己的页面里写的是绝对路径），把 V1 搬到 `/ui/` 就得同时改 V1 的全部资源前缀 ——
-         2026-09-15 的改名事故已经付过一次学费（见 `public/ui_old/js/api.js` 的注释）。
-         物理目录名保持历史原样，变的只是**入口**。
+         为什么还留着 `/ui/` 这一层壳（两条理由，都不是审美）：
+         ① **`/ui/api/*` 压着它** —— 那是两版共用的服务端接口命名空间（路由在
+            `src/ui/routes.ts`），前缀不能跟着界面改名；
+         ② `/ui/` 是真实存在过的用户可见地址（V2 的旧入口），老书签应当还能用 ——
+            留一层跳转比 404 好。
+         2026-09-15 的改名事故已经把"顺手改前缀"的代价演示过一次（见 `public/ui_v1/js/api.js`
+         的注释），所以这里一切从简：只跳转，不服务应用。
 
          两种跳转手段各管一半，理由是**竞态**：
          · 有脚本时（正常情况）用外链脚本跳，因为只有它能**带上 fragment** —— 声明式 refresh
@@ -27,14 +31,13 @@
            它在任何 CSP 下都成立（内联脚本会被 `script-src 'self'` 拒掉，故脚本必须是外链）。
          两者**不能同时生效**：refresh 的延迟为 0 时会和脚本抢跑，谁先到看网络 —— 放进
          `<noscript>` 之后就没有这个问题（有脚本时那段根本不参与）。
-         目标地址必须与 `src/routes/webdav.ts` 的根跳转一致，守卫见
-         `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
+         目标地址必须与 `src/routes/webdav.ts` 的根跳转一致。
          `<link rel="canonical">` 给出语义上的正主。 -->
-    <link rel="canonical" href="/ui_old/" />
+    <link rel="canonical" href="/ui_v1/" />
     <script src="/ui/js/redirect-hash.js"></script>
-    <noscript><meta http-equiv="refresh" content="0; url=/ui_old/" /></noscript>
+    <noscript><meta http-equiv="refresh" content="0; url=/ui_v1/" /></noscript>
   </head>
   <body>
-    <p><a href="/ui_old/">进入剪贴板历史</a></p>
+    <p><a href="/ui_v1/">进入剪贴板历史</a></p>
   </body>
 </html>

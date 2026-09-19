@@ -1,0 +1,817 @@
+/* ============================================================================
+ * 骨架层 — V2：顶栏、概览带、主搜索、筛选条、主区、页脚。
+ * 组件自身的样式在 board-v2.css（列表）与 overlay-v2.css（浮层）。
+ *
+ * 布局契约：这一层定义的所有 `--*` 组件令牌与类名都被 JS 读取/生成，
+ * 改名必须同步改 `public/ui_v2/js/`（`test/ui-contract.test.ts` 的双向类名守卫会拦下漏改的一半）。
+ * ========================================================================== */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 顶栏：吸顶、半透明 + 模糊。V1 的品牌后是一大片空白，V2 在这里放**同步状态**，
+ *    把"刚在手机上复制了，电脑上有没有过来"（场景 S3）放在最不需要操作的位置。 ── */
+.appbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-appbar);
+  height: var(--appbar-h);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px) saturate(1.4);
+  border-bottom: 1px solid var(--line);
+}
+
+.appbar__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  height: 100%;
+  padding: 0 var(--sp-5);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.brand__mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.brand__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand__name {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semi);
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.brand__meta {
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.appbar__spacer {
+  flex: 1 1 auto;
+}
+
+.appbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+
+/* 同步状态：点 + 文案。点用 `data-state` 换色 —— 它是**唯一**用颜色表达"健康度"的地方，
+ * 因此色相差异要够大（青=实时、琥珀=轮询、灰=还没握过手）。
+ *
+ * `data-state` 由 `js/ui/appbar.js` 写，**三档可达**：`live` / `poll` / `connecting`。
+ * 此前这里写着"灰=失联"，而代码把"通道断着"折进了 `poll` —— 灰只出现在第一次 `update()`
+ * 之前的那一瞬（初值是 `offline`）。见 `docs/AUDIT-missing-states.md` §2.3。 */
+.sync {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) 0 var(--sp-2);
+  height: var(--control-h);
+  border-radius: var(--r-pill);
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.sync__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink-faint) 18%, transparent);
+}
+
+.sync[data-state="live"] .sync__dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.sync[data-state="poll"] .sync__dot {
+  background: var(--star);
+  box-shadow: 0 0 0 3px var(--star-soft);
+}
+
+/* 握手中的过渡态（2026-09-18 补）：此前这一档**没有任何规则** —— `connecting` 能写进
+ * `data-state`，点却只拿着上面那条基础色，与"还没握过手"长得一样。
+ * 不给它第三个色相：它只持续一两秒，多一个色相只会让"青/琥珀"这两档更难记。
+ * 用比基础色更亮的灰，读作"正在建立"而不是"没建立"。 */
+.sync[data-state="connecting"] .sync__dot {
+  background: var(--ink-muted);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink-muted) 18%, transparent);
+}
+
+.sync__label {
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 用户名：窄屏隐藏（不是渲染缺陷，是优先级——它比同步状态次要得多） */
+.who {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 顶栏里的搜索入口只在**窄屏**出现：宽屏上有一条 44px 的完整搜索框，
+ * 再放一个图标入口就是同一件事的两条路径（用户会猜哪个才是"真的"搜索）。 */
+.appbar__actions .icon-btn[data-when="narrow"] {
+  display: none;
+}
+
+/* ── 主区 ── */
+.main {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-5) var(--sp-7);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-content: start;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.main > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.main > .workspace-heading {
+  grid-column: 1;
+}
+
+.main > .overview {
+  grid-column: 2;
+}
+
+/* 趋势图在中屏与桌面都**让位**：概览带在 `--content-max` 下只占两列布局的右半
+ * （见上面 `.main > .overview { grid-column: 2 }`），实测内容宽度 ≈ 614px 而可用约 588px ——
+ * 塞进一条 132px 的图会把「存储占用」与右端的 `›` 挤出胶囊。窄屏反而有位置：
+ * 那时概览带折成两行、图独占一行（见文件末尾 `<720` 那一档）。
+ *
+ * ⚠️ 选择器带 `.main > .overview` 前缀（特异性 **0,3,0**），这是**有意**的 ——
+ * 但它同时意味着末尾那档 `@media (max-width: 720px)` 的裸类规则（0,1,0）**永远压不过它**。
+ * 2026-09-18 实测：这一条 + 中屏那档 + 窄屏那档 + `overview.js` 的渲染一共 4 处都在，
+ * 而趋势图的可见高度恒为 0px（规则写了、图永远不显示）。故窄屏那档必须**同样带前缀**。
+ * 守卫：`test/manual/probe.mjs` 的 `sparkBars` 只数 DOM 里的 `<rect>`（`display:none` 时照样是 14），
+ * 所以它证明不了"看得见" —— 改动这一条后请用 `getBoundingClientRect().height > 0` 复核。 */
+.main > .overview .overview__spark {
+  display: none;
+}
+
+.workspace-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding-block: var(--sp-2) var(--sp-3);
+}
+
+.workspace-heading__eyebrow {
+  margin: 0 0 var(--sp-2);
+  color: var(--accent);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.1em;
+}
+
+.workspace-heading__title {
+  margin: 0;
+  font-size: clamp(1.5rem, 1.2rem + 1vw, 2rem);
+  line-height: 1.3;
+  letter-spacing: -0.035em;
+  font-weight: var(--fw-semi);
+}
+
+.workspace-heading__description {
+  margin: var(--sp-2) 0 0;
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+}
+
+.workspace-heading__link {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  text-underline-offset: 4px;
+}
+
+/* 列表区的**占位容器**（HTML 里就存在，JS 启动后把 `.board-area` append 进来）。
+ *
+ * ⚠️ 这里的 `min-height` 与下面 `.board-area` 的那条**不是重复**，两者服务于不同时刻：
+ *   · 本规则 → **首帧**（JS 还没跑、子节点还不存在）的预留高度，CLS 修复的真正落点；
+ *   · `.board-area` → **挂载之后**列表为空/骨架/错误态时不让区域塌掉。
+ * 两者都写成 70vh；父子的 `min-height` 不会叠加（子节点撑起父节点即已满足父的约束）。
+ * 数值的来历见 `.board-area` 那条的注释（900px 视口下量出来的）。 */
+#board-area {
+  min-height: 70vh;
+  scroll-margin-top: calc(var(--appbar-h) + var(--filters-h) + var(--sp-4));
+}
+
+#filters {
+  position: sticky;
+  top: var(--appbar-h);
+  z-index: var(--z-sticky);
+}
+
+/* ── 概览带：把"一眼掌握"压成一条 60px ──
+ * 设计取舍（docs/ui-v2-design.md §2 原则 3）：方案 B 的洞察放在这里，但**只占一行**。
+ * 整条是按钮：点开进抽屉看细则（清理状态、保留策略、类型明细）。 */
+.overview {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  width: 100%;
+  min-height: var(--overview-h);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .overview:hover {
+    border-color: var(--line-strong);
+    box-shadow: var(--shadow-sm);
+  }
+}
+
+.overview:active {
+  transform: translateY(0.5px);
+}
+
+.overview__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.overview__value {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semi);
+  line-height: var(--lh-display);
+  letter-spacing: -0.03em;
+}
+
+.overview__label {
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semi);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+/* 数字还没到时的小骨架条。
+ * 它占的宽度刻意接近真实数字（4–5 个字符），这样数据落地时概览带不会横向跳动。 */
+.overview__ghost {
+  display: block;
+  width: 3.5ch;
+  height: 0.7em;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  animation: breathe 1.5s var(--ease-in-out) infinite;
+}
+
+/* 趋势图：纯装饰（`aria-hidden`，数据在它的 title/图例里另有文字表达） */
+.overview__spark {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--accent);
+}
+
+.overview__sep {
+  width: 1px;
+  height: 28px;
+  flex: 0 0 auto;
+  background: var(--line);
+}
+
+.overview__spacer {
+  flex: 1 1 auto;
+}
+
+/* 可点提示：右端的 `›`。没有它，整条就只是一个"信息卡片"——
+ * 用户不会想到它能点开设置（实测走查时我自己也没想到）。
+ *
+ * 颜色用 `--ink-muted` 而不是 `--ink-faint`：`faint` 在浅色下是 warm-500，
+ * 在 1440px 截图里几乎看不见 —— 一个"提示"如果本身需要凑近看，它就没起到提示作用。
+ * 也没有给它加边框/底色：概览带的第一身份是**读数字**，加边框会让这个 20px 的小箭头
+ * 变成与真按钮抢注意力的东西，而那正是 V1 的老毛病。 */
+.overview__hint {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs);
+  color: var(--ink-muted);
+  transition: color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .overview:hover .overview__hint {
+    color: var(--accent);
+    transform: translateX(2px);
+  }
+}
+
+.overview:focus-visible .overview__hint {
+  color: var(--accent);
+}
+
+/* ── 主搜索：44px 高、全宽。V1 把搜索压成 200px 挤在工具栏里，
+ *    而"找回来"（场景 S1/S2）是这个界面最高频的动作。 ──
+ *
+ * 观感重做（用户反馈"有点丑"，2026-09-15）。原来那版的问题是三件事叠在一起：
+ *   ① 边框用的是 `--line-strong`（页面里最重的那条线），而阴影只有 4% 不透明度 ——
+ *      结果是"一个描了灰线的长条"，不像一个能输入的控件；
+ *   ② 底是纯白，与它下面的 chips（也是纯白 + 细边框）**重量几乎相同**，两条横条分不出主次；
+ *   ③ `Ctrl K` 提示常驻，且自己带边框 + 底 —— 一个输入框里套了第二个"框"。
+ *
+ * 改法：底色压深一档（`--surface-inset`，与 chips 的纯白分开）+ 边框降一档（`--line`）
+ * + 加一条**内凹**影（顶边的细阴影 = 凹进去，这是输入控件的通用语汇）+ 圆角收小一档。
+ * 高度保持 44px：它是全页最高频的目标，不为美观牺牲命中区。 */
+.omnibox {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  /* `width: 100%` + `min-width: 0` 成对：前者保证它铺满容器，后者防止内部的 `<input>`
+   * 用最小内容宽度把容器撑出横向滚动（表单控件的默认 `min-width: auto`）。 */
+  width: 100%;
+  min-width: 0;
+  height: var(--search-h);
+  padding: 0 var(--sp-3) 0 var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  /* 与筛选条（`.filters`）用**同一组**负外边距 + 内边距：两者因此共享同一套横向几何，
+   * 边缘与里面的 chips 精确对齐。少了这一句，搜索框会比它下面的 chips 宽出 12px，
+   * 两条横线的左右边缘差一点点 —— 那种"没对齐"很难指名，但看得出来。 */
+  margin: 0;
+  transition: border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .omnibox:hover {
+    border-color: var(--line-strong);
+  }
+}
+
+.omnibox:focus-within {
+  /* 聚焦时**底回到最亮**：从"凹进去的槽"变成"一张激活的纸"，与未聚焦态一眼分得开。
+   * 只改边框色是不够的 —— 那正是原来那版"点下去没什么反馈"的原因之一。 */
+  background: var(--surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.omnibox__icon {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+}
+
+.omnibox:focus-within .omnibox__icon {
+  color: var(--accent);
+}
+
+/* 搜索在途：`ui/omnibox.js` 的 `setBusy()` 会写 `data-busy`，而此前**没有任何 CSS 消费者**
+ * —— 那条注释承诺的"把图标降透明"从未出现过（`boot.js` 每次 `render()` 都在写这个属性，
+ * 包括每 10 秒的轮询）。见 `docs/AUDIT-missing-states.md` §3.3。
+ * 只降不透明、不做转圈：转圈会让人以为"搜索在跑"，而实际只是等一次往返（通常 100ms 内）。 */
+.omnibox[data-busy] .omnibox__icon {
+  opacity: 0.45;
+}
+
+.omnibox__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: none;
+  outline: none;
+  font-size: var(--fs-body);
+}
+
+.omnibox__input::placeholder {
+  color: var(--ink-faint);
+}
+
+/* 快捷键提示（⌘K / Ctrl K）：**只在悬停或聚焦时出现**。
+ *
+ * 原先它常驻，而且在 1192px 宽的空框里孤零零挂着一枚带边框的小方块 ——
+ * 读起来像"框里有个按钮"（那是用户说"丑"的第三个来源）。
+ * 它仍然要能被发现（它是键盘入口的提示），而"悬停到搜索框上就浮出来"已经足够 ——
+ * 一个准备用键盘的人，手/注意力本来就在这个框上。
+ * 触屏没有 hover：那一侧也不需要键盘快捷键提示。 */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  color: var(--ink-faint);
+  font-family: var(--font-sans);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .omnibox:hover .kbd {
+    opacity: 1;
+  }
+}
+
+.omnibox:focus-within .kbd {
+  opacity: 1;
+}
+
+/* 清空按钮：只在有内容时出现（无内容时按它没有意义） */
+.omnibox__clear {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.omnibox__clear[hidden] {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .omnibox__clear:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+  }
+}
+
+.omnibox__clear:active {
+  transform: scale(0.92);
+}
+
+/* ── 筛选条：吸顶在搜索之后。类型 chips 在左、状态筛选在右，低频控件收进抽屉 ──
+ * `min-width: 0` 是必需品不是保险：`flex-wrap` 容器里的项默认 `min-width: auto`
+ * （= 内容最小尺寸），而类型 chips 的最小宽度在 390px 视口下超过可用宽度，
+ * 于是整条筛选条会把页面撑出横向滚动（实测：手机上「组合」被切在屏幕外，整页可以左右拖）。
+ * V1 在同一处踩过同一个坑（它的注释记了这件事）。 */
+.filters {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  min-width: 0;
+  min-height: var(--filters-h);
+  padding: var(--sp-2) var(--sp-3);
+  margin: 0 calc(-1 * var(--sp-3));
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+
+.filters__spacer {
+  flex: 1 1 auto;
+}
+
+/* 类型 chips 的容器。
+ * `flex-wrap: wrap` 而不是 `overflow-x: auto` 横向滚动：横向滚动件在触屏上会与页面横滑手势
+ * 打架（用户分不清"滑这一条"还是"滑整页"），而 5 个 chip 换行只占两行。 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+/* ── 类型 chips（筛选条里那一行）──
+ * 取代 V1 的 `.segmented`（分段控件）。换掉的理由：V1 的 5 个分段把"类型筛选"画得跟
+ * "视图切换"一样重，而它的真实身份是**筛选条件集合**。chips 的语义更准，且计数能直接进 chip。
+ *
+ * 它们是类型分布**唯一**的显示位置（概览带里那份重复的已在第二轮移除，见 overview.js 的注释）。 */
+.chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-h);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition: background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chip:hover {
+    border-color: var(--line-strong);
+    color: var(--ink);
+  }
+}
+
+.chip:active {
+  transform: translateY(0.5px);
+}
+
+/* 选中态用 `aria-pressed` 作唯一判据 —— 不另设 `data-active`：
+ * 两个属性表达同一件事时，总有一处会忘记更新（V1 的教训）。 */
+.chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+.chip__num {
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semi);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip[aria-pressed="true"] .chip__num {
+  color: var(--accent);
+}
+
+/* 开关式 chip（收藏 / 回收站）：带图标，态同样用 aria-pressed 表达 */
+.chip__icon {
+  flex: 0 0 auto;
+  color: currentcolor;
+}
+
+.chip[data-tone="star"][aria-pressed="true"] {
+  border-color: var(--star);
+  background: var(--star-soft);
+  color: var(--star);
+}
+
+/* ── 主区内容容器 ── */
+.board-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+  /* 首屏**预留高度**（2026-09-16 实测修的 CLS 缺陷）。
+   *
+   * 问题的形状：HTML 一落地时列表区是空的（JS 还没跑），整页只有 804px 高 ——
+   * 页脚（736px 处）与分页（354px 处）**都在 900px 视口里**。数据一到，列表撑到 3976px，
+   * 这两块被整段顶出屏幕 ⇒ 实测 **CLS 0.90**（几乎全站最大的一次位移）。
+   * 骨架屏救不了它：骨架要等 `api.session()` 回来（约 300ms）才开始画，而位移在那之前就定了。
+   *
+   * 这里的 `min-height` 管的是**挂载之后**的空/骨架/错误态（首帧那一帧由父容器
+   * `#board-area` 的同名规则负责 —— 此刻这个节点还没被 append 进去；两条不是重复，
+   * 见 `#board-area` 处的说明）。
+   * `70vh` 是量出来的：900px 视口下 ≈ 630px，加上它上方 ~304px 的头部区，
+   * 页脚刚好落到折线以下；再小会漏，再大只是空等。
+   * 空状态与错误态同样受益（它们的卡片本来就不该贴在视口上缘）。 */
+  min-height: 70vh;
+}
+
+/* ── 页脚 ── */
+.footer {
+  border-top: 1px solid var(--line);
+  padding: var(--sp-5);
+  color: var(--ink-faint);
+  font-size: var(--fs-meta);
+}
+
+.footer__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  /* 与 .appbar__inner / .main 的水平内边距一致：少了这一句，页脚内容会比头部与列表左移 24px
+   * （V1 的注释记过这个坑，看不到像素时只能靠量）。 */
+  padding: 0 var(--sp-5);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3) var(--sp-5);
+  align-items: center;
+}
+
+.footer__spacer {
+  flex: 1 1 auto;
+}
+
+/* ── 断点：三档（V2 比 V1 多一档"中屏"）──
+ * ≥1080：完整表格 + 完整概览带
+ * 720–1079：表格保留但隐藏类型分布、页脚部分换行
+ * <720：卡片流 + 概览带压成两行 + 低频控件进抽屉
+ */
+@media (max-width: 1080px) {
+  .overview__spark {
+    display: none; /* 趋势图是"锦上添花"，中屏先让位给数字 */
+  }
+}
+
+@media (max-width: 720px) {
+  .main {
+    grid-template-columns: minmax(0, 1fr);
+    padding-top: var(--sp-5);
+  }
+
+  .omnibox__input {
+    font-size: 16px;
+  }
+
+  .main > .workspace-heading,
+  .main > .overview {
+    grid-column: 1;
+  }
+
+  #filters {
+    position: static;
+  }
+
+  .workspace-heading {
+    align-items: flex-start;
+    padding-block: 0;
+  }
+
+  .workspace-heading__eyebrow {
+    display: none;
+  }
+
+  .workspace-heading__link {
+    padding-block: var(--sp-2);
+    font-size: var(--fs-meta);
+  }
+
+  :root {
+    --appbar-h: 52px;
+  }
+
+  .appbar__inner,
+  .main,
+  .footer__inner {
+    padding-inline: var(--sp-4);
+  }
+
+  .main {
+    gap: var(--sp-3);
+  }
+
+  /* 概览带：横向排不下，改成两行（数字行 + 趋势行）。
+   * 用 flex-wrap 而不是 grid：数字的宽度随内容变化，grid 的固定轨道会在长数字时溢出。 */
+  .overview {
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+    padding: var(--sp-3);
+  }
+
+  /* 分隔线在窄屏收掉：换行之后它落在行首/行尾，看起来像一条无主的竖线 */
+  .overview__sep {
+    display: none;
+  }
+
+  /* 前缀必须与上面那条基础规则**完全同形**（0,3,0）：裸类规则会被它压掉，
+   * 症状是"图有数据、有 DOM、就是看不见"。 */
+  .main > .overview .overview__spark {
+    display: block; /* 窄屏反而**留**趋势图：它一行就够，比数字更省地方 */
+    flex: 1 1 100%;
+    order: 10;
+  }
+
+  .overview__spacer {
+    display: none;
+  }
+
+  .who {
+    display: none;
+  }
+
+  .filters {
+    /* 窄屏取消吸顶：视口本来就矮，吸顶会挤掉列表的可视高度 */
+    position: static;
+    margin: 0;
+    padding: 0;
+    background: none;
+    backdrop-filter: none;
+  }
+
+  /* 类型 chips：窄屏改成**一行横向滚动**，不再换行。
+   *
+   * 桌面端它们是 `flex-wrap: wrap`（换行，5 个 chip 占两行也不挤）；
+   * 但 390px 下换行会吃掉两行、再把"收藏/回收站/时间范围/清除筛选"往下推，
+   * 实测整个筛选区占到 **5 行**、一屏只剩 6 张卡片。
+   * 横向滚动在触屏上是自然手势（用户天天刷 feed），而它只占一行。
+   *
+   * 两个细节不能少：
+   *   · `flex-wrap: nowrap` 覆盖桌面端的换行；
+   *   · `flex: 1 1 100%` 让它独占一行，于是"哪些是类型、哪些是开关"在视觉上分成两组；
+   *   · 隐藏滚动条（`scrollbar-width: none` + `::-webkit-scrollbar`）：一条横向滚动条
+   *     在 44px 高的控件行里视觉噪音很大，而内容溢出的提示由"右边那个 chip 被切一半"承担。 */
+  .chips {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    /* 横向滑动交给这一层，不要冒泡成整页横滑 */
+    overscroll-behavior-x: contain;
+  }
+
+  .chips::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* 键盘快捷键提示在窄屏直接不渲染：触屏没有键盘，那条提示是纯噪声。
+   * 桌面端的显隐由 `.kbd` 自己的 `opacity` 控制（悬停/聚焦才出现），
+   * 这里用 `display: none` 是因为窄屏上连"悬停"这个动作都不存在。 */
+  .kbd {
+    display: none;
+  }
+
+  /* `刷新` 在窄屏**移到顶栏**（`appbar.js` 那个 `data-when="narrow"` 的图标按钮）：
+     它旁边就是"清除筛选"，两个都是低频动作，而 390px 宽的一行放不下
+     「收藏 + 回收站 + 时间范围 + 清除筛选 + 刷新」。
+     2026-09-18 之前这条规则只做了隐藏、没有替身 —— 注释说"收进抽屉的一部分"，而抽屉里
+     没有刷新控件 ⇒ 手机上唯一的刷新手段是等 10 秒轮询（见 `docs/AUDIT-missing-states.md` §3.4）。 */
+  .filters > .icon-btn {
+    display: none;
+  }
+
+  /* 顶栏只留状态点：文案在 390px 上放不下。
+     状态**不会被读屏丢掉** —— `appbar.js` 另有一个 `sr-only` 的 `role="status"` 区域只承载
+     状态词，它不随视口显隐（此前这条注释说"文案靠 title/aria-label"：`title` 确实写了，
+     `aria-label` 从来没设过，而 `display: none` 会把 `.sync__label` 整段移出无障碍树）。 */
+  .sync__label {
+    display: none;
+  }
+
+  /* 窄屏没有完整搜索框，这里补一个图标入口（宽屏它被上面的规则隐藏） */
+  .appbar__actions .icon-btn[data-when="narrow"] {
+    display: inline-grid;
+  }
+}
+
+/* 极窄（<380px）：数字降一档，避免主数字换成两行。
+   ⚠️ 目前是**死规则**：主数字（`.overview__value`）挂的是 `--fs-title`，没有任何东西消费
+   `--fs-display` ⇒ 这里改了也不生效。要么把主数字改回 `--fs-display`、要么删掉这条，
+   属设计决策，见 `docs/AUDIT-missing-states.md` §5.3。 */
+@media (max-width: 380px) {
+  :root {
+    --fs-display: 1.5rem;
+  }
+}

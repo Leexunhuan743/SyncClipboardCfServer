@@ -1,6 +1,6 @@
 // 前端纯逻辑：筛选语义（`filters.js`）、展示格式化（`format.js`）、API 边界的归一化（`api.js`）。
 //
-// 为什么值得一个套件：`public/ui/**` 是零构建的，不在 `tsc` 的 include 里；此前的守卫只有
+// 为什么值得一个套件：`public/ui_v2/**` 是零构建的，不在 `tsc` 的 include 里；此前的守卫只有
 // `ui-contract`（类名/属性/import 闭包/能否被原生解析）与 `next-target`、`clipboard` 两个纯函数用例。
 // 而「界面显示错了」最常出在这三处：时间范围算错一天（本地日界 vs UTC）、
 // 归一化漏字段（type 数字 → 枚举名）、查询串里丢了非默认值。
@@ -8,26 +8,26 @@
 //
 // 提示：`@ts-expect-error` 必须紧贴**报错行**——多行 import 的 TS7016 报在 `} from '…'` 那一行，
 // 所以下面这些导入一律写成单行；三条各配一条指令（少一条就报 7016，多一条就报 unused directive）。
-// @ts-expect-error TS7016：`public/ui/**` 是零构建的原生 ES 模块（同 next-target.test.ts）
-import { normalizeItem, buildQuery } from '../public/ui/js/api.js';
-// @ts-expect-error TS7016：`public/ui/**` 是零构建的原生 ES 模块（同 next-target.test.ts）
-import { DEFAULT_FILTERS, rangeBounds, toDateInput, fromDateInput, filtersFromUrl, filtersToApi, filtersToSearch, isDefaultFilters, startOfDay } from '../public/ui/js/filters.js';
+// @ts-expect-error TS7016：`public/ui_v2/**` 是零构建的原生 ES 模块（同 next-target.test.ts）
+import { normalizeItem, buildQuery } from '../public/ui_v2/js/api.js';
+// @ts-expect-error TS7016：`public/ui_v2/**` 是零构建的原生 ES 模块（同 next-target.test.ts）
+import { DEFAULT_FILTERS, rangeBounds, toDateInput, fromDateInput, filtersFromUrl, filtersToApi, filtersToSearch, isDefaultFilters, startOfDay } from '../public/ui_v2/js/filters.js';
 // @ts-expect-error TS7016：同上
-import { typeName, typeLabel, formatSize, formatRelative, previewText } from '../public/ui/js/format.js';
+import { typeName, typeLabel, formatSize, formatRelative, previewText } from '../public/ui_v2/js/format.js';
 // @ts-expect-error TS7016：同上
-import { parseFrames, classifyMessage, createPushChannel } from '../public/ui/js/push.js';
+import { parseFrames, classifyMessage, createPushChannel } from '../public/ui_v2/js/push.js';
 // @ts-expect-error TS7016：同上
-import { deleteConfirmSpec, batchDeleteConfirmSpec, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui/js/messages.js';
+import { deleteConfirmSpec, batchDeleteConfirmSpec, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui_v2/js/messages.js';
 // @ts-expect-error TS7016：同上
-import { rowMenuItems, sortMenuItems } from '../public/ui/js/menus.js';
+import { rowMenuItems, sortMenuItems } from '../public/ui_v2/js/menus.js';
 // 这一条破例取 **V1** 的模块：保留策略的显示口径（未设置 / 已关闭 / 有值 / 分档）只在特定取值下
 // 才现形 —— 60 分钟显示成「0 天」、null 显示成「不限」都不会在默认实例上出现，靠人眼看永远看不全。
-// @ts-expect-error TS7016：`public/ui_old/**` 同样是零构建的原生 ES 模块（同上的理由）
-import { retentionText, retentionEffectiveText } from '../public/ui_old/js/components/info.js';
+// @ts-expect-error TS7016：`public/ui_v1/**` 同样是零构建的原生 ES 模块（同上的理由）
+import { retentionText, retentionEffectiveText } from '../public/ui_v1/js/components/info.js';
 // 下载的**落盘文件名**（V1 `format.js` 的纯函数）：有原文件就保留原扩展名，没有才生成
 // `<type>-<hash8>.txt`；而名字来自客户端的 `dataName`（不可信）—— 这条判据只能在单测里逐值钉住。
 // @ts-expect-error TS7016：同上
-import { downloadNameForText, safeFileName } from '../public/ui_old/js/format.js';
+import { downloadNameForText, safeFileName } from '../public/ui_v1/js/format.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const DAY = 86_400_000;

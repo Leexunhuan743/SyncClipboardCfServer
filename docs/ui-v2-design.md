@@ -1,4 +1,4 @@
-# Web 界面 V2 设计（`/ui/`）
+# Web 界面 V2 设计（`/ui_v2/`）
 
 ## 生产完善（2026-09-17，进行中）
 
@@ -21,18 +21,18 @@
 > 后续改动请先改本文件再改代码 —— 尤其是 §3 的线框、§5 的类名词汇表与 §6 的 API 契约：
 > 它们与 `test/ui-contract.test.ts` 的双向守卫直接对应，改一处不改另一处会红。
 >
-> 与 V1 的关系（用户 2026-09-15 决策，2026-09-18 定位调整）：**V1 整体保留在 `/ui_old/`**，
-> V2 落在 `/ui/app/`。**2026-09-18 起 V1 是默认界面**（站点根与 `/ui/` 都指向 `/ui_old/`），
+> 与 V1 的关系（用户 2026-09-15 决策，2026-09-18 定位调整）：**V1 整体保留在 `/ui_v1/`**，
+> V2 落在 `/ui_v2/app/`。**2026-09-18 起 V1 是默认界面**（站点根与 `/ui_v2/` 都指向 `/ui_v1/`），
 > V2 降为**开发测试版** —— 本文件因此读作"V2 的设计与实现记录"，不再是默认入口的说明。
 > ⚠️ **下面这一段（V1 冻结、不受守卫约束）已被紧随其后的两条更新取代**，保留作历史决策记录：
 > V1 的源码原样冻结（只加弃用横幅与路径改写），作为设计与实现的可对照基线；
 > `test/ui-contract.test.ts` 等契约守卫改为覆盖 V2，V1 不再受守卫约束（它是冻结的存档，
-> 见 `public/ui_old/README.md`）。
+> 见 `public/ui_v1/README.md`）。
 >
 > **2026-09-17 更新**：V1 不再冻结 —— 它重新纳入维护（修掉接口前缀故障、
 > 重做密度与移动端、加了运行时可重复验证与回归守卫），逐条见 `docs/progress.md` §53。
 > 本文件对 V1 的描述保留为历史决策记录。**2026-09-18 更新：V1 成为默认界面，V2 降为开发测试版**
-> （站点根与 `/ui/` 都指向 `/ui_old/`，守卫见 `test/ui-guard.test.ts`），两者的挂载点与守卫分工不变，
+> （站点根与 `/ui_v2/` 都指向 `/ui_v1/`，守卫见 `test/ui-guard.test.ts`），两者的挂载点与守卫分工不变，
 > 变化只有一条：V1 现在也受 `test/ui-guard.test.ts` 里那一节 V1 断言的约束。
 >
 > **验证工具**（手动运行，不属于 `npm test`）：`test/manual/shoot.mjs` 出截图（给人看），
@@ -304,14 +304,14 @@ public/
 ├── _headers                   静态资源的 CSP/安全头 + 缓存策略（边缘直出，不经过 Worker）
 ├── robots.txt                 站点根（爬虫只读根路径）
 │                              ↑ 根路径**不放** index.html —— 它要留给 PROPFIND，见 wrangler.toml 的注释
-├── ui/                        V2（**开发测试版**；2026-09-18 起默认界面换成 V1 `ui_old/`）
-│   ├── index.html             `/ui/` 的目录索引：只做一件事 —— 跳到默认界面 `/ui_old/`
-│   ├── manifest.webmanifest   PWA manifest（`start_url` = `/ui/app/`）
+├── ui/                        V2（**开发测试版**；2026-09-18 起默认界面换成 V1 `ui_v1/`）
+│   ├── index.html             `/ui_v2/` 的目录索引：只做一件事 —— 跳到默认界面 `/ui_v1/`
+│   ├── manifest.webmanifest   PWA manifest（`start_url` = `/ui_v2/app/`）
 │   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
-│   ├── app/                   两页（`/ui/app/` 才是应用本体）
+│   ├── app/                   两页（`/ui_v2/app/` 才是应用本体）
 │   │   ├── index.html         列表页
 │   │   └── login.html         登录页
-│   ├── css/                   样式表名带 `-v2` 后缀：与 `ui_old/` 的同名文件区分开，
+│   ├── css/                   样式表名带 `-v2` 后缀：与 `ui_v1/` 的同名文件区分开，
 │   │   │                      grep 时不会两边一起命中（V1 的 `tokens.css` 等仍在存档里）
 │   │   ├── tokens-v2.css      设计令牌（原始值 → 语义 → 组件三层）
 │   │   ├── base-v2.css        重置、排版、焦点、可访问性、工具类
@@ -321,8 +321,8 @@ public/
 │   └── js/
 │       ├── boot.js            装配点：唯一知道「谁是谁」的地方，也是唯一碰网络的地方
 │       ├── theme-init.js      **经典脚本**（不是 module）：首帧前定主题与密度，避免白闪
-│       ├── redirect-hash.js   **经典脚本**：`/ui/` 跳转页的 fragment 中继（把 `/ui/#Type-hash`
-│       │                      的 hash 带到默认界面 `/ui_old/`；声明式 refresh 不继承 fragment）
+│       ├── redirect-hash.js   **经典脚本**：`/ui_v2/` 跳转页的 fragment 中继（把 `/ui_v2/#Type-hash`
+│       │                      的 hash 带到默认界面 `/ui_v1/`；声明式 refresh 不继承 fragment）
 │       ├── login.js           登录页逻辑
 │       ├── next-target.js     `?next=` 的同源判定（纯函数，安全边界）
 │       ├── api.js             /ui/api 封装 + 归一化 + 401 统一跳登录
@@ -359,8 +359,8 @@ public/
 │           ├── blank.js       空状态（三种语境）/ 加载失败态
 │           ├── ghost.js       骨架屏
 │           └── toast.js       提示条 + **原地状态**（`setPending` / `flashOk`）
-├── ui_old/                    V1（冻结存档，加弃用横幅；见该目录 README.md）
-└── ……（`ui_old/` 内是 V1 的全部文件，含它自己的 7 张样式表与 24 个 JS 模块）
+├── ui_v1/                    V1（冻结存档，加弃用横幅；见该目录 README.md）
+└── ……（`ui_v1/` 内是 V1 的全部文件，含它自己的 7 张样式表与 24 个 JS 模块）
 ```
 
 **分层纪律**（可被测试校验）：`ui/*` 组件**不得** import `api.js`——
@@ -395,10 +395,10 @@ flowchart TD
 2026-09-18 核对两版调用点时带出来的结论（用户要求记在这里）：
 
 - **V1**：首屏打一次 `GET /ui/api/overview`（合成快照）；此后每次**切视图 / 写操作**只补打**轻的**
-  `GET /ui/api/statistics`（`public/ui_old/js/main.js:158`、`:361`；首屏**不再**单独调它，
+  `GET /ui/api/statistics`（`public/ui_v1/js/main.js:158`、`:361`；首屏**不再**单独调它，
   见同一文件 1186 行那句注释）。
 - **V2**：写操作后走 `refresh({ silent: true })` **加** `refreshOverview()`
-  （`public/ui/js/boot.js:701-702`、`:730-731`、`:748-749`、`:989-990`、`:1020-1021`、`:1048-1049`；
+  （`public/ui_v2/js/boot.js:701-702`、`:730-731`、`:748-749`、`:989-990`、`:1020-1021`、`:1048-1049`；
   切视图同理 `:470`）——也就是**每次都整只重打 overview**。
 
 代价不只是"多一次请求"，两条端点的实际成本差在服务端（`src/ui/routes.ts`）：
@@ -458,7 +458,7 @@ flowchart TD
 
 | 阶段 | 内容 | 状态 | 验证 |
 |---|---|---|---|
-| **P0** | 文档定稿（本文件）+ V1 迁到 `ui_old/` + `wrangler.toml`/`index.ts` 适配 + 契约测试改指向 | ✅ | `/ui_old/` 可达、开关同时管住两个挂载点（`ui-guard` 新增守门） |
+| **P0** | 文档定稿（本文件）+ V1 迁到 `ui_v1/` + `wrangler.toml`/`index.ts` 适配 + 契约测试改指向 | ✅ | `/ui_v1/` 可达、开关同时管住两个挂载点（`ui-guard` 新增守门） |
 | **P1** | 令牌层 + 骨架 + 组件层（`tokens-v2` / `base-v2` / `shell-v2` / `board-v2` / `overlay-v2`） | ✅ | 截图（§12.1） |
 | **P2** | 数据接线：`api.js` 扩展、`state.js`、`overview`+`activity` 端点、列表渲染与对账 | ✅ | 首屏 2 次请求；`probe.mjs` 读到真实值（§12.2） |
 | **P3** | 交互补齐：搜索、筛选、抽屉、批量条、行操作、菜单、对话框、提示条、深链接、键盘 | ✅ | 桌面/移动截图 + `probe.mjs` 读 DOM 值 |
@@ -484,7 +484,7 @@ flowchart TD
 | `02-list-dark.png` | 同上一屏，深色 |
 | `03-drawer.png` | 抽屉：活动趋势、视图偏好、保留策略、清理状态、部署信息、维护 |
 | `05-login.png` | 登录页 |
-| `06-notfound.png` | `/ui/*` 的 404 页 |
+| `06-notfound.png` | `/ui_v2/*` 的 404 页 |
 | `09-mobile.png` | 移动 390×844 |
 
 ### 12.2 运行时（`test/manual/probe.mjs` 读真实 DOM 值，非截图目测）
@@ -533,20 +533,20 @@ FAILED REQUESTS  none
 
 | # | 症状 | 根因 |
 |---|---|---|
-| 7 | `test/ui-contract.test.ts` 的「modulepreload == import 闭包」把 24 条**正确**清单报成多余；`ui-logic.test.ts` 整个套件加载失败 | 它的 `stripComments` 用「任何位置的 `/*`…`*/`」剥块注释，而注释里的**通配写法**（`/ui/*`、`public/ui/js/*.js` —— 这个仓库的注释里到处都是）中那个 `/` 后面的 `*` 被当成块注释开头，于是它到下一个 `*/` 之间的**整整一屏正代码**被删掉。`boot.js` 的全部 import 落在那个区间里，闭包因此只剩入口自己。修法：块注释的 `/*` 只认**行首**（合法 JS 里它几乎总在行首，而文本中间的 `/*` 在注释里恰恰就是通配） |
+| 7 | `test/ui-contract.test.ts` 的「modulepreload == import 闭包」把 24 条**正确**清单报成多余；`ui-logic.test.ts` 整个套件加载失败 | 它的 `stripComments` 用「任何位置的 `/*`…`*/`」剥块注释，而注释里的**通配写法**（`/ui_v2/*`、`public/ui_v2/js/*.js` —— 这个仓库的注释里到处都是）中那个 `/` 后面的 `*` 被当成块注释开头，于是它到下一个 `*/` 之间的**整整一屏正代码**被删掉。`boot.js` 的全部 import 落在那个区间里，闭包因此只剩入口自己。修法：块注释的 `/*` 只认**行首**（合法 JS 里它几乎总在行首，而文本中间的 `/*` 在注释里恰恰就是通配） |
 
 ### 12.4 原有质量门
 
 - `npm run typecheck` ✅（`src` + `test`，`strict` + `noUncheckedIndexedAccess`）
-- `npm run lint` ✅（`public/ui/js` 共 30 个模块，零告警）
+- `npm run lint` ✅（`public/ui_v2/js` 共 30 个模块，零告警）
 - `npm test` ✅ **22 个套件全通过**（含 `ui-contract` 10 条跨文件契约、`ui-guard` 22 条鉴权/开关与 V1 契约、`docs` 7 条文档口径）
 
 ### 12.5 V1 存档未受影响
 
-- `/ui_old/` 可达，且与 V2 共用 `UI_ENABLED` 开关：关闭态两个挂载点都 404
+- `/ui_v1/` 可达，且与 V2 共用 `UI_ENABLED` 开关：关闭态两个挂载点都 404
   （`test/ui-guard.test.ts` 新增一条守这条不变式）
 - 存档源码相对冻结前只有三类改动（路径改写 / 存档横幅 / README），逐条记在
-  `public/ui_old/README.md`
+  `public/ui_v1/README.md`
 
 ### 12.6 未做 / 有意不做
 
@@ -1089,7 +1089,7 @@ Esc 后菜单还开着？  false
 **新加的静态模块不会立刻被 `wrangler dev` 提供**：`public/` 的资源清单在启动时构建，
 运行中**新增**文件返回 404（修改已有文件则会热更新）。症状很吓人：页面完全没有行、
 `booted` 为 null、控制台**零错误**（模块 404 在模块图上表现为"整张图加载失败"）。
-**规则：新增（而不是修改）`public/ui/**` 下的文件之后，重启 dev server 再判断页面。**
+**规则：新增（而不是修改）`public/ui_v2/**` 下的文件之后，重启 dev server 再判断页面。**
 
 ### 17.8 第三轮：登录页纳入冒烟 + 复查自己引入的问题
 
@@ -1098,7 +1098,7 @@ Esc 后菜单还开着？  false
 `required`、`autocomplete`）、可访问性（`role="alert"` 的错误区、打开即聚焦用户名、`<noscript>`）、
 客户端校验（空提交不发请求、给原因、把焦点与 `aria-invalid` 交回字段）、
 已登录时直接跳列表页、以及 `?next=` 白名单的**端到端**回落（同源照办；
-`https://evil`、`//evil`、`/\evil`、登录页自身 —— 一律回落到 `/ui/app/`）。
+`https://evil`、`//evil`、`/\evil`、登录页自身 —— 一律回落到 `/ui_v2/app/`）。
 
 **一个刻意的测试设计**：这一节**不打失败密码** —— 服务端对登录失败有速率限制（429），
 而冒烟脚本要反复跑，用错密码验文案跑几次就会把本机关进小黑屋、连脚本自己的登录都失败。

@@ -3,8 +3,10 @@ export interface Bindings {
   DB: D1Database;
   R2: R2Bucket;
   HUB: DurableObjectNamespace;
-  // 静态资源（`[assets] binding = "ASSETS"`）。因为 `[assets] run_worker_first = ["/ui", "/ui/*"]`，
-  // `public/ui/*` 的请求会**先进 Worker**：开关开着时由入口转回 `ASSETS.fetch()`，关着时直接 404。
+  // 静态资源（`[assets] binding = "ASSETS"`）。因为
+  // `[assets] run_worker_first = ["/ui", "/ui/*", "/ui_v1", "/ui_v1/*", "/ui_v2", "/ui_v2/*"]`，
+  // 三个界面前缀（`public/ui_v1/*`、`public/ui_v2/*`、`public/ui/*`）的请求会**先进 Worker**：
+  // 开关开着时由入口转回 `ASSETS.fetch()`，关着时直接 404。
   ASSETS: Fetcher;
   VERSION: string;
   MAX_SAVED_HISTORY_COUNT: string;

@@ -10,7 +10,8 @@
 //      `/file/{fileName}` 与 `/api/history/{profileId}` 的**取值语义必须保留大小写**：
 //      `/file/Statistics` 是一个名为 "Statistics" 的文件，归一成 `statistics` 就会查错对象。
 //      这正是"部分不区分"比"全都不区分"更安全的原因。
-//   2. 覆盖范围**只到协议面**：`/ui/*` 与静态资源不在其列 —— 静态资源由 Cloudflare 直接托管、
+//   2. 覆盖范围**只到协议面**：界面前缀（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）与静态资源不在其列 ——
+//      静态资源由 Cloudflare 托管、
 //      根本不经过 Worker（`[assets] directory = "./public"`，见 wrangler.toml），而 `/ui/api/*`
 //      是我们自己的面、上游无参系物（用户 2026-09-15 决策：只修协议面）。
 //   3. **表漏项必须能被测试发现**：`test/protocol.test.ts` 有一条守卫遍历 `app.routes`，断言协议面
@@ -47,7 +48,7 @@ export function normalizeProtocolPath(path: string): string | null {
     }
   };
 
-  // 第一段决定这条路径属于哪一族；不属于协议面（如 /ui/*）一律不动
+  // 第一段决定这条路径属于哪一族；不属于协议面（如界面前缀 /ui/*、/ui_v1/*、/ui_v2/*）一律不动
   switch ((segs[1] ?? '').toLowerCase()) {
     case 'api':
       setIfMatch(1, SEGMENT_1);

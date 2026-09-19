@@ -17,8 +17,8 @@ import { createUiRoutes } from '../src/ui/routes';
 import type { Bindings } from '../src/env';
 import worker from '../src/index';
 import { isUiEnabled } from '../src/uiEnabled';
-// @ts-expect-error TS7016：`public/ui_old/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里
-import { API_BASE, api, itemPath } from '../public/ui_old/js/api.js';
+// @ts-expect-error TS7016：`public/ui_v1/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里
+import { API_BASE, api, itemPath } from '../public/ui_v1/js/api.js';
 
 const USER = 'guard-probe-user';
 const PASS = 'guard-probe-password';
@@ -139,7 +139,8 @@ describe('/ui/api/* 鉴权不因注册顺序静默失效（遍历式回归）', 
 });
 
 // 界面部署开关（GitHub 仓库变量 `UI_ENABLED`，判定见 src/uiEnabled.ts）。
-// 它必须**关得住静态资源**：`public/ui/*` 现在由 `[assets] run_worker_first = ["/ui", "/ui/*"]`
+// 它必须**关得住静态资源**：`public/ui_v1/*`、`public/ui_v2/*`、`public/ui/*` 现在由
+// `[assets] run_worker_first = ["/ui", "/ui/*", "/ui_v1", "/ui_v1/*", "/ui_v2", "/ui_v2/*"]`
 // 先送进 Worker，再由出口决定"转回 ASSETS"还是"404"。若哪天 run_worker_first 被删掉，
 // 关闭态下资源仍会被平台直接托管 ⇒ 这两条断言会红（这正是要守的不变式）。
 describe('UI 部署开关（UI_ENABLED）', () => {
@@ -172,11 +173,11 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     const { env, seen } = makeEnv('false', 200);
     const cases: [string, 'page' | 'api'][] = [
       ['/ui', 'page'],
-      ['/ui/', 'page'],
-      ['/ui/index.html', 'page'],
-      ['/ui/app/', 'page'],
-      ['/ui/app/index.html', 'page'],
-      ['/ui/js/boot.js', 'page'],
+      ['/ui_v2/', 'page'],
+      ['/ui_v2/index.html', 'page'],
+      ['/ui_v2/app/', 'page'],
+      ['/ui_v2/app/index.html', 'page'],
+      ['/ui_v2/js/boot.js', 'page'],
       ['/ui/api/session', 'api'],
       ['/ui/api/login', 'api'],
       ['/ui/api/history', 'api'],
@@ -217,69 +218,69 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     expect(isUiEnabled({ UI_ENABLED: '0' } as unknown as Bindings)).toBe(true); // 不认 0/no/off，避免误关
   });
 
-  it('开启态：/ui/* 先转静态资源；资源未命中(404)时回落给 Hono 的 404 页', async () => {
+  it('开启态：界面路径先转静态资源；资源未命中(404)时回落给那张设计过的 404 页', async () => {
     // 命中资源 → 原样返回（含 /ui 的 307 跳转，由静态资源自己产生）
-    const hit = await at('/ui/js/boot.js');
+    const hit = await at('/ui_v2/js/boot.js');
     expect(hit.status).toBe(200);
     expect(await hit.text()).toBe('asset-body');
 
-    // 未命中资源 → 回落 Hono，拿到的是那张 404 页（与"静态资源直接托管"时平台自己回落的行为一致）
+    // 未命中资源 → 回落那张 404 页（三个界面前缀形状相同：都没有自己的服务端路由）
     const { env, seen } = makeEnv('true', 404);
-    const missing = await worker.fetch(new Request('https://sync.example.com/ui/__missing__'), env, CTX);
-    expect(seen, '未命中也先问过静态资源').toEqual(['/ui/__missing__']);
+    const missing = await worker.fetch(new Request('https://sync.example.com/ui_v2/__missing__'), env, CTX);
+    expect(seen, '未命中也先问过静态资源').toEqual(['/ui_v2/__missing__']);
     expect(missing.status).toBe(404);
-    expect(await missing.text(), '应回落到 Hono 的 404 页而不是一张空 404').toContain('这个地址没有页面');
+    expect(await missing.text(), '应回落到那张 404 页而不是一张空 404').toContain('这个地址没有页面');
 
     // /ui/api/* 不走静态资源（它一直是 Worker 路由）
     const api = await worker.fetch(new Request('https://sync.example.com/ui/api/__nope__'), env, CTX);
     expect(api.status).toBe(401); // 未带凭据 ⇒ 先被守卫拦下
-    expect(seen, '/ui/api/* 不该去问静态资源').toEqual(['/ui/__missing__']);
+    expect(seen, '/ui/api/* 不该去问静态资源').toEqual(['/ui_v2/__missing__']);
   });
 
-  // V1（`public/ui_old/`，2026-09-18 起是**默认界面**，见该目录 README）与 V2 共用同一个界面开关。
+  // V1（`public/ui_v1/`，2026-09-18 起是**默认界面**，见该目录 README）与 V2 共用同一个界面开关。
   // 这条守卫拦的是"关掉界面却留下一个仍可访问的旧界面"——那正是这个开关要消除的东西。
   // 2026-09-18 补：未命中也要回落到那张设计过的 404 页（V1 成了默认界面，打错路径不该拿到纯文本 404）。
   it('V1（默认界面）同样受界面开关约束：关闭态 404，开启态转静态资源，未命中回落 404 页', async () => {
     const off = makeEnv('false', 200);
-    for (const path of ['/ui_old', '/ui_old/', '/ui_old/index.html', '/ui_old/js/main.js']) {
+    for (const path of ['/ui_v1', '/ui_v1/', '/ui_v1/index.html', '/ui_v1/js/main.js']) {
       const res = await worker.fetch(new Request(`https://sync.example.com${path}`), off.env, CTX);
       expect(res.status, `${path} 在关闭态必须 404`).toBe(404);
     }
-    // 关闭态**一次都不该**去读静态资源（与 /ui/* 同一条纪律：关得干净）
+    // 关闭态**一次都不该**去读静态资源（与 `/ui_v2/*` 同一条纪律：关得干净）
     expect(off.seen, '关闭态的存档请求不该去读静态资源').toEqual([]);
 
     // 开启态：存档面没有服务端路由，故直接转静态资源
     const on = makeEnv('true', 200);
-    const res = await worker.fetch(new Request('https://sync.example.com/ui_old/index.html'), on.env, CTX);
+    const res = await worker.fetch(new Request('https://sync.example.com/ui_v1/index.html'), on.env, CTX);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('asset-body');
-    expect(on.seen).toEqual(['/ui_old/index.html']);
+    expect(on.seen).toEqual(['/ui_v1/index.html']);
 
-    // 未命中：先问静态资源，404 之后回落到那张页（与 /ui/* 同一条行为）
+    // 未命中：先问静态资源，404 之后回落到那张页（与 `/ui_v2/*` 同一条行为）
     const miss = makeEnv('true', 404);
-    const missing = await worker.fetch(new Request('https://sync.example.com/ui_old/__missing__'), miss.env, CTX);
-    expect(miss.seen, '未命中也先问过静态资源').toEqual(['/ui_old/__missing__']);
+    const missing = await worker.fetch(new Request('https://sync.example.com/ui_v1/__missing__'), miss.env, CTX);
+    expect(miss.seen, '未命中也先问过静态资源').toEqual(['/ui_v1/__missing__']);
     expect(missing.status).toBe(404);
     expect(await missing.text(), '应回落到设计过的 404 页而不是平台默认的纯文本').toContain('这个地址没有页面');
   });
 });
 
-// ===== V1 界面（`public/ui_old/`）的接口前缀与两页一致性 =====
+// ===== V1 界面（`public/ui_v1/`）的接口前缀与两页一致性 =====
 //
-// 这一节守的是一个**真实故障**：2026-09-15 把 V1 存档到 `public/ui_old/` 时，`/ui/` → `/ui_old/`
-// 的批量改写把 17 处**接口前缀**也一起改了，界面从此去打 `/ui_old/api/*` —— 而服务端从不提供
-// 那个命名空间（`src/index.ts` 把 `/ui_old/*` 整体当静态存档）。症状：HTML/CSS/JS 全部 200，
+// 这一节守的是一个**真实故障**：2026-09-15 把 V1 存档到 `public/ui_v1/` 时，`/ui_v2/` → `/ui_v1/`
+// 的批量改写把 17 处**接口前缀**也一起改了，界面从此去打 `/ui_v1/api/*` —— 而服务端从不提供
+// 那个命名空间（`src/index.ts` 把 `/ui_v1/*` 整体当静态存档）。症状：HTML/CSS/JS 全部 200，
 // 页面永远停在骨架屏上，只报一句「初始化失败：Not Found」。
 //
 // 为什么既有测试一条都没红：`test/ui-contract.test.ts` 的扫描目标在交接时改成了 V2，
-// 而 `ui-guard` 只验证 `/ui_old/` 的静态资源受界面开关约束 —— **没有一条断言碰过 V1 的接口前缀**。
+// 而 `ui-guard` 只验证 `/ui_v1/` 的静态资源受界面开关约束 —— **没有一条断言碰过 V1 的接口前缀**。
 // 这个故障因此在线上存活了两天，直到逐文件通读才发现。
 //
 // 判据取"结构性"的两条，而不是"逐个端点列清单"（后者每次加接口都要同步维护）：
 //   ① 接口前缀只有一处字面量，且它就是 `/ui/api`；
-//   ② 全部 V1 前端源码里不出现 `/ui_old/api`（无论出现在代码还是注释里）。
-describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => {
-  const V1_DIR = 'public/ui_old';
+//   ② 全部 V1 前端源码里不出现 `/ui_v1/api`（无论出现在代码还是注释里）。
+describe('V1 界面（public/ui_v1）的接口前缀与两页一致性', () => {
+  const V1_DIR = 'public/ui_v1';
 
   function walkFiles(dir: string, ext: string): string[] {
     const out: string[] = [];
@@ -304,35 +305,24 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
     expect(itemPath({ type: 'Text', hash: 'A#B?C' })).toBe('/ui/api/history/Text/A%23B%3FC');
   });
 
-  it('V1 前端源码里不出现 /ui_old/api（含注释）', () => {
+  it('V1 前端源码里不出现 /ui_v1/api（含注释）', () => {
     const offenders: string[] = [];
     const files = walkFiles(join(V1_DIR, 'js'), '.js');
     // 空集合会让这条断言永远为真：先把「扫到了东西」本身钉住（枚举有效性）
     expect(files.length, '没扫到 V1 的 JS 文件（守卫可能失效）').toBeGreaterThan(15);
     for (const file of files) {
       const text = readFileSync(file, 'utf8');
-      if (text.includes('/ui_old/api')) offenders.push(file);
+      if (text.includes('/ui_v1/api')) offenders.push(file);
     }
     // 两张页面同样不该出现（例如写死的接口地址）
     for (const page of ['index.html', 'login.html']) {
       const text = readFileSync(join(V1_DIR, page), 'utf8');
-      if (text.includes('/ui_old/api')) offenders.push(join(V1_DIR, page));
+      if (text.includes('/ui_v1/api')) offenders.push(join(V1_DIR, page));
     }
     expect(
       offenders,
-      '以下文件里出现了 /ui_old/api —— 服务端没有这个命名空间，界面会停在骨架屏上：',
+      '以下文件里出现了 /ui_v1/api —— 服务端没有这个命名空间，界面会停在骨架屏上：',
     ).toEqual([]);
-  });
-
-  it('两页的提示条键名一致（关闭状态跨页生效）', () => {
-    // 提示条的关闭逻辑在两个入口模块里各写了一份（理由见 js/main.js 的注释）。
-    // 一份实现、两处键名，就必须有一条断言钉住"两处一致"——不然在登录页关掉、进列表页又冒出来。
-    const readKey = (file: string) =>
-      /const NOTICE_KEY = '([^']+)'/.exec(readFileSync(join(V1_DIR, file), 'utf8'))?.[1] ?? null;
-    const inList = readKey('js/main.js');
-    const inLogin = readKey('js/login.js');
-    expect(inList, 'js/main.js 未声明 NOTICE_KEY').not.toBeNull();
-    expect(inLogin, 'js/login.js 未声明 NOTICE_KEY').toBe(inList);
   });
 
   it('两张页面引用的本地资源都存在（死引用 = 一次 404）', () => {
@@ -340,8 +330,8 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
     let checked = 0;
     for (const page of ['index.html', 'login.html']) {
       const html = readFileSync(join(V1_DIR, page), 'utf8');
-      for (const m of html.matchAll(/(?:href|src)="(\/ui_old\/[^"]+)"/g)) {
-        const rel = m[1]!.replace('/ui_old/', '');
+      for (const m of html.matchAll(/(?:href|src)="(\/ui_v1\/[^"]+)"/g)) {
+        const rel = m[1]!.replace('/ui_v1/', '');
         checked += 1;
         if (!existsSync(join(V1_DIR, rel))) missing.push(`${page} → ${m[1]}`);
       }
@@ -356,13 +346,13 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
   //   ① V1 的 modulepreload 清单是人工维护的，多一项白拉一个文件、少一项留下一段依赖瀑布，
   //      两者都不会报错。2026-09-18 给 V1 新增 `js/messages.js` 时正需要它。
   //   ② 自包含断言原先只查 `js/main.js` 与 `index.html` 两个文件，且其中的
-  //      `from '../ui/` 是从 `public/ui_old/js/` 出发的**空断言** —— `../ui/` 指向不存在的
-  //      `public/ui_old/ui/`，真正要拦的是 `../../ui/`。现在改成"解析后是否逃出 V1 目录"的结构性判据。
+  //      `from '../ui/` 是从 `public/ui_v1/js/` 出发的**空断言** —— `../ui/` 指向不存在的
+  //      `public/ui_v1/ui/`，真正要拦的是 `../../ui/`。现在改成"解析后是否逃出 V1 目录"的结构性判据。
   //   ③ `messages.js` 是 V1 自己的副本（产品面必须自包含，见该文件头），
   //      "两份必然漂移"由这条对等守卫兜住，而不是靠人工 review。
 
   /** 剥注释。判据与 `test/ui-contract.test.ts` 一致：块注释只认**行首**，
-   *  否则注释里的 `/ui/*` 这类通配写法会被当成块注释起点、吃掉整屏正代码。 */
+   *  否则注释里的 `/ui_v2/*` 这类通配写法会被当成块注释起点、吃掉整屏正代码。 */
   function stripJsComments(source: string): string {
     return source
       .replace(/(^|\n)([ \t]*)\/\*[\s\S]*?\*\//g, '$1')
@@ -371,7 +361,7 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
 
   /** V1 目录内的模块 id（`js/main.js` 形式）。 */
   function moduleId(file: string): string {
-    return file.replace(/\\/g, '/').replace(/^public\/ui_old\//, '');
+    return file.replace(/\\/g, '/').replace(/^public\/ui_v1\//, '');
   }
 
   /** 把 `spec` 相对 `id` 解析成模块 id；逃出目录时保留前导 `..`（供调用方判定）。 */
@@ -418,7 +408,7 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
       { name: 'login.html', entry: 'js/login.js' },
     ]) {
       const html = readFileSync(join(V1_DIR, page.name), 'utf8');
-      const preload = [...html.matchAll(/<link rel="modulepreload" href="\/ui_old\/([^"]+)"/g)]
+      const preload = [...html.matchAll(/<link rel="modulepreload" href="\/ui_v1\/([^"]+)"/g)]
         .map((m) => m[1]!)
         .sort();
       const closure = importClosure(moduleId(page.entry));
@@ -430,7 +420,7 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
     }
   });
 
-  it('V1 前端是完全自包含的：没有任何模块逃出 public/ui_old，页面也不引用 /ui/ 下的资源', () => {
+  it('V1 前端是完全自包含的：没有任何模块逃出 public/ui_v1，页面也不引用 /ui/ 下的资源', () => {
     const ids = walkFiles(join(V1_DIR, 'js'), '.js').map(moduleId);
     expect(ids.length, '没扫到 V1 的 JS 文件（守卫可能失效）').toBeGreaterThan(20);
     const offenders: string[] = [];
@@ -440,16 +430,17 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
         if (resolveFrom(id, spec).startsWith('..')) offenders.push(`${id} → ${spec}`);
       }
     }
-    // 两张页面也不得把 `/ui/` 下的东西当**子资源**引用（它是开发测试版，随时可能被破坏性重构或删除）。
-    // 注意范围：只查 `<script src>` 与 `<link href>`，**不查** `<a href>` ——
-    // 提示条里指向开发测试版入口 `/ui/app/` 的**导航链接**是有意的（见 index.html 的 notice-bar）。
+    // 两张页面也不得把 `/ui_v2/` 下的东西当**子资源**引用（它是开发测试版，随时可能被破坏性重构或删除）。
+    // 只查 `<script src>` 与 `<link href>`：V1 的页面里不该出现任何 `/ui_v2/` 前缀的引用。
+    // （2026-09-19 改名后这条判据的**含义也变了**：以前要拦的是跨到 `/ui/`，现在是跨到 `/ui_v2/`；
+    //  `/ui/` 本身已降为跳转壳、V1 不引用它。`/ui/api/*` 是接口、不在其列。）
     for (const page of ['index.html', 'login.html']) {
       const html = readFileSync(join(V1_DIR, page), 'utf8');
-      for (const m of html.matchAll(/<(?:script|link)\b[^>]*?(?:src|href)="(\/ui\/[^"]*)"/g)) {
+      for (const m of html.matchAll(/<(?:script|link)\b[^>]*?(?:src|href)="(\/ui_v2\/[^"]*)"/g)) {
         offenders.push(`${page} → ${m[1]!}`);
       }
     }
-    expect(offenders, '以下引用跨到了 public/ui —— 产品面（V1）必须自包含：').toEqual([]);
+    expect(offenders, '以下引用跨到了 public/ui_v2 —— 产品面（V1）必须自包含：').toEqual([]);
   });
 
   it('V1 的 messages.js 与 V2 的 messages.js 逐字一致（自包含的对等守卫）', () => {
@@ -469,7 +460,7 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
       return text.slice(at).replace(/\r\n/g, '\n');
     };
     const v1 = body(readFileSync(join(V1_DIR, 'js/messages.js'), 'utf8'), 'V1 的 messages.js');
-    const v2 = body(readFileSync('public/ui/js/messages.js', 'utf8'), 'V2 的 messages.js');
+    const v2 = body(readFileSync('public/ui_v2/js/messages.js', 'utf8'), 'V2 的 messages.js');
     expect(v1, 'V1 与 V2 的 messages.js 已漂移 —— 改文案时两版都要改').toBe(v2);
   });
 
@@ -479,10 +470,10 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
     // 后者此前没有任何守卫 —— 同一次改名照样能改错，症状是"跳到 404"，比接口前缀更难查。
     // 白名单只有两项，出现第三处就必须先改这里（逼作者说明理由）：
     const ALLOWED = [
-      { id: 'js/api.js', test: /export const PAGE_BASE = ['"]\/ui_old['"]/ },
+      { id: 'js/api.js', test: /export const PAGE_BASE = ['"]\/ui_v1['"]/ },
       {
         id: 'js/next-target.js',
-        test: /u\.pathname === ['"]\/ui_old\/login\.html['"]/,
+        test: /u\.pathname === ['"]\/ui_v1\/login\.html['"]/,
         // 该模块刻意不 import `api.js`（要保住"纯函数、可被测试直接覆盖"，见其文件头），
         // 所以这一处字面量无法引用 PAGE_BASE。
       },
@@ -493,13 +484,13 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
       stripJsComments(readFileSync(join(V1_DIR, id), 'utf8'))
         .split('\n')
         .forEach((line, index) => {
-          if (!/['"`]\/ui_old/.test(line)) return;
+          if (!/['"`]\/ui_v1/.test(line)) return;
           hits += 1;
           if (ALLOWED.some((entry) => entry.id === id && entry.test.test(line))) return;
           offenders.push(`${id}:${index + 1} → ${line.trim()}`);
         });
     }
-    expect(hits, '没扫到任何 /ui_old 字面量（守卫可能失效）').toBeGreaterThan(0);
+    expect(hits, '没扫到任何 /ui_v1 字面量（守卫可能失效）').toBeGreaterThan(0);
     expect(offenders, '挂载点字面量出现在未登记的位置 —— 改名/搬目录时会漏改：').toEqual([]);
   });
 });
@@ -512,7 +503,7 @@ describe('V1 界面（public/ui_old）的接口前缀与两页一致性', () => 
 // V2 那边**有意保留**成组的色阶与成对的 kind-*-soft（政策写在 `tokens-v2.css` 里），
 // 所以这两条只扫 V1：V1 没有"成组保留"的例外，一旦出现死令牌就该删或该用。
 describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈）', () => {
-  const V1_DIR = 'public/ui_old';
+  const V1_DIR = 'public/ui_v1';
 
   function walk(dir: string, ext: string): string[] {
     const out: string[] = [];
@@ -552,7 +543,6 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
       'segmented__item', // 类型 / 仅收藏 / 回收站
       'th-sort', // 表头排序
       'search__clear', // 清空搜索
-      'notice-bar__close', // 顶部提示条关闭
       'toast__action', // 提示条里的「重试」
       'checkbox', // 行选择 / 全选
       'status', // 顶栏「部署信息」（带推送状态那枚胶囊）
@@ -591,13 +581,14 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
     expect(cssText, 'CSS 没有消费 aria-invalid（字段标了错却看不出）').toContain('[aria-invalid="true"]');
   });
 
-  // 默认界面 = V1（`public/ui_old/`），2026-09-18 用户定的定位；V2（`public/ui/app/`）是开发测试版。
-  // 这条定位由**三个入口**共同表达，任何一处漏改都会让人落回另一版：
+  // 默认界面 = V1（`public/ui_v1/`），2026-09-18 用户定的定位；V2（`public/ui_v2/app/`）是开发测试版。
+  // 这条定位由**两个入口**共同表达，任何一处漏改都会让人落回另一版：
   //   ① `GET /` 的浏览器分支（`src/routes/webdav.ts`）直接 302；
-  //   ② `/ui/` 的目录索引壳（`public/ui/index.html`）meta refresh + canonical（给 /ui/ 的书签）；
-  //   ③ 两版界面里的提示条（V1 指 V2，V2 的标记是"开发测试版"）。
-  // 前两处必须指向同一个地址 —— 只翻一处的话，站点根与 /ui/ 会落到两个不同的界面。
-  it('默认界面的入口链一致：GET / 与 /ui/ 的目录索引都指向 V1', () => {
+  //   ② `/ui/` 的跳转壳（`public/ui/index.html`）meta refresh + canonical（给 `/ui/` 的老书签）。
+  // 两处必须指向同一个地址 —— 只翻一处的话，站点根与 `/ui/` 会落到两个不同的界面。
+  // （2026-09-19 前这里还有第三处：两版界面里的提示条。用户要求删掉那一行，整条提示条随之移除，
+  //  见 `docs/ui-rename-v1-v2.md` §4。）
+  it('默认界面的入口链一致：GET / 与 /ui/ 的跳转壳都指向 V1', () => {
     const webdav = readFileSync('src/routes/webdav.ts', 'utf8');
     const rootRedirect = /c\.redirect\('([^']+)', 302\)/.exec(webdav)?.[1] ?? null;
     const stub = readFileSync('public/ui/index.html', 'utf8');
@@ -606,21 +597,21 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
 
     // 空集合会让断言永远为真：先把三处都抽到了钉住
     expect(rootRedirect, '没抽到 GET / 的重定向目标（守卫可能失效）').not.toBeNull();
-    expect(metaRefresh, '没抽到 /ui/ 目录索引的 refresh 目标').not.toBeNull();
+    expect(metaRefresh, '没抽到 /ui/ 跳转壳的 refresh 目标').not.toBeNull();
     expect(canonical, '没抽到 canonical').not.toBeNull();
     expect(
       [metaRefresh, canonical],
-      '站点根与 /ui/ 目录索引必须落到同一个界面（默认界面 = V1）',
+      '站点根与 /ui/ 跳转壳必须落到同一个界面（默认界面 = V1）',
     ).toEqual([rootRedirect, rootRedirect]);
-    expect(rootRedirect).toBe('/ui_old/');
+    expect(rootRedirect).toBe('/ui_v1/');
   });
 
-  // UI_ENABLED=false 必须是**真的关掉**：`/ui_old/*` 若不进 run_worker_first，边缘命中静态资源就
-  // 直接返回，请求根本到不了 Worker，`src/index.ts` 里那段 isArchivePath 的 404 判定永远不执行 ——
+  // UI_ENABLED=false 必须是**真的关掉**：界面前缀若不进 run_worker_first，边缘命中静态资源就
+  // 直接返回，请求根本到不了 Worker，`src/index.ts` 里那段 `isUiAsset` 的 404 判定永远不执行 ——
   // 开关静默失效（V1 从 2026-09-18 起是默认界面，这条就成了承重问题）。
   // 这条守卫是 `docs/ui.md` 里"若哪天有人删掉 run_worker_first，关闭态会静默失效 —— 测试即红"那句话
   // 的兑现：此前**没有任何测试**在读这个配置。
-  it('两个界面挂载点都在 run_worker_first 里（否则 UI_ENABLED 静默失效）', () => {
+  it('三个界面挂载点都在 run_worker_first 里（否则 UI_ENABLED 静默失效）', () => {
     const toml = readFileSync('wrangler.toml', 'utf8');
     const raw = /run_worker_first\s*=\s*\[([^\]]*)\]/.exec(toml)?.[1] ?? null;
     expect(raw, '没抽到 run_worker_first（守卫可能失效）').not.toBeNull();
@@ -628,7 +619,7 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
       .split(',')
       .map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
       .filter((entry) => entry !== '');
-    for (const pattern of ['/ui', '/ui/*', '/ui_old', '/ui_old/*']) {
+    for (const pattern of ['/ui', '/ui/*', '/ui_v1', '/ui_v1/*', '/ui_v2', '/ui_v2/*']) {
       expect(patterns, `run_worker_first 缺少 ${pattern}：那一面的界面开关不会生效`).toContain(pattern);
     }
   });

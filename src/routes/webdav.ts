@@ -24,15 +24,17 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // GET / —— 浏览器访问站点根时引导到 Web UI；其余调用方（含官方客户端的探活）保持原响应。
   // 官方客户端从不 GET 根路径：Test() 与 GetFolderSubList() 都是 PROPFIND（WebDavBase.cs:271/321），
   // 这里的 Accept 判断只是让任何按文本协议探活的脚本行为完全不变。
-  // 界面被关闭时（GitHub 变量 UI_ENABLED=false）不再把人引到不存在的 /ui/，直接返回探活响应。
+  // 界面被关闭时（GitHub 变量 UI_ENABLED=false）不再把人引到不存在的界面，直接返回探活响应。
   //
-  // 跳转目标是 **`/ui_old/`**（2026-09-18 起它是**默认界面**，即 V1 的应用本体），
-  // 不是 `/ui/`：后者是静态资源的目录索引，而它唯一做的事就是再跳一次到同一个地方。
-  // 少一跳，浏览器历史里也少一条记录。
-  // （V2 —— `public/ui/` —— 现在是**开发测试版**，本体仍在 `/ui/app/`，只是不再是默认入口。）
+  // 跳转目标是 **`/ui_v1/`**（V1 是默认界面，2026-09-19 改名后挂在 `/ui_v1/`）—— 少一跳：
+  // `/ui/` 那层壳（老书签的入口）自己也会 meta refresh 到同一个地址，两处必须一致，
+  // 守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
+  // （V2 —— `public/ui_v2/` —— 是**开发测试版**，应用本体在 `/ui_v2/app/`。）
   app.get('/', (c) => {
     const accept = c.req.header('accept') ?? '';
-    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui_old/', 302);
+    // 跳转目标是 **`/ui_v1/`**（V1 是默认界面）。`/ui/` 那层跳转壳也只做同一件事（它的目标是
+    // 同一个地址）—— 两处必须一致，守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
+    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui_v1/', 302);
     return c.text('Server is running.');
   });
 

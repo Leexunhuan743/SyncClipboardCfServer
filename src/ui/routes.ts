@@ -298,7 +298,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // ===== 受保护端点（会话 Cookie 或 Basic）=====
   const guarded = new Hono<{ Bindings: Bindings }>({ strict: false });
   // 作用域必须收窄到 /ui/api/*：写成 '*' 会匹配到 UI 命名空间下的**所有**路径
-  // （中间件先于更晚注册的兜底路由命中），于是未认证访问 /ui/不存在 会得到 401 JSON
+  // （中间件先于更晚注册的兜底路由命中），于是未认证访问 /ui_v2/不存在 会得到 401 JSON
   // 而不是 404 页——实测发现。收窄后守卫只管 API，页面本身是公开的（与登录页一致）。
   guarded.use('/ui/api/*', uiAuthMiddleware());
 
@@ -549,7 +549,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // 它走会话 Cookie 鉴权，DO 侧只校验该 token 已登记且未过期（10 分钟，仅约束「登记后多久
   // 内必须发起连接」；连上后由连接本身维持）。
   //
-  // 前端两条纪律（写在 public/ui/js/signalr.js 里）：① 60 秒内至少发一条消息，否则 DO 的
+  // 前端两条纪律（写在 public/ui_v1/js/signalr.js 里）：① 60 秒内至少发一条消息，否则 DO 的
   // 静默清理会关掉它；② 保留轮询作为降级路径——推送链路任何一段出问题，界面都还能收敛。
   guarded.post('/ui/api/hub-ticket', async (c) => {
     await drainRequestBody(c.req.raw);

@@ -158,7 +158,9 @@ app.use('/ui/api/*', async (c, next) => {
 
 // 全局 Basic Auth（所有端点，含 /api/version、/api/time —— 上游 [Authorize] 类级）
 app.use('*', async (c, next) => {
-  // /ui/* 是本站页面自己的面，鉴权由 src/ui/guard.ts 负责（会话 Cookie 或 Basic）。
+  // 界面三面（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）是本站页面自己的面，鉴权由 src/ui/guard.ts 负责
+  // （会话 Cookie 或 Basic）。注意静态那两面由外层 fetch 直接走了静态资源、根本到不了这里，
+  // 这条跳过真正覆盖的是 `/ui/api/*`（它的守卫在 src/ui/routes.ts）。
   // 若走这里的 Basic-only 中间件，浏览器拿 Cookie 打进来的每个请求都会被 401。
   //
   // 根路径的**浏览器导航**同样放行：否则打开站点会被弹原生凭据框，
@@ -213,43 +215,39 @@ export default {
     const url = new URL(request.url);
 
     // Web 界面开关（GitHub 变量 UI_ENABLED，默认开；判定见 src/uiEnabled.ts）。
-    // 因为 `[assets] run_worker_first = ["/ui", "/ui/*"]`，界面请求会**先进 Worker**：
-    //   - 关着 → 一律 404（页面/资源纯文本、/ui/api/* 用同形 JSON），静态资源也不可达；
-    //   - 开着 → `/ui/api/*` 继续交给下面的 Hono 路由；其余（含裸 `/ui`）转回 `ASSETS.fetch()`，
-    //     行为与"静态资源直接托管"时完全一致 —— 裸 `/ui` 由静态资源回 **307 → `/ui/`**
-    //     （与加 run_worker_first 之前的生产行为一致；注意**不能**把它留给 Hono：`app.all('/ui/*')`
-    //     的兜底 404 会先于 `app.get('/ui')` 命中，见 docs/ui.md 的记录）。
-    const isUiPath = url.pathname === '/ui' || url.pathname.startsWith('/ui/');
-    const isUiApi = url.pathname.startsWith('/ui/api/');
-    // V1（`public/ui_old/`）2026-09-18 起是**默认界面**（V2 降为开发测试版）。
-    // 它与 V2 共用同一个界面开关：关掉界面时**两个**挂载点都必须 404 —— 否则"关掉界面"
-    // 会留下一个仍可访问的界面，那正是这个开关要消除的东西。
-    // ⚠️ 这条分支只在请求**到达 Worker** 时才跑：`wrangler.toml` 的 run_worker_first 必须同时
-    // 覆盖 `/ui_old` 与 `/ui_old/*`，否则边缘命中静态资源就直接返回、开关静默失效
-    // （2026-09-18 补上，此前只有 `/ui` 与 `/ui/*`）。守卫见 test/ui-guard.test.ts。
-    const isArchivePath = url.pathname === '/ui_old' || url.pathname.startsWith('/ui_old/');
-    if (isUiPath && !isUiApi) {
+    // 三个界面挂载点（2026-09-19 改名后）：/ui_v1（V1，默认界面）/ /ui_v2（V2，开发测试版）
+    // /ui（只剩一层跳转壳）。它们**共用**同一个开关 —— 关掉时必须全部 404，否则
+    // "关掉界面"会留下一个仍可访问的界面，那正是这个开关要消除的东西。
+    //
+    // `/ui/api/*` 与界面资源**同前缀但不同族**：它是服务端接口（`src/ui/routes.ts` 的路由），
+    // 必须原样交给下面的 Hono，绝不能被当成界面资源去问静态资源，也不能在关闭态被换成 404 页
+    // （关闭态它返回与 routes.ts 兜底同形的 JSON，见 src/uiEnabled.ts）。
+    const path = url.pathname;
+    const isUiApi = path.startsWith('/ui/api/');
+    const isUiAsset =
+      path === '/ui' ||
+      path.startsWith('/ui/') ||
+      path === '/ui_v1' ||
+      path.startsWith('/ui_v1/') ||
+      path === '/ui_v2' ||
+      path.startsWith('/ui_v2/');
+
+    if (isUiAsset && !isUiApi) {
+      // ⚠️ 这条分支只在请求**到达 Worker** 时才跑：`wrangler.toml` 的 run_worker_first 必须
+      // 覆盖全部三个前缀（含各自的 `/*`），否则边缘命中静态资源就直接返回、开关静默失效
+      // （2026-09-18 曾在 V1 那一面踩到；守卫见 test/ui-guard.test.ts）。
       if (!isUiEnabled(env)) return uiDisabledResponse(false);
-      // 先把请求转给静态资源；**未命中资源（404）时回落到 Hono**，与"静态资源直接托管"时
-      // 平台自身的回落行为一致（`not_found_handling = "none"` ⇒ 平台也会把未命中的 UI 路径交给 Worker，
-      // 于是 `/ui/不存在的路径` 拿到的是 Hono 的 404 页，而不是一张空 404）。
+      // 先把请求转给静态资源；**未命中资源（404）时回落**到那张设计过的 404 页
+      // （与"静态资源直接托管 + not_found_handling=none"时平台的回落行为同形：
+      //  `/ui_v1/不存在的路径` 拿到的是那张页，而不是平台默认的纯文本 404）。
+      // 三面共用这条链是因为它们的形状完全相同 —— 都没有自己的服务端路由。
       const asset = await env.ASSETS.fetch(request);
       if (asset.status !== 404) return asset;
-    } else if (isUiApi && !isUiEnabled(env)) {
-      return uiDisabledResponse(true);
-    } else if (isArchivePath) {
-      // V1 这一面没有自己的服务端路由（接口走与 V2 共用的 `/ui/api/*`），故它只需静态资源；
-      // 但**未命中时也回落到那张设计过的 404 页**（2026-09-18 改口）：V1 现在是默认界面，
-      // 打错一个路径拿到平台默认的纯文本 404 太糙，而 `/ui/*` 那一面早就有这张页了。
-      // 那页的样式来自 `/ui/css/*`（V2 的设计系统）——它是**站点的** 404，不属于任何一版界面，
-      // 为它在两套设计系统里各写一份才是浪费。
-      // 这里**必须**显式再判一次开关：run_worker_first 覆盖之后，页面与资源请求都会先进 Worker，
-      // 关掉界面时它们必须 404（2026-09-18 之前这段话写的是"不在 run_worker_first 里"，
-      // 而那正是开关失效的原因）。
-      if (!isUiEnabled(env)) return uiDisabledResponse(false);
-      const archiveAsset = await env.ASSETS.fetch(request);
-      if (archiveAsset.status !== 404) return archiveAsset;
       return notFoundPage(env);
+    }
+
+    if (isUiApi && !isUiEnabled(env)) {
+      return uiDisabledResponse(true);
     }
 
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）

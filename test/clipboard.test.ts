@@ -11,8 +11,8 @@
 //     写入被拒 → failed + 底层 message；转码失败 → failed + 明确原因
 //   - `writeText`：现代 API 优先，失败退 execCommand，两者都失败才返回 false
 import { describe, expect, it, afterEach } from 'vitest';
-// @ts-expect-error TS7016：`public/ui/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 next-target.test.ts）
-import { isImageName, itemIsImage, writeImage, writeText, canWriteImage } from '../public/ui/js/clipboard.js';
+// @ts-expect-error TS7016：`public/ui_v2/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 next-target.test.ts）
+import { isImageName, itemIsImage, writeImage, writeText, canWriteImage } from '../public/ui_v2/js/clipboard.js';
 
 const g = globalThis as unknown as Record<string, unknown>;
 

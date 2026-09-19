@@ -6,7 +6,7 @@
 //
 // 用法（需 dev server 已启动）：
 //   node test/manual/probe.mjs
-//   node test/manual/probe.mjs --url "/ui/app/?deleted=1"
+//   node test/manual/probe.mjs --url "/ui_v2/app/?deleted=1"
 //
 // 与 shoot.mjs 的关系：两者共用同一套 CDP 起浏览器/登录/注入 Cookie 的做法，
 // 但目的不同 —— shoot 出图（给人看），probe 出值（给断言看）。
@@ -23,7 +23,7 @@ function arg(name, fallback = null) {
 const BASE = arg('base', 'http://127.0.0.1:8787');
 const USER = arg('user', 'admin');
 const PASS = arg('pass', 'admin');
-const URL_PATH = arg('url', '/ui/app/');
+const URL_PATH = arg('url', '/ui_v2/app/');
 const PORT = Number(arg('port', '9341'));
 const WIDTH = Number(arg('width', '1440'));
 const HEIGHT = Number(arg('height', '900'));

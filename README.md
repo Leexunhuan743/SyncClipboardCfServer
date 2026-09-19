@@ -38,7 +38,7 @@ SyncClipboard 客户端支持三类服务端，能力并不相同：
 - **数据完整性校验**：Text / File / Image / Group 四类哈希算法逐字节对齐上游 C# 实现，
   服务端校验上传数据（不符即拒绝），避免坏数据在设备间扩散
 - **保留与清理**：Cron Trigger 定时执行保留期裁剪、条数上限、已删除记录硬删与孤儿对象清理
-- **Web 历史界面**（默认界面 `/ui_old/`；`/ui/` 与站点根都跳到它）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
+- **Web 历史界面**（默认界面 `/ui_v1/`；`/ui_v2/` 与站点根都跳到它）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
   支持时间范围（今天 / 近 7 天 / 近 30 天 / 自定义）、回收站（含恢复）、文本复制、图片预览、
   文件下载、收藏置顶、批量删除与部署信息。
   界面与官方 API 读写同一套数据，写操作走与官方 `PATCH` 相同的实现（含广播与数据清理）。
@@ -83,7 +83,7 @@ flowchart LR
 | **D1**（SQLite） | 历史记录与当前 Profile 元数据 |
 | **R2** | 剪贴板数据文件（`file/` 暂存区 + `history/` 持久区） |
 | **Durable Objects** | SignalR 兼容 Hub：持有 WebSocket 连接、心跳、全员广播 |
-| **静态资源**（`public/ui_old/**` = 默认界面 V1、`public/ui/**` = 开发测试版 V2） | 两个界面都由 Cloudflare 托管，但请求**先进 Worker**（`run_worker_first` 覆盖 `/ui*` 与 `/ui_old*`）——入口据此判断界面开关（`UI_ENABLED`），开着转回 `env.ASSETS.fetch()`，关着一律 404 |
+| **静态资源**（`public/ui_v1/**` = 默认界面 V1、`public/ui_v2/**` = 开发测试版 V2、`public/ui/**` = `/ui/` 的跳转壳） | 三个面都由 Cloudflare 托管，但请求**先进 Worker**（`run_worker_first` 覆盖 `/ui`、`/ui_v1`、`/ui_v2` 及各自的 `/*`）——入口据此判断界面开关（`UI_ENABLED`），开着转回 `env.ASSETS.fetch()`，关着一律 404 |
 
 协议面与界面面**严格分离**：`/api/history/*`、`/SyncClipboard.json`、`/file/*` 是客户端依赖的契约，
 界面只读同一套数据（另开 `/ui/api/*` 表达页大小、排序、选择集等界面需要），写操作与官方 `PATCH`
@@ -95,7 +95,7 @@ flowchart LR
 
 | 类别 | 端点 |
 |---|---|
-| 基础 | `GET /`（浏览器导航会 302 到**默认界面** `/ui_old/`）、`GET /api/version`、`GET /api/time` |
+| 基础 | `GET /`（浏览器导航会 302 到**默认界面** `/ui_v1/`）、`GET /api/version`、`GET /api/time` |
 | WebDAV | `GET`/`PUT /SyncClipboard.json`、`GET`/`HEAD`/`PUT`/`DELETE /file/*`、`PROPFIND`、`MKCOL` |
 | 历史 | `GET /api/history/{profileId}`、`GET /api/history/{profileId}/data`、`POST /api/history`、`POST /api/history/query`、`PATCH /api/history/{type}/{hash}`、`GET /api/history/statistics`、`DELETE /api/history/clear` |
 | 实时 | `/SyncClipboardHub`（negotiate + WebSocket） |
@@ -248,7 +248,7 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 
 | 开关 | `true` / 其它 | `false` |
 |---|---|---|
-| `UI_ENABLED` | 提供 Web 界面：两个挂载点（`/ui_old/` = 默认界面 V1、`/ui/` + `/ui/app/` = 开发测试版 V2）与 `/ui/api/*` 都可用，根路径对浏览器跳转到 `/ui_old/` | **整个界面关闭**：`/ui`、`/ui/*`、`/ui_old`、`/ui_old/*`（含静态资源与 `/ui/api/*`）一律 **404**，根路径返回 `Server is running.`。协议面（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）**完全不受影响** |
+| `UI_ENABLED` | 提供 Web 界面：三个挂载点（`/ui_v1/` = 默认界面 V1、`/ui_v2/` + `/ui_v2/app/` = 开发测试版 V2、`/ui/` = 跳转壳）与 `/ui/api/*` 都可用，根路径对浏览器跳转到 `/ui_v1/` | **整个界面关闭**：`/ui`、`/ui_v2/*`、`/ui_v1`、`/ui_v1/*`（含静态资源与 `/ui/api/*`）一律 **404**，根路径返回 `Server is running.`。协议面（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）**完全不受影响** |
 | `ENFORCE_STRONG_CREDENTIALS` | 命中弱口令（文档化默认值 / 过短）时**所有通道 fail-closed**（500） | 只警告：响应头带 `x-credential-warning: weak` 并打一条 `[security]` 日志，服务照常 |
 
 > `MAX_SAVED_HISTORY_COUNT` / `HISTORY_RETENTION_MINUTES` 直接换数字即可；上限分别是 1000000 条与
@@ -322,7 +322,7 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 
 ## Web 界面
 
-部署完成后，浏览器打开 Worker 地址（根路径会自动跳到**默认界面** `/ui_old/`），用与客户端相同的
+部署完成后，浏览器打开 Worker 地址（根路径会自动跳到**默认界面** `/ui_v1/`），用与客户端相同的
 `USERNAME` / `PASSWORD` 登录，即可：
 
 - 按类型 / 收藏筛选，**按时间范围筛选**（今天 / 近 7 天 / 近 30 天 / 自定义起止日期），全文搜索，
@@ -335,8 +335,8 @@ Settings → Secrets and variables → Actions → Variables → New repository 
   写操作走与官方 `PATCH` 相同的实现，客户端会同步收到变更广播
 - **实时更新**：页面可见时与 Hub 建立 WebSocket（用短期票据换连接，票据 10 分钟内可复用），别的设备一同步这边立刻可见；
   连接不可用时自动回落到轮询（10 秒），轮询始终保留为兜底
-- **记录级深链接**：`/ui_old/#Text-<hash>`（默认界面）打开即预览该条，链接可直接分享/收藏；
-  `/ui/#Text-<hash>` 这种入口写法也行 —— 那个跳转页会把 fragment 一起带过去
+- **记录级深链接**：`/ui_v1/#Text-<hash>`（默认界面）打开即预览该条，链接可直接分享/收藏；
+  `/ui_v2/#Text-<hash>` 这种入口写法也行 —— 那个跳转页会把 fragment 一起带过去
 - **维护面板**（部署信息对话框内）：清理任务的运行状态与失败信息、数据完整性自检
   （找出「记录说有数据、存储里却没有对象」的条目）、保留策略在线调整（0 = 关闭该阶段）、清空全部历史；
   「清空回收站」在**回收站视图**的选择条上（那里才看得到要清的东西）
@@ -409,7 +409,7 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 | 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
 | 清理可观测 | 清理按预算分阶段执行、游标续跑、失败写入 `cleanup:lastError`（`/ui/api/info` 可读） | `src/cleanup.ts` |
 | 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` / `src/requestLimits.ts` |
-| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的 `no-cache, must-revalidate`（无指纹 ⇒ **每次都会回源验证**，不存在"新旧混用窗口"；只有图标/manifest 走长缓存 + `stale-while-revalidate`）。Worker 自出的 `/ui/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
+| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的 `no-cache, must-revalidate`（无指纹 ⇒ **每次都会回源验证**，不存在"新旧混用窗口"；只有图标/manifest 走长缓存 + `stale-while-revalidate`）。Worker 自出的 `/ui_v2/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
 
 > **部署前必做**：`USERNAME` / `PASSWORD` 必须是**高熵随机值**。默认/占位口令 + 公开的 `*.workers.dev` 等于把全部剪贴板历史与附件
 > 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
@@ -462,7 +462,7 @@ src/
 ├── routes/             webdav.ts / history.ts
 ├── ui/                 Web 界面的服务端面：session / guard / query / routes / maintenance / notFound
 └── durable/            SyncClipboardHub.ts（Hub）+ signalr.ts（协议编解码）
-public/                 静态资源：robots.txt + _headers + ui_old/（默认界面 V1）+ ui/（开发测试版 V2）
+public/                 静态资源：robots.txt + _headers + ui_v1/（默认界面 V1）+ ui_v2/（开发测试版 V2）+ ui/（/ui/ 的跳转壳）
                         文件清单以 docs/ui.md §3 为准（避免四处各列一份、加文件时漏更新）
 test/                   全部 22 个套件 + live-signalr.mjs（线上验证脚本）
 tools/                  ab-upstream-probe.ps1（与**官方服务端发布件**逐条 A/B 对照的探针/守卫）
@@ -495,6 +495,8 @@ schema.sql              D1 建表语句
 | [docs/AUDIT-commit-9b4cdca.md](docs/AUDIT-commit-9b4cdca.md) | 单次提交审核报告（`9b4cdca`）：逐行读 diff + 交叉核对服务端实现 + 跑本地质量门后的结论与整改项 |
 | [docs/AUDIT-missing-states.md](docs/AUDIT-missing-states.md) | 前端审计报告（**缺失状态 / 不可达展示**）：与"找冗余"相反方向的判据，覆盖两版共约 18,000 行；含文档担保类失准与复核中剔除的结论 |
 | [docs/AUDIT-v1-v2-divergence.md](docs/AUDIT-v1-v2-divergence.md) | 前端审计报告（第二轮：**两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约**）：含"V1 修过、V2 仍有"的定向核对表，以及安全面"无可举证注入缺陷"的逐项结论 |
+| [docs/AUDIT-v1-v2-drift-2026-09-19.md](docs/AUDIT-v1-v2-drift-2026-09-19.md) | 前端走读报告（第三轮：**跨版漂移与遗留缺陷**，F1–F8）：含子代理逐条复核结论与实施记录 |
+| [docs/ui-rename-v1-v2.md](docs/ui-rename-v1-v2.md) | 界面改名与提示条移除的**操作记录**（2026-09-19）：三个挂载点的取舍、为什么不是一把 `sed`、踩到的六个坑、验证结果与未做项 |
 
 ## 许可证
 

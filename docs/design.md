@@ -52,8 +52,8 @@
 | D13 | 界面会话用**无状态签名 Cookie**（HMAC-SHA256，密钥由 `PASSWORD` 经 HKDF 派生） | Workers 没有可靠的进程内状态，服务端会话表会让每次页面请求多一次写库；签名 Cookie 零存储、可水平扩展，且改密码即让全部会话失效 | 已定（2026-09-13） |
 | D14 | `motion-web` 技能的取用**限于设计系统与打磨层**，不走它的页面蓝图路径 | 该技能自述范围是创意/营销页并明确排除 dashboard/admin UI，而本界面正落在排除侧。取用其令牌层、组件方言与状态矩阵、生产打磨与动效令牌；不生成 hero/分节文案/编造指标 | 已定（2026-09-13） |
 | D15 | **不实现 `/dav` 前缀别名**（另一个实现 `clipserver` 的端点前缀） | 本项目 WebDAV 端点在站点根，`PROPFIND` 的 `href` 从根计算。让前缀可用必须改写协议输出（href 前缀），为一个迁移便利碰协议保真不值得；迁移只需把客户端地址改成站点根（界面「部署信息」直接给出可复制地址） | 已定（2026-09-13） |
-| D16 | **界面是可关闭的**：`UI_ENABLED`（GitHub 仓库变量，默认开）关闭后 `/ui` 与 `/ui/api/*` 一律 404，根路径不再跳转；协议面不受影响。实现上必须让界面请求**先进 Worker**（`[assets] binding = "ASSETS"` + `run_worker_first`），否则平台在 Worker 之前就把静态资源托管掉了，开关无从生效 | 只想要"纯协议后端"的使用者（把服务端给别人的场景、不想暴露登录页）应当能一键关掉界面，而不是去改仓库或删资源。**不改协议面**是这个开关的硬边界：官方客户端不碰 `/ui/*`，因此开关对客户端零影响 | 已定（2026-09-15） |
-| D17 (界面定位) | **默认界面 = V1**（`public/ui_old/`，挂载点 `/ui_old/`）；站点根 `GET /` 的浏览器分支与 `/ui/` 的目录索引都指向它。V2（`public/ui/`，本体 `/ui/app/`）降为**开发测试版**，进去后顶栏版本号与登录页副标题都标着"开发测试版" | 用户 2026-09-18 的定位：V1 经过 2026-09-17～18 的多轮完善（密度、移动端、对比度、状态矩阵、按下反馈）后功能与质量都更完整，而 V2 是零构建方案的实验场（新的模块划分、状态矩阵、探针都先在那边试）。**物理目录名不动**：V1 的资源前缀是写死的 `/ui_old/*`，把它搬到 `/ui/` 要同时改写全部前缀，而 2026-09-15 的改名事故已经付过一次学费 —— 变的只是入口 | 已定（2026-09-18，提交 `f114242`） |
+| D16 | **界面是可关闭的**：`UI_ENABLED`（GitHub 仓库变量，默认开）关闭后 `/ui` 与 `/ui/api/*` 一律 404，根路径不再跳转；协议面不受影响。实现上必须让界面请求**先进 Worker**（`[assets] binding = "ASSETS"` + `run_worker_first`），否则平台在 Worker 之前就把静态资源托管掉了，开关无从生效 | 只想要"纯协议后端"的使用者（把服务端给别人的场景、不想暴露登录页）应当能一键关掉界面，而不是去改仓库或删资源。**不改协议面**是这个开关的硬边界：官方客户端不碰 `/ui_v2/*`，因此开关对客户端零影响 | 已定（2026-09-15） |
+| D17 (界面定位) | **默认界面 = V1**（`public/ui_v1/`，挂载点 `/ui_v1/`）；站点根 `GET /` 的浏览器分支与 `/ui_v2/` 的目录索引都指向它。V2（`public/ui_v2/`，本体 `/ui_v2/app/`）降为**开发测试版**，进去后顶栏版本号与登录页副标题都标着"开发测试版" | 用户 2026-09-18 的定位：V1 经过 2026-09-17～18 的多轮完善（密度、移动端、对比度、状态矩阵、按下反馈）后功能与质量都更完整，而 V2 是零构建方案的实验场（新的模块划分、状态矩阵、探针都先在那边试）。**物理目录名不动**：V1 的资源前缀是写死的 `/ui_v1/*`，把它搬到 `/ui_v2/` 要同时改写全部前缀，而 2026-09-15 的改名事故已经付过一次学费 —— 变的只是入口 | 已定（2026-09-18，提交 `f114242`） |
 | D17 (请求体上限) | **请求体上限默认 48 MiB、可调到 64 MiB**；并且**不用两个独立上限**，而是"合计工作集预算 96 MiB + 随请求体动态收缩的 zip 解压预算"（`src/requestLimits.ts`、`src/hash.ts` 的 `groupZipDecompressionCap`） | isolate 内存 128 MiB 被**所有并发请求共享**，而 Group 上传时"压缩体 + 解压内容"同时占内存 ⇒ 两个上限各自贴顶会变成 48+64 甚至 80+64，直接顶穿 isolate（OOM 会让并发中的其他请求一起 503，比 413 严重得多）。默认值贴"实际会发生的大小"（客户端默认 20 MB、线上最大 29.0 MiB），上限贴"能承受的极限"。完整推导见 §7.1。注：历史提交中该决策与上述「界面定位」同获编号 D17，两者按主题并立 | 已定（2026-09-15；沿革 32 → 64 → 48） |
 | D18 | **推送后不等 CI**（2026-09-18 用户要求）：`git push` 成功即**结束这一轮**。**禁止** `gh run watch`、`gh run watch --exit-status` 以及任何"轮询到跑完为止"的等待；要确认它有没有起跑，最多允许**一次**非阻塞快照 `gh run list --limit 1` | 本仓库的质量门在**本地**：D10 的协议级套件 + `npm run check`，且 D11 已规定"推送前跑全量套件且用真门禁"。CI 是**兜底**，不是我的判据；而 `deploy` 作业还要真的部署到 Cloudflare，一趟 2–3 分钟 —— 阻塞等待只是把用户晾在对话里，等一个与本轮结论无关的状态。跑失败不会丢：GitHub 自己会通知，下一次改动也会撞见 | 已定（2026-09-18） |
 
@@ -122,14 +122,14 @@ SyncClipboardCfServer/
 ├── public/                     # 静态资源（由 Cloudflare 托管，run_worker_first 优先进 Worker 以支持 UI_ENABLED 开关）
 │   ├── robots.txt              # 必须放站点根（爬虫只读根路径）
 │   ├── _headers                # 响应头：CSP/安全头 + js/css 的短 TTL 与 stale-while-revalidate
-│   ├── ui_old/                 # 默认界面 V1（2026-09-18 起接手默认入口 /ui_old/；详见其 README.md）
+│   ├── ui_v1/                 # 默认界面 V1（2026-09-18 起接手默认入口 /ui_v1/；详见其 README.md）
 │   │   ├── index.html / login.html / manifest.webmanifest
 │   │   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
 │   │   ├── css/                # tokens / base / layout / components / motion / auth / archive
 │   │   └── js/                 # api / clipboard / dom / filters / format / icons / latest / login / main / messages / next-target / signalr / store / theme-init
 │   │       └── components/     # confirm / header / info / list / pagination / preview / row-content / stats / toast / toolbar
 │   └── ui/                     # 开发测试版 V2（挂载在 /ui/app/；详见 docs/ui-v2-design.md）
-│       ├── index.html          # 跳转页（重定向到 /ui_old/）
+│       ├── index.html          # 跳转页（重定向到 /ui_v1/）
 │       ├── app/                # V2 应用本体（index.html / login.html）
 │       ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
 │       └── js/                 # api / boot / clipboard / dom / filters / focus / format / icons / keys / latest / login / menus / messages / next-target / paths / push / redirect-hash / spark / state / theme / theme-init / ui/*
@@ -140,7 +140,7 @@ SyncClipboardCfServer/
 │   ├── rateLimit.ts            # 认证失败限速：isolate 内存快路径 + DO 权威计数（F7）
 │   ├── requestLimits.ts        # 请求体上限与 loopback 判定（F8/HSTS 与 F9 共用）
 │   ├── pathCase.ts             # 协议路径**字面段**大小写归一（对齐 ASP.NET 路由；2026-09-15 A/B 后补救）
-│   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时两个挂载点（/ui*、/ui_old*）全 404、根路径不跳转
+│   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时两个挂载点（/ui*、/ui_v1*）全 404、根路径不跳转
 │   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
 │   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间与体积口径转换
 │   ├── hash.ts                 # Text / File / Image / Group 哈希（协议级精确复刻）
@@ -162,7 +162,7 @@ SyncClipboardCfServer/
 │   │   ├── query.ts            # 列表查询层：参数解析、白名单排序、截断、变更信号
 │   │   ├── routes.ts           # /ui/api/* 路由装配
 │   │   ├── maintenance.ts      # 后台维护与自检：完整性自检 GET /ui/api/integrity 与在线保留策略 PUT /ui/api/settings
-│   │   └── notFound.ts         # /ui/* 与 /ui_old/* 的 404 页
+│   │   └── notFound.ts         # /ui/* 与 /ui_v1/* 的 404 页
 │   └── durable/
 │       ├── SyncClipboardHub.ts # Durable Object：WS/SSE/长轮询三传输 + 广播 + 心跳
 │       └── signalr.ts          # SignalR JSON 协议消息编解码
@@ -468,12 +468,12 @@ npm run deploy
 # 6.（可选）自定义域名：wrangler.toml 增加 routes 或 Cloudflare 控制台绑定
 ```
 
-部署会一并上传 `public/**`（`[assets]`）：`/ui/*` 由 Cloudflare 静态资源直接托管、不经过 Worker，
+部署会一并上传 `public/**`（`[assets]`）：`/ui_v2/*` 由 Cloudflare 静态资源直接托管、不经过 Worker，
 其余路径（含全部协议端点）回落给 Worker。因此**部署必须在仓库根执行**，且 `public/` 不能缺失——
 少了它 wrangler 会直接报 `assets.directory does not exist`。
 
-部署完成后浏览器打开站点根即可进入 Web 界面（`GET /` 对浏览器导航 302 到 `/ui_old/`，
-即默认界面 V1；`/ui/` 的目录索引同样指向它 —— 两处必须一致，守卫见 `test/ui-guard.test.ts`），
+部署完成后浏览器打开站点根即可进入 Web 界面（`GET /` 对浏览器导航 302 到 `/ui_v1/`，
+即默认界面 V1；`/ui_v2/` 的目录索引同样指向它 —— 两处必须一致，守卫见 `test/ui-guard.test.ts`），
 用与客户端相同的 `USERNAME` / `PASSWORD` 登录。界面的能力与边界见 [`docs/ui.md`](ui.md)。
 
 本地开发：`npm run dev`（miniflare 模拟 D1/R2/DO；本地 D1 用 `wrangler d1 execute --local` 初始化 schema）。
@@ -517,7 +517,7 @@ SearchText 按字节限长）、`clipboard`（前端剪贴板写入的判别结�
 SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历史 UI 与增量同步直接依赖它们，
 而此前只测了「非法值 → 400」。
 
-`clipboard` 覆盖 `public/ui/js/clipboard.js` 的**判别结果**（此前只在浏览器里手工验过）：位图扩展名判定
+`clipboard` 覆盖 `public/ui_v2/js/clipboard.js` 的**判别结果**（此前只在浏览器里手工验过）：位图扩展名判定
 （不含 svg）、PNG 直写 / 非 PNG 转码、以及 `unsupported` / `failed(+底层原因)` / 降级到 `execCommand`
 三条分支——headless 环境拒绝 `clipboard.write`，成功路径只能这样钉住。
 

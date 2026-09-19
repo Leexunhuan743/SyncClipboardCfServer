@@ -5,34 +5,34 @@
 // 两者都是协议相对 URL——F3 的原始缺陷就是只挡了前者）、跨源绝对 URL、非 http(s) scheme、空值。
 import { describe, it, expect } from 'vitest';
 
-// `public/ui/**` 是零构建的原生 ES 模块：不在 tsconfig 的 include 里，也没有 .d.ts，
+// `public/ui_v2/**` 是零构建的原生 ES 模块：不在 tsconfig 的 include 里，也没有 .d.ts，
 // 于是 tsc 把这个静态 import 判成 TS7016（模块视为 any）。这是有意的取舍——
 // 前端保持无构建，本模块的契约改由下面的用例逐条验证（错误路径比 any 更能说明问题）。
 // 若将来 tsconfig 打开 allowJs，这行 directive 会变成「未使用」而报错，正好提示可以删掉。
 // @ts-expect-error TS7016：见上
-import { resolveNext } from '../public/ui/js/next-target.js';
+import { resolveNext } from '../public/ui_v2/js/next-target.js';
 
 const ORIGIN = 'https://syncclipboard.example';
 
-// V2：应用本体在 `/ui/app/`，所以调用方传的 fallback 与登录页自身路径都是它。
+// V2：应用本体在 `/ui_v2/app/`，所以调用方传的 fallback 与登录页自身路径都是它。
 // 本套件因此**显式传 fallback**，而不是依赖默认值 —— 默认值属于调用方的选择，
 // 而这里要测的是判定逻辑本身。`LOGIN` 是登录页自己的路径：它必须被判成"回落到默认页"，
 // 否则登录成功后会再次落到登录页（死循环）。
-const APP = '/ui/app/';
-const LOGIN = '/ui/app/login.html';
+const APP = '/ui_v2/app/';
+const LOGIN = '/ui_v2/app/login.html';
 
 /** 与 login.js 的调用形态一致：显式传站内默认页。 */
 const resolve = (raw: string | null | undefined) => resolveNext(raw, ORIGIN, APP);
 
 describe('resolveNext', () => {
   it('站内路径原样返回（含查询与片段）', () => {
-    expect(resolve('/ui/app/?x=1')).toBe('/ui/app/?x=1');
+    expect(resolve('/ui_v2/app/?x=1')).toBe('/ui_v2/app/?x=1');
     expect(resolve('/')).toBe('/');
-    expect(resolve('/ui/app/?page=2#top')).toBe('/ui/app/?page=2#top');
+    expect(resolve('/ui_v2/app/?page=2#top')).toBe('/ui_v2/app/?page=2#top');
   });
 
   it('同源绝对 URL 只取路径部分（不带 origin 漏出）', () => {
-    expect(resolve(`${ORIGIN}/ui/app/?x=1`)).toBe('/ui/app/?x=1');
+    expect(resolve(`${ORIGIN}/ui_v2/app/?x=1`)).toBe('/ui_v2/app/?x=1');
   });
 
   // 这一组断言的是**安全边界**：拒绝时回落到站内默认页，而不是把外源字符串带出去。
@@ -47,7 +47,7 @@ describe('resolveNext', () => {
 
   it('跨源绝对 URL 被拒（含同主机不同协议）', () => {
     expect(resolve('https://evil.example')).toBe(APP);
-    expect(resolve('http://syncclipboard.example/ui/app/')).toBe(APP);
+    expect(resolve('http://syncclipboard.example/ui_v2/app/')).toBe(APP);
   });
 
   it('非 http(s) scheme 被拒', () => {
@@ -64,7 +64,7 @@ describe('resolveNext', () => {
     expect(resolve(LOGIN)).toBe(APP);
   });
 
-  it('不传 fallback 时用内置默认值（`/ui/app/`）', () => {
+  it('不传 fallback 时用内置默认值（`/ui_v2/app/`）', () => {
     expect(resolveNext('//evil.example', ORIGIN)).toBe(APP);
     expect(resolveNext(null, ORIGIN)).toBe(APP);
   });

@@ -127,8 +127,8 @@ function createEnv(
     DB: {} as never,
     R2: {} as never,
     HUB: { idFromName: (name: string) => name, get: () => hub } as never,
-    // 静态资源绑定：本套件打的全是协议路径与 /ui/api/*，界面那只走 /ui/ 非 api 前缀，
-    // 因此这里永远不该被调用 —— 一旦被调用就说明路由判据被改坏了，让它显式失败而不是静默通过。
+    // 静态资源绑定：本套件打的全是协议路径与 /ui/api/*，界面那三面（/ui、/ui_v1、/ui_v2）走的是
+    // 静态资源前缀，因此这里永远不该被调用 —— 一旦被调用就说明路由判据被改坏了，让它显式失败而不是静默通过。
     ASSETS: {
       fetch: () => {
         throw new Error('本套件不该访问静态资源（UI_ENABLED 门控/路由前缀判据变了？）');

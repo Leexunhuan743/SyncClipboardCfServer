@@ -13,7 +13,7 @@
 > 平台事实（免费档额度等）单独标注外链来源，不与仓库内证据混同。
 >
 > ⚠️ **那些路径今天可能指不到文件**：本文件是 `509bdef` 那一刻的快照，而 V2 在 2026-09-16
-> 重构过目录（`public/ui/js/components/*` → `public/ui/js/ui/*`，`signalr.js` → `push.js`）。
+> 重构过目录（`public/ui_v2/js/components/*` → `public/ui_v2/js/ui/*`，`signalr.js` → `push.js`）。
 > §1–§3 里引用的 V2 路径**按快照保留原样**（改了就篡改历史），要看现状请用 §8 的落地位置表
 > 或 `docs/ui-v2-design.md` 的文件树。
 >
@@ -50,11 +50,11 @@
 | # | 能力 | 证据 | 影响 / 备注 |
 |---|---|---|---|
 | 1.1 | **清理状态没有界面** | 服务端 `/ui/api/info` 已返回 `cleanup:{lastRunAt,lastError,cursors}`（`src/ui/routes.ts:309`、`:340`；键契约在 `src/cleanup.ts` 的 Meta 键清单） | 「清理在跑吗 / 上轮失败了吗 / 有没有积压」这个为 F11 专门建的可观测面**当前无人消费**（`components/info.js` 只渲染地址、版本、传输、保留、体积、类型计数）。**建议第一个做** |
-| 1.2 | **`pinned`（置顶）无写入入口** | 协议 `PATCH` 支持 `pinned`；列表已渲染「置顶」徽标（`public/ui/js/components/list.js:86`），但界面无任何地方能设置 | 服务端语义上 `stared` 与 `pinned` **同样豁免保留期与条数裁剪**（`src/db.ts` 的 `softDeleteExpiredRecords` / `trimToMaxCount` 两条 SQL 都带 `Stared = 0 AND Pinned = 0`）。用户在客户端置顶的记录，界面看得到、改不了 |
+| 1.2 | **`pinned`（置顶）无写入入口** | 协议 `PATCH` 支持 `pinned`；列表已渲染「置顶」徽标（`public/ui_v2/js/components/list.js:86`），但界面无任何地方能设置 | 服务端语义上 `stared` 与 `pinned` **同样豁免保留期与条数裁剪**（`src/db.ts` 的 `softDeleteExpiredRecords` / `trimToMaxCount` 两条 SQL 都带 `Stared = 0 AND Pinned = 0`）。用户在客户端置顶的记录，界面看得到、改不了 |
 | 1.3 | **批量操作只有删除** | 仅 `POST /ui/api/history/batch-delete`（`src/ui/routes.ts:230`） | 回收站里逐条点「恢复」、收藏逐条点。批量写端点的形状已有，可照抄；「批量恢复」在 `docs/progress.md` §34.7 已记为未做 |
 | 1.4 | **排序 6 字段只有 3 个可点** | 白名单 `SORT_COLUMNS` 有 `id/type/size/createTime/lastModified/lastAccessed`（`src/ui/query.ts:62`），表头只给 类型 / 大小 / 时间（`list.js:254-257`） | `lastModified` / `lastAccessed` / `id` 只能手改 URL 才用得上 |
 | 1.5 | **`pageSize` 两套上限** | 服务端 ≤ 500（`src/ui/query.ts:59`），下拉只有 20/50/100/200（`filters.js:25`） | URL 写 `pageSize=500` 能工作，但 `<select>` 会落到空选，读起来像缺陷 |
-| 1.6 | **`PATCH` 响应体被丢弃** | `api.patch` 返回归一化后的条目（`public/ui/js/api.js:92`），调用点只当作成功信号（`main.js:292/322/342`） | 服务端算出的 `version` / `lastModified` 未被采纳。当前无害；将来做并发冲突提示时需要 |
+| 1.6 | **`PATCH` 响应体被丢弃** | `api.patch` 返回归一化后的条目（`public/ui_v2/js/api.js:92`），调用点只当作成功信号（`main.js:292/322/342`） | 服务端算出的 `version` / `lastModified` 未被采纳。当前无害；将来做并发冲突提示时需要 |
 | 1.7 | **「清空全部」协议有、界面无** | `DELETE /api/history/clear`（`src/routes/history.ts:331-336`） | 且它**不广播**（只有删行 + 删目录 + 返回计数）。界面要接此功能须先补广播——**该判断已被 §7.5 订正**：不补广播，界面靠 `/ui/api/poll` 的变更标记收敛；本轮已接界面（见 §8） |
 | 1.8 | **`/api/time` 本站界面未使用** | 协议端点存在（`src/index.ts:185`；覆盖率见 `docs/progress.md` §11）；**官方客户端会调用它**做时钟差检查（`docs/protocol.md:430`），本仓库前端零命中 | 客户端会因服务端与本机**时钟差 > 5 分钟而中止历史同步**。端点本身有真实消费者，缺的只是**界面展示**：显示服务端时间/偏移能把这类「同步不动」的根因提前暴露（一次 fetch + 一行文案） |
 
@@ -62,7 +62,7 @@
 
 | # | 能力 | 设计要点 | 成本 / 风险 |
 |---|---|---|---|
-| 2.1 | **真推送替代 10 s 轮询** | 每开一个界面标签 ≈ **8.6 k 请求/天**（`README.md` 容量提示已记）。做法：Worker 侧新增 `/ui/api/hub-ticket`（会话 Cookie 鉴权）→ 调 DO 的 `/register-token`（该分支在鉴权**之前**、外部不可达：`src/durable/SyncClipboardHub.ts:144-152`；Worker 只转发 negotiate 与 Hub 路径，`src/index.ts:192/209-210`）→ 浏览器 `new WebSocket('/SyncClipboardHub?id=<ticket>')`（DO 从 query `id` 读票据，`:596-600`） | 中。**「DO 类不用改」成立**：`hubStub`（`src/hub.ts:32`）与 `REGISTER_TOKEN_PATH`（`:7`）**都已导出**，Worker 侧只需新增一个端点：生成随机串 → `hubStub(env).fetch('https://hub' + REGISTER_TOKEN_PATH, {method:'POST', body: JSON.stringify({token})})`（DO 侧该分支只校验 `token` 非空字符串，见 `SyncClipboardHub.ts:144-152`）。但仍有三条真前置：① 浏览器侧要**自己实现 SignalR 分帧**（`\x1e` 分隔、握手、类型 6 心跳，见 `src/durable/signalr.ts`），且**必须 < 60 s 主动发一次消息**，否则被 DO 的静默清理关掉（`IDLE_TIMEOUT_MS = 60_000`，`:43` / `:204-205` / `:547-557`）——`public/ui/js` 目前零 SignalR 代码；② 票据是 **10 分钟有效的可复用 bearer**（`TOKEN_TTL_MS`，`:40`；鉴权成功路径只读不删），**不是一次性**，且连接建立后不再复检；③ 想要「一次性票据」或「用 WS Hibernation 避免 DO 常驻计费」都属 **DO 侧改动**（前者要在鉴权成功时删 `tok:` 键，后者要改用 `state.acceptWebSocket`），那时本结论不成立。另：现状连接存在内存 Map、无 `acceptWebSocket`，**一个开着的标签会让 DO 常驻并计入 duration 计费**。`docs/ui.md` §6 那一行给出的理由是「需要给 DO 的鉴权加一条 Cookie 通道，即改动协议侧代码」——**这条理由已过时**（票据走 DO 内路径、`hubStub` 已导出），剩下的是纯计费/收益权衡，立项时应连同该行一起更新 |
+| 2.1 | **真推送替代 10 s 轮询** | 每开一个界面标签 ≈ **8.6 k 请求/天**（`README.md` 容量提示已记）。做法：Worker 侧新增 `/ui/api/hub-ticket`（会话 Cookie 鉴权）→ 调 DO 的 `/register-token`（该分支在鉴权**之前**、外部不可达：`src/durable/SyncClipboardHub.ts:144-152`；Worker 只转发 negotiate 与 Hub 路径，`src/index.ts:192/209-210`）→ 浏览器 `new WebSocket('/SyncClipboardHub?id=<ticket>')`（DO 从 query `id` 读票据，`:596-600`） | 中。**「DO 类不用改」成立**：`hubStub`（`src/hub.ts:32`）与 `REGISTER_TOKEN_PATH`（`:7`）**都已导出**，Worker 侧只需新增一个端点：生成随机串 → `hubStub(env).fetch('https://hub' + REGISTER_TOKEN_PATH, {method:'POST', body: JSON.stringify({token})})`（DO 侧该分支只校验 `token` 非空字符串，见 `SyncClipboardHub.ts:144-152`）。但仍有三条真前置：① 浏览器侧要**自己实现 SignalR 分帧**（`\x1e` 分隔、握手、类型 6 心跳，见 `src/durable/signalr.ts`），且**必须 < 60 s 主动发一次消息**，否则被 DO 的静默清理关掉（`IDLE_TIMEOUT_MS = 60_000`，`:43` / `:204-205` / `:547-557`）——`public/ui_v2/js` 目前零 SignalR 代码；② 票据是 **10 分钟有效的可复用 bearer**（`TOKEN_TTL_MS`，`:40`；鉴权成功路径只读不删），**不是一次性**，且连接建立后不再复检；③ 想要「一次性票据」或「用 WS Hibernation 避免 DO 常驻计费」都属 **DO 侧改动**（前者要在鉴权成功时删 `tok:` 键，后者要改用 `state.acceptWebSocket`），那时本结论不成立。另：现状连接存在内存 Map、无 `acceptWebSocket`，**一个开着的标签会让 DO 常驻并计入 duration 计费**。`docs/ui.md` §6 那一行给出的理由是「需要给 DO 的鉴权加一条 Cookie 通道，即改动协议侧代码」——**这条理由已过时**（票据走 DO 内路径、`hubStub` 已导出），剩下的是纯计费/收益权衡，立项时应连同该行一起更新 |
 | 2.2 | **会话可撤销（登出所有设备）** | 现状：登出只清本机 Cookie，已签发的令牌在 24 h 内仍然有效（载荷只有 `{u,exp}`，`src/ui/session.ts:20-23`）；既有兜底通道是**改口令即让全部会话失效**（ADR D13，`docs/design.md:52`）。补法：Meta 存全局单调 `sessionEpoch`，Cookie 带 epoch，读取时比对 | 低-中。**代价要如实写**：验签现在是**零 I/O**（`session.ts:125-158` 只做 HMAC 校验），加 epoch 后**每个受守卫请求多一次 D1 读**（`src/ui/guard.ts:36-49`）；用 isolate 内存缓存只能**摊薄**（每 isolate 每 TTL 一次），低流量下可能退化为每请求一次，且撤销是**跨 isolate 的最终一致**——无法主动失效其它 isolate 的缓存，最坏滞后 = TTL。**这不属于 D13 的既有边界**（D13 的论据正是「零存储、不必每次请求读库」），应**新增一条 ADR**（如 D16）记录该取舍，而不是宣称「不违反 D13」。反向教训值得一并读：session 密钥曾按 isolate 缓存，导致改口令后旧会话在缓存存活期内仍被接受（G1，`session.ts:25-33`），该窗口被刻意消除——epoch 的陈旧窗口是功能本身，只能收敛不能消除 |
 | 2.3 | **Range / 206（只给 UI 数据端点）** | 三个路由都不处理 `Range`（实测：仅命中 `src/routes/history.ts:89` 的一句文案）；数据端点在 `src/ui/routes.ts:158-187`，`src/contentTypes.ts:84-98` 只设 content-type / nosniff / content-length。R2 `get(key,{range})` 支持（`src/storage.ts:85` 直接透传） | 低。**范围必须收窄到 `/ui/api/history/:type/:hash/data`**：`/file/{name}`（`src/routes/webdav.ts`）与 `/api/history/{id}/data`（`src/routes/history.ts:203`）忽略 Range 是**对齐上游的有意行为**（上游 `File(bytes,…)` 的 `EnableRangeProcessing` 默认 false，F29b 已记录在案），`test/fix-regressions.test.ts:674-675` 正是断言「Range 被忽略」——给协议侧加 206 会变成新的有意偏离，必须同时改该测试与 `docs/protocol.md` 的差异表。实现含 `accept-ranges`、`content-range`、多段/非法 Range 回退 200 |
 | 2.4 | **数据完整性自检** | 「`hasData = true` 但 R2 对象不存在」的记录清单——线上真发生过（`docs/progress.md` §26 记 **12 条**；§22 记的是 27 条「数据被误删」记录的**恢复路径**，不是缺数据条数） | 中。**不要按「逐条 HEAD」实现**：免费档的**内部服务**子请求上限是 **1 000/次调用**（Cloudflare limits：`Subrequests per invocation` 为 50，`Subrequests to internal services` 为 1 000，D1/R2/DO binding 都算后者；仓库正是按这条设预算，见 `src/cleanup.ts:26-31`「Free 计划上限 1,000/Cron，取 800 留 20% 余量」）——逐条 HEAD 1009 条 ≈ 1009 次内部子请求，**一次调用就触顶**。仓库已有更便宜的两半：R2 列举（`src/storage.ts:100-113`，1000 键/页）与 DB 侧期望目录集合（`src/db.ts:427-433`）——**求差即得清单**，只对差集里的嫌疑对象逐条 HEAD。若折进 cleanup，必须走既有预算纪律：`SUBREQUEST_BUDGET = 800`（`src/cleanup.ts:28`）+ 阶段保底 `PHASE_RESERVE`（`:65-72`，F11 教训） |
@@ -70,7 +70,7 @@
 | 2.6 | **存储/条数趋势** | 复用现有 Cron（`wrangler.toml:40`，**每小时**一次） | 低→中。三个隐含成本：① 每小时触发 ⇒ 写「每天一行」要按日期键**幂等**（多 1 次 Meta 读）；② Meta **没有任何裁剪机制**（`schema.sql:42-45` 只有 Key/Value 主键）⇒ 趋势行要自带 30 天过期，否则键无限增长；③ 计数来源**不要**直接调现状 `db.statistics()`（`src/db.ts:280-296` 正是 §3.1 的全表拉取），应写一条 `GROUP BY` / `SUM(CASE…)` 聚合（顺带偿还 §3.1） |
 | 2.7 | **在线客户端数 / 最近同步时间** | 「最近同步」用 `poll` 的 `lastModified` 即可（`src/ui/query.ts:281-291`）。但 DO **没有可读状态端点**：`fetch` 只认 `AUTH_RATE_LIMIT_PATH` / `BROADCAST_PATH` / `REGISTER_TOKEN_PATH` 三条内部路径（`SyncClipboardHub.ts:132-152`），其余鉴权后按方法分派（`:178-190`）；要读的 `clientCount()` 是 `private`（`:514-516`，除广播日志 `:139` 外还供 `scheduleHeartbeat()` `:519` 使用） | 低，但**不是「加一个键即可」**：要么新增一个 DO 只读分支（注意别落到 `:183` 的 `handleLongPoll`——空 `id` 会被当成新连接登记并挂起 25 s），要么放弃该字段。若加：`/ui/api/info` 会从**纯 D1/R2 端**（现状 `src/ui/routes.ts:311-316`）变成带 DO 依赖的端——失败语义应为「DO 超时 → 该字段 null，其余照常」，不要整体 5xx，否则诊断面会被它要诊断的对象拖垮 |
 | 2.8 | **导出历史** | 今天没有导出。全文**不能复用列表端点**：列表把 text 截到 500 字符并置 `textTruncated`（`src/ui/query.ts:194` / `:216-222`）；逐条走单条端点（`src/ui/routes.ts:146-154`）是 O(N) 请求 | 中。成本口径：① 逐条路径 1000 条 ≈ 1000 次请求 + 1000+ 行 D1 读；② 服务端 zip 可复用既有 `fflate`（`src/hash.ts:2` 已在用），但免费档 **10 ms CPU / 50 子请求**约束下必须**全程流式**（不得先聚合再压缩）；③ 128 MB 内存上限（`README.md:267`）只在「聚合」路线下才是瓶颈 |
-| 2.9 | **记录级深链接** | `/ui/#Text-<hash>` 打开即预览（实测：`public/ui/js/` 无 `hashchange` / `location.hash` 读取；单条端点 `src/ui/routes.ts:146-154` 与数据端点 `:158` 已具备；筛选状态走 query string，`filters.js:159-160`，hash 空闲） | 低，私有实例内跨设备引用方便 |
+| 2.9 | **记录级深链接** | `/ui_v2/#Text-<hash>` 打开即预览（实测：`public/ui_v2/js/` 无 `hashchange` / `location.hash` 读取；单条端点 `src/ui/routes.ts:146-154` 与数据端点 `:158` 已具备；筛选状态走 query string，`filters.js:159-160`，hash 空闲） | 低，私有实例内跨设备引用方便 |
 | 2.10 | **服务端缩略图** | 仓库无任何图片处理依赖；当前 `size > 512 KiB` 不拉原图（`list.js:24` 的 `THUMB_MAX_BYTES`，`docs/progress.md` §34.4 记理由）。既有记录只到「**缩略图依赖数据文件存在**」（`docs/progress.md` §24、`README.md:304`）与 512 KiB 折中为止，没有记过「服务端产出缩略图」这条路。**「免费档没有 Image Resizing」是错的**：Cloudflare 现行定价页写明默认即 Images Free 档、**含 transformations**（可优化存放在 R2 的图），额度 **每自然月 5 000 次唯一变换**，超出后新变换返回 9422、已缓存的不受影响（[pricing](https://developers.cloudflare.com/images/pricing/)） | 由此从「受计划限制」变成**可做**：数据端点（`src/ui/routes.ts:158-187`）用 `cf.image` 子请求或 Images binding（binding 可直接吃 R2 字节，≤20 MB）产出缩略图。三点注意：① binding 的响应**不会自动缓存**，要自己设缓存头（该端点现为 `cache-control: private, max-age=60`，`routes.ts:186`）；② 用 `cf.image` + 自指 URL 时要按 `Via: image-resizing` 放行原图，否则回环；③ 额度按**唯一变换**计（同源图 + 同参数每月只算一次），列表缩略图会随图片数消耗额度，实施时按「每图每月至多 1 次」核算 |
 | 2.11 | **FTS5 全文检索** | D1 支持 FTS5 模块（含 `fts5vocab`）——平台文档 <https://developers.cloudflare.com/d1/sql-api/sql-statements/>；仓库内无证据（`schema.sql` 是唯一 SQL 文件，无迁移目录）。当前是 `Text LIKE ?N ESCAPE '\'` 包 `%…%`（`src/ui/query.ts:173-177`） | 低优先。**匹配语义会变**：FTS5 是分词匹配，现在这版「子串 + LIKE 元字符转义」的语义（注释里还记着与官方 API 的有意差异）会作废。超长搜索串的**正确性不在本项**——已在 G6 处理（`MAX_SEARCH_BYTES = 48`，`src/serialization.ts:414-427`，协议与 UI 共用同一判定）。存量库加虚拟表需手工 `wrangler d1 execute` 迁移（仓库目前没有 migrations 目录） |
 
@@ -106,7 +106,7 @@ Web 字体、`/dav` 前缀别名（ADR D15）、JSON-LD（无现实实体）、`
   `clientCount()` 的调用点、`clear` 端点体内无广播，均为直读结论。**复核后新增的行号**（§2.1–§2.11 的绝大部分）
   由三名子代理独立复读并给出反证——见 §7。
 - **实测（本机实例）**：列表响应体量与时长（未压缩 76 595 B / 17 ms）、`/ui/api/history` 响应头无 `cache-control`、
-  三个路由无 `Range` 处理、`public/ui/js/` 无 fragment 处理、`info` 端点的 `cleanup` 无人渲染；
+  三个路由无 `Range` 处理、`public/ui_v2/js/` 无 fragment 处理、`info` 端点的 `cleanup` 无人渲染；
   **压缩复测**（带 `Accept-Encoding: gzip, br`）：`content-encoding: gzip`，同一响应 76 595 B → 13 733 B。
 - **平台事实（外链，非仓库证据）**：Cloudflare Images 免费档含 transformations、每自然月 5 000 次唯一变换
   （§2.10）；Workers 免费档内部服务子请求上限 1 000/次调用（§2.4）；D1 支持 FTS5 模块（§2.11）。
@@ -190,15 +190,15 @@ Web 字体、`/dav` 前缀别名（ADR D15）、JSON-LD（无现实实体）、`
 
 | 条目 | 状态 | 落地位置 / 理由 |
 |---|---|---|
-| §1.1 清理状态 | ✅ | 概览抽屉的「保留策略 / 清理」小节（V2：`public/ui/js/ui/drawer.js`；V1：`public/ui_old/js/components/info.js`） |
-| §1.2 `pinned` 写入口 | ✅ | 行内置顶开关 —— V2 在行菜单（`public/ui/js/menus.js`），V1 在行内固定槽位（`public/ui_old/js/components/list.js`），两版复用同一条 `PATCH` |
+| §1.1 清理状态 | ✅ | 概览抽屉的「保留策略 / 清理」小节（V2：`public/ui_v2/js/ui/drawer.js`；V1：`public/ui_v1/js/components/info.js`） |
+| §1.2 `pinned` 写入口 | ✅ | 行内置顶开关 —— V2 在行菜单（`public/ui_v2/js/menus.js`），V1 在行内固定槽位（`public/ui_v1/js/components/list.js`），两版复用同一条 `PATCH` |
 | §1.3 批量操作 | ✅ | `POST /ui/api/history/batch-update`（原 `batch-delete` 泛化）+ 选择条按视图给动作 |
 | §1.4 排序 6 字段 | ◑ | 表头 5 个可点（类型/大小/创建/修改/访问）；`id` 无可见列，仍只在 URL 里可用 |
 | §1.5 `pageSize` 上限 | ✅ | 下拉补 500 |
 | §1.6 `PATCH` 回执 | ✅ | 采纳 `version`/`lastModified`/`lastAccessed` 等元数据 |
 | §1.7 清空全部 | ✅ | `POST /ui/api/history/clear`（`trash`/`all`）；**不补广播**，见 §3.5 与 §8 末行 |
 | §1.8 `/api/time` | ✅ | `/ui/api/poll` 带 `serverTime` → 部署信息显示与本机的时钟差（>5 分钟告警） |
-| §2.1 真推送 | ✅ | `POST /ui/api/hub-ticket` + 推送通道（V2 `public/ui/js/push.js`、V1 `public/ui_old/js/signalr.js`）；轮询保留为 60 秒看门狗，后台断连 |
+| §2.1 真推送 | ✅ | `POST /ui/api/hub-ticket` + 推送通道（V2 `public/ui_v2/js/push.js`、V1 `public/ui_v1/js/signalr.js`）；轮询保留为 60 秒看门狗，后台断连 |
 | §2.2 会话可撤销 | ⏸ | 推迟：需在守卫热路径加 D1 读 + 新增 ADR；现有「改口令即全部失效」通道可用 |
 | §2.3 Range | ✅ | 只给 `/ui/api/history/:type/:hash/data` 加（协议侧有意忽略 Range，F29b 未动） |
 | §2.4 完整性自检 | ✅ | `GET /ui/api/integrity`（目录差集，不逐条 HEAD）+ 部署信息里的「数据完整性」小节 |
@@ -206,7 +206,7 @@ Web 字体、`/dav` 前缀别名（ADR D15）、JSON-LD（无现实实体）、`
 | §2.6 存储/条数趋势 | ⏸ | 推迟：Cron 幂等写 + Meta 无裁剪机制 + 新图表；收益有限（见 §2.6 的成本说明） |
 | §2.7 客户端数 / 最近同步 | ◑ | 「最近一次变更」已显示（来自 `/ui/api/poll` 的 `lastModified`）；DO 侧只读端点未加（推迟） |
 | §2.8 导出历史 | ⏸ | 推迟：含二进制的完整导出必须全程流式 zip，真正的约束是免费档 **10ms CPU**（§7.4 已订正过「50 子请求」那条口径——D1/R2 binding 属内部服务、上限 1000）；只导出元数据+文本又算不上「导出历史」。单条下载已覆盖「取回某个文件」的实际需求 |
-| §2.9 记录级深链接 | ✅ | `/ui/#Type-<hash>` 打开即预览；预览时写入 hash、关闭时清除 |
+| §2.9 记录级深链接 | ✅ | `/ui_v2/#Type-<hash>` 打开即预览；预览时写入 hash、关闭时清除 |
 | §2.10 服务端缩略图 | ⏸ | 推迟：依赖部署侧是否启用 Images（仓库内无证据）+ 额度按唯一变换计量 |
 | §2.11 FTS5 | ⏸ | 推迟：会改变匹配语义 + 存量库迁移；且 `schema.sql` 改动在「推送即生产」下需额外回填步骤 |
 | §3.1 `statistics` 全表拉取 | ✅ | 一条聚合查询；`countByType` 两条合一 |

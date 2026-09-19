@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error Native browser modules are checked by ESLint.
-import { debounce } from '../public/ui/js/dom.js';
+import { debounce } from '../public/ui_v2/js/dom.js';
 // @ts-expect-error Native browser modules are checked by ESLint.
-import { api } from '../public/ui/js/api.js';
+import { api } from '../public/ui_v2/js/api.js';
 // @ts-expect-error Native browser modules are checked by ESLint.
-import { createOmnibox } from '../public/ui/js/ui/omnibox.js';
+import { createOmnibox } from '../public/ui_v2/js/ui/omnibox.js';
 // @ts-expect-error Native browser modules are checked by ESLint.
-import { emptyStateKind, DEFAULT_FILTERS } from '../public/ui/js/filters.js';
-// V1（`public/ui_old/`，默认界面）的取数封装：`api.fetchData` 是图片复制与文件下载的**唯一**路径
+import { emptyStateKind, DEFAULT_FILTERS } from '../public/ui_v2/js/filters.js';
+// V1（`public/ui_v1/`，默认界面）的取数封装：`api.fetchData` 是图片复制与文件下载的**唯一**路径
 // （2026-09-18 之前那两处在 `main.js` 里裸用 `fetch` —— 既没有超时，也没有 401 统一处理）。
 // @ts-expect-error Native browser modules are checked by ESLint.
-import { api as v1api } from '../public/ui_old/js/api.js';
+import { api as v1api } from '../public/ui_v1/js/api.js';
 
 describe('empty result explanations', () => {
   it('distinguishes an empty library from an empty trash', () => {

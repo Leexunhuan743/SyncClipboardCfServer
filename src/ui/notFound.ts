@@ -1,13 +1,13 @@
-// 两个界面命名空间（`/ui/*` 与 `/ui_old/*`）下未匹配路径的 404 页。
+// 界面命名空间（`/ui`、`/ui_v1`、`/ui_v2`）下未匹配路径的 404 页。
 //
-// 只对 UI 命名空间生效：协议路径（`/api/*`、`/SyncClipboard.json`、`/file/*`）的 404 语义是
+// 只对界面前缀生效：协议路径（`/api/*`、`/SyncClipboard.json`、`/file/*`）的 404 语义是
 // 客户端依赖的契约（例如 `GET /api/history/{id}/data` 缺数据必须 404），不能换成 HTML 页面。
 //
-// 两个命名空间共用这一张：它是**站点的** 404，不属于任何一版界面。代价是它的样式取自
-// `/ui/css/*`（V2 的设计系统）—— 为一页 404 在两套设计系统里各写一份才是浪费。
-// 页内那个"返回剪贴板历史"指向**默认界面**（`/ui_old/`，2026-09-18 起的定位，见 ADR D17）。
+// 三个前缀共用这一张：它是**站点的** 404，不属于任何一版界面。代价是它的样式取自
+// `/ui_v2/css/*`（V2 的设计系统）—— 为一页 404 在两套设计系统里各写一份才是浪费。
+// 页内那个"返回剪贴板历史"指向**默认界面**（`/ui_v1/`，2026-09-18 起的定位，见 ADR D17）。
 //
-// 不引入静态资源绑定：页面直接引用已经托管在 `/ui/css/` 的样式表，省掉一个 ASSETS 绑定与一次
+// 不引入静态资源绑定：页面直接引用已经托管在 `/ui_v2/css/` 的样式表，省掉一个 ASSETS 绑定与一次
 // 内部 fetch。代价只是这段 HTML 内联在 Worker 里。
 //
 // ⚠️ **类名刻意不用 BEM 形态**（`page404__title` 之类）：`test/ui-contract.test.ts` 的
@@ -25,9 +25,9 @@ const HTML = `<!doctype html>
     <title>页面不存在 · 剪贴板历史</title>
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex, nofollow" />
-    <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/ui/css/tokens-v2.css" />
-    <link rel="stylesheet" href="/ui/css/base-v2.css" />
+    <link rel="icon" href="/ui_v2/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/ui_v2/css/tokens-v2.css" />
+    <link rel="stylesheet" href="/ui_v2/css/base-v2.css" />
     <style>
       .wrap {
         max-width: 30rem;
@@ -65,12 +65,12 @@ const HTML = `<!doctype html>
     <main class="wrap">
       <h1>这个地址没有页面</h1>
       <p>
-        你要找的界面不在这个地址下。剪贴板历史在 <a href="/ui_old/">/ui_old/</a>（默认界面），
-        开发测试版在 <code>/ui/app/</code>，
+        你要找的界面不在这个地址下。剪贴板历史在 <a href="/ui_v1/">/ui_v1/</a>（默认界面），
+        开发测试版在 <code>/ui_v2/app/</code>，
         SyncClipboard 客户端用的接口在站点根路径（<code>/SyncClipboard.json</code>、
         <code>/api/history/*</code>、<code>/file/*</code>）。
       </p>
-      <a class="home" href="/ui_old/">返回剪贴板历史</a>
+      <a class="home" href="/ui_v1/">返回剪贴板历史</a>
     </main>
   </body>
 </html>
