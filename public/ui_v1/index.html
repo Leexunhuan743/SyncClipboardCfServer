@@ -70,7 +70,10 @@
              用 role="status" 而不是 alert：它是持续状态，不该在读屏里抢断。 -->
         <div class="notice notice--warn" id="notice" role="status" hidden></div>
 
-        <!-- 统计条：三个真实数字（来自 /ui/api/statistics），由 js/components/stats.js 填充 -->
+        <!-- 统计条：三个真实数字，由 js/components/stats.js 填充。
+             首屏那一次走 `/ui/api/overview` 的合成快照（js/main.js 的 refreshOverview），
+             此后切视图/写操作由 `refreshStats()` 补 `/ui/api/statistics` —— 两个来源，
+             不是"全部来自 /ui/api/statistics"。 -->
         <section class="stats" id="stats" aria-label="用量统计"></section>
 
         <!-- 工具栏：筛选、搜索、每页条数 -->

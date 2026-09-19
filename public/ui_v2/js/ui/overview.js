@@ -30,10 +30,11 @@ export function createOverview({ onOpenDrawer }) {
   });
 
   const totalValue = el('span', { class: 'overview__value', text: '—' });
-  // 标签写「活跃记录」而不是「记录」：这个数字是 **`/ui/api/overview` 的 `totalCount`**
-  // （含回收站里的已删除行），而列表默认只显示活跃行。写「记录」会让用户对不上
-  // 「概览说 2191、列表说 1009」（实测截图里就是这个差异）。
+  // 标签写「活跃记录」：这个数字是 `boot.js` 传下来的 `stats.activeCount`（**活跃**口径，
+  // 与列表的"共 N 条"同一个数），**不含**回收站里的已删除行。
   // 回收站的量在抽屉里单独给，不占概览带的位置。
+  // （此前这里写的是 `totalCount`，与 `boot.js` 的接线相反；`totalCount` 只出现在抽屉的
+  //  存储明细里，两处口径不同是有意的。）
   const totalLabel = el('span', { class: 'overview__label', text: '活跃记录' });
   const totalStat = el('span', { class: 'overview__stat' }, [totalValue, totalLabel]);
 

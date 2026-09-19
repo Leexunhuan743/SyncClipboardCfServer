@@ -116,7 +116,7 @@ export function createBoard(handlers) {
   const selectAll = el('input', {
     class: 'check',
     type: 'checkbox',
-    'aria-label': '选择本页全部记录',
+    'aria-label': '全选（本页全部记录）',
     onchange: (event) => handlers.onSelectAll(event.target.checked),
   });
 

@@ -116,8 +116,10 @@
              它在这里（列表之后、分页之前）而不是 `</body>` 之前，是为了**Tab 顺序**：
              这个条只在用户选中了行之后才出现，而键盘用户正常路径上一定会在行的复选框上按 Space ——
              若它挂在文档最末，要按 200 多次 Tab 才够得到它的按钮（实测：50 行/页时是第 224 个可聚焦项）。
-             它是 `position: fixed` 悬浮的，所以位置不影响观感。 -->
-        <div class="batchbar" id="batchbar" role="toolbar" aria-label="批量操作" hidden></div>
+             它是 `position: fixed` 悬浮的，所以位置不影响观感。
+             `role` 用 `group` 而不是 `toolbar`：组件（`js/ui/batchbar.js`）也这么定，理由见那里的注释
+             （A-32：`toolbar` 承诺的方向键导航并不存在）。这里先给骨架，挂载后由组件整体替换。 -->
+        <div class="batchbar" id="batchbar" role="group" aria-label="批量操作" hidden></div>
 
         <!-- 分页容器：这里用 `div` 而不是 `nav`，因为组件自己已经建了一个
              `<nav aria-label="分页">` —— 两个嵌套且同名的 nav 地标会让读屏用户

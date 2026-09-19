@@ -34,7 +34,7 @@ export function createPager({ onPage }) {
     class: 'pager__input',
     type: 'number',
     min: '1',
-    'aria-label': '跳转到第几页',
+    'aria-label': '跳至页码',
     onfocus: (event) => event.target.select(),
     onkeydown: (event) => {
       if (event.key !== 'Enter') return;

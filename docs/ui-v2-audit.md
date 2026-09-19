@@ -99,7 +99,7 @@
 | A-30 | 5 张渲染阻塞样式表，其中 `overlay-v2.css`（24.9KB / 占 CSS 32%）首屏根本用不到（只有对话框/抽屉/菜单/提示条） | 实测：扣住 `tokens-v2.css` 400ms → FCP 从 308ms 推到 608ms；CSS 合计 78.7KB 原始 / 24.8KB brotli | 首屏多一次往返与约 1/3 的 CSS 字节 | **待定**（方案：合并为 `app.css` + 把 overlay 移出关键路径；代价是改守卫与设计文档的文件分层，收益有限，建议推迟） |
 | A-31 | 列表没有键盘导航模型：行不可聚焦、无方向键，每行 4 个 Tab 停靠点 | 实测：50 行 → 216 个可聚焦项；`grep tabindex` 在改造前 = 0 命中 | 从第 1 行到第 40 行要按约 160 次 Tab | **已修**（见 §2.1：↓/↑ 走**同一列**的相邻行，Home/End 到首末行；Tab 顺序一个字节未改） |
 | A-32 | `role="toolbar"` 没有配套的方向键模型（6 个停靠点，无 arrow 处理） | `batchbar.js` | 角色承诺了行为却没有，读屏用户会按工具条的预期操作 | **已修**（改为 `role="group"`：只声明"这是一组相关控件"，与"每个按钮都能 Tab 到"的现状相符。补 roving tabindex 反而会把 6 个按钮压成 1 个 Tab 停靠点，对这个体量不值） |
-| A-33 | 缺 safe-area 内边距：全仓 `grep safe-area\|env(` = 0 命中，viewport 也没有 `viewport-fit=cover` | 代码证据充分；**设备上的表现未验证** | iPhone 上悬浮的批量条/提示条可能压到 Home Indicator | **已修**（`viewport-fit=cover` + `.batchbar`/`.toasts` 的 `bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px))` —— 第二参数让**非刘海设备上是恒等变换**，零观感差异；仍属"未在真机验证"） |
+| A-33 | 缺 safe-area 内边距：全仓 `grep safe-area\|env(` = 0 命中，viewport 也没有 `viewport-fit=cover` | 代码证据充分；**设备上的表现未验证** | iPhone 上悬浮的批量条/提示条可能压到 Home Indicator | **已修**（`viewport-fit=cover` + `.batchbar`/`.toasts` 的 `bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px))` —— 第二参数让**非刘海设备上是恒等变换**，零观感差异；仍属"未在真机验证"）。**2026-09-19 补**：窄屏那档（`≤720`）曾把 `bottom` 改写成**不含 `env()`** 的 `var(--sp-4)`（同特异性、位置在后 ⇒ 生效），等于在**最需要安全区的那类设备**上把这条修复抹掉，已带上 `env()`（`overlay-v2.css:1117/1127`，见 `progress.md` §93.3） |
 | A-34 | 提示条 3.2 秒自动消失、无法用键盘关闭（点击关闭挂在不可聚焦的 `div` 上） | `toast.js` | 读屏用户来不及听完一条错误原因；也无法提前关掉 | **部分已修 + 一处有意不做**：错误提示 6s → **10s**、鼠标悬停即暂停计时（读它的时候它不会跑掉）；**不做** `tabindex="0"` —— 会自灭的元素一旦进了 Tab 顺序，键盘用户的焦点可能在它消失的瞬间掉到 `<body>`，那比"读不完"更糟 |
 | A-35 | 退出登录在离线时只跳转、不清 Cookie | `boot.js` 的 `logout()` 空 catch；Cookie TTL 24h | 共享浏览器上，下一个访问者可能直接进入界面 | **待定**（服务端/会话语义，属另一层） |
 | A-36 | `/ui/api/*` 响应缺 `X-Content-Type-Options: nosniff`（静态资源有） | 实测 401 响应头；CSP 已有 `frame-ancestors 'none'` | 影响很低（JSON + 严格 CSP），但基线头不一致 | **待定**（服务端一行） |
@@ -123,7 +123,7 @@
 | 交互稳定性 | 焦点快照/恢复（`focus.js`）；菜单关闭把焦点还给锚点；分页不再 blur；行内按钮进行中忽略第二次点击 | 实测：刷新后焦点仍在原按钮；连点两次只发 **1** 个 PATCH；菜单 Esc 后焦点回到 `⋯` |
 | 无障碍 | 统一按钮构造（`ui/button.js`）；右侧 `aria-haspopup`/`aria-expanded`；菜单方向键/Home/End；批量条计数 `role=status`；模态 `aria-labelledby`；抽屉下拉可访问名；排序方向写进 `aria-label`；窄屏表头改为"仅读屏"；chips 可聚焦横滚；`<kbd>` 标记 `aria-hidden` | 实测：**187 个按钮 0 个无名字**；表头在 390px 仍在无障碍树里；`drawer aria-labelledby=drawer-title` |
 | 对比度 | 新增 `--c-warm-550`，`--ink-faint` 指向它 | 4.24/3.80/3.54 → **5.57/4.99/4.65**（三处底色全部过 AA） |
-| 触屏 | `(pointer: coarse)` 下行内按钮间距 2px→10px、`.btn--sm` 28px→40px | 44px 命中区不再重叠；"上一页/下一页"与批量条动作在手机上有 40px 高 |
+| 触屏 | `(pointer: coarse)` 下行内按钮间距 2px→10px、`.btn--sm` 28px→**44px**（**2026-09-19 订正**：coarse 档早已把它抬到 `--hit-min` = 44px，但 `overlay-v2.css` 的 `≤720px` 档又写死 `40px`、且同特异性在后 ⇒ 手机上实际只有 40px；已改为同一个令牌 `var(--hit-min)`，见 `progress.md` §93.7） | 44px 命中区不再重叠；"上一页/下一页"与批量条动作在手机上有 **44px** 高 |
 | 健壮性 | 前进/后退按 URL 重读状态；越界页码夹回最后一页；只有传输错误/5xx 才报"失去联系"；模态期间不接管快捷键；连点预览/抽屉加守卫；Activity 字段类型兜底 | `states.mjs` 新增 12 组断言全绿 |
 | 冗余清理 | 抽出 `ui/button.js`、`focus.js`；统一 `setPending`/`flashOk`；删掉 3 个未使用导出、3 个未使用 API 封装、4 个未使用令牌、1 个空函数；`_headers` 注释与取值对齐 | `ui-contract.test.ts`（modulepreload == import 闭包、BEM 双向、属性生产者）全绿 |
 | **第二轮：键盘可达 + 纯逻辑外提** | 行的**同列方向键导航**（↓/↑/Home/End）；抽出 `messages.js`/`menus.js`/`keys.js` 并补 11 条单测；`role=group`；提示条悬停暂停 + 错误 6s→10s | `states.mjs`：↓ 到下一行同一控件、↑ 回上一行、End 到末行、Home 回首行，且**每行仍是 4 个 Tab 停靠点**（增量而非改动） |

@@ -175,7 +175,8 @@
  * **不用 `mask-image` + `background-color` 那条路**（它能让箭头自动跟随主题变量）——
  * 两个理由：① `mask-composite: exclude` 在部分浏览器下会把背景色一起裁掉，
  * 那会让整个下拉框变成透明块；② 箭头的颜色在深浅两主题下都只是"中性灰"，
- * 用一个固定值（`--c-warm-500` 的十六进制）不会损失任何可读性，
+ * 用一个固定值（内联 SVG 里的 `#857d71`，一个中性灰；它与 `--c-warm-500`（`#827a6e`）
+ * 接近但**不是同一个值**，别按这条注释去"同步令牌"）不会损失任何可读性，
  * 而它换来的是"在任何浏览器都成立"。这是刻意的取舍，不是遗漏。 */
 .control--select {
   appearance: none;
@@ -1097,20 +1098,30 @@
   }
 }
 
-/* ── 窄屏：批量条与提示条都要让开安全区 ── */
+/* ── 窄屏：批量条与提示条都要让开安全区 ──
+ * 基础规则里的 `bottom` 是 `calc(var(--sp-5) + env(safe-area-inset-bottom, 0px))`（A-33），
+ * 而窄屏恰好是**有 Home Indicator 的那一类设备**（`app/index.html` 开了 `viewport-fit=cover`）——
+ * 所以这里改写间距时**必须把 env() 一起带上**，否则等于把 A-33 的修复在窄屏上抹掉
+ * （同特异性、位置在后 ⇒ 生效）。2026-09-19 修正。 */
 @media (max-width: 720px) {
   /* 窄屏上小按钮要长大：`.icon-btn` 与 `.check` 都有 44px 的命中区（`::before`），
    * 而 `.btn--sm` 一直停在 28px —— 实测 390px 下"上一页/下一页"是 85×28、
    * 批量条的每个动作是 50×28、批量条的 ✕ 是 23×34，而它们恰恰是**带破坏性操作**的那些，
    * 结果是手机上最该好点的按钮反而最小。这里只改窄屏，桌面观感不变。 */
   :root {
-    --control-h-sm: 40px;
+    /* 对齐 `tokens-v2.css` 的触屏档，而不是写 40px：那里的注释写明 `--hit-min: 44px`
+     * 是"触屏最小命中区，不可下调"，并在 `@media (pointer: coarse)` 里把 `--control-h-sm`
+     * 抬到 `var(--hit-min)`（受影响的是分页「上一页/下一页」、批量条动作、抽屉里那些按钮）。
+     * 本条与它**同特异性**（`:root`）、而本文件是最后一张样式表 ⇒ 写 40px 会把它盖掉：
+     * 手机上命中区反而从 44 缩到 40 —— 而这一档要解决的正是"手机上最该好点的按钮反而最小"。
+     * 用同一个令牌后，触屏与桌面都是 44px。 */
+    --control-h-sm: var(--hit-min);
   }
 
   .batchbar {
     left: var(--sp-4);
     right: var(--sp-4);
-    bottom: var(--sp-4);
+    bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
     transform: none;
     border-radius: var(--r-lg);
     overflow-x: auto;
@@ -1120,7 +1131,7 @@
   .toasts {
     left: var(--sp-4);
     right: var(--sp-4);
-    bottom: var(--sp-4);
+    bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
     align-items: stretch;
   }
 

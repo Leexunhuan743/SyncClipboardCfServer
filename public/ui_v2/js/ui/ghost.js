@@ -10,7 +10,9 @@
 // 而原来的注释还写着"CLS = 0"。行数由调用方按**当前页大小**给出（见 `board.js`）。
 import { el } from '../dom.js';
 
-/** 建 N 行骨架。行高与真实行同高（`--row-h`），所以内容落地时不发生跳动（CLS ≈ 0）。 */
+/** 建 N 行骨架。行高与真实行同高（`--row-h`），所以**每行**落位不跳；
+ * 但总高度取决于行数：`rows` 与真实页大小差得远时整页高度仍会突变（文件头记的 CLS = 0.90 就是这么来的），
+ * 故调用方必须按当前页大小传 `rows`（见 `board.js`）；这里的 6 只是兜底默认值。 */
 export function renderGhost(rows = 6) {  const fragment = document.createDocumentFragment();
   for (let i = 0; i < rows; i += 1) {
     fragment.append(

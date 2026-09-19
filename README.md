@@ -38,7 +38,7 @@ SyncClipboard 客户端支持三类服务端，能力并不相同：
 - **数据完整性校验**：Text / File / Image / Group 四类哈希算法逐字节对齐上游 C# 实现，
   服务端校验上传数据（不符即拒绝），避免坏数据在设备间扩散
 - **保留与清理**：Cron Trigger 定时执行保留期裁剪、条数上限、已删除记录硬删与孤儿对象清理
-- **Web 历史界面**（默认界面 `/ui_v1/`；`/ui_v2/` 与站点根都跳到它）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
+- **Web 历史界面**（默认界面 `/ui_v1/`；`/ui/` 的跳转壳与站点根都跳到它）：浏览器里查看/搜索/筛选/预览服务器上的剪贴板历史，
   支持时间范围（今天 / 近 7 天 / 近 30 天 / 自定义）、回收站（含恢复）、文本复制、图片预览、
   文件下载、收藏置顶、批量删除与部署信息。
   界面与官方 API 读写同一套数据，写操作走与官方 `PATCH` 相同的实现（含广播与数据清理）。
@@ -200,7 +200,7 @@ npm run deploy
 - **触发**：push 到 `master` **且改动涉及产品代码或构建输入**，或 Actions 页面手动运行
   （`workflow_dispatch`）。白名单见 `deploy.yml` 的 `on.push.paths`：`src/**`、`public/**`、
   `test/**`、`schema.sql`、`wrangler.toml`、`package*.json`、`tsconfig.json`、`vitest.config.ts`、
-  CI 自身。**纯文档改动不触发**——它既不改变部署产物，也不影响协议行为；反过来，将来新增
+  `eslint.config.js`、CI 自身。**纯文档改动不触发**——它既不改变部署产物，也不影响协议行为；反过来，将来新增
   部署输入时要同步加进那个列表，否则该变更不会触发流水线。
 - **注意**：`deploy` job 需要下方两个 Secret，**未配置时该 job 会失败并列出缺少的名称**
   （`quality` job 不需要凭据，其协议/界面/文档/单元用例仍会照常运行并通过）
@@ -336,7 +336,8 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 - **实时更新**：页面可见时与 Hub 建立 WebSocket（用短期票据换连接，票据 10 分钟内可复用），别的设备一同步这边立刻可见；
   连接不可用时自动回落到轮询（10 秒），轮询始终保留为兜底
 - **记录级深链接**：`/ui_v1/#Text-<hash>`（默认界面）打开即预览该条，链接可直接分享/收藏；
-  `/ui_v2/#Text-<hash>` 这种入口写法也行 —— 那个跳转页会把 fragment 一起带过去
+  `/ui/#Text-<hash>` 这种写法也行 —— `/ui/` 那层跳转壳会把 fragment 一起带过去
+  （V2 本体在 `/ui_v2/app/`，`/ui_v2/app/#Text-<hash>` 同样直达该条；`/ui_v2/` 本身没有页面，落到 404 页）
 - **维护面板**（部署信息对话框内）：清理任务的运行状态与失败信息、数据完整性自检
   （找出「记录说有数据、存储里却没有对象」的条目）、保留策略在线调整（0 = 关闭该阶段）、清空全部历史；
   「清空回收站」在**回收站视图**的选择条上（那里才看得到要清的东西）
@@ -374,7 +375,7 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 | `[HISTORY …]` | `src/routes/history.ts` | 历史上传被拒的原因（如 `hash is required`、`Hash contains invalid path characters`） |
 | `[security]` | `src/auth.ts`、`src/rateLimit.ts` | 弱凭据告警（每个 isolate 一次）、认证失败突发告警 |
 
-**隐私**：日志里**不出现剪贴板正文** —— 只有阶段名、计数、hash、文件名与错误消息（共 12 处 `console.*`
+**隐私**：日志里**不出现剪贴板正文** —— 只有阶段名、计数、hash、文件名与错误消息（共 14 处 `console.*`
 调用点，逐处核过）。新增日志时请沿用这条约定。
 
 ## 容量提示
@@ -408,7 +409,7 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 | multipart | 分界串长度上限 70 字节（RFC 2046）；分界串查找为原生扫描（不再 O(体×串)） | `src/multipart.ts` |
 | 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
 | 清理可观测 | 清理按预算分阶段执行、游标续跑、失败写入 `cleanup:lastError`（`/ui/api/info` 可读） | `src/cleanup.ts` |
-| 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` / `src/requestLimits.ts` |
+| 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` |
 | 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的 `no-cache, must-revalidate`（无指纹 ⇒ **每次都会回源验证**，不存在"新旧混用窗口"；只有图标/manifest 走长缓存 + `stale-while-revalidate`）。Worker 自出的 `/ui_v2/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
 
 > **部署前必做**：`USERNAME` / `PASSWORD` 必须是**高熵随机值**。默认/占位口令 + 公开的 `*.workers.dev` 等于把全部剪贴板历史与附件
@@ -486,7 +487,7 @@ schema.sql              D1 建表语句
 | [docs/security-fix-plan.md](docs/security-fix-plan.md) | 安全审计修复计划（cfserver-audit-003 的 11 Findings）：优先级、逐条修复设计、实施状态 |
 | [docs/upstream-issues.md](docs/upstream-issues.md) | 上游 SyncClipboard 自身的问题（15 条，附 `文件:行` 证据与复现），用于回馈上游 |
 | [docs/upstream-parity.md](docs/upstream-parity.md) | 与上游 `28c7e596` 的逐文件对照报告：文件映射总表、差异与修复清单、风险分级、待确认项、上线结论 |
-| [docs/upstream-defects.md](docs/upstream-defects.md) | **上游缺陷与怪癖的复刻清单**：16 条已复刻（契约/缺陷/结构性消除三分类）+ 5 条未复刻，逐条给处置决定与"为什么不能顺手改好" |
+| [docs/upstream-defects.md](docs/upstream-defects.md) | **上游缺陷与怪癖的复刻清单**：21 条候选（A 必须复刻 10 / B 有意偏离 5 / C 结构性消除 2 / D 待办 2 / 不改但需知 2），逐条给处置决定与"为什么不能顺手改好" |
 | [docs/backend-gaps.md](docs/backend-gaps.md) | 后端能力缺口与可完善项评估：已建未接（§1）/ 可新增（§2）/ 效率欠账（§3），附建议顺序与复核记录 |
 | [docs/ui-v2-design.md](docs/ui-v2-design.md) | Web 界面 V2 设计与实现记录：骨架线框、设计令牌、组件词汇表、API 契约与验证记录 |
 | [docs/ui-v2-audit.md](docs/ui-v2-audit.md) | Web 界面 V2 系统性审计报告：设计系统体检、类名契约、跨端交互与状态矩阵验证 |
@@ -496,7 +497,7 @@ schema.sql              D1 建表语句
 | [docs/AUDIT-missing-states.md](docs/AUDIT-missing-states.md) | 前端审计报告（**缺失状态 / 不可达展示**）：与"找冗余"相反方向的判据，覆盖两版共约 18,000 行；含文档担保类失准与复核中剔除的结论 |
 | [docs/AUDIT-v1-v2-divergence.md](docs/AUDIT-v1-v2-divergence.md) | 前端审计报告（第二轮：**两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约**）：含"V1 修过、V2 仍有"的定向核对表，以及安全面"无可举证注入缺陷"的逐项结论 |
 | [docs/AUDIT-v1-v2-drift-2026-09-19.md](docs/AUDIT-v1-v2-drift-2026-09-19.md) | 前端走读报告（第三轮：**跨版漂移与遗留缺陷**，F1–F8）：含子代理逐条复核结论与实施记录 |
-| [docs/ui-rename-v1-v2.md](docs/ui-rename-v1-v2.md) | 界面改名与提示条移除的**操作记录**（2026-09-19）：三个挂载点的取舍、为什么不是一把 `sed`、踩到的六个坑、验证结果与未做项 |
+| [docs/ui-rename-v1-v2.md](docs/ui-rename-v1-v2.md) | 界面改名与提示条移除的**操作记录**（2026-09-19）：三个挂载点的取舍、为什么不是一把 `sed`、踩到的八个坑、验证结果与未做项 |
 
 ## 许可证
 

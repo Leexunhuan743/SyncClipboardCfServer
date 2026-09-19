@@ -31,17 +31,17 @@
 | `public/` 下增删任何文件 | `docs/ui.md` §3 的「共 N 个资源」总数与 V1 / V2 / 跳转壳 / 站点根分表；`docs/design.md` §4 目录树；`docs/ui-v2-design.md` §7 目录树 |
 | V2 增删 JS 模块 | `public/ui_v2/app/index.html` 与 `login.html` 的 `modulepreload` 清单（**少一项留下依赖瀑布、多一项白拉一个文件，两者都不会报错**）；上面的资源数与目录树 |
 | **增删界面挂载点**（`public/` 下新增/改名 `ui*` 目录） | 三份事实**必须一起改**：`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 的路径规则；`test/ui-guard.test.ts` 里那组**挂载点判据**（`run_worker_first` ×2 + `isUiAsset` ×1 + `_headers` ×2）会红 —— 挂载点集合一律从 `public/` **动态发现**（不写死清单），见 §3 |
-| 增删测试套件 `test/*.test.ts` | 套件数出现在 `README.md`、`docs/design.md`、`docs/ui.md`、`.github/workflows/deploy.yml`；且 `docs/design.md` 的「**套件清单**」段要逐个列出套件名（名单与数字是两条独立断言） |
+| 增删测试套件 `test/*.test.ts` | 套件数出现在 `README.md`、`AGENTS.md`、`docs/design.md`、`docs/ui.md`、`.github/workflows/deploy.yml`；且 `docs/design.md` 的「**套件清单**」段要逐个列出套件名（名单与数字是两条独立断言） |
 | 改 `public/ui_v1/js/messages.js` 或 `public/ui_v2/js/messages.js` | **两份从第一条 `import` 起必须逐字一致**（`ui-guard` 的对等守卫会红，见 §3；文件头**有意不同** —— V1 那份解释「为什么自己有一份」，别去"对齐"掉）；改 V1 时同时看 `docs/ui.md` §3.2 |
 | 要**截断**或**统计用户看到的字符数**（提示条「已复制 N 个字符」、删除确认里的正文开头、行内 `aria-label`） | 用各自 `format.js` 的 `truncateText()` / `charCount()`，**不要写 `slice(0, n)` / `.length`** —— 按 UTF-16 码元切会切出半个代理对（渲染成 `�`），`.length` 把 10 个 emoji 报成 20。两版各有一份同名实现（**不共享**），改其一要同时改另一版；口径与例外见 `docs/AUDIT-v1-v2-divergence.md` §5.3 |
 | 改 V1 结果区的**形态**（骨架 / 表格 / 空态）或**行高** | `public/ui_v1/js/components/list.js` 的 `setView()` 是这三种形态的**唯一开关**（别处不要再直接写 `table.hidden` / `empty.hidden`）；`.skeleton__row` 的高度必须等于真实行高（`8+8+1+30 = 47px`，推导在 `components.css` 的 `.table td` 那条注释里）；`public/ui_v1/index.html` 里那份静态骨架是**挂载前**的占位，与它同源；`docs/ui.md` §9.3 的 loading 行。**补/改一个"未知"档时要过一遍该组件的每一处出口**（`update` / `showError` / `removeItem` …）—— 2026-09-18 实测：只给 `update()` 加了骨架档，`showError()` 那条出口就把「正在加载…」和「加载失败」同时留在了屏幕上；同一个哨兵值（`total === 0`）还会在**别的组件**里各写一份（分页、统计条各有自己的判据，见 `docs/AUDIT-missing-states.md`） |
 | 改协议行为（路由、状态码、字段、响应头、哈希） | `docs/protocol.md` §10 差异登记表 —— **它是协议差异的唯一登记处**，每条带上游 `文件:行`；同一差异不要重复登记 |
 | 做了设计取舍（新方案 / 换方案 / 决定不做） | `docs/design.md` §2 加一条 ADR（编号递增），实现处注明 D 号 |
 | 修缺陷、踩到坑、量出数字 | `docs/progress.md` 追加一节（编号递增 + 日期）；**被修的行为若还有测试断言在钉它，同一次改掉断言**——别让旧断言继续固化已被判定为缺陷的行为 |
-| 改文档里写死的数字 / 文件名 / 令牌名 | 全文搜一遍再改：同一事实常散在 3~4 处（套件数 4 处、资源数 2 处、V2 目录树 3 处） |
+| 改文档里写死的数字 / 文件名 / 令牌名 | 全文搜一遍再改：同一事实常散在 3~5 处（套件数 5 处、资源数 2 处、V2 目录树 3 处） |
 
-**「门禁全绿」不等于「文档对了」。** `test/docs.test.ts` 只把 4 个文件当作现状口径校验
-（`README.md` / `docs/design.md` / `docs/ui.md` / `.github/workflows/deploy.yml`），
+**「门禁全绿」不等于「文档对了」。** `test/docs.test.ts` 只把 5 个文件当作现状口径校验
+（`README.md` / `AGENTS.md` / `docs/design.md` / `docs/ui.md` / `.github/workflows/deploy.yml`），
 且只校验**套件数**与**资源数**。端点表、目录树、令牌表、差异登记表都在守卫之外 ——
 **上表才是责任范围，门禁只兜住它的一部分。**
 
@@ -108,6 +108,6 @@
 
 - `.workbuddy/` —— **项目记忆**（跨会话的工作日志与长期事实），不是缓存，不要删。
 - `.dev.vars` —— 本地凭据，已被 `.gitignore` 排除，**永远不要提交**。
-- 本地库里那批 `qf-*` 夹具（软删状态，见 `docs/progress.md` §16.8）：删数据需要显式授权。
+- 本地库里那批 `qf-*` 夹具（软删状态，见 `docs/progress.md` §52 的「仍未做」与 §20）：删数据需要显式授权。
 - `docs/progress.md` 的历史快照数字（每轮记的套件数/行数）：那是版本曲线，**不要"顺手校准"**；
   要补就另起一节、带日期。

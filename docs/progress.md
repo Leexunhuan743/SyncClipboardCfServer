@@ -118,6 +118,7 @@
 - 90. 补回 `public/_headers`：改名漏改的那一处（2026-09-19，审查发现）
 - 91. 复审三个提交：补出上一轮漏掉的两处（2026-09-19，用户"审查最近的3个提交"）
 - 92. 完善：改名漂移的第三类（文档里的"地名"）与守卫的"防新增"边界（2026-09-19，用户"开始完善"）
+- 93. 通读驱动的修正：文档事实错误、`progress.md` 自身缺陷与前端缺陷（2026-09-19，用户"阅读全部的文件/文档…首要修改错误/不合理的地方"）
 ## 1. 项目状态
 
 | 阶段 | 状态 | 完成日期 | 说明 |
@@ -196,7 +197,7 @@ push 到 `master` 只在**改动涉及产品代码或构建输入**时触发流�
 | 历史写路径 | `src/historyOps.ts` | ✅ | PATCH 黑盒 / ui 套件 | 官方 PATCH 与界面写操作共用 |
 | PROPFIND XML | `src/webdavXml.ts` | ✅ | 协议测试 | RFC 4918 multistatus |
 | 认证限速 | `src/rateLimit.ts` | ✅ | rate-limit 套件 | isolate 快路径 + DO 权威计数 |
-| 请求体上限 / loopback | `src/requestLimits.ts` | ✅ | limits / rate-limit 套件 | 默认 64 MiB（可调至 80 MiB，2026-09-15 由 32 MiB 提高）；与 F8 判定共用 |
+| 请求体上限 / loopback | `src/requestLimits.ts` | ✅ | limits / rate-limit 套件 | 默认 48 MiB（可调至 64 MiB；2026-09-15 由 32 MiB 提高后同日定稿，见 §47/§48）；与 F8 判定共用 |
 | Web 界面服务端面 | `src/ui/*` | ✅ | ui / ui-guard / ui-contract 套件 | 见 `docs/ui.md` §3 |
 
 ## 3. 决策日志
@@ -1182,8 +1183,9 @@ ES 模块由浏览器原生加载。
 - [ ] 可选：绑定自定义域名（wrangler.toml routes 或 Cloudflare 控制台）
 
 已知限制（详见 README）：免费版单请求 100MB；畸形 zip 的隐式目录/重复条目语义与上游在第三方畸形输入上存在
-minor 差异（官方客户端不可达）；Web 界面的三条限制（不走 SignalR 实时推送、缩略图依赖数据文件存在、
-界面标签轮询计入请求额度）与验证边界（图片复制的成功路径未能在无头浏览器验证）见 `docs/ui.md` §9/§10。
+minor 差异（官方客户端不可达）；Web 界面的两条限制（图片缩略图依赖数据文件存在、
+界面标签的轮询计入请求额度）与验证边界（图片复制的成功路径未能在无头浏览器验证）见 `docs/ui.md` §6/§10
+（另见 README 的「已知限制」与「容量提示」）。
 
 ## 25. 版本记录
 
@@ -1227,13 +1229,16 @@ minor 差异（官方客户端不可达）；Web 界面的三条限制（不走 
 | 1.21.4 | 2026-09-15 | 文档：§39.4「复核驳回」表补齐**证据链**（六条，含文件:行号；③ 附 ASP.NET 官方文档引用）并区分证据等级（确定性代码路径 vs 未实测的框架文档推断）（详见 §39.4） |
 | 1.22.0 | 2026-09-15 | 第二十二轮：**真上游 A/B + 真客户端 E2E** —— 在本机起官方 v3.2.0 服务端发布件逐条对照（32 例状态码级 + 18 例 negotiate 文本级），找出并修复 negotiate 的**两处真缺陷**（错误串写错、把「超出 Int32」误并入「负数」分支）；再用官方 v3.2.0 客户端对生产做双向文本/文件与实时推送 E2E（详见 §44） |
 | 1.22.1 | 2026-09-15 | 路径**字面段**大小写归一（`src/pathCase.ts` + 入口最前面）：`/API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`/SYNCCLIPBOARDHUB/negotiate` 与上游同为 200；只归一字面段、取值不动，并加"遍历 `app.routes` 断言字面段全覆盖"的守卫（20 套件 / 328 例，A/B 未登记差异 0，详见 §44.7） |
+| 1.23.0 | 2026-09-15 | 第二十三轮：**部署开关** —— 新增 GitHub 变量 `UI_ENABLED`（默认开）可关掉整个 Web 界面（`/ui` 与 `/ui/api/*` 一律 404、根路径不再跳转，协议面零影响；实现需 `[assets] binding = "ASSETS"` + `run_worker_first`）；同一套机制接线 `ENFORCE_STRONG_CREDENTIALS` / `MAX_SAVED_HISTORY_COUNT` / `HISTORY_RETENTION_MINUTES`，CI 加"默认兜底 + 取值校验"并新增界面可达性冒烟（详见 §45） |
+| 1.24.0 | 2026-09-15 | 第二十四轮：**审计上游 Docker 变量并再接线两个旋钮** —— 上游那 4 个能对上的变量早已全有；新增 `MAX_REQUEST_BODY_BYTES`（默认 32MiB，允许 256KiB–64MiB：客户端 `MaxFileByte` 远大于它，此前撞 413 只能改代码）与限速四参数（**文档明确写"不建议变化"**）；CI 的 `resolve_int` 扩成带上下限、九变量名三处逐字一致（详见 §46） |
+| 1.25.0 | 2026-09-15 | 第二十五轮：**请求体上限默认 32 → 64 MiB、上限 64 → 80 MiB**（用户要求；80 而非 85 见 §47.1）—— 因 Group 上传期间"压缩体与解压内容同时存活"，把两个上限改成"一份合计预算（96 MiB）+ 动态收缩的解压预算"，并加不变式守卫；全量 20 套件 / 344 例（详见 §47） |
+| 1.25.1 | 2026-09-15 | 请求体上限定稿：**默认 48 MiB、上限 64 MiB**（用户追问后按**真实数据**回落 —— 官方客户端默认 20 MB、本部署线上最大一条 29.0 MiB 的 Group；决定性依据是并发：2×48=96 MiB 留有 32 MiB 余量，2×64=128 MiB 正好顶格）；同节留档"不做流式上传"的结论与实测可行性（详见 §48） |
+| 1.25.2 | 2026-09-15 | 文档重构：README 回归**用户视角**（579 → 498 行）——请求体上限的完整推导搬进 `design.md` §7.1（并新增 ADR D17）、A/B 探针的步骤搬进 `design.md` §12、删掉文档史说明；README 只留"我要做什么"（详见 §49） |
 
 ## 26. 数据处置：无数据记录与早期 e2e 残留（2026-09-13）
-| 1.23.0 | 2026-09-15 | 第二十三轮：**部署开关** —— 新增 GitHub 变量 `UI_ENABLED`（默认开）可关掉整个 Web 界面（`/ui` 与 `/ui/api/*` 一律 404、根路径不再跳转，协议面零影响；实现需 `[assets] binding = "ASSETS"` + `run_worker_first`）；同一套机制接线 `ENFORCE_STRONG_CREDENTIALS` / `MAX_SAVED_HISTORY_COUNT` / `HISTORY_RETENTION_MINUTES`，CI 加"默认兜底 + 取值校验"并新增界面可达性冒烟（详见 §45） |
-| 1.24.0 | 2026-09-15 | 第二十四轮：**审计上游 Docker 变量并再接线两个旋钮** —— 上游那 4 个能对上的变量早已全有；新增 `MAX_REQUEST_BODY_BYTES`（默认 32MiB，允许 256KiB–64MiB：客户端 `MaxFileByte` 远大于它，此前撞 413 只能改代码）与限速四参数（**文档明确写"不建议变化"**）；CI 的 `resolve_int` 扩成带上下限、九变量名三处逐字一致（详见 §46） |线上**实测**（不沿用旧统计）：活跃 **79** 条中，**12 条 `hasData` 为真而取不到数据**；
-| 1.25.0 | 2026-09-15 | 第二十五轮：**请求体上限默认 32 → 64 MiB、上限 64 → 80 MiB**（用户要求；80 而非 85 见 §47.1）—— 因 Group 上传期间"压缩体与解压内容同时存活"，把两个上限改成"一份合计预算（96 MiB）+ 动态收缩的解压预算"，并加不变式守卫；全量 20 套件 / 344 例（详见 §47） |另有 **7 条早期轮次的人工 e2e 残留**（`wdfile.txt`、`r5push.txt`、`R5BIG-*`、`e2e-r5-*`、
-| 1.25.1 | 2026-09-15 | 请求体上限定稿：**默认 48 MiB、上限 64 MiB**（用户追问后按**真实数据**回落 —— 官方客户端默认 20 MB、本部署线上最大一条 29.0 MiB 的 Group；决定性依据是并发：2×48=96 MiB 留有 32 MiB 余量，2×64=128 MiB 正好顶格）；同节留档"不做流式上传"的结论与实测可行性（详见 §48） |`webdav-precise-*`、`inline-live-*`、`r6-*`）。
-| 1.25.2 | 2026-09-15 | 文档重构：README 回归**用户视角**（579 → 498 行）——请求体上限的完整推导搬进 `design.md` §7.1（并新增 ADR D17）、A/B 探针的步骤搬进 `design.md` §12、删掉文档史说明；README 只留"我要做什么"（详见 §49） |
+
+线上**实测**（不沿用旧统计）：活跃 **79** 条中，**12 条 `hasData` 为真而取不到数据**；另有 **7 条早期轮次的人工 e2e 残留**（`wdfile.txt`、`r5push.txt`、`R5BIG-*`、`e2e-r5-*`、`webdav-precise-*`、`inline-live-*`、`r6-*`）。
+
 **两类的构成与并集**（实测，与 `matched=16`、备份 16 行一致）：
 
 | 分块 | 条数 | 内容 |
@@ -1263,7 +1268,7 @@ minor 差异（官方客户端不可达）；Web 界面的三条限制（不走 
 > 与事故归因（孤儿清理误删数据文件）一致。
 >
 > 教训（已写进方法边界）：**先从类型定义确认字段存在，再据其取值下结论**。
-> 具体到这次：`dataName` 是 **`ProfileDto`** 的字段（本项目确实实现它，见 §4/§7 的
+> 具体到这次：`dataName` 是 **`ProfileDto`** 的字段（本项目确实实现它，见 §6 的
 > `ProfileDto.dataName` 条目），而 **`HistoryRecordDto` 没有这个键**——我把两个 DTO 弄混了，
 > 于是在历史记录上读一个恒为 `undefined` 的键。同一名称、不同 DTO，是这类误判的典型入口。
 > 另：9 条被修引用记录的 `transferDataFile` 已被清空，修前值**不可考**。因此
@@ -1317,7 +1322,7 @@ minor 差异（官方客户端不可达）；Web 界面的三条限制（不走 
 
 **与客户端的关系（为什么两条路径都不用硬删）**：修引用把 `Version` 递增，启用历史同步的客户端
 会在下次同步时把本地那条从「有数据」更新为「无数据」；软删的 7 条会被客户端同步删除。
-而**硬删**会让客户端把它判成孤儿并**反向重传**（§21-② 记录的机制）——对"要删掉的残留"正是反效果。
+而**硬删**会让客户端把它判成孤儿并**反向重传**（§22-② 记录的机制）——对"要删掉的残留"正是反效果。
 
 ## 27. 安全审计与全量修复（cfserver-audit-003）（2026-09-13）
 
@@ -2074,7 +2079,7 @@ CDP `Performance.getMetrics` 取 `ScriptDuration` / `LayoutDuration` / `RecalcSt
 
 ### 39.3 判定为"有意偏离、本轮不修"
 
-32 MiB 体量上限（**订正：2026-09-15 起默认 64 MiB、可调至 80 MiB，见 §47**）、Group 解压上限、清理周期与批次、保留策略在线可调、`clear` 不广播、Range 只给 UI 面、
+32 MiB 体量上限（**订正：2026-09-15 起默认 48 MiB、可调至 64 MiB —— §47 先把上限提到 64/80，同日 §48 按真实数据回落定稿**）、Group 解压上限、清理周期与批次、保留策略在线可调、`clear` 不广播、Range 只给 UI 面、
 PROPFIND 207、附件加固、hash 分隔符 400、时间字段忽略、hash 统一大写、Group `.` 段与重复条目语义
 ——**全部已在 `docs/protocol.md` §10 登记**，逐条理由见 `docs/upstream-parity.md` §4.3。
 
@@ -2623,7 +2628,7 @@ ASSETS 转发这条新链路，它坏了界面就整片 404）；`false` → `/u
 README 的表格补齐了每个变量的**默认值与生效方式**（改变量 = 改配置 + 重新部署），并修掉了一处过时描述
 （`DEPLOY_URL` 曾写"未设置则跳过"，而现在的实现是回落到部署输出地址、**不跳过**）。
 
-**明确不做成开关（有意）**：~~请求体上限（32 MiB）~~（**订正：§46 已按用户要求接线，默认 64 MiB/可调 80 MiB**）、Group zip 解压上限、hash/路径校验 —— 它们是**安全边界**，
+**明确不做成开关（有意）**：~~请求体上限（32 MiB）~~（**订正：§46 已按用户要求接线；同日晚些时候 §47 提到 64/80，§48 按真实数据定稿为默认 48 MiB / 可调 64 MiB**）、Group zip 解压上限、hash/路径校验 —— 它们是**安全边界**，
 保持"改代码才改"。配置项一多，边界就会被悄悄放宽，而这正是本项目一贯拒绝的取向（见 D9/§10 的登记习惯）。
 
 **候选（尚未接线，需要改代码从 env 读，等用户决定）**：
@@ -2671,7 +2676,7 @@ Workers 上**没有对应物**（CF 终止 TLS、路由/域名由平台管、D1 
 
 ### 46.2 本轮接线的两个（用户选 A + B）
 
-**A. `MAX_REQUEST_BODY_BYTES`（默认 32 MiB，允许 256 KiB–64 MiB）**（**订正：同一日晚些时候按用户要求改为默认 64 MiB、上限 80 MiB，见 §47**） —— 唯一一个"运维真的会撞上、
+**A. `MAX_REQUEST_BODY_BYTES`（默认 32 MiB，允许 256 KiB–64 MiB）**（**订正：同一日晚些时候按用户要求改为默认 64 MiB、上限 80 MiB（见 §47），随后同日 §48 按真实数据定稿为默认 48 MiB、上限 64 MiB**） —— 唯一一个"运维真的会撞上、
 撞上后无法自救"的旋钮：官方客户端 `MaxFileByte` 默认远大于 32 MiB（实测那份是 1.78 GB），
 客户端乐意传、服务端却回 413，而此前只能改代码重部署。
 - `src/requestLimits.ts`：加 `MAX_REQUEST_BODY_BYTES_FLOOR/CEILING` 与 `maxRequestBodyBytes(env)`；
@@ -3916,7 +3921,7 @@ TODO 清单式的动作标签（预览/下载/收藏…）**没有**并进共用
 ### 57.3 行间方向键（V2）：清单条目过期，补的是两处守卫差异
 
 核对发现 **V2 早已实现**（`board.js` 的 `onRowKeydown`：↓↑/Home/End + 用 `focus.js` 的
-`describeFocusable` 认"同一个控件"），§27 P1-8 是过期条目。真正的差异只有两处，本轮补齐：
+`describeFocusable` 认"同一个控件"），`docs/frontend-checklist.md` §27 的 P1 第 8 条是过期条目。真正的差异只有两处，本轮补齐：
 
 - `event.shiftKey` 让路 —— Shift+方向键是"选中文字"，此前 V2 会把焦点搬走；
 - 到边界时**吞掉按键**（`preventDefault`）—— 此前会带着页面滚一下（V1 早就这么做）。
@@ -5144,7 +5149,7 @@ FOOTER {"hovered":true,"panelVisible":true,"aboveTrigger":true,"insideViewport":
 .toolbar .select[aria-label="每页条数"] { display: none; }
 ```
 
-它来自 2026-09-18 早些时候那次密度重做（§? 见本文件 3402 行那条记录）：窄屏原本**每组一行**，
+它来自此前那次密度重做（见 §53 第 3 条 —— 本文件 :3465 记着窄屏工具栏 **176 → 124px**）：窄屏原本**每组一行**，
 工具栏实测胀到 176px（4 行、20% 的视口）；收敛的方式是让"搜索 / 类型"整行独占、其余组共用剩余行，
 再把最低频的一件让出去 —— 就是每页条数，理由写在注释里："底部分页条仍写着「第 1–50 条，共 N 条」，
 页大小也还能改 URL"。
@@ -5761,7 +5766,7 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 1. 每条规则的路径必须在 `public/` 下**真实存在** ⇒ 改名漏改会红（死规则 = 路径不存在）；
 2. 三个挂载点里**有** `js`/`css` 目录的，都必须有 `no-cache, must-revalidate` 规则。
 
-这两条把"只有人去数才会发现"（本文件 §0 反复记的那类漂移）换成了"守卫会红"。
+这两条把"只有人去数才会发现"（`AGENTS.md` §1 记的那类漂移）换成了"守卫会红"。
 
 **同时订正的文档**（都是同一次机械替换打偏的，逐条见 `docs/ui-rename-v1-v2.md` §7）：
 `AGENTS.md` §2/§3（把 `/ui/` 误写成 `/ui_v2/`、V2 探针 URL 仍是 `/ui/app/`）、
@@ -5961,3 +5966,283 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
    同一次复核还发现另外两处同型问题：`ui.md` §2.1 的沿革句被改名替换打偏（历史上补的是 `ui_old`，
    被写成了后来的 `/ui_v1`）、`ui-rename-v1-v2.md` §9① 的"21 处"与 `git diff --numstat` 的
    +23/−22 对不上 —— 三处都已订正。
+
+## 93. 通读驱动的修正：文档事实错误、`progress.md` 自身缺陷与前端缺陷（2026-09-19，用户"阅读全部的文件/文档…首要修改错误/不合理的地方"）
+
+> **性质与边界**：本轮是**逐行通读**（文档 + `public/**` 全量，`src/**` 为定向核对）后按"事实错误 > 不合理 >
+> 语言"分级修的一批小改动。本节（§93.1–§93.4）与 §93.5 是**同一轮的两路**（分工见 §93.5 的引子）。
+> 撰写这批改动时用户要求"暂时不要测试"；**随后用户放开测试**，故 §93.7 记录**补跑的门禁与真实浏览器实测**
+> —— 撰写期的"未经验证"结论已在 §93.7 逐条结清，§93.4 相应条目已订正。
+
+### 93.1 文档事实错误（已订正）
+
+| 位置 | 原文 | 实况（证据） | 改法 |
+|---|---|---|---|
+| `README.md:41` | "`/ui_v2/` 与站点根都跳到它" | `/ui_v2/` 是**实挂载点**（V2 本体在 `/ui_v2/app/`，`/ui_v2/` 自己落到那张 404 页）；会带 fragment 跳转的只有 `/ui/`（`public/ui/js/redirect-hash.js:11`） | 改成"`/ui/` 的跳转壳与站点根都跳到它" |
+| `README.md:339` | "`/ui_v2/#Text-<hash>` 这种入口写法也行" | 同上：该路径没有页面；V2 读 hash 的是 `boot.js:277/1262`，入口应为 `/ui_v2/app/` | 改指 `/ui/`（跳转壳会带 hash），并补 `/ui_v2/app/#Text-<hash>` 一行 |
+| `README.md:378` | "共 12 处 `console.*` 调用点" | 实测 **14** 处（`Select-String -Path src/*.ts,src/**/*.ts -Pattern 'console\.'`，排除注释行） | 12 → 14 |
+| `README.md:412` | 弱凭据检测归在 `src/auth.ts` / `src/requestLimits.ts` | `requestLimits.ts` 全文无凭据相关代码（`ENFORCE_STRONG_CREDENTIALS` 只在 `auth.ts:78-147` 与 `env.ts:18`） | 只留 `src/auth.ts` |
+| `README.md:490` | upstream-defects"16 条已复刻 + 5 条未复刻" | 该文件头部已是"**21 条候选**：A 必须复刻 10 / B 有意偏离 5 / C 结构性消除 2 / D 待办 2 / 不改但需知 2"（`docs/upstream-defects.md:1`） | 按现行口径重写 |
+| `README.md:500` | ui-rename"踩到的六个坑" | 该文 §3 现有 **8** 条（`:78/80/82/85/87/91/94/97`） | 六个 → 八个 |
+| `README.md:201` | 触发路径白名单枚举漏项 | `deploy.yml` 的 `on.push.paths` 共 11 条，含 `eslint.config.js` | 补进枚举 |
+| `AGENTS.md:34/41/43-44` | "套件数出现在 4 个文件" / "`docs.test.ts` 只把 4 个文件当作现状口径校验" | `test/docs.test.ts:84-90` 的 `CURRENT_STATE_FILES` 是 **5 项且含 `AGENTS.md`**（2026-09-18 加入）；实测 5 个文件各有一处"N 个套件" | 4 → 5，并把 `AGENTS.md` 补进两处名单 |
+| `AGENTS.md:111` | qf-* 夹具见 `progress.md` §16.8 | 全文**无 §16.8**；夹具现状在 §20（:995 已清 15 条）与 §52 的「仍未做」（:3305 仍余 46 条） | 改指 §52 的「仍未做」与 §20 |
+| `public/ui_v1/README.md:42` | "窄屏（≤560px）不显示「每页条数」" | `ui_v1/css/layout.css:602` 明写"**不再**在窄屏隐藏（2026-09-18 反转）" | 改成"与「刷新」整组贴行尾" |
+
+### 93.2 `progress.md` 自身的结构缺陷与失效引用（已订正）
+
+- **插进一半的版本表（§25/§26 边界）**：§25 的版本表在 `1.22.1` 处被 `## 26.` 标题截断，`1.23.0`–`1.25.2`
+  四行掉到 §26 标题**之后**，且 §26 首段被切碎成四片、分别粘在这四行的行尾（表格单元格里因此出现整
+  句话）。已把四行移回 §25 表内（表格不再被空行断开），标题与首段还原成一段。
+- **订正标记指向中间值**：三处"订正"把请求体上限指向 §47 的 64/80 MiB，而当日最终定稿是 §48 的
+  **48/64**（= 代码现值 `src/requestLimits.ts:9/17`）：旧 `:199`（§2 **现状表**里也是 64/80）、`:2081`、
+  `:2630`、`:2678`。四处已改成"§47 先提到 64/80，同日 §48 按真实数据回落定稿为 48/64"。
+- **失效小节号**：`:1270` 的 `§4/§7` → `§6`（`ProfileDto.dataName` 条目实际在 §6 的表里）；`:1324` 的
+  `§21-②` → `§22-②`（"硬删 → 客户端反向重传"记在 §22；§21 是写库套件的目标守卫）；`:3923` 的
+  `§27 P1-8` → `docs/frontend-checklist.md` §27 的 P1 第 8 条（那份文件用连续编号，没有 `P1-8` 这种写法）。
+- **未填的占位与不存在的节**：`:5151` 的 `（§? 见本文件 3402 行那条记录）` → 指 §53 第 3 条
+  （`：3465` 记着窄屏工具栏 **176 → 124px**；3402 行是登录页的测试设计，与此无关）；`:5768` 的
+  `本文件 §0` → `AGENTS.md` §1（"只有人去数才会发现"这句只在那里）。
+- **过期的限制项**：`:1185` 仍把"界面不走 SignalR 实时推送"列为限制（早已实施，`docs/ui.md:426` 已把它
+  从"不做什么"表移除），且指向 `docs/ui.md` §9/§10 —— 限制清单在 §6。已改为"两条限制（图片缩略图依赖
+  数据文件、标签轮询计入请求额度）"并改指 §6/§10，另附 README「已知限制」与「容量提示」的指引。
+
+### 93.3 前端缺陷（已修）
+
+| 位置 | 缺陷 | 改法 |
+|---|---|---|
+| `public/ui_v2/js/ui/drawer.js:382` | **保留策略栏的取值规则**（本行是撰写期的初版改法；**最终形态见 §93.7 的三组状态实测**）：改前把分钟 ÷ 1440 **四舍五入到 3 位小数**回填（8641 分钟 → `"6.001"`），而保存路径只认整数 ⇒ 用户**只改另一栏**也会被拒，报错还指向他没碰过的那一栏；顺带还发现同源的两处：非整天数的 Meta 值会被静默清除、部署变量值会被回填成 Meta 覆盖（= 静默冻结"跟随部署变量"）。 | 只回填 Meta 值、生效值进 placeholder、保存时按"知不知道当前状态"决定发值 / 发 null / 省略字段；删掉因此闲置的 `round()` 助手 |
+| `public/ui_v2/css/overlay-v2.css:1117/1127` | 窄屏那档把 `bottom` 改写成**不含 `env()`** 的 `var(--sp-4)`（同特异性、位置在后 ⇒ 生效），而窄屏恰是**有 Home Indicator 的设备**类型 ⇒ 等于把 A-33 的安全区内边距在窄屏上抹掉了（本节标题还写着"都要让开安全区"）。 | 两处补成 `calc(var(--sp-4) + env(safe-area-inset-bottom, 0px))` |
+| `public/ui_v2/js/ui/board.js:119` | 可视标签是「全选」，可访问名却是"选择本页全部记录"（不含"全选"）⇒ 违反本仓自订的 2.5.3 判据（`ui_v1/index.html:118`） | 改为 `全选（本页全部记录）` |
+| `public/ui_v2/js/ui/pager.js:37` | 同类问题：可视标签「跳至」，可访问名"跳转到第几页" | 改为 `跳至页码` |
+| `public/ui_v2/app/index.html:120` | 占位节点写 `role="toolbar"`，而组件（`ui/batchbar.js:25-34`）按 A-32 特意用 `role="group"`（`toolbar` 承诺的方向键导航并不存在） | 占位改成 `role="group"` 并注明理由 |
+| `public/ui_v2/css/shell-v2.css:663` | **死规则**：`@media (max-width: 1080px){ .overview__spark{display:none} }` 是裸类（0,1,0），压不过 `:193` 的 `.main > .overview …`（0,3,0），而后者本就是 `display:none` ⇒ 既不生效、也**看不出**没生效（文件在 `:187-191` 已记过这个特异性坑） | 删除，改成一条说明（显隐只由 `:193` 与 `:731` 决定） |
+| `public/ui_v2/js/ui/overview.js:33` | 注释说概览主数字是 `totalCount`（含已删除），实际接线是 `stats.activeCount`（`boot.js:346-350`） | 注释改为 activeCount 口径 |
+| `public/ui_v2/js/ui/ghost.js:13` | 注释承诺"CLS ≈ 0"，与同文件头部实测的 **CLS = 0.90** 直接打架（`rows = 6` 这个默认值正是那次闯祸值） | 改为"每行落位不跳；但整页高度取决于行数，调用方必须按页大小传 `rows`" |
+| `public/ui_v2/js/ui/filters.js:92` | 注释声称包装是为了让回收站里的「清除筛选」与空状态行为一致，实际**没传** `keepView` ⇒ 行为仍不一致 | 注释改为如实描述，并标为**未定论项**（见 §93.4） |
+| `public/ui_v2/css/overlay-v2.css:178` | 注释说内联 SVG 的箭头色是"`--c-warm-500` 的十六进制"，实际 hex `#857d71`、令牌 `#827a6e`（`tokens-v2.css:30`） | 注释改成"固定中性灰 `#857d71`，与令牌接近但不是同一个值" |
+| `public/ui_v1/index.html:73` | 注释说统计条三个数字"来自 `/ui/api/statistics`"，而首屏走 `/ui/api/overview`（`main.js:1246` 的 `refreshOverview()`）——`stats.js:2-5` 早已订正过这句 | 注释写明两个来源 |
+| `public/ui_v1/css/components.css:1011` | 注释说"文本行没有『下载』、文件行没有『复制』"，而 Text 的第 3 槽**恒满**（`list.js:161-183`：有数据文件叫「下载」、内联文本叫「下载文本」），唯一会用占位的只剩**非图片的 File/Group**（没有「复制」） | 注释按实际改写 |
+
+### 93.4 未做与待定
+
+1. **`keepView` 语义不一致（待定，本轮未改行为）**：V2 工具栏那枚「清除筛选」不传 `keepView`（清完回活跃
+   列表，与 V1 `main.js:222` 一致），空状态里那枚传 `{ keepView: true }`（留在回收站）。
+   `docs/AUDIT-commit-9b4cdca.md` §P2 只消掉了"Event 被当选项解构"的隐患、没对齐行为；而 §81.1.2
+   （本文件 :5325）写下的原则是"清除筛选保持所在视图"。**两种读法都讲得通**（工具栏那枚若保留
+   `deleted`，点完按钮仍在、像是没生效），故本轮只在 `filters.js` 注释里如实标注，**没有改行为** ——
+   要统一请指明取哪一条。
+2. **门禁已补跑**（见 §93.7）：`tsc --noEmit` 0 错、`eslint` 0 告警、**22 个套件 / 413 例全绿**、
+   V1/V2 探针**零 console 错误零失败请求**。撰写期那批改动因此**已按 DoD 验过**；
+   仅剩两处**测不到**的：粗指针（触屏）下的命中区、以及"点保存"这一条交互（探针不点保存按钮）。
+3. **未逐行读完的面**：`src/**` 已由**同轮第二路**（§93.5）逐个通读；本轮这一路只做定向核对
+   （常量、路由、日志点、凭据判定）。`test/**`（28 个文件）与 `.github/workflows/deploy.yml`
+   仍只核对了数字、清单与引用，**未逐行通读**。
+4. **并发写入**：本轮执行期间工作区里**另有一路写入者**（§93.5 那一路）在改 `src/**` 与四份文档，
+   因此 dev server 会因文件变更自动 reload（本机实测过一次 reload 时 `SQLITE_BUSY` 致命退出 ——
+   原因是**我自己同时起了两个 `wrangler dev`**，它们共用同一份本地 D1 SQLite 文件；收掉一个即恢复。
+   **教训：本地 D1 是单文件，同一时刻只应有一个 `wrangler dev` 实例。**）
+   同理，套件与探针读到的计数是**共享本地库的即时值**（实测同一份数据在两次探针之间
+   `deleted` 从 3405 变成 3491），跨轮比较数字时要注意这一点。
+
+
+### 93.5 同轮第二路：`src/**` 逐个通读 + 四份文档的事实错误（同一日期，另一路并行完成）
+
+> 与 §93.1–§93.3 是**同一轮的两路**：那一路覆盖 `README.md` / `AGENTS.md` / `progress.md` 自身与
+> `public/**`；这一路覆盖 **`src/**` 全部 30 个文件**（逐个通读）+ `docs/design.md` / `docs/ui.md` /
+> `docs/protocol.md` / `docs/ui-v2-design.md` / `docs/frontend-checklist.md`，外加 `test/**`、
+> `wrangler.toml` 的定向核对。同样**没有跑**全量套件与探针（用户当轮要求"暂时不要测试"），
+> 但**跑了**静态门禁：`node node_modules/typescript/bin/tsc --noEmit` 与
+> `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` 均 **exit 0**。
+
+**文档事实错误（已订正）**
+
+| 位置 | 原文 | 实况（证据） | 改法 |
+|---|---|---|---|
+| `docs/design.md:226` | `FileAndGroup=6` | 位掩码是 `File\|Group = 2\|8 = 10`（`src/types.ts:20`；同表 `All=15` 也只有 10 才自洽），6 是 `File\|Image` | 6 → 10 |
+| `docs/design.md:143` | 界面开关"关闭时**两个**挂载点（/ui*、/ui_v1*）全 404" | 三前缀一律 404（`src/uiEnabled.ts:9`、`src/index.ts:233-239`，同文件 `:471` 也写"三个"） | 两个 → 三个（补 `/ui_v2*`） |
+| `docs/ui.md:541` | 标题"**29** 字符…（V1 保持 **22** 字符）" | 实测 `public/ui_v2/app/index.html:8` 是 **28**、`public/ui_v1/index.html:6` 是 **21** | 29/22 → 28/21，并写出 V1 的标题原文 |
+| `docs/protocol.md:497` | hash 匹配的实现写在 `src/db.ts:133` | 该 SQL 在 `src/db.ts:157`（`:133` 早已是别的代码） | 行号改 157 |
+| `docs/protocol.md:500` | Group 条目 `.`/`..` 的拒绝在 `src/hash.ts:224-228` | 判据在 `src/hash.ts:239`（`:224-228` 那段讲的是盘符/NUL） | 行号改 239 |
+| `docs/ui-v2-design.md:218` | `--content-max` 1240px："容器（V1 **1180px**；内容列需要更宽）" | V1 是 `1280px`（`public/ui_v1/css/tokens.css:149`）；且 1240 不比 1280 宽，那条理由也不成立 | 改为"（V1 是 `1280px`；V2 更窄，两侧留白更多）" |
+| `docs/ui-v2-design.md:284` | `GET /ui/api/activity?days=30&**tzOffset**=-480` | 线上参数名是 `tz`（`src/ui/routes.ts:603`、`public/ui_v2/js/api.js:241`；`docs/ui.md:369` 写的也是 `tz`） | 两处 `tzOffset` → `tz` |
+| `docs/ui-v2-design.md:3` / `:19` | 标题"生产完善（2026-09-17，**进行中**）"，而 `:19` 的状态行写"已实现并通过全量质量门（2026-09-15）" | 两处日期不同、读起来互相打脸（`:19` 说的是实现轮） | 标题去掉"，进行中"；`:19` 标明"（V2 实现轮，2026-09-15）" |
+| `docs/ui-v2-design.md` §8.1 与 `docs/frontend-checklist.md:493-495` | §8.1 标题"**尚未实施**"、正文"本轮只做核对与记录，**没有改代码**"；checklist 同声"尚未实施" | 第 2 件（`overview` 内部把统计各算两遍）**已实施**：`src/ui/routes.ts` 拆成 `deploymentStats()`（`:76-88`）+ `deploymentMeta()`（`:97-144`），`:621` 有 O-01 注释；**第 1 件（V2 写操作后不整只重打 `overview`）确实仍未做** | 两处都改成"第 2 件已实施（O-01）、第 1 件仍未做" |
+| `docs/ui-v2-design.md` §8.1 内文 | `main.js:158`/`:361`、`1186 行`、`boot.js:701-702…`、`:470`、`routes.ts:530-551`/`:583-602`/`:72-81`、`boot.js:625`、`storage.ts:199-210` | 逐一实测：`main.js` 的 `api.statistics(` 只在 `:411`、注释在 `:1240`；V2 那七对是 `:669-670 / :745-746 / :776-777 / :795-796 / :1044-1045 / :1080-1081 / :1108-1109`、切视图 `:492`；`statistics` 路由 `:572-588`、`overview` 路由 `:623-641`；`api.poll` 在 `boot.js:653`；`totalHistorySize()` 在 `storage.ts:200` | 行号逐个更新（`db.ts:363` 原本就对） |
+| `docs/ui-v2-design.md:410-412` | "V2 付的是 overview 的全套（R2 列举 **2 遍**、statistics **2 遍**、按类型计数 **2 遍**…）" | O-01 之后那三项各只剩 1 遍，只有 marker 与 Meta 读仍是 V2 多付的 | 按"O-01 之前 / 之后"分别写清 |
+
+**`src/**` 逐个通读的发现（已修）**
+
+| 位置 | 问题 | 改法 |
+|---|---|---|
+| `src/ui/query.ts:455` | **潜在缺陷**：函数注释承诺"哈希比较大小写不敏感"，而同函数预取是 `Hash IN (…)` **等值**比较（SQLite 默认大小写敏感）—— 小写入参在**预取那一步**就被滤掉，下面那句 `toUpperCase()` 过滤根本没机会生效。库里恒为大写（`docs/protocol.md` §10），调用方却可能发小写 | 预取前把入参统一 `toUpperCase()`（保持可走索引，不改 SQL 形态），并改掉误导注释 |
+| `src/db.ts:262` | 注释断言高位（`Unknown`/`None`）"**不可达**"，但 `Types` 也接受**数字**（`Types=16` 合法，`src/serialization.ts` 明写接受数字），紧邻代码正是在测 `1 << 4`/`1 << 5` | 改成"按**名字**传时走不到高位；数字入参落到 `Unknown`/`None` 上，与上游 `Enum.GetValues` 一致" |
+| `src/db.ts:279` | 引用 `docs/protocol.md §10「查询搜索」` —— §10 表里**没有这一条**（它也不是协议差异：协议面这边就是照上游做的）。该分面实际登记在 `docs/AUDIT-redundancies.md` 的 C-05（`:351`） | 改指 C-05，并写明"故不在 protocol.md §10 里" |
+| `src/db.ts:290` | 注释声称"这里再保证 offset 是安全整数"，而紧邻代码只判 `page` 是不是安全整数：`(2^53-1 - 1) * 50` 本身就会溢出（真正兜住它的是路由层的 int32 上界） | 注释改成如实描述：路由层给 int32 上界，这里只兜非正/非安全整数 |
+| `src/db.ts:504`、`src/storage.ts:30`、`src/types.ts:121` | 三处注释引用 `listHistoryWorkingDirs()` —— 这个函数**不存在**；现存方法是 `listHistoryObjectsByDir()`（`src/storage.ts:143`，`cleanup.ts` 调的也是它） | 三处一律改成 `listHistoryObjectsByDir` |
+| `src/requestLimits.ts:12` | 注释自相矛盾：说客户端默认上限"**远大于**它"，括号里写的却是"客户端默认 20 MB"（20 MB < 48 MiB，默认根本撞不上） | 改成"客户端 `MaxFileByte` **可调到 GB 级**（默认 20 MB，低于这里的默认上限）—— 调大之后才会撞 413" |
+| `src/rateLimit.ts:18`、`:237` | 同一文件两种说法：`:27` 写"第 11 次**请求**命中封锁"，另两处写"第 11 次**失败**起生效"（实际是第 10 次失败写入封锁、第 11 次请求被拦） | 两处统一为"第 11 次**请求**起立即被拦" |
+| `src/profile.ts:3` | 未使用的导入 `tempKey`（`tsconfig` 未开 `noUnusedLocals`，`src/**` 也不在 eslint 覆盖内，故长期静默） | 删掉该导入 |
+| `wrangler.toml:35` | 注释说本仓库自身版本"当前 1.21.3"，而 `package.json` 是 `1.25.2` | 改为 1.25.2 |
+| `test/ui-contract.test.ts:41` | `@ts-expect-error` 的理由写"`public/ui_v1/**` 不在 include 里"，而该行导入的是 `public/ui_v2/js/latest.js`，本套件扫描目标也是 V2 | 改成 `public/ui_v2/**` |
+| `test/ui-contract.test.ts:85-87` | 同文件内部自相矛盾：头部 `:4-12` 明写"V1 从 2026-09-17 起重新纳入维护"，`:85-87` 却仍写"V1 冻结存档…存档目录**不再受约束**" | 按头部口径重写，并指明 V1 的契约守卫在 `test/ui-guard.test.ts` |
+| `test/ui-input.test.ts:157` | 往 `api.overview()` 传 `tz: -480`，而该选项已被有意废弃（`public/ui_v2/js/api.js:228-231`："`tz` 从头到尾没人读"），且这条用例只断言 `deleted` | 删掉 `tz: -480` |
+| `public/ui_v2/js/spark.js:31` | 注释说"间距占柱宽的 **34%**"，代码是固定 `const gap = 2`（代入 `width:132` 的调用方，占比随根数在 14%~26% 之间变） | 注释改成"间距固定 2px（不随根数缩放）" |
+| `public/ui_v2/js/ui/dialog.js:242` | JSDoc 登记了 `tone?: 'danger'\|'neutral'`，但全文件只有这一处出现 `tone`（确认键的类是写死的 `.btn--danger`），调用方也从不传 | 从 JSDoc 里删掉 `tone?`（要真做就另开一轮） |
+
+**同轮发现、但这一路没有动的（列在这里以免被当成"已修"）**
+
+1. `src/ui/routes.ts:703-704`（`app.all('/ui/*', …)` 与 `app.get('/ui', …)`）是**不可达**代码：
+   `src/index.ts:233-253` 对三个界面前缀一律提前 return（asset 或那张 404 页），只有测试直接
+   `createUiRoutes()` 才会命中。**未删** —— 删它属收缩 API 面，且 `ui-guard` 可能有直连用例断言这两条。
+2. `src/pathCase.ts:82` 的 `LITERAL_POSITIONS` **无任何消费者**（`src` / `test` / `docs` / `public` /
+   `tools` 全仓只此一处；注释自称"供守卫测试与文档引用"，两个消费者都不存在——守卫用的是
+   `normalizeProtocolPath`）。**未删**，与上一条同理。
+3. `src/profile.ts` 的 `isLocalDataValid` / `deleteDataIfNeed` 各带一个**未使用**的 `db` 形参
+   （要同步 3 处调用点）。**未改**：属签名收缩，不是本轮"改错"的范围。
+4. `public/ui_v2/js/boot.js:1147` 的 `isModalOpen: () => Boolean(document.querySelector('dialog[open]'))`
+   **漏了行菜单**：菜单是 `ui/menu.js` 的 `div.menu` + `.menu-backdrop`（不是 `<dialog>`），于是
+   菜单开着时 `keys.js:27` 的模态早退不生效 —— `/` 与 `Ctrl/Cmd+K` 会把焦点移到遮罩**底下**的搜索框、
+   `r` 会刷新列表而菜单不关。**未改**：属行为改动，按 DoD 必须有真实浏览器验证，本轮跑不了。
+5. `docs/AUDIT-redundancies.md` 里 C-05 / C-06 引用的 `src/db.ts:149-153`、`src/ui/query.ts:196-202`
+   等行号已漂。**未改**：那几份是审计报告的**当轮快照**，与 `progress.md` 的历史数字同理。
+6. `docs/progress.md:3177` 的"V1 时的基线是 **323** 例"与同一轮 §48.3 / §49.3 / §50.3 记的
+   **344** 例对不上。**未改**：用例数属版本曲线，且该文件本轮正由另一路编辑。
+
+### 93.6 同轮第三批：V1 前端真缺陷 + 审计文档的失效引用（同一日期，继续）
+
+> 这一批把通读面推到 `public/ui_v1/js/**`（37 个文本文件逐行）与 `public/ui_v2/css/**` + 此前未读的
+> 测试文件。**仍未跑**套件与探针；V1 的改动过了 eslint（`public/ui_v1/js` 在 lint 覆盖内，exit 0）。
+
+**V1 真缺陷（已修，`public/ui_v1/js/**` 不在另一路的改动集内）**
+
+| 位置 | 缺陷（证据） | 改法 |
+|---|---|---|
+| `js/components/info.js:523` | **重试成功却显示成失败**：`open()` 的成功路径无条件 `dialog.showModal()`，而同一个文件 `:462-464` 早就写明"对已打开的 `<dialog>` 再调会抛 InvalidStateError"。走一遍"首屏失败 → 点重试"：`main.js:1083` 先 `open(fresh)` 把数据画好，紧接着抛异常被 catch 吞掉，因 `!cached` 仍为真又执行 `open(null)`，把数据换回「暂时取不到部署信息」 | 与 `!info` 分支同判据：`if (!dialog.open) dialog.showModal();` |
+| `js/components/list.js`（`removeItem`） | **空态只剩一块 128px 空白**：`.empty` 建出来时没有子节点，内容只在 `update()` 的空结果分支里填（`:760-764`）。删掉本页最后一行、批量删完、回收站批量恢复完走的都是 `removeItem` 这条出口 —— 要等紧随其后的静默刷新落地才有内容，那次若失败就一直空着 | 同一出口也 `buildEmptyState(...)` 填内容；顺带把"是否处于筛选态"抽成 `isFiltered()`（原先只在 `update()` 里内联，两处出口各写一份正是漏掉的原因），并用组件级 `lastFilters` 记住最近一次 filters |
+| `js/signalr.js:114`（`teardown`） | **竞态窗口漏判**：`stop()` 已把 `socket` 置空、而新一次 `start()` 正在取票据（`pending === true`）时，旧连接迟到的 `close` 仍会照跑收尾 —— 把刚写下的 `'connecting'` 覆盖成 `'offline'`、多记一次失败、再排一个空转的重试（清理其实已由 `stop()` 做完） | 判据加上 `pending`：`if (pending || (socket !== null && socket !== nextSocket)) return;` |
+| `js/components/list.js:728`、`:250` | 注释里的数算错/过时：错峰尾巴写成 440ms（`ENTER_STAGGER_LIMIT = 12` × `motion.css:41` 的 40ms = **480ms**）；"每行 3–4 个可聚焦控件"（活跃视图**最多 7 个**：复选框 + 至多 4 个行内动作 + 收藏/置顶 ⇒ 50 行最多 350 个 Tab 停靠点） | 两个数字改成实测值 |
+
+**审计文档与 checklist 的失效引用 / 自相矛盾（已订正）**
+
+- `docs/frontend-checklist.md:265-269` 与 `:542`："V2 的同名函数仍是旧行为"已过期 —— `ui_v2/js/format.js:68-75`
+  在 2026-09-18 就按 V1 分档补齐，`test/ui-logic.test.ts` 的断言也同批改了。
+- `docs/AUDIT-redundancies.md`：§13.3 表头「**V2 当前（回退）**」加订正注（三条都已在 2026-09-18 晚落地，
+  逐条给出 `format.js:68-75` / `filters.js:83` / `push.js:31,88-97,191-192`）；§15 的"明确不改"行随之作废；
+  目录补 §14 / §15 / 附（原先只剩到 §13，而 `:10` 自己写着"§14 是唯一的执行记录"）；
+  `:976` 的 `提示条指向 /api/app/` → `/ui/app/`（并注明该提示条 2026-09-19 已移除）。
+- `docs/AUDIT-missing-states.md:99` 与 `:138`：正文写"**未修**"，而同文件 §10 的对照表写"**已修**" ——
+  两处补上"本轮未修；随后已修，见 §10"。
+- `docs/AUDIT-v1-v2-divergence.md:238`（§10 结论说三条"原文未动、仍在"，§12 却记"已修"）与
+  `:272`（行首的 `§1` 其实指第一轮 `AUDIT-missing-states.md` 的 §1.3/§1.4/§1.5 与 §3.1）。
+- `docs/AUDIT-v1-v2-drift-2026-09-19.md:5`：焦点那条在 `AUDIT-missing-states.md` §3.1，不在 divergence §3.1。
+- `docs/upstream-parity.md:286-287`（句子被自己的列表项拦腰截断）与 `:303`（U3 已在 §4.2 记"已修复"、
+  `package.json:30` 也已是 `wrangler ^4.131.2`，却仍列在"可上线的边界"）。
+- `docs/upstream-issues.md:23`：枚举漏了 `Issue 13`（文件里实有 1–15）。
+- `docs/backend-gaps.md:16` 与 `:53`：快照期的 V2 路径写成 `public/ui_v2/js/...`，实际是
+  `public/ui/js/...`（已用 `git ls-tree 509bdef:public/ui/js` 与 `git show 509bdef:...list.js` 逐条核对）。
+
+**同轮发现、这一批没动的**
+
+1. `public/ui_v1/js/main.js:370`：`render()` 与那条提示仍在 `api.list` 的同一个 `try` 里 —— 组件渲染
+   抛异常会被 `:380` 的 `serverUnreachable(error)` 判成网络故障，点亮「失去联系」横幅。同文件
+   `:405-421` 已经给 `refreshStats` 立过"绘制放在 fetch 的 try 之外"的纪律，`refresh()` 这条没跟上。
+   **未改**：要重排 async 流程，本轮没有测试可验。
+2. `public/ui_v1/index.html:85`：注释说"每页条数存在 localStorage，静态页面读不到"——V1 只存
+   `sb-ui-theme`（`main.js:1103`、`theme-init.js:10`），页大小其实来自 URL（`filters.js:132`）。
+   **未改**：该文件正由另一路编辑。
+3. `public/ui_v1/css/components.css:1012`（"唯一会用占位的是非图片的 File/Group 行"，而回收站行同样产
+   占位）、`:234` 的图标像素说明。**未改**：同上，文件属另一路。
+4. `public/ui_v2/css/overlay-v2.css:972`（注释说"只保留五个"动画，实际 **8** 个 `@keyframes`）与
+   `:1111-1113`（`≤720px` 块里 `:root{--control-h-sm:40px}` 压掉了 `tokens-v2.css:270-281` 的
+   `--hit-min` 44px —— 手机上触屏命中区反而**变小**，且该块标题还写着"都要让开安全区"）。
+   **未改**：文件属另一路，第二条更是样式行为改动，需要真机量。
+5. `public/ui_v2/css/shell-v2.css:342`（注释按 `--ink-faint = warm-500` 论证，而它 2026-09-16 已改为
+   `warm-550`）与 `:658-662`（"720–1079 中屏档"并不存在，"隐藏类型分布"的机制也已移除）。
+   **未改**：文件属另一路。
+6. `public/ui_v2/css/base-v2.css:24-25` 断言"V2 所有可点元素都有 `:active` 反馈"，实测缺
+   `.sort-btn`（`board-v2.css:148-174`）、`.details__summary`、`.password-field__toggle`
+   （后两个在 `overlay-v2.css`）。**未改**：补齐要动另一路的文件，且属视觉改动。
+7. `public/ui_v2/css/board-v2.css:123/194` 的窄屏吸顶偏移（`≤720px` 时筛选条已是 `position: static`，
+   偏移仍按 appbar+filters 算）与 `:109-113` 的色条高度（`.board__cell` 上下各 12px 内边距，52px 色条
+   塞进 40px 内容盒）。**未改**：两条都要真机量一次才能定性，属"待确认"而非已证缺陷。
+8. `public/ui_v2/js/ui/board.js:113` 用了 `.sort-btn__label`，而 5 张 V2 样式表里没有这个类。
+   **未改**：文件属另一路编辑。
+9. `test/protocol.test.ts` / `test/fix-regressions.test.ts` / `test/transports.test.ts` 都经真实 HTTP
+   写库，却既没有 `afterAll` 收尾、也没有"有意留残留"的说明（同批的 `cleanup` / `query-filters` / `ui`
+   都显式收尾，`test/support/target-guard.ts` 记的正是残留累积的后果）。**未改**：属补测试，而本轮
+   不跑套件、加完无法验证。
+
+
+
+
+
+
+### 93.7 门禁与真实浏览器实测（测试放开后补跑，2026-09-19）
+
+> 用户发话"可以测试"后，把 §93.1–§93.3 那批改动按 `AGENTS.md` §2 的 DoD 真跑了一遍。
+> ⚠️ 这些套件与探针跑的是**当时整棵工作区**（其中已含同轮另一路 §93.5 / §93.6 的改动 ——
+> 它们与本路并行写入同一工作区，详见 §93.4 第 4 条），因此结论口径是"**当时那份树**全绿"，
+> 不是"只跑了本路的 16 个文件"。
+> 命令与判据逐条如下（**不经管道吞退出码**：直调 CLI 入口）。
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `node node_modules/typescript/bin/tsc --noEmit` | **exit 0**（0 错） |
+| 静态检查 | `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` | **exit 0**（0 告警） |
+| 全量套件 | `wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` + `node node_modules/vitest/vitest.mjs run --no-file-parallelism` | **22 files / 413 tests 全过**（连跑**四次**：69.84s / 68.72s / 69.91s / 68.96s；最后一次是在本节所有**代码与样式**改动落定之后，其后只改了本文件正文） |
+| V2 探针（1440×900） | `node test/manual/probe.mjs --port 9341 --width 1440 --height 900 --url /ui_v2/app/` | `CONSOLE ERRORS none` / `FAILED REQUESTS none`；`rows=50`、`pageOverflow=0` |
+| V2 探针（375×812） | 同上 `--width 375 --height 812` | 同上全绿；`sparkBox 424×26`（窄屏仍显示趋势图）、`pageOverflow=0` |
+| V1 探针（1440×900） | `node test/manual/probe-ui-v1.mjs --port 9342 --width 1440 --height 900` | `CONSOLE ERRORS none` / `FAILED REQUESTS none`；`rowHeight=47`（骨架高度不变式仍成立）、`sizeSelectVisible=true` |
+
+**一次假红（已定位、非缺陷）**：收尾那一轮出现过 `signalr` 的「心跳：连接保持超过客户端 ServerTimeout（30s）
+不掉线」失败（`expected Error: WebSocket closed with status code:… to be undefined`）。原因是**我在套件运行
+期间又编辑了 `public/ui_v2/js/ui/drawer.js`**（纯注释重排），`wrangler dev` 的文件监听触发 reload、把正在
+测试的 WebSocket 打断。冻结工作区后重跑即 **22 files / 413 tests 全绿**（70.40s）。
+教训：**跑套件期间不要碰工作区的任何文件** —— 与"先起 dev server 再跑"同属操作纪律，不是产品缺陷。
+
+**探针新增三个字段**（`test/manual/probe.mjs` 的 `DRAWER` 段）：`retentionCount`（第二条数字输入框的值）、
+`retentionHints`（两个框的 placeholder）、`retentionNote`（`#retention-status` 那行说明）。
+理由：本轮改的正是这三个东西的**取值规则**，没有它们就只能靠人眼看截图 ——
+与 `retentionDays` 同类的"给断言看的读数"。
+
+**三组状态实测**（`PUT /ui/api/settings` 造状态 → 探针读 DOM）：
+
+| 状态（`/ui/api/info` 的 retention） | 探针读数 | 说明 |
+|---|---|---|
+| `meta 10080 / meta 500` | `retentionDays="7"`、`retentionCount="500"` | Meta 覆盖 ⇒ 回填（与改前一致） |
+| `meta 100 / env 1000` | `retentionDays=""`、`retentionCount=""`、说明行含"当前保留期是 100 分钟（此处设置的旧值，不是整天数）；这一栏留空 = 保持它不变" | **本轮修的主缺陷**：改前这里回填成 `"0.069"` ⇒ 用户改另一栏也保存不了 |
+| `env / env`（10080 / 1000 生效） | `retentionDays=""`、`retentionCount=""`、`retentionHints=["当前 10080","当前 1000"]` | **顺带修掉的第二处**：改前两栏都回填成 `"7"`/`"1000"`，于是"什么都没改直接保存"会把部署变量值写成 Meta 覆盖（静默冻结"跟随部署变量"）。生效值改放 placeholder，看得见但不会被顺手提交 |
+
+服务端语义也实测确认（这是上面"省略字段"分支的依据）：只发 `{"maxSavedHistoryCount":200}` 时
+保留期**纹丝不动**（`maintenance.ts:102` 的"缺省字段 = 不改动"），而发 `null` 才清除。
+
+**测试期间又改了三处**（都属于"读过才发现的真错"，就地修掉并复跑）：
+
+1. `public/ui_v1/css/components.css:1010-1016`：我自己上一版写的注释说"唯一会用占位的是非图片的
+   File/Group 行" —— **错**（§93.5 那一路指出）：`list.js:105-122` 的回收站分支只留槽 1 的「恢复」、
+   其余三槽全是占位。已按两条分支改写。
+2. `public/ui_v2/css/shell-v2.css:658`：断点说明写着"三档（多一档中屏）"与"720–1079 隐藏类型分布" ——
+   全文件**只有** `max-width: 720px` / `380px` 两条媒体查询，而类型分布随 2026-09-15
+   移出概览带（`ui/overview.js:63`）已无"隐藏"可言。已改成两档 + 极窄档并注明订正。
+3. `public/ui_v2/css/overlay-v2.css:1112`：`≤720px` 块里的 `--control-h-sm: 40px` 与
+   `tokens-v2.css` 的触屏档**同特异性**（`:root`）、而本文件是最后一张样式表 ⇒ 它把
+   `@media (pointer: coarse)` 抬到 `var(--hit-min)`（44px，注释写明"不可下调"）的值**盖回 40px**，
+   即"手机上命中区反而变小"，而这一档的注释恰恰写着要解决"手机上最该好点的按钮反而最小"。
+   已改为同一个令牌 `var(--hit-min)`；改后 375×812 探针仍 `pageOverflow=0`、零 console 错误。
+
+**仍未验证的两处**（明确登记，别当成已验证）：
+
+- **粗指针（触屏）下的命中区**：V2 探针没有触屏模拟（`--coarse` 只有 V1 探针有），故第 3 条改动
+  只验到"窄屏不溢出"，**没有**在 `pointer: coarse` 下量 44px。要闭合请用带触摸模拟的浏览器或 `states.mjs`。
+- **"点保存"这条交互**：探针不点抽屉里的「保存保留策略」，故"填 → 保存 → 回读生效值"这条链路
+  本轮只验到**发送侧**（payload 构造 + 服务端语义）与**渲染侧**（三组状态），没有端到端点一次。
+
+**收尾审核发现、本轮未改的一处 V1/V2 分歧（登记在此，供下一轮取）**：抽屉那两个栏位在
+`/ui/api/info` 返回 `retentionMinutes: null`（Meta 与部署变量**都没设**）时，V2 的 placeholder 是写死的
+"跟随部署变量"，而那一刻真正生效的是**内置默认**（10080 分钟 / 1000 条，见 `src/cleanup.ts`）——
+V1 的 `components/info.js:24-28` 专门为此定义 `DEFAULT_RETENTION_MINUTES` / `DEFAULT_MAX_HISTORY_COUNT`，
+placeholder 写"当前 10080 / 当前 1000"，注释里写明"'跟随部署变量'会让用户去找一个并不存在的配置项"。
+本部署 `wrangler.toml` 的 `[vars]` 恒设这两个变量 ⇒ **该状态在线上不可达**；要闭合需把 V1 那两个常量
+（连同注释）搬进 V2 抽屉，而本环境造不出该状态来验证（要临时删 `[vars]` 再跑探针），故留到下一轮。
+

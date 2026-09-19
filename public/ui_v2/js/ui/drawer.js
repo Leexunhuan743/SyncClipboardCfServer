@@ -123,6 +123,15 @@ export function createDrawer(handlers) {
   const MAX_SAVED_HISTORY_COUNT_MAX = 1_000_000;
   const retentionInput = el('input', { class: 'input', type: 'number', min: '0', step: '1', max: String(RETENTION_DAYS_MAX), 'aria-label': '保留天数', 'aria-describedby': 'retention-status' });
   const maxCountInput = el('input', { class: 'input', type: 'number', min: '0', step: '1', max: String(MAX_SAVED_HISTORY_COUNT_MAX), 'aria-label': '最多保留条数', 'aria-describedby': 'retention-status' });
+  // 渲染时记下两件"这一栏的当前状态"，保存路径要用：
+  //   · `oddMetaMinutes` = Meta 里那种**用整天表示不出来**的分钟数（只有 V1 那份按分钟的输入写得出来，
+  //     见 `public/ui_v1/js/components/info.js` 的「历史保留分钟数」）。用户没动「保留天数」时（留空）
+  //     必须把原值**原样发回去** —— 发 null 的语义是"清除 Meta 覆盖"，会把用户设在 V1 的策略静默改成
+  //     部署变量值，那正是本段注释反复警告的"静默改了配置"。
+  //   · `retentionKnown` = 我们**知不知道**当前值（= `/ui/api/info` 取到过 retention）。不知道时保存
+  //     既不能发 null（会清掉一条用户看不见的覆盖），也不能沿用旧值。
+  let oddMetaMinutes = null;
+  let retentionKnown = false;
   // `role="status"`：这一行同时是"当前生效值"的说明与**错误出口**（两个输入框的 `aria-describedby`
   // 目标），错误只改文字而不被播报的话，读屏用户听不到（与 `components.md` §2 的 error 格同一条要求）。
   const retentionSource = el('span', { class: 'row__hint', role: 'status', id: 'retention-status' });
@@ -166,17 +175,28 @@ export function createDrawer(handlers) {
         const [label, , max, input] = bad;
         input.setAttribute('aria-invalid', 'true');
         input.focus();
-        retentionSource.textContent = `${label}只能填 0–${max} 之间的整数；留空表示回落到部署时的环境变量。`;
+        retentionSource.textContent = `${label}只能填 0–${max} 之间的整数；空值的意思见下方说明。`;
         return;
       }
       setPending(button, true);
       try {
         // 空输入 = 清除覆盖（回落部署环境变量）；**0 是合法值**，含义是"关闭该阶段"。
         // 把空串当 0 会让"清除覆盖"变成"关掉清理" —— 语义正好相反（V1 的注释记过这个坑）。
-        await handlers.onSaveSettings({
-          retentionMinutes: days === null ? null : days * 1440,
-          maxSavedHistoryCount: count,
-        });
+        // 两条例外，都是"别在用户不知情时改他的配置"：
+        //   ① `oddMetaMinutes` 非 null：Meta 里存着一个整天表示不出来的值 ⇒ 原样发回，不能清除；
+        //   ② `retentionKnown` 为假（部署信息一次都没取到）：**省略该字段** —— 服务端把"缺省"
+        //      理解为"不改动"（`src/ui/maintenance.ts:102`），发 null 会清掉一条用户看不见的覆盖。
+        const payload = {};
+        if (days !== null) payload.retentionMinutes = days * 1440;
+        else if (retentionKnown) payload.retentionMinutes = oddMetaMinutes;
+        if (count !== null) payload.maxSavedHistoryCount = count;
+        else if (retentionKnown) payload.maxSavedHistoryCount = null;
+        if (Object.keys(payload).length === 0) {
+          // 一个字段都没得发（两栏都空 + 部署信息未知）：服务端会回 400，不如就地说明原因。
+          retentionSource.textContent = '部署信息还没取到，暂时无法保存：先刷新一次再试。';
+          return;
+        }
+        await handlers.onSaveSettings(payload);
       } finally {
         setPending(button, false);
       }
@@ -379,28 +399,59 @@ export function createDrawer(handlers) {
   // ---- 保留策略 ----
   const retention = info?.retention;
   if (retention) {
-    // 分钟 → 天。**只在能被整天整除时**显示成整数天，否则给出小数（8641 分钟是 6.0007 天，
-    // 四舍五入成 6 再保存回去会**改变用户的配置**）。
+    // 分钟 → 天。两件事都在这里定：
+    //   ① **只在能被整天整除时**才有整数天可回填（8641 分钟回填成 `"6.001"` 会被保存路径的
+    //      `parseInteger` 拒掉；四舍五入成 6 又会**改变用户的配置**，两者都不能做）；
+    //   ② **只回填来自 Meta 的值**。把部署变量/内置默认的生效值填进输入框，"什么都没改直接按保存"
+    //      就会把它写成一条 Meta 覆盖 —— 等于把"跟随部署变量"静默冻结（V1 `components/info.js`
+    //      的注释记过这个陷阱，V2 此前两个栏位都有）。生效值仍看得见，放在 placeholder 里。
+    const isMeta = retention.retentionSource === 'meta';
     const minutes = retention.retentionMinutes;
-    setInputValue(
-      retentionInput,
-      minutes === null || minutes === undefined ? '' : String(round(minutes / 1440, 3)),
-    );
+    const wholeDays =
+      typeof minutes === 'number' && minutes >= 0 && minutes % 1440 === 0 ? minutes / 1440 : null;
+    setInputValue(retentionInput, isMeta && wholeDays !== null ? String(wholeDays) : '');
+    const count = retention.maxSavedHistoryCount;
     setInputValue(
       maxCountInput,
-      retention.maxSavedHistoryCount === null || retention.maxSavedHistoryCount === undefined
-        ? ''
-        : String(retention.maxSavedHistoryCount),
+      retention.maxCountSource === 'meta' && count !== null && count !== undefined ? String(count) : '',
     );
-    retentionInput.placeholder = '跟随部署变量';
-    maxCountInput.placeholder = '跟随部署变量';
+    retentionInput.placeholder =
+      minutes === null || minutes === undefined ? '跟随部署变量' : `当前 ${minutes}`;
+    maxCountInput.placeholder =
+      count === null || count === undefined ? '跟随部署变量' : `当前 ${count}`;
 
+    // 非整天数且**来自 Meta** 时，这个值必须被保住（保存时原样发回，见 `oddMetaMinutes` 的声明处）；
+    // 来自部署变量时留空反而是对的（那里本来就是"跟随部署变量"）。
+    const oddMinutes = typeof minutes === 'number' && minutes % 1440 !== 0 ? minutes : null;
+    oddMetaMinutes = isMeta ? oddMinutes : null;
+    // 这一栏的"空值"到底是什么意思，取决于**我们知不知道当前状态**（见保存路径）。
+    retentionKnown = true;
+
+    // 非整天数要如实报出：否则输入框是空的，用户会以为"没设置过"，而实际是他设过的值 —— 只是这一栏按天填不下它。
+    const oddNote =
+      oddMinutes === null
+        ? null
+        : isMeta
+          ? `当前保留期是 ${oddMinutes} 分钟（此处设置的旧值，不是整天数）；这一栏留空 = 保持它不变，要清除请填 0 或整天数`
+          : `当前保留期是 ${oddMinutes} 分钟（来自部署环境变量，不是整天数）；这一栏留空不影响它`;
     const sourceText = [
       `保留期来源：${sourceLabel(retention.retentionSource)}`,
       `条数上限来源：${sourceLabel(retention.maxCountSource)}`,
-      '留空 = 清除这里的设置、回落到部署变量；填 0 = 关闭对应的清理阶段。',
-    ].join(' · ');
+      oddNote,
+      oddMetaMinutes === null
+        ? '留空 = 清除这里的设置、回落到部署变量；填 0 = 关闭对应的清理阶段。'
+        : '（保留期那一栏见上；条数上限留空 = 回落到部署变量、填 0 = 关闭条数裁剪。）',
+    ]
+      .filter((part) => part !== null)
+      .join(' · ');
     retentionSource.textContent = sourceText;
+  } else {
+    // 取不到部署信息：把上一次的"已知状态"清掉 —— 否则保存会沿用一个已经过期的判断
+    // （既可能静默保留旧值，也可能静默清除覆盖，见保存路径的两个分支）。
+    oddMetaMinutes = null;
+    retentionKnown = false;
+    retentionInput.placeholder = '跟随部署变量';
+    maxCountInput.placeholder = '跟随部署变量';
   }
 
   // ---- 清理状态 ----
@@ -552,7 +603,3 @@ function sourceLabel(source) {
   return source === 'meta' ? '此处设置' : '部署环境变量';
 }
 
-function round(value, digits) {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}

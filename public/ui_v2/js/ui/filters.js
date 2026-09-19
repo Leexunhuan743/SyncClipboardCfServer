@@ -90,9 +90,11 @@ export function createFilters(handlers) {
     text: '清除筛选',
     hidden: true,
     // 包一层再调：`onClearFilters` 的签名是 `({ keepView } = {})`，
-    // 直接把处理器挂上去会让**浏览器传进来的 MouseEvent** 被当选项对象解构——
-    // `keepView` 恒为 undefined，于是回收站里这个按钮会把人踢回活跃列表，
-    // 与空状态里那个「清除筛选」（`keepView: true`）行为不一致。
+    // 直接把处理器挂上去会让**浏览器传进来的 MouseEvent** 被当选项对象解构（那是隐患）。
+    // 这里**不传** `keepView` ⇒ 清空筛选会回到活跃列表，与 V1 `main.js:222` 的同名处理器一致；
+    // 而空状态里那个「清除筛选」传的是 `{ keepView: true }`（留在回收站，见 `board.js` 的 renderEmpty）。
+    // ⚠️ 两处语义不一致，且**尚未定论**：`docs/AUDIT-commit-9b4cdca.md` §P2 只消掉了包装隐患、
+    //    没对齐行为。若要统一成"保留所在视图"，改的就是这一行（加 `{ keepView: true }`）。
     onclick: () => handlers.onClearFilters(),
   });
 
