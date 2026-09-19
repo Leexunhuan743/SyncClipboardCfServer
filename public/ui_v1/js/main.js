@@ -160,8 +160,10 @@ async function fetchFull(item, retry = null) {
 // ===== 动作 =====
 // 哪些筛选字段会**改变结果集的成员资格**：变了它们，选择集里的旧快照可能已不在新结果里，
 // 而批量删除/收藏仍按选择集逐条在服务端执行 —— 那等于对"看不见的行"动手（F3）。
-// 排序 / 翻页 / 页大小 / 搜索**不在列**：它们不改变集合（搜索只是高亮过滤，记录仍在库里）。
-const MEMBERSHIP_KEYS = ['types', 'starred', 'deleted', 'range', 'after', 'before'];
+// 排序 / 翻页 / 页大小**不在列**：它们不改变集合。
+// ⚠️ **搜索在列**（2026-09-19 复查补入）：它是筛选，不是"高亮"—— 服务端为它生成
+// `Text LIKE ?`（见 `src/ui/query.ts`），被它滤掉的行看不见、却仍留在选择集里 ⇒ 与 F3 同型。
+const MEMBERSHIP_KEYS = ['types', 'starred', 'deleted', 'range', 'after', 'before', 'search'];
 
 function setFilters(patch, { push = false, scroll = false } = {}) {
   const state = store.get();

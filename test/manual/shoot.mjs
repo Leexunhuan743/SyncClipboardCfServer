@@ -200,9 +200,9 @@ try {
   const wants = (name) => !ONLY || ONLY.split(',').includes(name);
 
   // 这是 **V2** 的出图脚本：应用本体在 `/ui_v2/app/`。
-  // （`/ui_v2/` 是只做跳转的目录索引，2026-09-18 起它指向**默认界面 V1** `/ui_v1/` ——
+  // （`/ui/` 是只做跳转的壳，它把人送到**默认界面 V1** `/ui_v1/` ——
   //   V1 自己的出图在 probe-ui-v1.mjs 的 `--shots`。）
-  const APP = `${BASE}/ui/app/`;
+  const APP = `${BASE}/ui_v2/app/`;
 
   await goto(APP);
   // 等列表真的渲染出来（首屏是骨架 → 真行；失败时是空状态或错误态，
@@ -246,7 +246,7 @@ try {
     await shoot('04-trash');
   }
   if (wants('login')) {
-    await goto(`${BASE}/ui/app/login.html`);
+    await goto(`${BASE}/ui_v2/app/login.html`);
     await shoot('05-login');
   }
   if (wants('404')) {

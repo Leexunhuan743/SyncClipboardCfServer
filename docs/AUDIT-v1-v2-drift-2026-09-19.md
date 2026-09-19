@@ -56,7 +56,12 @@
 
 **对照**：V2 在 `boot.js:156-159` 只清了 `onToggleDeleted`；但其 `setFilters`（`:452-477`）被所有筛选动作共用 —— **经复核 V2 的 `setFilters` 本体也不清选择集**，清选择集只发生在 `onToggleDeleted` 与 `resetFilters`。故本条的正确口径是：**两版都只对"进出回收站/复位"清选择集，其余筛选变更都残留**；V1 更危险只是因为它的"删除选中"在选择条上常驻。
 
-**修法**：在 `setFilters` 里对"会改变结果集成员资格"的 patch（types/starred/range/after/before/deleted）统一清选择集；排序/翻页/页大小不清（它们不改变集合）。两版同一判据。
+**修法**：在 `setFilters` 里对"会改变结果集成员资格"的 patch（types/starred/range/after/before/deleted/**search**）统一清选择集；排序/翻页/页大小不清（它们不改变集合）。两版同一判据。
+
+> **2026-09-19 复查补正**：上面这份初版清单与 §6 的实施记录都把 `search` 归为"不改变集合"，**那是错的** ——
+> 服务端为它生成 `Text LIKE ?`（`src/ui/query.ts:196-202`），被它滤掉的行看不见、却仍留在选择集里，
+> 与 F3 **完全同型**（勾选若干行 → 搜索 → 批量删除 = 对看不见的行动手）。`search` 已补入两版的
+> `MEMBERSHIP_KEYS`，两版注释与本节同一次改掉。
 
 ## 4. 其余条目（隐患 / 漂移）
 
@@ -89,7 +94,7 @@
 |---|---|---|
 | F1 | ✅ V2 `boot.js` | 新增 `missedWhileHidden` 旗子：`pollOnce` 的 changed 分支按 `visibilityState` 分流（可见即刷新、隐藏只记旗），`visibilitychange` 可见分支先补刷再重连推送。移植 V1 同名机制。 |
 | F2 | ✅ V1 `confirm.js` | 新增 `busy` 旗子：在途时 ✕ / 取消按钮经 `tryDismiss` 被挡（`if (busy) return`），Esc 的 `cancel` 事件用 `event.preventDefault()` 拦截。移植 V2 `dialog.js` 的 `canClose` 语义。 |
-| F3 | ✅ 两版 | 两版各自加 `MEMBERSHIP_KEYS = ['types','starred','deleted','range','after','before']`，在 `setFilters` 里统一清选择集；`onToggleDeleted` 里原来各清一份的代码删除（同一件事两处写必然漂移）。排序/翻页/页大小/搜索**不清**（不改变结果集成员资格）。 |
+| F3 | ✅ 两版 | 两版各自加 `MEMBERSHIP_KEYS = ['types','starred','deleted','range','after','before','search']`，在 `setFilters` 里统一清选择集；`onToggleDeleted` 里原来各清一份的代码删除（同一件事两处写必然漂移）。排序/翻页/页大小**不清**（不改变集合）；**`search` 要清** —— 见 §3 的复查补正（初版误记为"不改变成员资格"，实际服务端为它生成 `Text LIKE ?`）。 |
 | F5 | ✅ V2 `boot.js` | `toggleFlag` 成功后若 `selection.has(key)` 就把选择集里那份换成归一化后的 `next`，并 `board.syncSelection` —— 移植 V1 `main.js:538-544`。 |
 
 **门禁**：`tsc --noEmit` 0 错、`eslint public/ui/js public/ui_old/js` 0 告警、`vitest run`（ui-logic / ui-guard / ui-contract / ui-input / ui-activity / next-target 六套件）**107/107 过**。未跑全量 22 套件（多数要求 8787 端口的 dev server 在本地未起）；未做 `docs/ui.md` §11 的浏览器探针。

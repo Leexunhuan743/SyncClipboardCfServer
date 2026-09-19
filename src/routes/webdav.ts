@@ -32,8 +32,6 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // （V2 —— `public/ui_v2/` —— 是**开发测试版**，应用本体在 `/ui_v2/app/`。）
   app.get('/', (c) => {
     const accept = c.req.header('accept') ?? '';
-    // 跳转目标是 **`/ui_v1/`**（V1 是默认界面）。`/ui/` 那层跳转壳也只做同一件事（它的目标是
-    // 同一个地址）—— 两处必须一致，守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
     if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui_v1/', 302);
     return c.text('Server is running.');
   });

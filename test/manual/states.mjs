@@ -207,7 +207,7 @@ try {
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(4000);
 
   // ── 1. 行高与密度 + **挂载点 id 契约** ────────────────────────
@@ -315,7 +315,7 @@ try {
   expect('行高回来了', densityOff.height === density.before, `行高 ${densityOff.height}，期望 ${density.before}`);
 
   // 刷新后仍然生效（它存在 localStorage，`theme-init.js` 在首帧前就应用）
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(3500);
   const densityPersist = await evaluate(`(async () => {
     const btn = document.querySelector('.board-head .icon-btn[data-icon="list"]');
@@ -324,7 +324,7 @@ try {
     return { stored: localStorage.getItem('sb-ui-density') };
   })()`);
   expect('紧凑模式写盘', densityPersist.stored === 'compact', `stored=${densityPersist.stored}`);
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(3500);
   const afterReload = await evaluate(`(async () => {
     const compact = Math.round(document.querySelector('.item').getBoundingClientRect().height);
@@ -789,7 +789,7 @@ try {
   expect('概览带有可点提示', JSON.parse(overviewHint).hasHint === true, '整条可点但没有任何视觉提示');
 
   // (c) 回收站里行的**主操作**必须是「恢复」
-  await send('Page.navigate', { url: `${BASE}/ui/app/?deleted=1` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/?deleted=1` });
   await wait(3500);
   const trashPrimary = await evaluate(`(() => {
     const row = document.querySelector('.item');
@@ -818,7 +818,7 @@ try {
     );
   }
   // 回到活跃视图
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(3000);
 
   // (d) 手机端筛选区不许占太多行
@@ -851,7 +851,7 @@ try {
     });
   })()`;
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(3500);
   const mobile = await evaluate(measureRows);
   record('移动端筛选区', mobile);
@@ -871,7 +871,7 @@ try {
   expect('移动端无横向溢出', m.overflowX === 0, `多出 ${m.overflowX}px`);
   await shoot('16-state-mobile');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(3000);
 
   // (e) 复制失败时的话必须说清原因、并且**替用户打开预览**
@@ -934,7 +934,7 @@ try {
   await send('Emulation.setEmulatedMedia', {
     features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
   });
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(3500);
   const reduced = await evaluate(`(() => {
     const rows = [...document.querySelectorAll('.item')];
@@ -976,7 +976,7 @@ try {
   // 这一节钉住的是"审计发现的缺陷已经被修掉"，每条都对应一个被实测复现过的行为。
   await send('Emulation.setEmulatedMedia', { features: [] });
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(3500);
 
   // (a) 焦点保持：刷新（`r`）后焦点必须还在原来那个控件上，且"内容没变"时不该动 DOM。
@@ -1240,7 +1240,7 @@ try {
       };
     })();`,
   });
-  await send('Page.navigate', { url: `${BASE}/ui/app/` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/` });
   await wait(1500);
   const retryStartup = JSON.parse(await evaluate(`(async () => {
     const failed = document.querySelector('.blank')?.dataset.kind === 'error';
@@ -1256,7 +1256,7 @@ try {
   expect('首屏错误可见且重试恢复列表与推送', retryStartup.failed && retryStartup.rows > 0 && retryStartup.live, JSON.stringify(retryStartup));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: faultScript.identifier });
 
-  await send('Page.navigate', { url: `${BASE}/ui/app/?deleted=1&search=release-no-match-92748` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/?deleted=1&search=release-no-match-92748` });
   await wait(1500);
   const trashSearch = JSON.parse(await evaluate(`(async () => {
     const kind = document.querySelector('.blank')?.dataset.kind;
@@ -1305,7 +1305,7 @@ try {
   // 前两条必须**先摘掉会话 Cookie**：已登录的浏览器打开登录页会立刻跳走（那是正确行为），
   // 于是登录页的 DOM 根本来不及被看到。
   await clearSessionCookie();
-  await send('Page.navigate', { url: `${BASE}/ui/app/login.html` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/login.html` });
   await wait(2500);
   const loginPage = await evaluate(`JSON.stringify({
     url: location.pathname,
@@ -1341,7 +1341,7 @@ try {
   expect('无脚本时给出说明', lp.hasNoscript === true, '缺少 noscript 兜底');
 
   // 空提交：必须**在本地**拦住（不发请求、不离开本页）
-  await send('Page.navigate', { url: `${BASE}/ui/app/login.html` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/login.html` });
   await wait(2200);
   const emptySubmit = await evaluate(`(async () => {
     document.getElementById('login-submit').click();
@@ -1365,7 +1365,7 @@ try {
 
   // 已登录访问登录页 = 多一步，必须直接送去列表页（把会话 Cookie 装回去）
   await setSessionCookie();
-  await send('Page.navigate', { url: `${BASE}/ui/app/login.html` });
+  await send('Page.navigate', { url: `${BASE}/ui_v2/app/login.html` });
   await wait(2500);
   const redirected = JSON.parse(await evaluate(`JSON.stringify({ path: location.pathname + location.search })`));
   record('已登录访问登录页', JSON.stringify(redirected));
@@ -1380,7 +1380,7 @@ try {
     { next: '/ui_v2/app/login.html', want: '/ui_v2/app/', why: '指向登录页自身（防死循环）回落' },
   ];
   for (const testCase of nextCases) {
-    await send('Page.navigate', { url: `${BASE}/ui/app/login.html?next=${encodeURIComponent(testCase.next)}` });
+    await send('Page.navigate', { url: `${BASE}/ui_v2/app/login.html?next=${encodeURIComponent(testCase.next)}` });
     await wait(2200);
     const actual = JSON.parse(await evaluate(`JSON.stringify({ path: location.pathname + location.search })`)).path;
     expect(`?next= ${testCase.why}`, actual === testCase.want, `期望 ${testCase.want}，实际 ${actual}`);

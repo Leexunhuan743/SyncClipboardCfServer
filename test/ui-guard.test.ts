@@ -634,7 +634,8 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
 //
 // 判据取"结构性"的两条，而不是"逐个路径列清单"（后者每加一个挂载点都要同步维护）：
 //   ① 每条规则的路径必须在 `public/` 下**真实存在** —— 死规则就是改名漏改；
-//   ② 三个挂载点里**有** `js`/`css` 目录的，都必须有 `no-cache, must-revalidate` 规则。
+//   ② `public/` 下**每个**界面挂载点（`ui*` 目录）里**有** `js`/`css` 的，都必须有
+//      `no-cache, must-revalidate` 规则 —— 挂载点**动态发现**，不写死清单。
 describe('public/_headers：规则必须落在真实路径上，且代码资源都禁缓存', () => {
   /**
    * 解析 `_headers` 的「路径 → 响应头」映射。
@@ -670,9 +671,16 @@ describe('public/_headers：规则必须落在真实路径上，且代码资源�
     expect(dead, '下面这些 _headers 规则指向不存在的路径（改名/搬目录时漏改了它）：').toEqual([]);
   });
 
-  it('三个挂载点的 JS/CSS 都禁缓存（no-cache, must-revalidate）', () => {
+  it('每个挂载点的 JS/CSS 都禁缓存（no-cache, must-revalidate）', () => {
+    // 挂载点从 `public/` **动态发现**，不写死清单：写死的话，"新增一个挂载点却忘了给
+    // `_headers` 加规则"会**双双漏网**（判据 ① 不红 —— 没有规则就没有死规则；判据 ② 不红 ——
+    // 前缀不在那份写死的列表里），而这正是本守卫诞生要防的同型失效（2026-09-19 复查）。
+    const prefixes = readdirSync('public', { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('ui'))
+      .map((entry) => `/${entry.name}`);
+    expect(prefixes.length, '没在 public/ 下发现任何界面挂载点目录（守卫可能失效）').toBeGreaterThan(0);
     let checked = 0;
-    for (const prefix of ['/ui', '/ui_v1', '/ui_v2']) {
+    for (const prefix of prefixes) {
       for (const kind of ['js', 'css']) {
         // 该面没有这个目录就不要求（例：`/ui/` 只剩跳转壳，没有 `css/`）
         if (!existsSync(`public${prefix}/${kind}`)) continue;
