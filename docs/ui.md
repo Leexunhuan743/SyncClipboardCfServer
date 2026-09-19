@@ -157,7 +157,6 @@ Worker
 | `css/components.css` | 组件：按钮、字段、分段控件、徽标、数据表、星标、复选框、对话框、提示、空状态、分页 |
 | `css/motion.css` | 动效集中处 + `prefers-reduced-motion` 的等价降级 |
 | `css/auth.css` | 登录页专属样式（列表页不加载） |
-| `css/archive.css` | 顶部提示条（`.notice-bar`，指出开发测试版在 `/ui_v2/app/`；32px 高、可关闭并持久化至 localStorage） |
 | `js/api.js` | `/ui/api` 调用封装、类型归一化、401 统一跳登录；**首屏合成快照** `overview()`、**批量取全文** `batchMeta()`（按服务端 100 条上限分片）、`latest()`（全库最新一条，供顶栏「复制最近一条」）、请求默认 30 秒超时（把调用方取消与超时合成一个 signal） |
 | `js/filters.js` | 筛选状态 ⇄ URL（可链接、可后退、刷新不丢） |
 | `js/store.js` | 状态容器：`get` / `set`，不掺 DOM 不掺网络。**刻意不提供订阅**——此前有过一个 `subscribe()` 而全仓无人调用；「看起来像响应式、实际全靠手动 `render()`」的接口只会误导下一个人（真要改成订阅驱动，得连同组件的重建策略一起设计） |
@@ -489,14 +488,14 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 ### 8.1 按下反馈（`:active`，2026-09-18 补全）
 
 上表是"**内容事件的动效**"；按下反馈是另一件事（状态矩阵里的一格，不是内容事件），
-实现散在各组件表里（`components.css` / `layout.css` / `archive.css`），只有两条规矩：
+实现散在各组件表里（`components.css` / `layout.css`），只有两条规矩：
 
 1. **每个可点控件都要有**（触屏没有 hover，`:active` 是唯一的按下反馈）；
-2. 手法两档 —— 小钮/方钮缩放（`.search__clear` `.notice-bar__close` `.checkbox` = 0.9、
+2. 手法两档 —— 小钮/方钮缩放（`.search__clear` `.checkbox` = 0.9、
    `.toast__action` = 0.94、`.segmented__item` = 0.96、`.status` = 0.97），
    文字类控件**不缩放**（表头排序用底色压深一档，缩放会让一行文字抖）。时长一律 `--dur-instant`。
 
-清单（`btn` / `icon-btn` / `segmented__item` / `th-sort` / `search__clear` / `notice-bar__close` /
+清单（`btn` / `icon-btn` / `segmented__item` / `th-sort` / `search__clear` /
 `toast__action` / `checkbox` / `status`）**手写**在 `test/ui-guard.test.ts` 里：新增可点控件
 不写 `:active` 就红。此前只有 `.btn` 与 `.icon-btn` 两处有 —— 而 `base.css` 那句"所有可点元素
 都有 :active"当时是假的（详见 `progress.md` §68.2）。

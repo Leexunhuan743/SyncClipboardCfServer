@@ -624,3 +624,67 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
     }
   });
 });
+// ===== 静态资源的响应头配置（`public/_headers`）=====
+//
+// 为什么要有这一条：`public/_headers` 里的路径是**按挂载点写死**的，而它一度是 `public/` 下唯一
+// 「含路径字面量、却没有任何守卫」的配置文件。2026-09-19 的 `ui_old` → `ui_v1` / `ui` → `ui_v2`
+// 改名就漏改了它（改名是按目录分三轮替换的，这个"站点根的特殊文件"不属于任何一轮）——
+// 规则全留在 `/ui_old/*`，而那个目录已不存在 ⇒ 两版前端**同时**退回平台默认的 `max-age=0`，
+// 而 `docs/frontend-checklist.md` 还把这条记成"已完成"。线上实测与复盘见 `docs/progress.md` §90。
+//
+// 判据取"结构性"的两条，而不是"逐个路径列清单"（后者每加一个挂载点都要同步维护）：
+//   ① 每条规则的路径必须在 `public/` 下**真实存在** —— 死规则就是改名漏改；
+//   ② 三个挂载点里**有** `js`/`css` 目录的，都必须有 `no-cache, must-revalidate` 规则。
+describe('public/_headers：规则必须落在真实路径上，且代码资源都禁缓存', () => {
+  /**
+   * 解析 `_headers` 的「路径 → 响应头」映射。
+   *
+   * 判据不能用"按空行切块、取块首行"—— 紧贴在路径行上方的**注释行**会一起落在同一块里，
+   * 于是块首行是注释而不是路径（这条守卫的第一版就是这么写错的，被自己红了一次）。
+   * 改为逐行扫描：顶格且以 `/` 开头 ⇒ 开一条新规则；其后**缩进**的行是它的响应头；
+   * 空行或顶格的其它行 ⇒ 结束当前规则。
+   */
+  const rules = new Map<string, string>();
+  {
+    let current: string | null = null;
+    for (const line of readFileSync('public/_headers', 'utf8').replace(/\r\n/g, '\n').split('\n')) {
+      if (line.startsWith('/')) {
+        current = line.trim();
+        rules.set(current, '');
+        continue;
+      }
+      if (current === null) continue;
+      if (line.trim() === '' || !/^\s+\S/.test(line)) current = null;
+      else rules.set(current, rules.get(current) + line.trim() + '\n');
+    }
+  }
+
+  it('每条规则的路径都能在 public/ 里找到对应物（改名漏改 = 死规则）', () => {
+    expect(rules.size, '没解析到任何 _headers 规则（守卫可能失效）').toBeGreaterThan(8);
+    const dead: string[] = [];
+    for (const pattern of rules.keys()) {
+      // `/ui_v1/js/*` → 目录 `public/ui_v1/js`；`/ui_v1/favicon.svg` → 文件；`/*` → `public`
+      const target = pattern === '/*' ? 'public' : `public${pattern.replace(/\/\*$/, '')}`;
+      if (!existsSync(target)) dead.push(`${pattern} → 找不到 ${target}`);
+    }
+    expect(dead, '下面这些 _headers 规则指向不存在的路径（改名/搬目录时漏改了它）：').toEqual([]);
+  });
+
+  it('三个挂载点的 JS/CSS 都禁缓存（no-cache, must-revalidate）', () => {
+    let checked = 0;
+    for (const prefix of ['/ui', '/ui_v1', '/ui_v2']) {
+      for (const kind of ['js', 'css']) {
+        // 该面没有这个目录就不要求（例：`/ui/` 只剩跳转壳，没有 `css/`）
+        if (!existsSync(`public${prefix}/${kind}`)) continue;
+        checked += 1;
+        const pattern = `${prefix}/${kind}/*`;
+        const rule = rules.get(pattern) ?? '';
+        expect(rule, `_headers 缺少 ${pattern}：那一面的代码资源会退回平台默认值`).not.toBe('');
+        expect(rule, `${pattern} 的规则不是 no-cache, must-revalidate`).toContain(
+          'no-cache, must-revalidate',
+        );
+      }
+    }
+    expect(checked, '没有检查到任何挂载点（守卫可能失效）').toBeGreaterThan(2);
+  });
+});

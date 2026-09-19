@@ -57,7 +57,7 @@
 | 9 | 守卫同步：`ui-guard` / `ui-contract` / `docs.test` / `next-target` / `rate-limit` / `ui-input` / `ui-logic` / `clipboard` | ✅ |
 | 10 | 门禁与工具链：`package.json` 的 `lint`、`eslint.config.js` 的 glob、`.github/workflows/deploy.yml`（lint 名 + 冒烟五条路径）、`AGENTS.md`（DoD 命令 + 两张表） | ✅ |
 | 11 | 文档：`README.md` / `docs/*.md`（现状类）/ `public/ui_v1/README.md` / `docs/ui.md` 资源数 89 → 88 | ✅ |
-| 12 | 全量套件 + 探针 | ⏳ 见 §5 |
+| 12 | 全量套件 + 探针 | ✅ 见 §5 |
 
 ### 2.1 替换的实际做法（为什么不是一把 `sed`）
 
@@ -94,6 +94,11 @@
 - **删一个 UI 元素要连带清三处**：删掉提示条那一行文字后，`#notice-bar` 的 HTML、两处 JS 接线
   （`NOTICE_KEY` / `initNoticeBar`）、`archive.css` 整份样式、`ui-guard` 的 `PRESSABLE` 条目与
   "两页 NOTICE_KEY 一致"用例全部失去目标 —— 少清任何一处都会留下死代码或让守卫红。
+- **按目录批量替换会漏掉"含死路径的配置文件"**（**本次审查发现，见 §7**）：`public/_headers` 的
+  路径规则是按挂载点写死的，而它既不在 `public/ui_v1`、也不在 `test/`、也不在 `public/ui/`
+  这三轮替换的范围里 ⇒ 规则全留在 `/ui_old/*`，两版前端**同时**退回平台默认的 `max-age=0`，
+  而当时**没有任何守卫读它**（`docs.test.ts` 只数文件总数）。教训：按目录替换时，要单独列一份
+  「含路径字面量的配置文件」清单（`_headers` / `robots.txt` / `wrangler.toml` / `deploy.yml`）逐个过。
 
 ## 4. 原话③的读法与处置（重要，请复核）
 
@@ -112,7 +117,8 @@
 | `docs/ui.md` | §3 资源数 89 → 88，V1 分表 38 → 37，并记一句原因 |
 
 **若原意只是删掉那句文字、保留提示条外壳**：把上面六处按本文件末尾的"回滚点"恢复即可
-（`git show HEAD:public/ui_old/css/archive.css` 能取回整个样式文件）。
+（`git show 796a3b8:public/ui_old/css/archive.css` 能取回整个样式文件 —— **不能用 `HEAD`**：
+改名之后 `public/ui_old/` 在 HEAD 里已不存在，那条命令会以 exit 128 失败）。
 
 ## 5. 验证（本机实测）
 
@@ -140,3 +146,41 @@
 - **历史文档未改**：`docs/progress.md`（按轮次的历史快照）与 `docs/AUDIT-*.md`（审计证据）里仍写着
   `ui_old` / `public/ui/`。这是**有意**的 —— 改它们等于篡改历史，且 `docs.test.ts` 刻意豁免
   `progress.md`。
+## 7. 事后修正（2026-09-19 审查轮）
+
+`e3858cd` / `9357f59` 推送后做了一次逐文件审查，抓出**一处功能性漏改**与一批机械替换打偏的
+文档句子。原因分析见 §3 的倒数第二条。
+
+**① `public/_headers` 整份没跟着改名（唯一影响运行的一处）**
+
+| | |
+|---|---|
+| 症状 | 规则仍挂在 `/ui_old/js/*`、`/ui_old/css/*` 与 `/ui_old/` 的四个图标/manifest 上 —— 这些路径改名后都不存在了 |
+| 线上实测 | `/ui/js/redirect-hash.js` 拿到 `public, no-cache, must-revalidate`；而 `/ui_v1/js/format.js`、`/ui_v2/js/boot.js`、`/ui_v1/favicon.svg` 全部只剩 `public, max-age=0, must-revalidate`（平台默认） |
+| 影响 | 两版**同时**丢掉"每次回源验证"的纪律（该文件自己的注释写着"靠平台默认值正是明确不要的东西"），图标/manifest 的长缓存也丢了；而 `docs/frontend-checklist.md` 的 P0-3 还写着"✅ 已完成" |
+| 修法 | 按三个挂载点重写规则：`/ui/js/*` 保留（跳转壳的 `redirect-hash.js` 也是代码资源）、`/ui_v1` 与 `/ui_v2` 各一条 js/css 禁令 + 各自的图标/manifest 长缓存、`/ui/` **不写**图标规则（那一面根本没有图标文件） |
+| 防复发 | `test/ui-guard.test.ts` 新增两条结构判据：规则路径必须在 `public/` 下真实存在；三个挂载点里**有** js/css 目录的都必须有 `no-cache, must-revalidate` 规则 |
+
+**② 机械替换打偏的文档句子**（`/ui/` → `/ui_v2/` 那一轮打到了"主语是 `/ui/` 跳转壳"和
+"历史叙述"的句子上）：
+
+| 文件 | 修前（错） | 修后 |
+|---|---|---|
+| `AGENTS.md` §3 | 「`/ui_v2/`（`public/ui_v2/`）只剩一层跳转壳」「`/ui/api/*` 必须以 `/ui_v2/` 为前缀」 | 两处都改回 `/ui/`。原句后面紧跟着"别把接口前缀跟着改名"的警告，等于自己演示了那个错误 |
+| `AGENTS.md` §2 | V2 探针 `--url /ui/app/` | `--url /ui_v2/app/` |
+| `AGENTS.md` §3 | 「`ui-guard` 禁止它引用 `../../ui/`」 | `../../ui_v2/`（守卫实际拦的就是它） |
+| `docs/design.md` §4 | 目录树**没重建**：`ui/` 被当成 V2 的家、没有 `ui_v2/` 条目、`ui_v1/css` 里还列着已删的 `archive` | 重建成 `ui_v1/` + `ui_v2/` + `ui/`（跳转壳）三条；`_headers` 那句"短 TTL 与 stale-while-revalidate"也订正（那是 2026-09-17 就删掉的取值） |
+| `docs/ui-v2-design.md` §7 | 同上；且 `redirect-hash.js` 被放在 V2 的 `js/` 下（**实际只在 `public/ui/js/`**）；`ui_v1/` 被写成"冻结存档，加弃用横幅"；样式表数写 7 | 重建成三条；`redirect-hash.js` 归到 `ui/`；`ui_v1/` 改成"默认界面 V1（**产品面**）"；6 张样式表 |
+| `docs/ui.md` §3.2 / §7 | V1 文件清单仍列着**已删除**的 `css/archive.css`（同一文件 §3 的计数表已写"38 → 37"）；§7 的 `:active` 小节仍把 `archive.css` 与 `.notice-bar__close` 当现存目标 | 删掉那一行；两处清单里的 `archive.css` / `.notice-bar__close` 一并移除 |
+| `docs/frontend-checklist.md` §2 | 历史叙述被改成「2026-09-15 的 `/ui_v2/` → `/ui_v1/` 批量改写」（真事件是 `/ui/` → `/ui_old/`，而这两个名字 2026-09-19 才存在） | 改回 `/ui/` → `/ui_old/` |
+| `docs/frontend-checklist.md` P0-3 | 「`/ui_v1/*` 的缓存策略 ✅ 2026-09-17 完成」 | 「2026-09-17 完成、2026-09-19 改名后**补回**」，并写明这次漏改与现在的守卫 |
+| `docs/protocol.md` | 「省去一次从 `/ui_v2/` 的跳跃」（应为 `/ui/`）；「`/ui_v2/*`（静态资源 + `/ui/api/*`）」把接口也算进了 `/ui_v2/` | 两处订正 |
+| 本文件 §4 | 回滚命令写 `git show HEAD:public/ui_old/css/archive.css` —— HEAD 里没有这个路径（实测 exit 128） | 改为 `796a3b8`，并注明不能用 `HEAD` |
+
+**③ 审查里核过、确认无误的部分**（记下来免得下次重复劳动）：三个挂载点的配置与路由全同步正确
+（`wrangler.toml` 的六模式、`src/index.ts` 的 `isUiApi` 优先 + `isUiAsset` 三前缀、
+`deploy.yml` 的冒烟五条路径与关闭态三前缀、`package.json` / `eslint.config.js`）；
+图标与 manifest **没有被两版互换**（用提交对象哈希逐对比对）；`ui-guard` 改名后**守卫没被改瞎**
+（`checked>20`、`selectors.length>5`、`files.length>15/20`、`hits>0` 这些反空转断言都在）；
+`docs/ui.md` 的资源数 89 → 88 与实测一致（37 + 47 + 2 + 2）；V1 提示条移除干净（`archive.css` 的
+`<link>` 已删、无悬挂引用）；F1/F2/F3/F5 四条实现正确；其余 17 处小改动逐行核对全是纯路径替换。

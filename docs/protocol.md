@@ -107,9 +107,10 @@
 | PROPFIND | `/` | **207 multistatus**（列自身）；上游为 200 空体，客户端按 2xx 判定 |
 | PROPFIND | `/file` | **207 multistatus**（目录自身 + 暂存对象，`D:href` 逐段 URL 编码）——客户端 `PreciseDelete` 的 `GetFolderSubList` 会 `XmlDocument.LoadXml` 解析，空体会抛异常 |
 | MKCOL | `/file` | 200 空体（上游 `Ok()`） |
-| GET | `/` | 200 文本 `"Server is running."`；**浏览器导航**（`Accept` 含 `text/html`）且界面开启（`UI_ENABLED!=false`）→ 302 `/ui_v1/`（**默认界面**入口；2026-09-18 起直接跳到 `/ui_v1/`，省去一次从 `/ui_v2/` 的跳跃）。客户端从不 GET 根路径（`Test()` 与 `GetFolderSubList()` 都是 PROPFIND），故该分支不影响协议行为 |
+| GET | `/` | 200 文本 `"Server is running."`；**浏览器导航**（`Accept` 含 `text/html`）且界面开启（`UI_ENABLED!=false`）→ 302 `/ui_v1/`（**默认界面**入口；2026-09-18 起直接跳到 `/ui_v1/`，省去一次从 `/ui/` 的跳跃）。客户端从不 GET 根路径（`Test()` 与 `GetFolderSubList()` 都是 PROPFIND），故该分支不影响协议行为 |
 
-> **非协议路径**：`/ui_v2/*`（静态资源 + `/ui/api/*`）是本实现附带的 Web 界面，**不属于协议契约**——
+> **非协议路径**：`/ui_v1/*`、`/ui_v2/*`（界面静态资源）、`/ui/`（跳转壳）与两版共用的界面接口
+> `/ui/api/*` 是本实现附带的 Web 界面，**不属于协议契约**——
 > 它用会话 Cookie 或 Basic 鉴权（401 不带 `WWW-Authenticate`）、响应形状可随版本调整。
 > 对照实现时可以完全忽略它，但不要把它当成客户端依赖的端点。
 >

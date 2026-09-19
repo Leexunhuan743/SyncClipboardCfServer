@@ -304,8 +304,7 @@ public/
 ├── _headers                   静态资源的 CSP/安全头 + 缓存策略（边缘直出，不经过 Worker）
 ├── robots.txt                 站点根（爬虫只读根路径）
 │                              ↑ 根路径**不放** index.html —— 它要留给 PROPFIND，见 wrangler.toml 的注释
-├── ui/                        V2（**开发测试版**；2026-09-18 起默认界面换成 V1 `ui_v1/`）
-│   ├── index.html             `/ui_v2/` 的目录索引：只做一件事 —— 跳到默认界面 `/ui_v1/`
+├── ui_v2/                     V2（**开发测试版**；默认界面是 V1 `ui_v1/`，见 docs/ui.md §3）
 │   ├── manifest.webmanifest   PWA manifest（`start_url` = `/ui_v2/app/`）
 │   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
 │   ├── app/                   两页（`/ui_v2/app/` 才是应用本体）
@@ -321,8 +320,6 @@ public/
 │   └── js/
 │       ├── boot.js            装配点：唯一知道「谁是谁」的地方，也是唯一碰网络的地方
 │       ├── theme-init.js      **经典脚本**（不是 module）：首帧前定主题与密度，避免白闪
-│       ├── redirect-hash.js   **经典脚本**：`/ui_v2/` 跳转页的 fragment 中继（把 `/ui_v2/#Type-hash`
-│       │                      的 hash 带到默认界面 `/ui_v1/`；声明式 refresh 不继承 fragment）
 │       ├── login.js           登录页逻辑
 │       ├── next-target.js     `?next=` 的同源判定（纯函数，安全边界）
 │       ├── api.js             /ui/api 封装 + 归一化 + 401 统一跳登录
@@ -359,8 +356,10 @@ public/
 │           ├── blank.js       空状态（三种语境）/ 加载失败态
 │           ├── ghost.js       骨架屏
 │           └── toast.js       提示条 + **原地状态**（`setPending` / `flashOk`）
-├── ui_v1/                    V1（冻结存档，加弃用横幅；见该目录 README.md）
-└── ……（`ui_v1/` 内是 V1 的全部文件，含它自己的 7 张样式表与 24 个 JS 模块）
+├── ui/                        `/ui/` 的跳转壳（老书签入口）：index.html + js/redirect-hash.js
+│                              ↑ 它的 fragment 中继把 `/ui/#Type-hash` 的 hash 带到 `/ui_v1/`（声明式 refresh 不继承 fragment）
+├── ui_v1/                     默认界面 V1（**产品面**，挂 `/ui_v1/`；见该目录 README.md）
+└── ……（`ui_v1/` 内是 V1 的全部文件，含它自己的 6 张样式表与 24 个 JS 模块；清单见 docs/ui.md §3.2）
 ```
 
 **分层纪律**（可被测试校验）：`ui/*` 组件**不得** import `api.js`——

@@ -121,18 +121,18 @@ SyncClipboardCfServer/
 │   └── progress.md             # 开发进度追踪
 ├── public/                     # 静态资源（由 Cloudflare 托管，run_worker_first 优先进 Worker 以支持 UI_ENABLED 开关）
 │   ├── robots.txt              # 必须放站点根（爬虫只读根路径）
-│   ├── _headers                # 响应头：CSP/安全头 + js/css 的短 TTL 与 stale-while-revalidate
+│   ├── _headers                # 响应头（边缘直出）：CSP/安全头 + 三个挂载点各自的 js/css no-cache、图标与 manifest 长缓存
 │   ├── ui_v1/                 # 默认界面 V1（2026-09-18 起接手默认入口 /ui_v1/；详见其 README.md）
 │   │   ├── index.html / login.html / manifest.webmanifest
 │   │   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
-│   │   ├── css/                # tokens / base / layout / components / motion / auth / archive
+│   │   ├── css/                # tokens / base / layout / components / motion / auth
 │   │   └── js/                 # api / clipboard / dom / filters / format / icons / latest / login / main / messages / next-target / signalr / store / theme-init
 │   │       └── components/     # confirm / header / info / list / pagination / preview / row-content / stats / toast / toolbar
-│   └── ui/                     # 开发测试版 V2（挂载在 /ui/app/；详见 docs/ui-v2-design.md）
-│       ├── index.html          # 跳转页（重定向到 /ui_v1/）
-│       ├── app/                # V2 应用本体（index.html / login.html）
-│       ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
-│       └── js/                 # api / boot / clipboard / dom / filters / focus / format / icons / keys / latest / login / menus / messages / next-target / paths / push / redirect-hash / spark / state / theme / theme-init / ui/*
+│   ├── ui_v2/                  # 开发测试版 V2（挂载 /ui_v2/，应用本体在 /ui_v2/app/；详见 docs/ui-v2-design.md）
+│   │   ├── app/                # 应用本体（index.html / login.html）
+│   │   ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
+│   │   └── js/                 # api / boot / clipboard / dom / filters / focus / format / icons / keys / latest / login / menus / messages / next-target / paths / push / spark / state / theme / theme-init / ui/*
+│   └── ui/                     # `/ui/` 的跳转壳：index.html + js/redirect-hash.js（送到 /ui_v1/）
 ├── src/
 │   ├── index.ts                # Worker 入口：Hono 装配、中间件、Hub 转发、Cron
 │   ├── env.ts                  # 绑定类型（D1/R2/HUB/Vars/Secrets）

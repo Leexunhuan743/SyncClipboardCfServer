@@ -115,6 +115,7 @@
 - 87. 前端审计第二轮：两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约（2026-09-18 晚，用户"继续全面深挖"）
 - 88. 前端两轮审计的修复落地（2026-09-18 晚，用户"合理完善修复"）
 - 89. 界面改名（ui_old → ui_v1 / ui → ui_v2）与 V1 提示条移除（2026-09-19，用户三条原话）
+- 90. 补回 `public/_headers`：改名漏改的那一处（2026-09-19，审查发现）
 ## 1. 项目状态
 
 | 阶段 | 状态 | 完成日期 | 说明 |
@@ -5722,7 +5723,48 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 （`/ui_v2/app/` 与 `/ui_v1/`）**零 console 错误、零失败请求**，V1 探针另报
 `AUDIT findings=0` 与 `noticeVisible=null`（提示条确已移除）。
 
-> 完整操作记录（含三个挂载点的取舍推导、替换做法表、六个坑、回滚点）见
+> 完整操作记录（含三个挂载点的取舍推导、替换做法表、踩到的坑、回滚点；另有 §7 的**事后修正**）见
 > [`docs/ui-rename-v1-v2.md`](ui-rename-v1-v2.md)。
 > **日期口径备注**：本节按环境日期写 `2026-09-19`；而 §88 末尾记着上一轮把注释里的 `09-19`
 > 全部订正为 `09-18`（当时判定真实日期是 09-18）。两处口径不一致，按需统一。
+
+## 90. 补回 `public/_headers`：改名漏改的那一处（2026-09-19，审查发现）
+
+用户在 `e3858cd` / `9357f59` 推送后要求"全面严格审查最新的两个提交"，这是审查里唯一的
+**功能性**缺陷（其余都是同一次机械替换打偏的文档句子，见本节末）。
+
+**症状（线上实测，不是推断）**：`public/_headers` 的路径规则**整份没跟着改名**，仍挂在
+`/ui_old/js/*`、`/ui_old/css/*` 与 `/ui_old/` 的四个图标/manifest 上 —— 而这些路径在改名后
+**都不存在了**。curl 生产（`cache-control` 实测）：
+
+| 路径 | 实测响应头 |
+|---|---|
+| `/ui/js/redirect-hash.js`（规则命中） | `public, no-cache, must-revalidate` |
+| `/ui_v1/js/format.js` | `public, max-age=0, must-revalidate`（平台默认） |
+| `/ui_v2/js/boot.js` | 同上 |
+| `/ui_v1/favicon.svg` | 同上（本该 `max-age=86400, swr=604800`） |
+
+⇒ 两版前端**同时**丢掉 `no-cache, must-revalidate`，图标/manifest 的长缓存也丢了。这正是该文件
+自己的注释记着的"2026-09-17 修过的那个缺陷"原地复现（`§34.4` / `§57` 一带），而
+`docs/frontend-checklist.md` 的 P0-3 还写着"✅ 已完成" —— **一句话都不成立**。
+
+**为什么漏**：改名是**按目录**分三轮替换的（`public/ui_v1`、`test/`、`public/ui/`），
+`public/_headers` 这个"站点根的特殊文件"不属于任何一轮的扫描范围；而且**没有任何守卫读它**
+（`docs.test.ts` 只数 `public/` 的文件总数，规则内容在守卫之外）。
+
+**修法**：按三个挂载点重写规则 —— `/ui/js/*` 保留（跳转壳的 `redirect-hash.js` 也是代码资源）、
+`/ui_v1` 与 `/ui_v2` 的 js/css 各一条禁令 + 各自的图标/manifest 长缓存、`/ui/` **不写**图标规则
+（那一面根本没有图标文件，写了就是死规则）。并给 `test/ui-guard.test.ts` 加两条**结构**判据：
+
+1. 每条规则的路径必须在 `public/` 下**真实存在** ⇒ 改名漏改会红（死规则 = 路径不存在）；
+2. 三个挂载点里**有** `js`/`css` 目录的，都必须有 `no-cache, must-revalidate` 规则。
+
+这两条把"只有人去数才会发现"（本文件 §0 反复记的那类漂移）换成了"守卫会红"。
+
+**同时订正的文档**（都是同一次机械替换打偏的，逐条见 `docs/ui-rename-v1-v2.md` §7）：
+`AGENTS.md` §2/§3（把 `/ui/` 误写成 `/ui_v2/`、V2 探针 URL 仍是 `/ui/app/`）、
+`docs/design.md` §4 与 `docs/ui-v2-design.md` §7 两张目录树（**没重建**：仍把 `ui/` 当 V2 的家、
+`ui_v2/` 没有条目、V1 还被写成"冻结存档"、样式表数 7→6）、`docs/ui.md` §3.2/§7（已删的
+`css/archive.css` 与 `.notice-bar__close` 仍留在清单里）、`docs/frontend-checklist.md`
+（历史叙述被改错 + 缓存那条的"已完成"是假话）、`docs/protocol.md`（`/ui_v1/` 那次跳跃的旧名）、
+`docs/ui-rename-v1-v2.md`（回滚命令指向了 HEAD 里不存在的路径）。
