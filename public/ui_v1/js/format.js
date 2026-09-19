@@ -26,7 +26,10 @@ export function formatSize(bytes) {
   // 于是全新实例（或记录已被清空）的「存储占用」显示成破折号 —— 它读作"取不到/坏了"，
   // 而同一行的「记录 0 条」「已收藏 0 条」都是 `0`，自相矛盾；`docs/upstream-issues.md`
   // 还记着上游 `catch {}` 会让 `totalFileSizeMB` 静默变 0，那个 0 同样是真值。
-  // 见 `docs/AUDIT-v1-v2-divergence.md` §5.2（V2 对同一字段显式给 `'0 B'`）。
+  // 见 `docs/AUDIT-v1-v2-divergence.md` §5.2：V2 概览带那**一格**用的是它自己的短写函数
+  // `ui_v2/js/ui/overview.js` 的 `formatSizeShort()`，那里显式给 `'0 B'`。
+  // ⚠️ 别误读成"两版口径一致"：V2 的 `formatSize()`（`ui_v2/js/format.js`）对 0 给的是 `'—'`，
+  // 与这里**有意不同**（它那支的理由写在它自己文件里）。两支函数同名不同物，改的时候别只改一支。
   if (n <= 0) return '0 B';
   // 取整：调用方传进来的常是浮点积（`MB × 1024 × 1024`），不取整会写出
   // 「104.85760000000001 B」这种字节数。

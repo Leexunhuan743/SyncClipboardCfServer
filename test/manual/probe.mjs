@@ -179,7 +179,13 @@ try {
     overviewTotal: document.querySelector('.overview__stat .overview__value')?.textContent ?? null,
     overviewTotalLabel: document.querySelector('.overview__stat .overview__label')?.textContent ?? null,
     overviewSize: [...document.querySelectorAll('.overview__stat')].at(-1)?.querySelector('.overview__value')?.textContent ?? null,
-    kinds: [...document.querySelectorAll('.kinds__item')].map((n) => n.textContent.trim()),
+    // 类型计数在筛选条的 chips 上：chipAll 只取「全部」那一枚，这里把四个类型也读出来。
+    // （本块是模板字符串，注释里不许出现反引号。）此前读 .kinds__item —— 那个类没有生产者
+    // （概览带的类型分布 2026-09-15 起已移除，见 ui_v2/js/ui/overview.js:64-68），
+    // 字段恒为空数组、且没有被断言，属"探针在空转"。
+    kinds: [...document.querySelectorAll('.chip[data-kind]:not([data-kind="All"]) .chip__num')].map((n) =>
+      n.textContent.trim(),
+    ),
     // 趋势图：条数只证明 DOM 在，**不等于看得见** —— 2026-09-18 的缺陷正是
     // "14 根柱都在、可见高度 0"（基础规则的 .main > .overview 前缀压过了窄屏那档媒体查询）。
     // 故把渲染盒一起量出来：中屏/桌面上它应当让位（h=0），窄屏应当独占一行（h>0）。

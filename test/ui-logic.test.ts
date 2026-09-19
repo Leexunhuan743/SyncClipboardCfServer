@@ -1,4 +1,4 @@
-// 前端纯逻辑：筛选语义（`filters.js`）、展示格式化（`format.js`）、API 边界的归一化（`api.js`）。
+// 前端纯逻辑：筛选语义（`filters.js`）、展示格式化（`format.js`，含用户可见的「字符」口径）、API 边界的归一化（`api.js`）。
 //
 // 为什么值得一个套件：`public/ui_v2/**` 是零构建的，不在 `tsc` 的 include 里；此前的守卫只有
 // `ui-contract`（类名/属性/import 闭包/能否被原生解析）与 `next-target`、`clipboard` 两个纯函数用例。
@@ -13,7 +13,7 @@ import { normalizeItem, buildQuery } from '../public/ui_v2/js/api.js';
 // @ts-expect-error TS7016：`public/ui_v2/**` 是零构建的原生 ES 模块（同 next-target.test.ts）
 import { DEFAULT_FILTERS, rangeBounds, toDateInput, fromDateInput, filtersFromUrl, filtersToApi, filtersToSearch, isDefaultFilters, startOfDay } from '../public/ui_v2/js/filters.js';
 // @ts-expect-error TS7016：同上
-import { typeName, typeLabel, formatSize, formatRelative, previewText } from '../public/ui_v2/js/format.js';
+import { typeName, typeLabel, formatSize, formatRelative, previewText, truncateText, charCount } from '../public/ui_v2/js/format.js';
 // @ts-expect-error TS7016：同上
 import { parseFrames, classifyMessage, createPushChannel } from '../public/ui_v2/js/push.js';
 // @ts-expect-error TS7016：同上
@@ -27,7 +27,7 @@ import { retentionText, retentionEffectiveText } from '../public/ui_v1/js/compon
 // 下载的**落盘文件名**（V1 `format.js` 的纯函数）：有原文件就保留原扩展名，没有才生成
 // `<type>-<hash8>.txt`；而名字来自客户端的 `dataName`（不可信）—— 这条判据只能在单测里逐值钉住。
 // @ts-expect-error TS7016：同上
-import { downloadNameForText, safeFileName } from '../public/ui_v1/js/format.js';
+import { downloadNameForText, safeFileName, truncateText as truncateTextV1, charCount as charCountV1 } from '../public/ui_v1/js/format.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const DAY = 86_400_000;
@@ -585,3 +585,73 @@ describe('下载的落盘名（V1 `format.js`）', () => {
   });
 });
 
+
+// ===== 用户可见的「字符」（2026-09-19 补）=====
+//
+// 判据来自一个真实缺陷：两版 `format.js` 的 `slice(0, 40/80)` 与 `.length` 按 **UTF-16 码元**
+// 处理「用户看到的字符」——39 个 ASCII + 一个 emoji 会被切成半个代理对（渲染成 `\uFFFD`），
+// 10 个 emoji 会被报成「20 个字符」。修复引入了 `truncateText()` / `charCount()`，
+// 而这两个函数**两版各有一份、不共享**（见 AGENTS.md §1），只有纪律要求「改其一同时改另一版」。
+// 本节补上此前完全缺失的断言：① 切不出半个代理对；② 计数按字素簇；③ 两版结果一致。
+describe('字符口径（两版 format.js 各一份，行为必须一致）', () => {
+  const IMPLS = [
+    { name: 'V2', truncateText, charCount },
+    { name: 'V1', truncateText: truncateTextV1, charCount: charCountV1 },
+  ];
+  const hasSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function';
+  const FAMILY = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}'; // 家庭 emoji（3 个码点 + 2 个零宽连接符，故用转义写法，避免不可见字符被吃掉）
+
+  /** 扫码元：出现孤立的高/低代理位即为「切坏了」。 */
+  function hasLoneSurrogate(text: string): boolean {
+    for (let i = 0; i < text.length; i += 1) {
+      const code = text.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const next = text.charCodeAt(i + 1);
+        if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+        i += 1;
+      } else if (code >= 0xdc00 && code <= 0xdfff) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  for (const impl of IMPLS) {
+    it(`${impl.name}：截断不切出半个代理对`, () => {
+      const text = `${'a'.repeat(39)}😀`; // 恰好 40 个字素，第 40 个是 emoji
+      const whole = impl.truncateText(text, 40);
+      expect(whole).toBe(text);
+      expect(hasLoneSurrogate(whole)).toBe(false);
+
+      // 收到 39：字素簇口径留下 39 个 a；码点回退同理。**不许**只留下高代理位
+      const clipped = impl.truncateText(text, 39);
+      expect(hasLoneSurrogate(clipped)).toBe(false);
+      expect(clipped).toBe('a'.repeat(39));
+    });
+
+    it(`${impl.name}：字符数按「用户看到的一个字」算，不按码元`, () => {
+      expect(impl.charCount('😀'.repeat(10))).toBe(10); // 码元口径会报 20
+      expect(impl.charCount('')).toBe(0);
+      expect(impl.charCount(null)).toBe(0); // 函数体里的 `text ?? ''` 兜底
+      // 家庭 emoji：字素簇 1 个；回退（Firefox < 125）按码点数成 5 段（8 个码元里含两个 ZWJ）。
+      // 两种都不切出半个字符 —— 这正是注释承诺的口径，故这里把两个分支都钉住
+      expect(impl.charCount(FAMILY)).toBe(hasSegmenter ? 1 : 5); // FAMILY 写成转义：ZWJ 不可见，字面量会被工具链吃掉
+    });
+  }
+
+  it('两版实现给出一致结果（改其一必须同时改另一版）', () => {
+    const samples = ['', 'a', '\u{1F600}', `${'a'.repeat(39)}\u{1F600}`, FAMILY, '中'.repeat(50) + '🎉'.repeat(5)];
+    for (const sample of samples) {
+      for (const max of [0, 1, 5, 40, 80]) {
+        expect(
+          truncateTextV1(sample, max),
+          `两版 truncateText 结果不一致（max=${max}）：${JSON.stringify(sample).slice(0, 24)}`,
+        ).toBe(truncateText(sample, max));
+      }
+      expect(
+        charCountV1(sample),
+        `两版 charCount 结果不一致：${JSON.stringify(sample).slice(0, 24)}`,
+      ).toBe(charCount(sample));
+    }
+  });
+});
