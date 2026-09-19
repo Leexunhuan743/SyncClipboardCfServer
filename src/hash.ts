@@ -99,7 +99,7 @@ export const GROUP_ZIP_MIN_RATIO_CHECK_BYTES = 8 * 1024 * 1024; // 比值守卫�
 //   `groupZipDecompressionCap(zipBytes)`，把两者之和压在 ISOLATE_TRANSFER_BUDGET_BYTES 内。
 export function groupZipDecompressionCap(zipBytes: Uint8Array): number {
   const remaining = ISOLATE_TRANSFER_BUDGET_BYTES - zipBytes.length;
-  // 下限 1 MiB：理论上不会走到（上限 80 MiB < 预算 96 MiB ⇒ 余量恒 ≥ 16 MiB），留下它只为
+  // 下限 1 MiB：理论上不会走到（请求体可调到的**上**上限 64 MiB < 预算 96 MiB ⇒ 余量恒 ≥ 32 MiB），留下它只为
   // 防止将来有人把上限调到预算之上时出现"预算为 0 ⇒ 任何 zip 都报错"这种难查的形态。
   return Math.max(1 * 1024 * 1024, Math.min(GROUP_ZIP_MAX_TOTAL_BYTES, remaining));
 }

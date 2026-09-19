@@ -90,6 +90,7 @@ function warnRateLimitOverrideOnce(got: string, range: string): void {
   rateLimitOverrideWarned = true;
   console.warn(`[security] 限速参数取值无效，已回落默认值：${got}（允许范围 ${range}）`);
 }
+
 // DO 侧内部端点（仅 Worker → DO 调用，不经外部路由暴露）
 export const AUTH_RATE_LIMIT_PATH = '/auth-rate-limit';
 // DO 侧低频落盘的 storage key（每 AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES 次失败或产生新封锁时落一次）
@@ -258,8 +259,14 @@ export function noteAuthSuccess(
   username: string | null,
   ctx?: WaitUntil,
 ): void {
-  const keys = authLimitKeys(request, username).filter((key) => cache.limits.delete(key));
-  if (keys.length > 0 && ctx) ctx.waitUntil(callHub(env, 'clear', keys));
+  // 写成显式循环而不是 `authLimitKeys(...).filter((key) => cache.limits.delete(key))`：
+  // 后者的「删除」是副作用却藏在 `filter` 里，读起来像在筛选；而且它把"本地确有记录"这个
+  // 判据混在返回值里。这里先逐个删，只有真的删掉了东西才去通知 DO（正常同步路径零 I/O）。
+  const cleared: string[] = [];
+  for (const key of authLimitKeys(request, username)) {
+    if (cache.limits.delete(key)) cleared.push(key);
+  }
+  if (cleared.length > 0 && ctx) ctx.waitUntil(callHub(env, 'clear', cleared));
 }
 
 // ===== DO 交互（失败路径与快照，均不阻塞响应）=====

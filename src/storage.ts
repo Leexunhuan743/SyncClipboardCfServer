@@ -120,7 +120,6 @@ export class R2Storage {
     await this.deletePrefix(workingDirPrefix(type, hash));
   }
 
-
   // 列出 history/ 下的**全部对象 key**（数据完整性自检的 R2 一侧；期望 key 由 DB 记录算出后求差集）。
   // 分页列举而不是逐条 HEAD：Free 计划单次调用的内部服务子请求上限是 1000（本仓库按它设了
   // SUBREQUEST_BUDGET = 800，见 src/cleanup.ts:28-31），本机记录总数 2000+ 逐条 HEAD 一次调用即触顶；

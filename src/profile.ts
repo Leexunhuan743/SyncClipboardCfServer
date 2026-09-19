@@ -451,6 +451,9 @@ export async function addRecordDto(
   }
 
   if (!(await isLocalDataValid(db, storage, entity))) {
+    // ⚠️ `tranfer` 是**上游的拼写**，不是笔误：这条 400 文案是逐字复刻的协议契约
+    // （见 docs/upstream-parity.md 的「状态码/文案」条目、docs/protocol.md §3），
+    // 改成正确拼写就会变成一处新的协议偏离；test/fixes.test.ts 也是按这个串断言的。
     throw new BadRequestError('Needs tranfer data.');
   }
 
@@ -615,7 +618,7 @@ async function ensureExistingRecordData(
   existing: HistoryRecordEntity,
 ): Promise<void> {
   if (!(await isLocalDataValid(db, storage, existing))) {
-    throw new BadRequestError('Needs tranfer data.');
+    throw new BadRequestError('Needs tranfer data.'); // `tranfer` = 上游拼写，理由见 addRecordDto 里那条注释
   }
 }
 

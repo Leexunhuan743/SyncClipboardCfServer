@@ -435,7 +435,6 @@ export class HistoryDb {
     return { updated: true, entity: existing };
   }
 
-
   // ===== 保留与清理（对齐上游 HistoryService 的 RemoveOutOfRetentionRecords /
   //       SetRecordsMaxCount / RemoveOutOfDateDeletedRecords / CleanOrphanedFolders）=====
 

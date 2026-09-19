@@ -411,7 +411,6 @@ export function entityToUpdateDto(e: HistoryRecordEntity): HistoryRecordUpdateDt
   };
 }
 
-
 // ===== 搜索串上限（G6）=====
 // D1 的 LIKE 模式有字节上限，超长会让查询直接报错（表现为未处理的 500，非资源类缺陷）。
 // 实测：48 字节通过、49 字节失败（模式为 `%…%`）。以**字节**而非字符计，避免 CJK/emoji

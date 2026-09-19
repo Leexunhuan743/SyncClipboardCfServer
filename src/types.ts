@@ -92,6 +92,9 @@ export interface HistoryRecordEntity {
   createTime: number; // epoch ms
   lastAccessed: number; // epoch ms
   lastModified: number; // epoch ms
+  // ⚠️ `stared` **不是拼错**：它与 D1 的列名 `Stared` 同形（见 schema.sql、db.ts 的读写），
+  // 而对外（协议 / 界面 DTO）一律叫 `starred`（见 serialization.ts 的 `entityToDto*`）。
+  // 改这个字段名必须连 schema.sql 与 db.ts 一起改。
   stared: boolean;
   pinned: boolean;
   version: number;

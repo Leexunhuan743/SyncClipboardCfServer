@@ -92,7 +92,7 @@ const RESERVED_AFTER: Record<CleanupPhase, number> = (() => {
   return out;
 })();
 
-// ===== Meta 键（D→F 契约）=====
+// ===== Meta 键（清理任务写 / UI 只读的共享键名）=====
 
 // 清理任务写进 Meta 的键；UI 的 /ui/api/info 只读展示同名键。
 // 六个键每轮运行都会写入，因此 UI 侧可以假定它们恒存在。
@@ -151,7 +151,7 @@ export interface RetentionSettings {
 }
 
 // 解析单个配置值：合法 = 非负安全整数（**0 合法**），非法/缺失 = null（未配置）。
-// 不复用 parsePositiveInt：那个函数的返回值是「总是有值」（回落到 fallback），
+// 不复用 parseNonNegativeInt：那个函数的返回值是「总是有值」（回落到 fallback），
 // 而这里必须能表达「未配置」这一状态，且**不能**把 0 当非法值回落默认 ——
 // 那会让「关闭清理」变成「按默认清理」，属于静默改变用户意图。
 function parseSettingValue(raw: string | undefined): number | null {
@@ -248,7 +248,9 @@ const PHASE_COUNTER: Record<CleanupPhase, 'expired' | 'trimmed' | 'hardDeleted' 
   orphans: 'orphans',
 };
 
-function parsePositiveInt(raw: string | undefined, fallback: number): number {
+// 名字是「非负」不是「正数」：**0 是合法值**（它表示"关闭该阶段"，见 disabledReason），
+// 所以这里判 `n >= 0` 而不是 `n > 0`。
+function parseNonNegativeInt(raw: string | undefined, fallback: number): number {
   const n = Number(raw);
   return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
 }
@@ -517,7 +519,7 @@ function runPhase(
   }
 }
 
-// 阶段被 env 显式关闭（0 = 关闭，与 parsePositiveInt 的语义一致）
+// 阶段被 env 显式关闭（0 = 关闭，与 parseNonNegativeInt 的语义一致）
 function disabledReason(phase: CleanupPhase, retentionMinutes: number, maxCount: number): string | null {
   if (phase === 'retention' && retentionMinutes <= 0) return 'HISTORY_RETENTION_MINUTES=0';
   if (phase === 'trim' && maxCount <= 0) return 'MAX_SAVED_HISTORY_COUNT=0';
@@ -558,8 +560,8 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       maxCount = settings.maxSavedHistoryCount ?? DEFAULT_MAX_SAVED_HISTORY_COUNT;
     } catch (err) {
       recordFailure(run.failures, 'meta', err);
-      retentionMinutes = parsePositiveInt(env.HISTORY_RETENTION_MINUTES, DEFAULT_RETENTION_MINUTES);
-      maxCount = parsePositiveInt(env.MAX_SAVED_HISTORY_COUNT, DEFAULT_MAX_SAVED_HISTORY_COUNT);
+      retentionMinutes = parseNonNegativeInt(env.HISTORY_RETENTION_MINUTES, DEFAULT_RETENTION_MINUTES);
+      maxCount = parseNonNegativeInt(env.MAX_SAVED_HISTORY_COUNT, DEFAULT_MAX_SAVED_HISTORY_COUNT);
     }
     const startedAt = new Date(run.nowMs).toISOString();
 
@@ -568,7 +570,7 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);
       const stored = await run.db.getMetaValues(META_KEYS_ALL);
       for (const phase of CLEANUP_PHASES) {
-        run.cursors[phase] = parsePositiveInt(stored.get(CLEANUP_META_KEYS.cursors[phase]), 0);
+        run.cursors[phase] = parseNonNegativeInt(stored.get(CLEANUP_META_KEYS.cursors[phase]), 0);
       }
     } catch (err) {
       recordFailure(run.failures, 'meta', err);
@@ -608,8 +610,6 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
         `[cleanup] phase=${phase} status=${status} processed=${processed} batches=${batches} truncated=${status === 'truncated'} cursor=${run.cursors[phase]} subrequests=${run.budget.spent} ms=${Date.now() - phaseStartMs}${off ? ` reason=${off}` : ''}`,
       );
     }
-
-    result.subrequests = run.budget.spent;
 
     // 收尾落库：六个键每轮都写（UI 据此展示进度与失败）。写失败只记日志/返回值 ——
     // 此时已无处落库，且不能把错误抛给调用方。
