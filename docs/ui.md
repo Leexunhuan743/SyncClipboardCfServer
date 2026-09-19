@@ -1,4 +1,4 @@
-# Web 历史界面（`/ui_v2/`）
+# Web 历史界面（默认界面 V1 `/ui_v1/`；开发测试版 V2 `/ui_v2/`）
 
 本文件描述本项目的 Web 界面：它的来源、与协议面的边界、模块划分、鉴权模型、设计系统与验证记录。
 
@@ -46,9 +46,10 @@
 ```
 浏览器
   │  GET /                 → Worker：302 → `/ui_v1/`（默认界面；Accept: text/html 才跳）
-  │  GET /ui/**            → Cloudflare 静态资源（public/ui_v2/**，V2 = 开发测试版）
+  │  GET /ui/**            → Cloudflare 静态资源（public/ui/**，`/ui/` = 跳转壳，送到 /ui_v1/）
   │  GET /ui_v1/**        → Cloudflare 静态资源（public/ui_v1/**，V1 = 默认界面）
-  │      ↑ 两个面都先经过 Worker：`run_worker_first = ["/ui", "/ui_v2/*", "/ui_v1", "/ui_v1/*"]`
+  │  GET /ui_v2/**        → Cloudflare 静态资源（public/ui_v2/**，V2 = 开发测试版）
+  │      ↑ 三个面都先经过 Worker：`run_worker_first = ["/ui", "/ui/*", "/ui_v1", "/ui_v1/*", "/ui_v2", "/ui_v2/*"]`
   │        + `binding = "ASSETS"` —— 入口据此判断界面开关（UI_ENABLED），开着才转回
   │        `env.ASSETS.fetch()`，关着直接 404
   │  GET/PATCH /ui/api/**  → Worker：src/ui/routes.ts（会话 Cookie 或 Basic 鉴权）
@@ -62,24 +63,24 @@ Worker
 ### 2.1 界面开关（`UI_ENABLED`，默认开）
 
 两个界面面原本都由 Cloudflare 直接托管、**不经过 Worker** —— 那样的话"关掉界面"就无从实现。
-2026-09-15 起 `[assets]` 增加了 `binding = "ASSETS"` 与 `run_worker_first = ["/ui", "/ui_v2/*"]`；
+2026-09-15 起 `[assets]` 增加了 `binding = "ASSETS"` 与 `run_worker_first = ["/ui", "/ui/*"]`；
 **2026-09-18 补上 `/ui_v1` 与 `/ui_v1/*`**（V1 成为默认界面后，这一面的开关必须真的生效：
 不在名单里时，边缘命中静态资源就直接返回，请求到不了 Worker，那段 404 判定永远不执行）。
 于是界面请求先到 `src/index.ts`，由它按 GitHub 仓库变量 `UI_ENABLED`（判定见 `src/uiEnabled.ts`）分流：
 
 | | 界面开着（默认） | `UI_ENABLED=false` |
 | --- | --- | --- |
-| `/ui`、`/ui_v2/`、`/ui_v2/js/*`（V2）与 `/ui_v1/`、`/ui_v1/js/*`（V1） | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
-| `/ui_v2/不存在的路径` | 资源 404 后**回落 Hono**，拿到 `notFoundPage`（与平台自身回落一致） | 404 纯文本（不产生界面痕迹） |
+| `/ui`、`/ui/js/*`（跳转壳；`redirect-hash.js` 同样是代码资源）、`/ui_v1/`、`/ui_v1/js/*`（V1）与 `/ui_v2/`、`/ui_v2/js/*`（V2） | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
+| `/ui/不存在的路径`、`/ui_v1/不存在的路径`、`/ui_v2/不存在的路径` | 资源 404 后**回落 Hono**，拿到 `notFoundPage`（三个前缀共用同一条链，与平台自身回落一致） | 404 纯文本（不产生界面痕迹） |
 | `/ui/api/*` | 照旧交给 Hono，守卫与业务不变 | **404 JSON** `{"error":"not_found"}` |
 | 根路径 `/`（`Accept: text/html`） | 302 → **`/ui_v1/`**（默认界面，少一跳） | **200 `Server is running.`**（不再把人引到不存在的界面） |
 | 协议面 | 不受影响 | **不受影响**（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub 全照常） |
 
 三条不变式由 `test/ui-guard.test.ts` 的「UI 部署开关」用例守着：关闭态**一次都不访问**静态资源且全 404；
-开启态资源未命中必须回落出 404 页；**两个挂载点都在 `run_worker_first` 里**（2026-09-18 补的第三条 ——
+开启态资源未命中必须回落出 404 页；**三个挂载点都在 `run_worker_first` 里**（2026-09-18 补的第三条、2026-09-19 改名后扩到三个；挂载点从 `public/` 动态发现 ——
 此前文档写着"删掉它会测试即红"，而实际上没有任何测试在读这份配置）。
-线上每次部署后由 CI 冒烟按开关断言两版的页面与入口 JS：
-`/ui_v2/`（V2 的跳转索引）、`/ui_v2/app/`、`/ui_v2/js/boot.js`、`/ui_v1/`、`/ui_v1/js/main.js`。
+线上每次部署后由 CI 冒烟按开关断言三面的页面与入口 JS：
+`/ui/`（跳转壳）、`/ui_v1/`、`/ui_v1/js/main.js`、`/ui_v2/app/`、`/ui_v2/js/boot.js`。
 ```
 
 三条不变式：
@@ -89,11 +90,11 @@ Worker
 2. **写路径唯一**：界面上的收藏/置顶/删除都经 `src/historyOps.ts` 的 `applyHistoryUpdate`——
    与官方 `PATCH /api/history/{type}/{hash}` 是同一个实现（同一套版本判定、同一条广播、同一次 R2 清理）。
    这样「界面改了但客户端不知道」在结构上不可能发生。
-3. **静态资源不占协议路径**：`public/` 下不放 `index.html`，所有资源都在 `/ui_v2/` 下；
+3. **静态资源不占协议路径**：`public/` 下不放 `index.html`，所有资源都在三个挂载点（`/ui/`、`/ui_v1/`、`/ui_v2/`）下；
    根路径留给 `PROPFIND`（客户端的探活与目录列举）。
 
-`wrangler.toml` 的 `[assets]` 只声明 `directory` 与 `not_found_handling = "none"`：命中资源的请求由边缘
-直接返回，未命中的（含全部协议请求）回落给 Worker。
+`wrangler.toml` 的 `[assets]` 声明 `directory`、`binding = "ASSETS"`、`run_worker_first` 与 `not_found_handling = "none"`：
+三个界面前缀（`/ui`、`/ui_v1`、`/ui_v2` 及各自的 `/*`）的请求**先进 Worker**，其余命中的静态资源由边缘直接返回，未命中的（含全部协议请求）回落给 Worker。
 
 ---
 
@@ -108,7 +109,7 @@ Worker
 | `query.ts` | 只读查询层：参数解析、白名单排序、LIKE 转义、分页、按类型计数、变更信号。拥有 `UiHistoryItem` / `UiListQuery` 等类型 |
 | `routes.ts` | 路由装配：把 HTTP 映射到上面三者 + 复用协议层的 `HistoryDb`/`R2Storage`/`applyHistoryUpdate` |
 | `maintenance.ts` | 维护面：数据完整性自检（R2 列举 × D1 期望目录差集）与保留策略的在线读写（写 Meta 覆盖，0 = 关闭该阶段，空 = 回落部署环境变量） |
-| `notFound.ts` | `/ui_v2/*` 未匹配路径的 404 页（只覆盖 UI 命名空间，不碰协议 404 语义） |
+| `notFound.ts` | 三个界面前缀（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）未匹配路径共用的 404 页（只覆盖 UI 命名空间，不碰协议 404 语义） |
 
 共享层的小幅开放：`db.ts` 导出 `rowToEntity`/`DbRow`（界面按自己的排序读同一张表，若另写一份映射，
 两处对 NULL/布尔列的解释迟早分叉）；`contentTypes.ts` 从 `routes/webdav.ts` 抽出（`fileHeaders`
@@ -118,8 +119,8 @@ Worker
 ### 3.2 前端（`public/ui_v1/` = V1，真文件 + 原生 ES 模块，无构建步骤）
 
 > **本节描述的是 V1，而 V1 从 2026-09-18 起就是默认界面。**
-> 站点根 `GET /` 的浏览器分支（`src/routes/webdav.ts`）与 `/ui_v2/` 的目录索引
-> （`public/ui_v2/index.html`，meta refresh + canonical）**都**指向 `/ui_v1/`；两者必须一致，
+> 站点根 `GET /` 的浏览器分支（`src/routes/webdav.ts`）与 `/ui/` 的目录索引
+> （`public/ui/index.html`，meta refresh + canonical）**都**指向 `/ui_v1/`；两者必须一致，
 > 守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
 > V2（`public/ui_v2/`，本体 `/ui_v2/app/`）降为**开发测试版**：它进去后顶栏版本号与登录页副标题
 > 都标着"开发测试版"，设计与实现见 [`docs/ui-v2-design.md`](ui-v2-design.md)。
@@ -144,7 +145,7 @@ Worker
 | **V1**（`public/ui_v1/`，**默认界面**） | 37 | 默认入口，挂载 `/ui_v1/`；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`）。2026-09-19 删掉顶部提示条后随之删掉 `css/archive.css`（它只为那条提示存在），38 → 37 |
 | **V2**（`public/ui_v2/`，**开发测试版**） | 47 | 3 处入口（`app/index.html`、`app/login.html`、以及 `js/*` 的模块图）+ 5 张样式表 + 35 个 JS 模块 + `theme-init.js` + `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest`；应用本体挂 `/ui_v2/app/` |
 | **跳转壳**（`public/ui/`） | 2 | 只剩 `index.html`（meta refresh + canonical + 外链脚本）与 `js/redirect-hash.js`（把 fragment 中继到目标）。它把 `/ui/`（老书签）送到 `/ui_v1/`；**保留这个前缀的真正原因是 `/ui/api/*`** —— 两版共用的服务端接口命名空间，路由在 `src/ui/routes.ts` |
-| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放 `/ui_v2/` 下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate`（每次回源验证）、图标/manifest 的长缓存——这批文件不经过 Worker，只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
+| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放三个挂载点下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate`（每次回源验证）、图标/manifest 的长缓存——这些响应头由静态资源层施加（三个前缀的请求虽先进 Worker，资源仍由 `ASSETS` 出网），只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
 
 下表是 **V1** 的文件清单（供对照）：
 
@@ -430,7 +431,7 @@ Worker
 
 ### 6.1 同一文档重复初始化（实测触发过）
 
-应用若被以 `/ui` 与 `/ui_v2/` 两个 URL 同时加载，模块图会出现两份，`boot()` 被第二次求值时
+应用若被以 `/ui_v2/app` 与 `/ui_v2/app/` 两个 URL 同时加载（V1 同理：`/ui_v1` 与 `/ui_v1/`），模块图会出现两份，`boot()` 被第二次求值时
 挂载点已被上一次替换掉（`getElementById` 返回 null）→ 半渲染 + 报错。已在 `boot()` 开头用
 `document.documentElement.dataset.appBooted` 做幂等保护（3 行，实测拦住）。
 
@@ -447,7 +448,7 @@ Worker
   （不带 origin，跨源字符串没有漏出的路径）。**前缀比较不够**：浏览器（WHATWG URL）对 http/https
   这类 special scheme 把 `\` 视同 `/`，于是 `?next=/\evil.example` 与 `//evil.example` 一样是协议相对 URL
   而跳到站外——登录成功后与「已登录时打开登录页」两处 `location.replace` 都会中招。
-  按 origin 判定后 `//evil.example`、`/\evil.example`、`javascript:alert(1)` 全部落回站内默认页 `/ui_v2/`，
+  按 origin 判定后 `//evil.example`、`/\evil.example`、`javascript:alert(1)` 全部落回站内默认页 `/ui_v2/app/`，
   站内目标（如 `?next=/ui/?x=1`）照常可用。回归用例见 `test/next-target.test.ts`。
 - **失败路径排空请求体**：受守卫的 `PATCH` / `batch-update` / `clear` 都带 body，一旦在未读完入站体时就发出响应，
   Workers 会抛 `Can't read from request stream after response has been sent.` 并让**本 isolate 的后续请求**
@@ -546,10 +547,10 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 
 ### 9.2 404 与爬虫
 
-- ✅ **设计过的 404**：`src/ui/notFound.ts` 服务 `/ui_v2/*` 下未匹配的路径（协议命名空间仍是 JSON/文本 404，语义不动）。
+- ✅ **设计过的 404**：`src/ui/notFound.ts` 服务三个前缀（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）下未匹配的路径（协议命名空间仍是 JSON/文本 404，语义不动）。
 - ✅ `robots.txt` 放**站点根**（`public/robots.txt`，爬虫只读根路径）——`Disallow: /` 与页面里的 `noindex` 构成两道。
 - ⚠️ 不做 `sitemap.xml`：整站 noindex，站点地图没有意义。
-- ✅ 尾斜杠决策：`/ui` 由静态资源层重定向到 `/ui_v2/`；协议路由用 Hono 的 `strict: false` 容忍（对齐 ASP.NET）。
+- ✅ 尾斜杠决策：`/ui` 由静态资源层重定向到 `/ui/`（那一层壳再把人送到 `/ui_v1/`）；协议路由用 Hono 的 `strict: false` 容忍（对齐 ASP.NET）。
 
 ### 9.3 非快乐路径的状态
 
@@ -651,7 +652,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 区块重叠 / 非预期裁切 | 0（几何断言） |
 | 浏览器交互（headless Chromium，真实浏览器引擎） | 登录流、筛选/搜索/排序/分页、星标往返、单选/全选、批量删除确认（取消路径）、文本与图片预览、Esc 关闭、空状态、部署信息、主题切换与持久化、`data_missing` 的**三处可达**表现（缩略图占位/预览空态/下载提示） |
 | 路由语义 | 匿名 `/ui_v2/不存在` → 404 页；匿名 `/ui/api/*` → 401 JSON；带凭据 `/ui/api/未知` → 404 JSON；协议路径 404 语义不变 |
-| 登录跳转 `?next=`（headless Chromium 导航日志 + 纯函数用例） | 打开 `/ui_v2/login.html?next=/%5Cevil.example`（反斜杠变体，浏览器解析为 `http://evil.example/`）时，**零交互**的已登录跳转落在 `/ui_v2/`（同源），没有站外跳转；`//evil.example`、`javascript:alert(1)`、`https://evil.example`、空值同样落回默认页，`/ui_v2/?x=1` 与 `/` 正常返回；页面零 console 错误。用例：`test/next-target.test.ts` |
+| 登录跳转 `?next=`（headless Chromium 导航日志 + 纯函数用例） | 打开 `/ui_v2/app/login.html?next=/%5Cevil.example`（反斜杠变体，浏览器解析为 `http://evil.example/`）时，**零交互**的已登录跳转落在 `/ui_v2/app/`（同源），没有站外跳转；`//evil.example`、`javascript:alert(1)`、`https://evil.example`、空值同样落回默认页，`/ui_v2/app/?x=1` 与 `/` 正常返回；页面零 console 错误。用例：`test/next-target.test.ts` |
 | 窄屏行布局（触屏模拟） | 内容列 84px → **239px@375 / 278px@414**、行高 170px → **106px**、操作按钮 **44×44**（独占整行、换行确定）、元信息「类型 · 时间」可见、表头排序保留、溢出 0 |
 | 桌面（1440） | 行 55px、七列齐全、`.cell-content__meta` 隐藏——窄屏改动对桌面零影响 |
 | 触屏命中区（`pointer: coarse`） | `.btn`/`.select` 44px、`.icon-btn` 44×44（含 `flex: none`）、星标 44×44、分段控件 40px、**`.th-sort` 42×44 / `.search__clear` 44×44**（本轮补） |
@@ -662,7 +663,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 当轮门禁（A 批，历史的数字不改写） | `npx tsc --noEmit` 干净；`npm test` 全部套件通过（当轮为 19 个测试文件；用例数见命令输出，含当轮新增的 `clipboard`） |
 | **系统性完善轮**（2026-09-13，详见 `docs/progress.md` §34） | 时间范围：预设 `range=today` 请求携带本地日界 `after`、自定义区间带 `after/before`（`?range=custom&after=1788969600000` → API `after=1788969600000`）；回收站：`?deleted=1` → API `deleted=true`、行内只剩「恢复」（带数据文件的图片记录全部 `disabled` 且 tooltip 说明原因）、恢复一条后计数 −1 且行就地消失并提示「已恢复」；**类型计数与视图同源**：回收站工具栏 `全部 1064 / 文本 667`（已删口径），同一屏的存储明细仍是 `文本 742`（活跃口径）；切回活跃视图 `1009 / 742`；快速切换 6 次两个方向都正确；星标一条后统计条「已收藏」251 → **252 就地更新**（不再等列表刷新）；选择列在回收站隐藏（`display: none`）；失联横幅全程 `hidden`；工具栏在 1440 / 375 两档无横向溢出（自定义日期行独占一行，桌面 36 → 84px）；新元素对比度 —— 统计条回收站入口 **5.47（浅）/ 6.62（深）**、失联横幅 **5.66 / 5.44**（均 ≥ 4.5:1）；登录页在外置主题脚本 + CSP 下三条路径全通过（空提交本地校验、错口令 401 文案、成功登录回列表），零异常 |
 | **本轮静态投递**（`_headers`） | 实测响应头：`content-security-policy`（`default-src 'none'` + 逐项白名单）、`x-content-type-options: nosniff`、`referrer-policy: same-origin`、`cache-control: public, no-cache, must-revalidate`（js/css）；页面在**零 CSP 违规**下加载（CDP `Log.entryAdded` + `Runtime.exceptionThrown` 全量采集，0 条） |
-| **前端 lint**（`npm run lint`，eslint 只覆盖 `public/ui_v2/js`——该目录不在 `tsc` 的 include 里） | 首次运行抓到 `buildActions(item, actions, ref)` 的 `ref` 从未使用（既有代码）；复核轮加上 `no-shadow` 后又抓到一处**真缺陷的成因**（见 §10 末的复核记录）：`refreshStats` 的局部 `const stats = await api.statistics(...)` 遮蔽了模块级组件实例，`stats.update(...)` 每次都抛 TypeError 被 catch 吞掉 |
+| **前端 lint**（`npm run lint`，eslint 覆盖 `public/ui_v2/js` 与 `public/ui_v1/js`——这两个目录不在 `tsc` 的 include 里） | 首次运行抓到 `buildActions(item, actions, ref)` 的 `ref` 从未使用（既有代码）；复核轮加上 `no-shadow` 后又抓到一处**真缺陷的成因**（见 §10 末的复核记录）：`refreshStats` 的局部 `const stats = await api.statistics(...)` 遮蔽了模块级组件实例，`stats.update(...)` 每次都抛 TypeError 被 catch 吞掉 |
 | **主世界错误采集**（CDP `Runtime.exceptionThrown` + `Log.entryAdded`） | 遍历改筛选 / 翻页 / 换排序（三条视图过渡路径）后 **0 异常**。采集方式说明：`page.on('console')` 在本 harness 抓不到任何条目（合成 `console.log` 亦无输出），隔离世界的 `window.onerror` 也看不到主世界——**只有 CDP 这条路可信**；本轮据此发现并修掉一个真实缺陷（见下） |
 
 **本轮修掉的两处「状态是死的」缺陷**（都不影响功能、只影响可信度，正因如此长期无人发现）：

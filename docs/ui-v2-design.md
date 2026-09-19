@@ -301,7 +301,7 @@ V2 的三处升级：
 
 ```
 public/
-├── _headers                   静态资源的 CSP/安全头 + 缓存策略（边缘直出，不经过 Worker）
+├── _headers                   静态资源的 CSP/安全头 + 缓存策略（由静态资源层施加：`/ui*` 的请求虽先进 Worker，资源仍由 `ASSETS` 出网，规则本身不由 Worker 执行）
 ├── robots.txt                 站点根（爬虫只读根路径）
 │                              ↑ 根路径**不放** index.html —— 它要留给 PROPFIND，见 wrangler.toml 的注释
 ├── ui_v2/                     V2（**开发测试版**；默认界面是 V1 `ui_v1/`，见 docs/ui.md §3）
