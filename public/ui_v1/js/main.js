@@ -545,8 +545,8 @@ async function toggleFlag(item, field, value) {
       items: store.get().items.map((entry) => (entry.key === next.key ? next : entry)),
     });
     // 这一行如果在选择集里，选择集里那份也要换成新对象：选择条的方向与文案（置顶 / 取消置顶、
-    // 收藏 / 取消收藏）读的正是选择集里的对象。只更新列表而不更新它，就会出现"这一行明明已经
-    // 置顶，选择条还说置顶"。
+    // 收藏 / 取消收藏）读的正是选择集里的对象。只更新列表而不更新它，就会出现
+    // 「这一行已经置顶了，选择条上的按钮却还写着『置顶』」—— 它按的是旧快照，方向是反的。
     const selection = store.get().selection;
     if (selection.has(next.key)) {
       const synced = new Map(selection);
