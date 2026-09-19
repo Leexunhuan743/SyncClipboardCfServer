@@ -6,6 +6,16 @@
 > 分工：项目是什么、为什么这样取舍 → [`README.md`](README.md) + [`docs/design.md`](docs/design.md)；
 > 协议逐条行为 → [`docs/protocol.md`](docs/protocol.md)；界面 → [`docs/ui.md`](docs/ui.md)。
 > **本文件不抄这些内容的副本**，只写"干活时必须遵守什么"。
+>
+> **引文说明**：代码与文档里引用了两份**不在本仓库**的文档，它们来自 `motion-web` 技能
+> （ADR D14 允许取用其设计系统/打磨层）：
+>   · `components.md` —— 组件状态矩阵九格（rest / hover / `:active` / `:focus-visible` /
+>     disabled / loading / error / empty / success），其中 error 格要求：信息挨着控件、
+>     被 `aria-describedby` 关联、不靠颜色单独传达（"never colour alone"）；
+>   · `handfeel.md` §7 —— "跟随"类动作（相机 / 光标 / 导轨 / tooltip）：必须到达并停住。
+> ⚠️ 这两份文档当前环境里都拿不到（仓库与 git 历史都没有）。因此凡是引用它们的地方，
+> 都必须把要求**就地写全** —— 照做不需要去找原文件（最完整的一处在 `docs/ui.md`
+> 硬约束第 19 条；九格逐格核对的结果在 `docs/progress.md` §69.1）。
 
 ## 1. 铁律：改代码顺手维护文档
 
