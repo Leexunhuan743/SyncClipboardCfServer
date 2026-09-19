@@ -20,7 +20,7 @@
 - **对象**：`SyncClipboard`（C# / ASP.NET Core 服务端，仓库本地路径 `C:/Users/leeexx/Documents/NewProject/SyncClipboard`）
 - **核实方式**：本轮**只读**通读上游源码（下列每条都给出 `文件:行` 与逐字代码），未运行上游服务；因此"影响"部分是按代码语义的推断，凡未实测处均已标注。
 - **关联审计**：`cfserver-audit-003`（对 SyncClipboardCfServer 的交叉验证审计）。本文件只收录**上游本身存在**的问题；本实现特有的问题见 `docs/security-fix-plan.md`。
-- **用途**：可按主题拆成若干 issue 提交上游（本文件共 **15** 条，其中 8–12、14 为后续追加轮次补入）。建议标签：`security`、`Area-Server`。
+- **用途**：可按主题拆成若干 issue 提交上游（本文件共 **15** 条，其中 8–15 为后续追加轮次补入）。建议标签：`security`、`Area-Server`。
 
 ---
 

@@ -239,7 +239,7 @@ export function createConfirm() {
   return {
     /**
      * @param {{ title: string, message: string, confirmLabel?: string,
-     *           tone?: 'danger'|'neutral', action?: () => Promise<unknown> }} spec
+     *           action?: () => Promise<unknown> }} spec
      * @returns {Promise<boolean>}
      */
     async ask(spec) {

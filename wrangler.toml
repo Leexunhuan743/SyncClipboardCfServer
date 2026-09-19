@@ -32,7 +32,7 @@ new_sqlite_classes = ["SyncClipboardHub"]
 # `src/Directory.Build.props` 是版本唯一事实源（VersionPrefix=3.2.0 / VersionSuffix 空），
 # `SyncClipboardProperty.AppVersion` 取程序集 AssemblyInformationalVersion 并截掉 '+' 之后的部分
 # ⇒ 该基线的 /api/version 返回 "3.2.0"。此处**逐字对齐上游**，与本仓库自身的 package.json 版本
-# （迁移项目版本号，当前 1.21.3）是两套互不相干的编号，切勿"顺手对齐"。
+# （迁移项目版本号，当前 1.25.2）是两套互不相干的编号，切勿"顺手对齐"。
 # 跟版规则：仅当上游改动版本事实源（bump `<VersionPrefix>` 或换版本来源）时才改这里，
 # 并同步 docs/protocol.md §10 的登记行。
 # 功能上无影响：官方客户端只要求服务端 >= 3.1.1（Env.RequestServerVersion="3.1.1"），

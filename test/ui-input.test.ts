@@ -154,7 +154,7 @@ describe('UI network recovery and full text', () => {
   it('requests trash counts for the trash view instead of relabelling active counts', async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json({}));
     vi.stubGlobal('fetch', fetch);
-    await api.overview(undefined, { deleted: true, tz: -480 });
+    await api.overview(undefined, { deleted: true });
     expect(new URL(fetch.mock.calls[0]?.[0], 'http://localhost').searchParams.get('deleted')).toBe('true');
   });
   it('loads text attachments from the data endpoint, preserving Unicode and newlines', async () => {

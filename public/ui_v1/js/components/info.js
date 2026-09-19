@@ -520,7 +520,11 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         dangerSection(),
       );
 
-      dialog.showModal();
+      // 与上面的 `!info` 分支同一条判据：有快照的调用方会先 `open(fresh)`，刷新失败时再
+      // `open(null)` 覆盖它 —— 第二次进来对话框已经开着，直接 showModal() 会抛
+      // InvalidStateError，被调用方 catch 吞掉后还会把刚画好的数据换回「暂时取不到部署信息」
+      // （重试成功却显示成失败）。
+      if (!dialog.open) dialog.showModal();
     },
   };
 }

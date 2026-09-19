@@ -28,7 +28,7 @@ export function renderSpark(days, { width = 132, height = 28, label = '近两周
   const items = Array.isArray(days) ? days : [];
   if (items.length === 0) return svg;
 
-  // 柱宽 = 总宽 / 根数，间距占柱宽的 34%（8 根以上时看起来最平衡）。
+  // 柱宽 = 扣掉柱间间距后的宽度 / 根数；间距固定 2px（不随根数缩放）。
   const gap = 2;
   const barW = Math.max(1, (width - gap * (items.length - 1)) / items.length);
   const max = Math.max(1, ...items.map((d) => Number(d.total) || 0));

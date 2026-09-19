@@ -538,7 +538,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 项 | 状态 |
 |---|---|
 | `lang` / `charset` / `viewport` / `color-scheme` | ✅ |
-| `<title>` 40–60 字符 | ⚠️ 偏离：用 29 字符的「剪贴板历史 · SyncClipboard（开发测试版）」。这是 noindex 的私有应用，标题长度换不来搜索曝光。**2026-09-18 加了"（开发测试版）"后缀**：默认界面换成了 V1，两份界面长得像，标签页标题必须能一眼分清（V1 那边保持 22 字符的短标题） |
+| `<title>` 40–60 字符 | ⚠️ 偏离：用 28 字符的「剪贴板历史 · SyncClipboard（开发测试版）」。这是 noindex 的私有应用，标题长度换不来搜索曝光。**2026-09-18 加了"（开发测试版）"后缀**：默认界面换成了 V1，两份界面长得像，标签页标题必须能一眼分清（V1 那边保持 21 字符的短标题「剪贴板历史 · SyncClipboard」） |
 | `meta description` | ✅ |
 | `og:type/title/description`、`twitter:card` | ✅（链接被贴进 Slack / 微信时至少有一行像样的预览） |
 | `og:image`（绝对 URL，1200×630） | ❌ **有意不做**：og:image 必须是绝对 URL，而部署域名由使用者决定、构建时未知。写死一个错的绝对 URL 会让预览比现在更糟（空白图）。要做就得让 Worker 注入 origin，那等于为了预览把 HTML 从静态资源挪回 Worker——不值 |

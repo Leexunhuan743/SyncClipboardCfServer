@@ -38,7 +38,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
-// @ts-expect-error TS7016：`public/ui_v1/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 clipboard.test.ts）
+// @ts-expect-error TS7016：`public/ui_v2/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 clipboard.test.ts）
 import { createLatestGate } from '../public/ui_v2/js/latest.js';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
@@ -82,9 +82,8 @@ function stripComments(source: string): string {
 
 // ===== 模块图 =====
 // 扫描目标 = **当前实际发布的那一份界面**。
-// 2026-09-15 的 V1→V2 交接：V1 冻结存档到 `public/ui_v1/`（挂载点 `/ui_v1/`，见该目录的
-// README.md），V2 落在 `public/ui_v2/`。本套件现在守 V2 —— 存档目录**不再受约束**（它是冻结的，
-// 对它报死规则只会逼人动一份刻意不动的代码）。
+// 2026-09-15 的 V1→V2 交接后，V2 落在 `public/ui_v2/`，本套件守 V2；V1 **已于 2026-09-17
+// 重新纳入维护**（见本文件头部第 2 条），它的契约守卫在 `test/ui-guard.test.ts`。
 //
 // V2 的布局与 V1 有两处不同，读下面的常量时要记得：
 //   · 两页在 `public/ui_v2/app/` 下（`/ui_v2/` 这个路径留给目录索引，应用本体在 `/ui_v2/app/`）；

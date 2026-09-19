@@ -235,7 +235,8 @@
   且对 `animation-fill-mode: forwards` 停在 `opacity:0` 的离场动效都有 JS 兜底（`ui_old/js/components/list.js:860`、`ui/js/ui/board.js:492-493`）。
 - 焦点：两版的对话框**初始焦点**都落到合理位置（不是 `<body>`、不是危险按钮）；全仓**无正数 `tabindex`**。
 - 表单：`aria-describedby`/`aria-labelledby` 指向的 id **逐个存在**；`min`/`max` 与前端 clamp 一致。
-- 历史缺陷复核：第一轮 §1.3/§1.4/§1.5 三条**原文未动、仍在**，无新增残留。
+- 历史缺陷复核（**截至本轮开头**）：第一轮 §1.3/§1.4/§1.5 三条的原文未动、仍在，无新增残留 ——
+  这三条随后已在本文件 §12 的修复轮里改掉（不写这句，本节会与 §12 "已修" 打架）。
 
 ## 11. 优先级建议（本轮新增，接第一轮 §9）
 
@@ -268,7 +269,7 @@
 
 | 条目 | 状态 | 落点 |
 |---|---|---|
-| §1 V1 修过、V2 仍有（抽屉未保存输入被轮询重置 / 推送断 5 次永久停手 / `copyImage` 裸 `fetch` / 越界夹取 `push:false` / `.overview__ghost` 首绘 / pager·board 加载档 / `neighborButton` 图标名） | **已修** | `ui/js/ui/drawer.js`、`ui/js/push.js`、`ui/js/boot.js`、`ui/js/ui/pager.js`、`ui/js/ui/board.js`、`ui/js/ui/overview.js` |
+| 第一轮 `AUDIT-missing-states.md` 的 §1.3/§1.4/§1.5 与 §3.1（V1 修过、V2 仍有：抽屉未保存输入被轮询重置 / 推送断 5 次永久停手 / `copyImage` 裸 `fetch` / 越界夹取 `push:false` / `.overview__ghost` 首绘 / pager·board 加载档 / `neighborButton` 图标名） | **已修** | `ui/js/ui/drawer.js`、`ui/js/push.js`、`ui/js/boot.js`、`ui/js/ui/pager.js`、`ui/js/ui/board.js`、`ui/js/ui/overview.js` |
 | §2 V2 修过、V1 仍有（200+ 非 JSON 静默成空列表 / `setStale` 无条件点亮「失去联系」/ toast 每条播报两遍 / `debounce` 无 `cancel` / 跳页 `blur()` 丢焦点 / `formatSize(0)` → `—`） | **已修** | `ui_old/js/api.js`、`main.js`、`components/toast.js`、`components/toolbar.js`、`dom.js`、`components/pagination.js`、`format.js` |
 | §3 竞态/重入：登录页被重复求值、`dialog` 在异步删除中被 Esc/`✕` 关掉 | **已修** | 两版 `login.js`（`appBooted` 幂等守卫）、`ui/js/ui/dialog.js`（`canClose`） |
 | §5.1 时钟差方向说反 | **已修**（文案改为直接点名「本机」，不再让读者倒推符号约定） | `ui/js/format.js` 的 `describeClockSkew` |

@@ -111,7 +111,10 @@ export function createPushChannel({ acquireTicket, onSignal, onState }) {
     //   · `socket` 是别人    → 忽略（stop() 或新连接已取代它，迟到的 close 不能动新连接的心跳与状态）
     // 上一版写成 `socket !== nextSocket` 就返回，把 error→close 那条**常见**路径整个吞掉了：
     // 状态永远停在 'live'（面板显示「已连接」却早已断开）、轮询停在看门狗档、也不再重连。
-    if (socket !== null && socket !== nextSocket) return;
+    // `pending` 那一支：`stop()` 已把 socket 置空、而新一次 start() 正在取票据，旧连接的 close
+    // 落在这个窗口里**也不该**收尾 —— 清理已由 `stop()` 做完，再走一遍只会把刚写下的
+    // 'connecting' 覆盖成 'offline'，多记一次失败并排一个空转的重试（下一行的守卫会让它空转）。
+    if (pending || (socket !== null && socket !== nextSocket)) return;
     socket = null;
     clearInterval(heartbeat);
     heartbeat = 0;

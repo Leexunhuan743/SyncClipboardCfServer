@@ -247,7 +247,8 @@ export function createList(actions) {
 
   // 行间方向键（↓/↑/Home/End）：把焦点送到相邻行的**同一个控件**。
   //
-  // 为什么需要：每行有 3–4 个可聚焦控件，一页 50 行就是 150–200 个 Tab 停靠点 ——
+  // 为什么需要：活跃视图一行**最多 7 个**可聚焦控件（复选框 + 至多 4 个行内动作 + 收藏/置顶），
+  // 一页 50 行就是最多 350 个 Tab 停靠点 ——
   // 从第 1 行走到底部要按上百次 Tab。方向键是**纯增量**：Tab 顺序一个不动
   // （这一点与 V2 的做法一致，V2 也是"加方向键"而不是 roving tabindex）。
   //
@@ -417,6 +418,20 @@ export function createList(actions) {
 
   // 回收站视图：行内动作换成「恢复」，选择列照常渲染（批量恢复 / 清空回收站都要用它）
   let recycleMode = false;
+  // 最近一次 `update()` 收到的 filters：`removeItem()` 收掉本页最后一行时也要用它（空态文案由
+  // 「是否处于筛选态」决定）。此前这份判断只在 `update()` 里内联算过一次，收行那条出口就漏了。
+  let lastFilters = null;
+
+  // 当前视图是否处于筛选态 —— 空态的文案与按钮由它决定（"没有匹配…" 还是 "还没有记录"）。
+  function isFiltered(filters) {
+    return (
+      filters.types !== 'All' ||
+      filters.starred ||
+      filters.search !== '' ||
+      filters.range !== 'all' ||
+      filters.deleted
+    );
+  }
 
   // 复选框（含 Shift 范围选择）。回收站里同样需要它：批量恢复与清空回收站都以选择集为入口。
   //
@@ -725,7 +740,7 @@ export function createList(actions) {
       }
 
       // 入场错峰**只在首屏**（第一份非空结果）播一次，那是「页面来了」的一次性仪式；此后任何更新
-      // （切类型、翻页、改筛选、轮询）都走按行对账：级联 12 行 × 40ms = 440ms 的尾巴在用户**已经在看
+      // （切类型、翻页、改筛选、轮询）都走按行对账：级联 12 行 × 40ms = 480ms 的尾巴在用户**已经在看
       // 这张表**时只会读成「内容慢半拍」，而且它要求整表重建（节点全新建）——实测（6× CPU 降速）
       // 这类切换一次要 250~350ms 主线程，去掉后 38ms。
       //
@@ -750,12 +765,8 @@ export function createList(actions) {
         reconcile(items, flashKeys ?? new Set());
       }
 
-      const filtered =
-        filters.types !== 'All' ||
-        filters.starred ||
-        filters.search !== '' ||
-        filters.range !== 'all' ||
-        filters.deleted;
+      lastFilters = filters;
+      const filtered = isFiltered(filters);
       setView(items.length > 0 ? 'table' : 'empty');
       if (items.length === 0) {
         empty.replaceChildren(
@@ -859,7 +870,20 @@ export function createList(actions) {
       row.addEventListener('animationend', drop, { once: true });
       setTimeout(drop, 240); // 兜底：reduced-motion 或动画被跳过时也要收掉
       lastHead = { ...lastHead, total: Math.max(0, lastHead.total - 1) };
-      if (currentItems.length === 0) setView('empty');
+      if (currentItems.length === 0) {
+        // `.empty` 建出来时是**空的**，内容只在 `update()` 的空结果分支里填（见那处）。删掉本页
+        // 最后一行、批量删完、回收站批量恢复完都会走到这条出口 —— 不在这里填上，屏上就只剩一块
+        // 128px 的空白（上下各 64px 内边距），要等紧随其后的静默刷新落地才有内容；那次若失败
+        // 就一直空着。
+        setView('empty');
+        empty.replaceChildren(
+          ...buildEmptyState({
+            filtered: lastFilters ? isFiltered(lastFilters) : false,
+            search: lastFilters?.search ?? '',
+            recycle: recycleMode,
+          }),
+        );
+      }
       syncSelectAll();
       // 展开 `lastHead` 而不是逐个字段抄：头栏的口径（总数/是否筛选中/是否加载中）只该有
       // `lastHead` 一个来源，逐个抄会在下次给头栏加字段时漏一处。

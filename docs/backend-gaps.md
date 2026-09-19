@@ -13,7 +13,7 @@
 > 平台事实（免费档额度等）单独标注外链来源，不与仓库内证据混同。
 >
 > ⚠️ **那些路径今天可能指不到文件**：本文件是 `509bdef` 那一刻的快照，而 V2 在 2026-09-16
-> 重构过目录（`public/ui_v2/js/components/*` → `public/ui_v2/js/ui/*`，`signalr.js` → `push.js`）。
+> 重构过目录（`public/ui/js/components/*` → `public/ui_v2/js/ui/*`，`signalr.js` → `push.js`）。
 > §1–§3 里引用的 V2 路径**按快照保留原样**（改了就篡改历史），要看现状请用 §8 的落地位置表
 > 或 `docs/ui-v2-design.md` 的文件树。
 >
@@ -50,7 +50,7 @@
 | # | 能力 | 证据 | 影响 / 备注 |
 |---|---|---|---|
 | 1.1 | **清理状态没有界面** | 服务端 `/ui/api/info` 已返回 `cleanup:{lastRunAt,lastError,cursors}`（`src/ui/routes.ts:309`、`:340`；键契约在 `src/cleanup.ts` 的 Meta 键清单） | 「清理在跑吗 / 上轮失败了吗 / 有没有积压」这个为 F11 专门建的可观测面**当前无人消费**（`components/info.js` 只渲染地址、版本、传输、保留、体积、类型计数）。**建议第一个做** |
-| 1.2 | **`pinned`（置顶）无写入入口** | 协议 `PATCH` 支持 `pinned`；列表已渲染「置顶」徽标（`public/ui_v2/js/components/list.js:86`），但界面无任何地方能设置 | 服务端语义上 `stared` 与 `pinned` **同样豁免保留期与条数裁剪**（`src/db.ts` 的 `softDeleteExpiredRecords` / `trimToMaxCount` 两条 SQL 都带 `Stared = 0 AND Pinned = 0`）。用户在客户端置顶的记录，界面看得到、改不了 |
+| 1.2 | **`pinned`（置顶）无写入入口** | 协议 `PATCH` 支持 `pinned`；列表已渲染「置顶」徽标（`public/ui/js/components/list.js:86`，快照期 V2 的路径），但界面无任何地方能设置 | 服务端语义上 `stared` 与 `pinned` **同样豁免保留期与条数裁剪**（`src/db.ts` 的 `softDeleteExpiredRecords` / `trimToMaxCount` 两条 SQL 都带 `Stared = 0 AND Pinned = 0`）。用户在客户端置顶的记录，界面看得到、改不了 |
 | 1.3 | **批量操作只有删除** | 仅 `POST /ui/api/history/batch-delete`（`src/ui/routes.ts:230`） | 回收站里逐条点「恢复」、收藏逐条点。批量写端点的形状已有，可照抄；「批量恢复」在 `docs/progress.md` §34.7 已记为未做 |
 | 1.4 | **排序 6 字段只有 3 个可点** | 白名单 `SORT_COLUMNS` 有 `id/type/size/createTime/lastModified/lastAccessed`（`src/ui/query.ts:62`），表头只给 类型 / 大小 / 时间（`list.js:254-257`） | `lastModified` / `lastAccessed` / `id` 只能手改 URL 才用得上 |
 | 1.5 | **`pageSize` 两套上限** | 服务端 ≤ 500（`src/ui/query.ts:59`），下拉只有 20/50/100/200（`filters.js:25`） | URL 写 `pageSize=500` 能工作，但 `<select>` 会落到空选，读起来像缺陷 |

@@ -258,8 +258,10 @@ export class HistoryDb {
       params.push(q.modifiedAfter.getTime());
     }
     if (q.types !== ProfileTypeFilter.All) {
-      // 上游用 `Enum.GetValues(typeof(ProfileType))` 遍历已定义值并按位测试；
-      // ProfileTypeFilter 只定义到 All(15)，故高位（Unknown/None 对应的 16/32）不可达。
+      // 上游用 `Enum.GetValues(typeof(ProfileType))` 遍历已定义值并按位测试。
+      // 按**名字**传 `Types` 时走不到高位（`ProfileTypeFilter` 只定义到 `All=15`）；但 `Types`
+      // 也接受**数字**（`Types=16` 合法），此时高位会落到 `Unknown`/`None` 上（`1 << 4` / `1 << 5`）
+      // —— 与上游的 `Enum.GetValues` 行为一致，不是缺陷。
       const included = (Object.values(ProfileType) as number[])
         .filter((t) => Number.isInteger(t))
         .filter((t) => ((q.types as number) & (1 << t)) !== 0);
@@ -276,7 +278,8 @@ export class HistoryDb {
       // 这是**对齐上游**（`HistoryService.cs:153` 同样 `EF.Functions.Like(r.Text, $"%{searchText}%")`），
       // 属协议面行为，不能单方面收紧——改了会让"上游能搜到、这里搜不到"。
       // 对照实现：UI 面**转义**（src/ui/query.ts 的 `LIKE … ESCAPE '\'`），那是本站自己的面，
-      // 用户搜 `100%` 不该退化成匹配任意。两侧的差异见 docs/protocol.md §10「查询搜索」。
+      // 用户搜 `100%` 不该退化成匹配任意。这处分面登记在 docs/AUDIT-redundancies.md 的 C-05
+      // （它**不是**协议差异 —— 协议面这边就是照上游做的，故不在 protocol.md §10 里）。
       // 上限另有约束：超长搜索串会让 D1 的 LIKE 直接报错，故入口按 48 字节校验
       // （src/serialization.ts 的 normalizeSearchText）。
       where.push(`Text LIKE ?${idx++}`);
@@ -287,8 +290,10 @@ export class HistoryDb {
       params.push(q.starred ? 1 : 0);
     }
 
-    // 防御性钳制：越界 Page 由路由层校验并返回 400；这里再保证 offset 是安全整数，
-    // 不会以 REAL（如 5e21）绑定到 LIMIT/OFFSET 而触发 SQLite 'datatype mismatch' → 500（F9）
+    // 防御性钳制：越界 Page 由**路由层**校验（`src/routes/history.ts` 把 page 限进 int32）并返回
+    // 400；这里只兜住 `page` 不是正安全整数的情形，避免以 REAL（如 5e21）绑定到 LIMIT/OFFSET 而
+    // 触发 SQLite 'datatype mismatch' → 500（F9）。offset 的安全性由上面那道 int32 上界保证 ——
+    // 只判 `page` 是不是安全整数**不够**（`(2^53-1 - 1) * 50` 本身就会溢出）。
     const page = Number.isSafeInteger(q.page) && q.page > 0 ? q.page : 1;
     const offset = (page - 1) * PAGE_SIZE;
     const sql =
@@ -501,7 +506,7 @@ export class HistoryDb {
   }
 
   // 活记录的工作目录集合，用于孤儿对象判定。
-  // **必须带尾斜杠**：调用方（cleanup.ts）把它与 `R2Storage.listHistoryWorkingDirs()` 的结果比较，
+  // **必须带尾斜杠**：调用方（cleanup.ts）把它与 `R2Storage.listHistoryObjectsByDir()` 的结果比较，
   // 而后者由 R2 key 截取得来、形如 `Text_ABC/`（尾斜杠是 deletePrefix 的语义所需 —— 少了它，
   // `history/Text_AB` 会误匹配 `history/Text_ABC/…`）。
   // 此前这里返回的是不带斜杠的 `Text_ABC`，导致 cleanup 的 `active.has(dir)` **恒为 false**：

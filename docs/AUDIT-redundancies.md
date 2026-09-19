@@ -27,6 +27,9 @@
 - [11. 待确认清单（含验证方式）](#11-待确认清单含验证方式)
 - [12. 变更影响面与验证清单](#12-变更影响面与验证清单)
 - [13. 上游对照：兼容性结论（基线 28c7e596）](#13-上游对照兼容性结论基线-28c7e596)
+- [14. 处置记录（第三轮）](#14-处置记录第三轮本轮实际实施的改动)
+- [15. 处置记录（第四轮）](#15-处置记录第四轮2026-09-18-晚按逐行通读结论落地)
+- [附：本次审计的产出](#附本次审计的产出)
 
 ---
 
@@ -920,6 +923,13 @@
 | 2 | 跨夏令时的日期运算 | `ui_old/js/filters.js:47-58` 的 `addDays()`（`date.setDate()` 日历运算） | `ui/js/filters.js:66/81/83/113` 用 `±DAY_MS` 常数 | 在 `TZ=America/New_York` 下断言"近 7 天"跨 2026-11-01（DST 结束）时仍是本地 7 个日历日。⚠️ 现有用例在任何常见时区都**不跨 DST**，测不出该差异——必须固定 `TZ`，否则白写 |
 | 3 | 推送的冷却重连 | `ui_old/js/signalr.js:26-30,86-98,187-194`（`RETRY_COOLDOWN_MS=10min` 冷却后仍重试） | `ui/js/push.js:79` 连续失败 5 次即 `return`（不再重建）；`start()`（L160-169）不重置 `retryDelay`、不清冷却计时器 | 用假定时器制造 5 次断开后，断言**仍会重试**（存在 10 分钟冷却定时器 / 推进 10 分钟后新建连接）。⚠️ 现有两条 push 用例都到不了 `failures>=5` 分支，**完全覆盖不到** |
 
+> **订正（2026-09-19）**：本表「**V2 当前（回退）**」一列已成**历史** —— 三条都已在 2026-09-18 晚落地，
+> 实测证据：① `public/ui_v2/js/format.js:68-75` 按 V1 分档补上了"以后"（`if (diff < 0)` 四档）；
+> ② `public/ui_v2/js/filters.js:83` 改用 `date.setDate(date.getDate() + days)` 日历运算；
+> ③ `public/ui_v2/js/push.js` 有 `RETRY_COOLDOWN_MS = 10 * 60_000`（`:31`）、冷却定时器（`:88-97`）与
+> `start()` 里的清理（`:191-192`）。故本表只剩「重写验收断言」那一列里**要求固定 `TZ` / 假定时器**的
+> 用例仍待补（见 §11 与 `docs/AUDIT-v1-v2-divergence.md`）；V1 侧（正确的那一侧）照旧不要动。
+
 ### 13.4 结论（兼容性维度）
 
 1. **本文 §4/§6/§7/§8 的可执行项里，没有一条会破坏官方客户端兼容。**
@@ -963,7 +973,7 @@
 | **R-08** | 新建 `public/ui_old/js/messages.js`（6 个用户文案函数，V1 自包含）；`main.js` 改 import 并**修掉两处"两版共用"的错误注释**；补 `index.html` 的 modulepreload；`docs/ui.md` 的资源数 87 → 88 |
 | **N-01①** | 补 **V1 的「modulepreload == import 闭包」守卫**（此前只有 V2 有） |
 | **N-01②** | `api.js` 新增 `export const PAGE_BASE = '/ui_old'`，`login.js` 默认落点、`api.js:redirectToLogin`、`main.js:logout` 三处改用常量；补 **「挂载点字面量只有一处 + 一处有理由的例外」守卫** |
-| **N-01③** | 自包含守卫**重写**：原先只查 `main.js` + `index.html`，且 `from '../ui/` 是空断言。现在解析全部 V1 JS 的 import 是否逃出目录，并检查两张页面的 `<script src>` / `<link href>` 是否指向 `/ui/`（**不查 `<a href>`** —— 提示条指向 `/api/app/` 的导航链接是有意的） |
+| **N-01③** | 自包含守卫**重写**：原先只查 `main.js` + `index.html`，且 `from '../ui/` 是空断言。现在解析全部 V1 JS 的 import 是否逃出目录，并检查两张页面的 `<script src>` / `<link href>` 是否指向 `/ui/`（**不查 `<a href>`** —— 提示条指向 `/ui/app/` 的导航链接是有意的；该提示条本身已在 2026-09-19 移除，见 `docs/ui-rename-v1-v2.md`） |
 | **D-13（部分）** | 删三个死 id：`index.html` 的 `id="skeleton"`、`components/preview.js` 的 `id="preview-meta"`、`components/toolbar.js` 的 `id="search"` |
 | **O-09** | ① `filters.js` 新增 `nearestPageSize()`：`?pageSize=37` 吸附到最近档位（此前会落到下拉空选）；② `next-target.js` 补登录页自身回落（`/ui_old/login.html` → `null`，由调用方取默认落点） |
 
@@ -1042,7 +1052,7 @@
 
 | 条目 | 为什么不改 |
 |---|---|
-| V2 三处回退：**未来时间戳** / 跨 DST 日历运算 / 推送冷却重连 | 沿用 §13.3 与 N-05 的决定（"不回移，写进 V2 重写验收清单"）。注：未来时间戳在本机**可复现**（探针 `firstRowMeta` 读到 `DC168F2D…·17 B·09:03`），改它必须同时改 `test/ui-logic.test.ts:172` —— 那条断言钉的正是被修掉的行为 |
+| ~~V2 三处回退：**未来时间戳** / 跨 DST 日历运算 / 推送冷却重连~~ | **已作废（2026-09-19 订正）**：三条都在 2026-09-18 晚补上了（证据见 §13.3 的订正注），`test/ui-logic.test.ts` 里钉旧行为的那条断言也已同批改掉 —— "沿用 §13.3 与 N-05 的决定、不回移"在这里不再成立 |
 | V2 死代码（`appbar` 的 `offline` 态不可达、`.tag[data-tone=star\|pin]`、`.bar__fill[data-kind]`） | 按 §10.2 第 3 条：V2 允许破坏性重构，重写会自然消掉 |
 | `row.js:228` 的 data URL 重复 | **已做**（见 15.1 的 O-08k），从待办中划掉 |
 

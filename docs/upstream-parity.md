@@ -283,8 +283,7 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 **验证方式**：`wrangler dev --test-scheduled`（本地 miniflare，128MB isolate、D1/R2/DO 全部模拟）
 + 全量套件（含 HTTP 黑盒、真 SignalR 客户端三传输、清理 Cron 真触发、界面 API 与契约守卫）。
 + **真上游 A/B**（`tools/ab-upstream-probe.ps1` × 官方 v3.2.0 服务端发布件，34 例状态码级 + 18 例文本级）
-+ **真客户端 E2E**（官方 v3.2.0 便携客户端 × 生产：双向文本/文件 + 实时推送）——两类证据的完整记录见
-+`progress.md` §44。
++ **真客户端 E2E**（官方 v3.2.0 便携客户端 × 生产：双向文本/文件 + 实时推送）——两类证据的完整记录见 `progress.md` §44。
 
 **结果**：`22` 个套件全绿（本轮新增 5 例：415 ×3、urlencoded ×2；当轮用例数记录在 `progress.md` §39.8 ——
 用例数刻意不在这里固化，现状以 README 与命令输出为准）；
@@ -301,7 +300,7 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 - **协议层完整、行为等价**：上游服务端 18 个 action / 约 45 个返回点全部覆盖，差异项**要么已在本轮修复**，
   **要么是已在 `docs/protocol.md` §10 逐条登记的有意偏离**（安全加固、平台约束、fail-loud 取舍）。
 - **未发现阻断上线的等价性缺口**；本轮修掉的两处（415、urlencoded）都是"上游有、迁移没有"的真实契约差异。
-- **可上线的边界**：① 部署前需手工创建 D1/R2（U1）；② 生产与本地 compat date 不同（U3，建议升 wrangler 4）；
+- **可上线的边界**：① 部署前需手工创建 D1/R2（U1）；② ~~生产与本地 compat date 不同（U3，建议升 wrangler 4）~~ **已消解**（2026-09-15，见 §4.2 U3；`package.json` 现锁 `wrangler ^4.131.2`）；
   ③ §6 的框架级行为未实测 —— 它们都是**上游自身的框架行为**，本迁移的实现依据是"官方客户端 + 框架文档语义"，
   在真实客户端 E2E 之前保留为待确认项。
 - 本轮**未修改上游任何文件**；上游自身缺陷记录在 [`upstream-issues.md`](upstream-issues.md)（新增 Issue 8–13）。

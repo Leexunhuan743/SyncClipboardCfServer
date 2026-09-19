@@ -15,7 +15,7 @@
 // 已知局限（取舍，非缺陷）：
 //   - 跨 isolate 的权威封锁通过「热状态下每 ≥ SNAPSHOT_INTERVAL_MS 拉一次 DO 快照」传播，
 //     拉取本身异步，故某个 isolate 对某个 key 的封锁最多滞后**一个请求**生效。
-//     同一客户端 IP 稳定落在同一 colo，攻击者的失败必然把该 isolate 变热，故第 11 次失败起立即生效。
+//     同一客户端 IP 稳定落在同一 colo，攻击者的失败必然把该 isolate 变热，故第 11 次**请求**起立即被拦。
 //   - DO 状态在重启/驱逐后可能丢失（低频落盘、尽力而为）：丢失等价于计数器归零，最坏情况是多给 10 次失败。
 
 import { Bindings } from './env';
@@ -234,7 +234,7 @@ export function checkAuthRateLimit(
   return null;
 }
 
-// 记一次认证失败：本地立即计数（本 isolate 从第 11 次失败起即刻生效），并异步上报 DO 汇总。
+// 记一次认证失败：本地立即计数（本 isolate 从第 11 次**请求**起即刻被拦），并异步上报 DO 汇总。
 export function noteAuthFailure(
   env: Bindings,
   request: Request,

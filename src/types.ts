@@ -118,7 +118,7 @@ export const INT32_MAX = 2147483647;
 // 即拒绝 `/` 与 `\`（Windows 上两者分别是 Alt 与 Directory 分隔符；Linux 上 Alt 同 Directory）。
 //
 // 本实现的 hash 参与 R2 key 构造（`history/{Type}_{Hash}/{file}`）与孤儿目录判定
-// （`listHistoryWorkingDirs` 按第一个 `/` 截断工作目录名）。含 `/` 的 hash 会让这两处**不同构**：
+// （`listHistoryObjectsByDir` 按第一个 `/` 截断工作目录名）。含 `/` 的 hash 会让这两处**不同构**：
 // 记录侧是 `Text_A/B`，而 R2 侧只会被识别为目录 `Text_A/`。客户端本地也用同一规则构造路径，
 // 拿到这种 hash 会抛异常/产生非法路径。故写入拒绝、读取（存储值分类）降级，storage 层另有断言兜底。
 export function isValidProfileHash(hash: string): boolean {

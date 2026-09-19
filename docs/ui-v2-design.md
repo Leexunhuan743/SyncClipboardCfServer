@@ -1,6 +1,6 @@
 # Web 界面 V2 设计（`/ui_v2/`）
 
-## 生产完善（2026-09-17，进行中）
+## 生产完善（2026-09-17）
 
 发布目标：桌面与移动端均有清楚的内容层级；登录、检索、预览、复制下载、收藏、
 批量操作和维护形成完整闭环；加载、空结果、离线、会话失效与操作失败均可理解、可恢复。
@@ -16,7 +16,7 @@
 待验收：窄屏与深色视觉、键盘与触屏主要流程、搜索竞态、各类型预览、失败恢复、
 完整测试与发布构建。后续发现的问题继续纳入本轮，不以首批改动代替发布验收。
 
-> **状态：已实现并通过全量质量门（2026-09-15）**。本文件既是 V2 的**设计事实源**（骨架、令牌、
+> **状态（V2 实现轮，2026-09-15）：已实现并通过全量质量门**。本文件既是 V2 的**设计事实源**（骨架、令牌、
 > 组件词汇表、API 契约、移动端行为），也记录了实现后的验证结果（§12）。
 > 后续改动请先改本文件再改代码 —— 尤其是 §3 的线框、§5 的类名词汇表与 §6 的 API 契约：
 > 它们与 `test/ui-contract.test.ts` 的双向守卫直接对应，改一处不改另一处会红。
@@ -215,7 +215,7 @@ V2 的三处升级：
 | `--control-h` | `34px` | 常规控件 |
 | `--search-h` | `44px` | 主搜索框（**令牌名是 `--search-h`**，不是 `--control-h-lg` —— 后者从来没定义过，曾是本表的笔误） |
 | `--hit-min` | `44px` | 触屏命中区 |
-| `--content-max` | `1240px` | 容器（V1 1180px；内容列需要更宽） |
+| `--content-max` | `1240px` | 容器（V1 是 `1280px`；V2 更窄，两侧留白更多） |
 
 ### 4.5 动效（沿用 V1 唯一的准入规则：每个动效对应真实内容事件，关掉不丢信息）
 
@@ -281,7 +281,7 @@ V2 的三处升级：
 | # | 端点 | 为什么需要 | 契约 |
 |---|---|---|---|
 | N1 | `GET /ui/api/overview` | **首屏从 4 个请求降到 1 个**：V1 的 `refresh` + `refreshStats` + `info` 在首屏打三次 D1/R2，且 `statistics` 内部还要跑 3 条查询（`backend-gaps.md` §3.1）。概览带需要的是它们**合并后**的一个快照 | `{stats, byType, byTypeActive, info:{version,serverUrl,retention,storage,cleanup,hubTransports}, marker:{count,lastModified}, serverTime}`。**只读、无副作用**；`info` 里任何单块失败 → 该块为 `null`，其余照常（诊断面不能被它要诊断的对象拖垮，与 §2.7 同一条纪律） |
-| N2 | `GET /ui/api/activity?days=30&tzOffset=-480` | 概览带的**趋势图**需要「每天多少条」——现有端点只能给总数（`backend-gaps.md` §2.6 记了这条缺口，且提示**不要**复用 `db.statistics()` 的全表拉取） | `{days:[{day:'2026-09-15', total, Text, Image, File, Group}], max}`。`day` 按**客户端时区**切分（`tzOffset` 分钟，与 `Date.prototype.getTimezoneOffset` 同号），否则「今天」在 UTC+8 会在早上 8 点错位。`days` 上限 90；SQL 走 `GROUP BY` + `strftime`，**1 条聚合查询**；顺带补上 `backend-gaps.md` §3.1 欠的合并查询 |
+| N2 | `GET /ui/api/activity?days=30&tz=-480` | 概览带的**趋势图**需要「每天多少条」——现有端点只能给总数（`backend-gaps.md` §2.6 记了这条缺口，且提示**不要**复用 `db.statistics()` 的全表拉取） | `{days:[{day:'2026-09-15', total, Text, Image, File, Group}], max}`。`day` 按**客户端时区**切分（`tz` 分钟，与 `Date.prototype.getTimezoneOffset` 同号），否则「今天」在 UTC+8 会在早上 8 点错位。`days` 上限 90；SQL 走 `GROUP BY` + `strftime`，**1 条聚合查询**；顺带补上 `backend-gaps.md` §3.1 欠的合并查询 |
 | N3 | `POST /ui/api/history/batch-meta` | 预览/复制**全文**时逐条取单条是 O(N) 请求（`backend-gaps.md` §2.8 的口径）。列表正文截断在 500 字符且带 `textTruncated` | `{items:[{type,hash}]}`（≤ 100）→ `{items:[完整 HistoryRecordDto…]}`。用于「选中多条 → 一起复制/下载」与预览预取 |
 | N4 | `GET /ui/api/clients` | 概览带要显示**「几台设备在线」**；`backend-gaps.md` §2.7 指出 DO **没有可读状态端点**且 `clientCount()` 是 private | `{clients: number\|null, updatedAt}`。DO 侧新增一个**只读分支**（注意别落到 `handleLongPoll`），失败 → `clients: null`（不整体 5xx）。**成本复核**：这条会让 `/ui/api/overview` 带上一次 DO 往返；故 `overview` 里该字段仅当概览带展开时才请求，首屏不带 |
 | N5 | `GET /ui/api/export?format=json\|zip&scope=active\|all` | 「导出历史」是私有数据服务端的**最低义务**（用户数据可携带）；当前零导出路径 | **流式**产出（免费档 10ms CPU / 50 子请求约束下不得先聚合再压缩）：`json` 走 `ReadableStream` 逐行写；`zip` 复用既有 `fflate` 的 `Zip`（流式）。`scope` 上限由 `MAX_SAVED_HISTORY_COUNT` 约束 |
@@ -389,40 +389,43 @@ flowchart TD
 2. **每次往返过 `latest.js` 守卫**：列表、统计、概览各持一个 gate；`isCurrent` 通过才写回。
 3. **同一视图内按行对账**：行内容签名不变则不重建 DOM（保缩略图、动画、焦点）。
 
-### 8.1 写操作之后该打哪个端点（2026-09-18：V2 可以从 V1 学一条，**尚未实施**）
+### 8.1 写操作之后该打哪个端点（2026-09-18 记录；第 2 件已于 2026-09-19 实施，见 O-01）
 
 2026-09-18 核对两版调用点时带出来的结论（用户要求记在这里）：
 
 - **V1**：首屏打一次 `GET /ui/api/overview`（合成快照）；此后每次**切视图 / 写操作**只补打**轻的**
-  `GET /ui/api/statistics`（`public/ui_v1/js/main.js:158`、`:361`；首屏**不再**单独调它，
-  见同一文件 1186 行那句注释）。
+  `GET /ui/api/statistics`（`public/ui_v1/js/main.js:411` 是唯一的调用点；首屏**不再**单独调它，
+  见同一文件 `:1240` 那句注释）。
 - **V2**：写操作后走 `refresh({ silent: true })` **加** `refreshOverview()`
-  （`public/ui_v2/js/boot.js:701-702`、`:730-731`、`:748-749`、`:989-990`、`:1020-1021`、`:1048-1049`；
-  切视图同理 `:470`）——也就是**每次都整只重打 overview**。
+  （`public/ui_v2/js/boot.js:669-670`、`:745-746`、`:776-777`、`:795-796`、`:1044-1045`、`:1080-1081`、`:1108-1109`；
+  切视图同理 `:492`）——也就是**每次都整只重打 overview**。
 
 代价不只是"多一次请求"，两条端点的实际成本差在服务端（`src/ui/routes.ts`）：
 
 | 端点 | 一次调用做了什么 |
 |---|---|
-| `GET /ui/api/statistics`（`:530-551`） | `storage.totalHistorySize()`（**R2 逐页列举**，`src/storage.ts:199-210`）+ `db.statistics()`（1 条聚合，`src/db.ts:363`）+ `countByTypeViews()`（两个口径） |
-| `GET /ui/api/overview`（`:583-602`） | 上面那整套 **＋** `readChangeMarker()` **＋** `deploymentInfo()`（`:72-81`）—— 而 `deploymentInfo` **自己又算了一遍** `totalHistorySize()` + `db.statistics()` + `countByTypeViews()` + 两次 Meta 读 |
+| `GET /ui/api/statistics`（`src/ui/routes.ts:572-588`） | `storage.totalHistorySize()`（**R2 逐页列举**，`src/storage.ts:200`）+ `db.statistics()`（1 条聚合，`src/db.ts:363`）+ `countByTypeViews()`（两个口径） |
+| `GET /ui/api/overview`（`src/ui/routes.ts:623-641`） | 上面那整套 **＋** `readChangeMarker()` **＋** `deploymentInfo()` —— 而 **2026-09-19（O-01）之前**`deploymentInfo` **自己又算了一遍** `totalHistorySize()` + `db.statistics()` + `countByTypeViews()` + 两次 Meta 读；现已拆成 `deploymentStats()`（统计层，`:76-88`）+ `deploymentMeta()`（元信息层，`:97-144`），统计层只算一次 |
 
-所以现状是：**点一次「收藏」**，V2 付的是 overview 的全套（R2 列举 **2 遍**、statistics **2 遍**、
-按类型计数 **2 遍**，再加 marker 与 Meta 读），而 V1 只付 `statistics` 那一套。
+所以现状是：**点一次「收藏」**，V2 付的是 overview 的全套，而 V1 只付 `statistics` 那一套。
+差额在 O-01 之前是 R2 列举 **2 遍**、statistics **2 遍**、按类型计数 **2 遍**；O-01 之后那三项
+各只剩 **1 遍**（统计层只算一次），V2 仍多付的是 `readChangeMarker()` 与 `deploymentMeta()` 里的两次 Meta 读。
 
 两件可以做的，互相独立：
 
 1. **V2 侧**：写操作后只补打 `statistics`（列表照旧 `refresh()`）。安全性有三条依据：写操作是
    **本机发起的**；`marker` / "最近同步" 不需要由它刷新 —— 在线 60s 看门狗与离线 10s 轮询
-   （`boot.js:625` 那条 `api.poll`）会带回来；部署信息（保留策略、版本、地址）不因一次收藏而变。
+   （`boot.js:653` 那条 `api.poll`）会带回来；部署信息（保留策略、版本、地址）不因一次收藏而变。
 2. **两版共享的后端**：`overview` 内部把 `statistics` / `totalHistorySize` / `countByTypeViews`
    算了**两遍**（一遍给它自己的 `stats`/`byType`，一遍在 `deploymentInfo` 里）。让 `deploymentInfo`
    接一份**已算好的快照**（或让 overview 复用它返回的 `stats`/`views`/`bytes`）就能各减一半 ——
    这条对 **V1 的首屏同样有效**，所以它是更划算的那一件。
 
-**状态**：本轮只做核对与记录，**没有改代码**。要动手建议先做第 2 件（纯后端、两版共享、
-无行为变化），再决定第 1 件。反向的那张表（"V2 有什么值得 V1 借鉴"）在
-`docs/frontend-checklist.md` §26，它此前只写了单向。
+**状态**（2026-09-19 更新）：记录当时只做核对、没动代码；随后第 2 件按这里的建议实施了 ——
+`src/ui/routes.ts` 把 `deploymentInfo` 拆成 `deploymentStats()`（统计层，`:76-88`）与
+`deploymentMeta()`（元信息层，`:97-144`），`overview` 一次算好、同时喂给响应的 `stats` 与 `info`
+（同文件 `:621` 的 O-01 注释）。**第 1 件（V2 写操作后不再整只重打 `overview`）仍未做。**
+反向的那张表（"V2 有什么值得 V1 借鉴"）在 `docs/frontend-checklist.md` §26，它此前只写了单向。
 
 ---
 

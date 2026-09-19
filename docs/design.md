@@ -140,7 +140,7 @@ SyncClipboardCfServer/
 │   ├── rateLimit.ts            # 认证失败限速：isolate 内存快路径 + DO 权威计数（F7）
 │   ├── requestLimits.ts        # 请求体上限与 loopback 判定（F8/HSTS 与 F9 共用）
 │   ├── pathCase.ts             # 协议路径**字面段**大小写归一（对齐 ASP.NET 路由；2026-09-15 A/B 后补救）
-│   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时两个挂载点（/ui*、/ui_v1*）全 404、根路径不跳转
+│   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时三个挂载点（/ui*、/ui_v1*、/ui_v2*）全 404、根路径不跳转
 │   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
 │   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间与体积口径转换
 │   ├── hash.ts                 # Text / File / Image / Group 哈希（协议级精确复刻）
@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS Meta (
 ```
 
 `Type` 枚举值（`ProfileType`）：`Text=0, File=1, Image=2, Group=3, Unknown=4, None=5`。
-`ProfileTypeFilter` 位掩码：`None=0, Text=1, File=2, Image=4, Group=8, FileAndGroup=6, All=15`。
+`ProfileTypeFilter` 位掩码：`None=0, Text=1, File=2, Image=4, Group=8, FileAndGroup=10`（= `File|Group`）、`All=15`。
 
 ### 5.2 R2 key 布局
 

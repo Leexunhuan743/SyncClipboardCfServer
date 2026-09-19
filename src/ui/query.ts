@@ -452,7 +452,10 @@ export async function readBatchMeta(
 
   // 只对 hash 做一次 IN，type 在应用层过滤：`(type, hash)` 元组 IN 要拼两倍的参数列表，
   // 而这里的候选集本来就极小（≤100 条记录、去重后更少），多筛一次是免费的。
-  const hashes = [...new Set(items.map((i) => i.hash))];
+  // 库里存的是大写（`docs/protocol.md` §10：落库 hash 统一 `.toUpperCase()`），而调用方可能发小写 ——
+  // 故先把参数统一成大写：否则小写入参在**这一步**就被 `Hash IN (…)` 的等值比较滤掉，
+  // 下面那句\"大小写不敏感\"的过滤根本没机会生效。
+  const hashes = [...new Set(items.map((i) => i.hash.toUpperCase()))];
   const placeholders = hashes.map((_, i) => `?${i + 2}`).join(',');
   const res = await db
     .prepare(`SELECT * FROM HistoryRecords WHERE UserId = ?1 AND Hash IN (${placeholders})`)
@@ -462,7 +465,7 @@ export async function readBatchMeta(
   const wanted = new Set(items.map((i) => `${i.type}\u0000${i.hash.toUpperCase()}`));
   return (res.results ?? [])
     .map(rowToEntity)
-    // 哈希比较**大小写不敏感**（与 `getByTypeAndHash` 的 `LOWER(Hash) = LOWER(?3)` 同义：
-    // 库里存的是大写，但调用方可能发小写）
+    // 哈希比较**大小写不敏感**（与 `getByTypeAndHash` 的 `LOWER(Hash) = LOWER(?3)` 同义）：
+    // 上面预取时已把入参统一为大写，这里再按大写比对，兜住 `entity.hash` 的大小写差异。
     .filter((entity) => wanted.has(`${entity.type}\u0000${entity.hash.toUpperCase()}`));
 }

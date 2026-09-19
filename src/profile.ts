@@ -1,6 +1,6 @@
 // 服务层：Profile 校验/持久化与历史记录编排（行为对照上游 HistoryService / SyncClipboardController）
 import { HistoryDb, shouldUpdate, basename, BadRequestError } from './db';
-import { R2Storage, tempKey } from './storage';
+import { R2Storage } from './storage';
 import { MAX_REQUEST_BODY_BYTES } from './requestLimits';
 import {
   sha256Hex,

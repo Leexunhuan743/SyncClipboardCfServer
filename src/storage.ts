@@ -26,8 +26,8 @@ function assertHashForPath(hash: string): void {
   }
 }
 
-// 工作目录名（`{Type}_{hash}/`）。**不带 `history/` 前缀** —— 与 `listHistoryObjectsByDir()` 的键、
-// `listHistoryWorkingDirs()` 的产物、`db.listActiveWorkingDirs()` 的产物保持同一形式：几处集合比较
+// 工作目录名（`{Type}_{hash}/`）。**不带 `history/` 前缀** —— 与 `listHistoryObjectsByDir()` 分组后的
+// 目录键、`db.listActiveWorkingDirs()` 的产物保持同一形式：几处集合比较
 // 必须同构，形式不一致会让比较恒不命中（历史上正是这类不一致导致每小时清空一次 history/，见 F33）。
 // 需要构造完整 key/前缀时用 `workingDirPrefix()`（= `history/` + 本函数）。
 export function workingDirName(type: ProfileType, hash: string): string {
