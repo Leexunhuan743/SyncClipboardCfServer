@@ -449,7 +449,7 @@ Worker
   这类 special scheme 把 `\` 视同 `/`，于是 `?next=/\evil.example` 与 `//evil.example` 一样是协议相对 URL
   而跳到站外——登录成功后与「已登录时打开登录页」两处 `location.replace` 都会中招。
   按 origin 判定后 `//evil.example`、`/\evil.example`、`javascript:alert(1)` 全部落回站内默认页 `/ui_v2/app/`，
-  站内目标（如 `?next=/ui/?x=1`）照常可用。回归用例见 `test/next-target.test.ts`。
+  站内目标（如 `?next=/ui_v2/app/?x=1`）照常可用。回归用例见 `test/next-target.test.ts`。
 - **失败路径排空请求体**：受守卫的 `PATCH` / `batch-update` / `clear` 都带 body，一旦在未读完入站体时就发出响应，
   Workers 会抛 `Can't read from request stream after response has been sent.` 并让**本 isolate 的后续请求**
   以 503 结束。已在守卫的 401/500、login 的 500、logout、三条 400 早退路径逐一排空；

@@ -468,8 +468,8 @@ npm run deploy
 # 6.（可选）自定义域名：wrangler.toml 增加 routes 或 Cloudflare 控制台绑定
 ```
 
-部署会一并上传 `public/**`（`[assets]`）：三个界面前缀（`/ui`、`/ui_v1`、`/ui_v2` 及各自的 `/*`）的请求**先进 Worker**（由 `UI_ENABLED` 决定"转回静态资源"还是 404），其余静态资源由边缘直出，
-其余路径（含全部协议端点）回落给 Worker。因此**部署必须在仓库根执行**，且 `public/` 不能缺失——
+部署会一并上传 `public/**`（`[assets]`）：三个界面前缀（`/ui`、`/ui_v1`、`/ui_v2` 及各自的 `/*`）的请求**先进 Worker**（由 `UI_ENABLED` 决定"转回静态资源"还是 404）；其余路径由边缘先行处理 ——
+命中静态资源的直接返回，未命中的（含全部协议端点）回落给 Worker。因此**部署必须在仓库根执行**，且 `public/` 不能缺失——
 少了它 wrangler 会直接报 `assets.directory does not exist`。
 
 部署完成后浏览器打开站点根即可进入 Web 界面（`GET /` 对浏览器导航 302 到 `/ui_v1/`，

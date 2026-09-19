@@ -62,7 +62,7 @@ const safeNext = (raw) => {
 };
 ```
 
-**验收**：`?next=/\evil.example`、`?next=//evil.example`、`?next=javascript:alert(1)` 全部落回站内；`?next=/ui/?x=1` 正常跳转。补一条回归用例（现有测试未覆盖反斜杠变体）。
+**验收**：`?next=/\evil.example`、`?next=//evil.example`、`?next=javascript:alert(1)` 全部落回站内；`?next=/ui_v2/app/?x=1` 正常跳转（**2026-09-19 改名后**：应用本体在 `/ui_v2/app/`，此前的写法是 `/ui/?x=1`）。补一条回归用例（现有测试未覆盖反斜杠变体）。
 **上游归属**：本项目新增面（上游 `SyncClipboard.Server.Core` 无 Web UI 与登录页，`grep -rE "Cookie|Session|HtmlContent|text/html"` 零命中）⇒ 非上游问题。
 
 ---

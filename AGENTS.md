@@ -20,7 +20,7 @@
 | `src/ui/routes.ts` / `src/ui/maintenance.ts` 增删 `/ui/api/*` 端点 | `docs/ui.md` §5 端点表；`test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`（**18 条是权威口径**） |
 | `public/` 下增删任何文件 | `docs/ui.md` §3 的「共 N 个资源」总数与 V1 / V2 / 跳转壳 / 站点根分表；`docs/design.md` §4 目录树；`docs/ui-v2-design.md` §7 目录树 |
 | V2 增删 JS 模块 | `public/ui_v2/app/index.html` 与 `login.html` 的 `modulepreload` 清单（**少一项留下依赖瀑布、多一项白拉一个文件，两者都不会报错**）；上面的资源数与目录树 |
-| **增删界面挂载点**（`public/` 下新增/改名 `ui*` 目录） | 三份事实**必须一起改**：`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 的路径规则；`test/ui-guard.test.ts` 的三条判据（挂载点一律从 `public/` **动态发现**）会红，见 §3 |
+| **增删界面挂载点**（`public/` 下新增/改名 `ui*` 目录） | 三份事实**必须一起改**：`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 的路径规则；`test/ui-guard.test.ts` 里那组**挂载点判据**（`run_worker_first` ×2 + `isUiAsset` ×1 + `_headers` ×2，一律从 `public/` **动态发现**）会红，见 §3 |
 | 增删测试套件 `test/*.test.ts` | 套件数出现在 `README.md`、`docs/design.md`、`docs/ui.md`、`.github/workflows/deploy.yml`；且 `docs/design.md` 的「**套件清单**」段要逐个列出套件名（名单与数字是两条独立断言） |
 | 改 `public/ui_v1/js/messages.js` 或 `public/ui_v2/js/messages.js` | **两份从第一条 `import` 起必须逐字一致**（`ui-guard` 的对等守卫会红，见 §3；文件头**有意不同** —— V1 那份解释「为什么自己有一份」，别去"对齐"掉）；改 V1 时同时看 `docs/ui.md` §3.2 |
 | 要**截断**或**统计用户看到的字符数**（提示条「已复制 N 个字符」、删除确认里的正文开头、行内 `aria-label`） | 用各自 `format.js` 的 `truncateText()` / `charCount()`，**不要写 `slice(0, n)` / `.length`** —— 按 UTF-16 码元切会切出半个代理对（渲染成 `�`），`.length` 把 10 个 emoji 报成 20。两版各有一份同名实现（**不共享**），改其一要同时改另一版；口径与例外见 `docs/AUDIT-v1-v2-divergence.md` §5.3 |
