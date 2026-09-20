@@ -73,7 +73,7 @@ Worker
 | --- | --- | --- |
 | `/ui`、`/ui/js/*`（跳转壳；`redirect-hash.js` 同样是代码资源）、`/ui_v1/`、`/ui_v1/js/*`（V1）与 `/ui_v2/`、`/ui_v2/js/*`（V2） | 转 `env.ASSETS.fetch()`，行为与"静态资源直接托管"时**逐条一致**（含裸 `/ui` 的 `307 → /ui/`） | **404**（纯文本 `Not Found`） |
 | `/ui/不存在的路径`、`/ui_v1/不存在的路径`、`/ui_v2/不存在的路径` | 资源 404 后**回落 Hono**，拿到 `notFoundPage`（三个前缀共用同一条链，与平台自身回落一致） | 404 纯文本（不产生界面痕迹） |
-| `/ui/api/*` | 照旧交给 Hono，守卫与业务不变 | **404 JSON** `{"error":"not_found"}` |
+| `/ui/api/*`（含裸 `/ui/api`） | 照旧交给 Hono，守卫与业务不变。**裸形态 2026-09-20 起也归接口面**：它与 `/ui/api/` 是同一个命名空间的两种写法，此前却落进上一条的资源分支、回的是**HTML 404 页** | **404 JSON** `{"error":"not_found"}` |
 | 根路径 `/`（`Accept: text/html`） | 302 → **`/ui_v1/`**（默认界面，少一跳） | **200 `Server is running.`**（不再把人引到不存在的界面） |
 | 协议面 | 不受影响 | **不受影响**（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub 全照常） |
 
@@ -362,7 +362,7 @@ Worker
 | POST | `/ui/api/history/batch-meta` | 批量取记录（**含完整正文**）：`{items:[{type,hash}]}`（**单次 ≤100 条**，超出由界面分片串行发）→ `{items:[完整 HistoryRecordDto]}`。用于「选中多条 → 一起复制/下载」——列表里的正文被服务端截断到 500 字符，而逐条走单条端点是 O(N) 次请求；**只接受 `application/json`**（与 batch-update / clear 同一条纵深防御） | 400 / 415 |
 | POST | `/ui/api/history/clear` | 清空历史：`{scope:'trash'\|'all'}`。trash = 只删已删除行并返回计数（不物化整批行）；all = 与协议 `DELETE /api/history/clear` **共用** `historyOps.clearAllHistory`（先删行，再按 `clearAll` 返回的**实体集合**删工作目录——最坏漏删孤儿目录，不会误删并发写入的新记录）。**不逐条广播**（上游的广播触发点清单里没有 clear，见 §6 的说明；跨标签页收敛靠 `/ui/api/poll` 的计数变化） | 400 / 415 |
 | POST | `/ui/api/hub-ticket` | 签发一张 Hub 连接票据（`{token, path}`），供前端建立 WebSocket；DO 打不通时 503（前端据此继续轮询） | 503 |
-| GET | `/ui/api/integrity` | 数据完整性自检：`{checkedAt, recordsWithData, historyObjects, missingCount, missing[], missingTruncated}`。成本 = 1 次 D1 + `ceil(对象数/1000)` 次 R2 列举（**不逐条 HEAD**） | — |
+| GET | `/ui/api/integrity` | 数据完整性自检：`{checkedAt, recordsWithData, historyObjects, missingCount, missing[], missingTruncated}`。成本 = 1 次 D1 + `ceil(对象数/1000)` 次 R2 列举（**不逐条 HEAD**）。⚠️ hash 含路径分隔符的**坏行**（只能带外写入 —— 三条写路径都拒）按「取不到」计入 `missingCount` 并列进清单：不是 500、也不是静默跳过（2026-09-20；此前 `historyKey()` 的断言会让整个自检 500 —— 而它恰恰是数据坏掉时唯一该工作的诊断面） | — |
 | PUT | `/ui/api/settings` | 保留策略的在线调整：`{retention:{retentionMinutes, maxSavedHistoryCount, retentionSource, maxCountSource}}`；`null` = 清除覆盖、`0` = 关闭该阶段。**没有对应的 GET**：读取走 `/ui/api/info` 的 `retention`（同一份 `readRetentionSettings`，连通来源字段一起给） | 400 / 415 |
 | GET | `/ui/api/statistics` | 官方统计 + 按类型分布。**两个计数键口径不同**：`byType` 随 `?deleted=true` 走（工具栏的类型计数要与当前视图同源），`byTypeActive` **恒为活跃口径**（统计条「存储占用」的明细用它——已删记录的 R2 文件在软删时就删了） | 400 参数非法 |
 | GET | `/ui/api/overview` | **首屏合成快照**：一次往返拿到 `{stats, byType, byTypeActive, marker, info, serverTime}` —— 统计、类型计数、变更标记、部署信息、服务端时间**同源**（数字与列表来自同一瞬间，不会「控件说 1009、列表说 1008」）。`?deleted=true` 时 `byType` 随视图走（`byTypeActive` 恒活跃）。**只读、无副作用**，且统计层只算一次（此前单次请求要列举两遍 R2 全桶，见 O-01）。**不含 `activity`**：那是独立的一天粒度查询，前端在列表落地后单独拉 | 400 参数非法（`deleted` 非法值 → 400 而不是 500） |

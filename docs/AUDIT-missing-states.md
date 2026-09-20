@@ -119,6 +119,26 @@
 - **可对照**：`state === 'empty'` 时写「0 条记录」是**对的**（那确实是空）；
   错的是 `error` 跟着一起走。缺的是"错误"这一档（与 §85 缺的那一档同源）。
 
+### 1.6 [V1+V2] 分页的**失败档**（2026-09-20 补登，§1.1 那一族的第三处出口）
+
+- **位置**：`public/ui_v1/js/components/pagination.js`（判据）、`public/ui_v1/js/main.js`（绘制时机）、
+  `public/ui_v1/js/components/list.js`（错误态的保持）、`public/ui_v2/js/ui/pager.js` + `boot.js`（同一件事的 V2 份）。
+- **形状**：§1.1 给 V1 分页补了**加载档**（`pending = loading && total === 0` → 「正在加载…」），
+  但**失败**既不是"加载"也不是"空"：
+  - V1 的失败路径**不调 `render()`**（那会让 `list.update()` 把刚画好的错误态换成空状态），
+    于是分页条**根本不会被重绘**，永远停在加载档写下的「正在加载…」——与正下方的「加载失败」同屏矛盾；
+  - 失败之后用户点任一筛选 chip（`setFilters` 会先 `render()` 一次）⇒ `list.update()` 把
+    「加载失败 + 重试」整块换成「还没有任何记录」：**条数未知却给出确定结论，还抹掉唯一的重试入口**。
+- **V2 的同一格**：`pager.js` 只有 `pending`，失败时落到 `pages <= 1` 那一支写「**共 0 条**」
+  ——与 §1.4 是同一句谎，只是触发时机从"首屏"换成"失败"。
+- **修法（2026-09-20，V1 与 V2 同轮）**：`store` 增加 `error` 位（V1 `main.js`）；
+  抽出 `renderPagination()` 作为分页那一格的**唯一**绘制点，失败路径也调它；
+  `list.update()` 补"失败且无数据 ⇒ 保持错误态"的出口；
+  两版分页各补 `unknown` 档（`error && total === 0` ⇒ **什么都不说**）。
+  V2 的判据接 `boardState(current) === 'error'`、V1 接 `state.error && items.length === 0` ——
+  **与列表共用同一条判据，而不是各写一份。**
+- **状态**：**已修**。过程与逐 hunk 核实台账见 `docs/AUDIT-public-diff-6ebcf6e.md`（F-8 / F-9）。
+
 ---
 
 ## 2. [A] 哨兵值复用（除 §1 之外）
@@ -401,6 +421,7 @@
 | §1.3 V2 `.overview__ghost` 从未被绘制 | **已修** | `ui/js/ui/overview.js` 的 `placeholder()` 接进首绘 |
 | §1.4 V2 分页「共 0 条」 | **已修** | `ui/js/ui/pager.js` |
 | §1.5 V2 错误态的列表头「0 条记录」 | **已修** | `ui/js/ui/board.js` 的三态计数 |
+| §1.6 两版分页的**失败档**（加载/空之外的第三态） | **已修**（2026-09-20） | V1 `ui_v1/js/components/{pagination,list}.js` + `main.js` 的 `renderPagination()`；V2 `ui_v2/js/ui/pager.js` + `boot.js` 的 `boardState()`。台账见 `docs/AUDIT-public-diff-6ebcf6e.md` F-8/F-9 |
 | §2.1 V1 统计条首屏失败后永久空白 | **已修** | `ui_old/js/main.js` 的 `pollOnce` 里补 `refreshOverview()` |
 | §2.2 V2 抽屉把"没取到"当成"从来没有过" | **已修** | `ui/js/ui/drawer.js`（`loaded` 标记 + `info` 空判） |
 | §2.3 V2 顶栏把「未连接」折成「定时检查中」 | **已修** | `ui/js/ui/appbar.js`（删掉无生产者的 `offline`，另补 `connecting` 的 CSS 档） |

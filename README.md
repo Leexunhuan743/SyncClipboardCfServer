@@ -248,7 +248,7 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 
 | 开关 | `true` / 其它 | `false` |
 |---|---|---|
-| `UI_ENABLED` | 提供 Web 界面：三个挂载点（`/ui_v1/` = 默认界面 V1、`/ui_v2/` + `/ui_v2/app/` = 开发测试版 V2、`/ui/` = 跳转壳）与 `/ui/api/*` 都可用，根路径对浏览器跳转到 `/ui_v1/` | **整个界面关闭**：`/ui`、`/ui_v2/*`、`/ui_v1`、`/ui_v1/*`（含静态资源与 `/ui/api/*`）一律 **404**，根路径返回 `Server is running.`。协议面（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）**完全不受影响** |
+| `UI_ENABLED` | 提供 Web 界面：三个挂载点（`/ui_v1/` = 默认界面 V1、`/ui_v2/` + `/ui_v2/app/` = 开发测试版 V2、`/ui/` = 跳转壳）与 `/ui/api/*` 都可用，根路径对浏览器跳转到 `/ui_v1/` | **整个界面关闭**：`/ui`、`/ui/*`、`/ui_v1`、`/ui_v1/*`、`/ui_v2`、`/ui_v2/*`（含静态资源与 `/ui/api/*`）一律 **404**，根路径返回 `Server is running.`。协议面（`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）**完全不受影响** |
 | `ENFORCE_STRONG_CREDENTIALS` | 命中弱口令（文档化默认值 / 过短）时**所有通道 fail-closed**（500） | 只警告：响应头带 `x-credential-warning: weak` 并打一条 `[security]` 日志，服务照常 |
 
 > `MAX_SAVED_HISTORY_COUNT` / `HISTORY_RETENTION_MINUTES` 直接换数字即可；上限分别是 1000000 条与
@@ -410,7 +410,7 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 | 长轮询队列 | 单连接队列上限 64 条 / 1 MB，超限关闭连接（204） | `src/durable/SyncClipboardHub.ts` |
 | 清理可观测 | 清理按预算分阶段执行、游标续跑、失败写入 `cleanup:lastError`（`/ui/api/info` 可读） | `src/cleanup.ts` |
 | 弱凭据检测 | `PASSWORD` 命中已知弱值或短于 8 位时，每个 isolate 打一次 `console.warn`，并在 `/api/version` 响应头给出 `x-credential-warning: weak`；默认**不阻断服务**（避免直接切断同步），需要强制时设 `ENFORCE_STRONG_CREDENTIALS=true` | `src/auth.ts` |
-| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的 `no-cache, must-revalidate`（无指纹 ⇒ **每次都会回源验证**，不存在"新旧混用窗口"；只有图标/manifest 走长缓存 + `stale-while-revalidate`）。Worker 自出的 `/ui_v2/*` 404 页另在 `src/ui/notFound.ts` 单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
+| 界面静态资源的响应头 | `public/_headers`（这批文件由边缘直出、不经过 Worker）：CSP `default-src 'none'` + 逐项白名单（脚本/样式限本站；`connect-src 'self' wss: ws:`——`'self'` 对 websocket scheme 的解析各浏览器不一致，显式写死以免实时推送在部分浏览器被静默拦掉；`frame-ancestors 'none'`、`object-src 'none'`）、`nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`，以及 js/css 的 `no-cache, must-revalidate`（无指纹 ⇒ **每次都会回源验证**，不存在"新旧混用窗口"；只有图标与 manifest 走长缓存 —— 图标 `max-age=86400` + `stale-while-revalidate=604800`、manifest `max-age=3600`，后者没有 `stale-while-revalidate`）。Worker 自出的界面 404 页（`/ui`、`/ui_v1`、`/ui_v2` 三个前缀共用同一张，见 `src/ui/notFound.ts`）另单独设 CSP——它不经过静态资源层 | `public/_headers` / `src/ui/notFound.ts` |
 
 > **部署前必做**：`USERNAME` / `PASSWORD` 必须是**高熵随机值**。默认/占位口令 + 公开的 `*.workers.dev` 等于把全部剪贴板历史与附件
 > 交给任何知道该口令的人（审计中已实测：用该口令可**离线假冒**会话 Cookie）。轮换方式见下方"方式 A/B"；轮换后需同步更新所有
@@ -497,6 +497,11 @@ schema.sql              D1 建表语句
 | [docs/AUDIT-missing-states.md](docs/AUDIT-missing-states.md) | 前端审计报告（**缺失状态 / 不可达展示**）：与"找冗余"相反方向的判据，覆盖两版共约 18,000 行；含文档担保类失准与复核中剔除的结论 |
 | [docs/archive/AUDIT-v1-v2-divergence.md](docs/archive/AUDIT-v1-v2-divergence.md) | 前端审计报告（第二轮：**两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约**）：含"V1 修过、V2 仍有"的定向核对表，以及安全面"无可举证注入缺陷"的逐项结论。**已归档**（2026-09-20）：封版不再更新；**§ 编号是冻结的引用锚点**（全仓 44 处），文中 `文件:行` 与数字停在归档时点 |
 | [docs/AUDIT-v1-v2-drift-2026-09-19.md](docs/AUDIT-v1-v2-drift-2026-09-19.md) | 前端走读报告（第三轮：**跨版漂移与遗留缺陷**，F1–F8）：含子代理逐条复核结论与实施记录 |
+| [docs/AUDIT-src-diff-6ebcf6e.md](docs/AUDIT-src-diff-6ebcf6e.md) | **逐 hunk 核实台账**（`6ebcf6e` → 最新，`src/**`）：91 处的「位置 + 变更 + 判定 + 可复核判据」；含查出的 D1–D6 与门禁未跑的声明 |
+| [docs/AUDIT-public-diff-6ebcf6e.md](docs/AUDIT-public-diff-6ebcf6e.md) | **逐 hunk 核实台账**（`6ebcf6e` → 最新，`public/**`）：90 文件 / 208 hunk 全列，逐条给核实结论；208 处机械核实 `MISMATCH = 0`；含查出的 F-1…F-9（其中 F-8 是分页失败档的真缺陷） |
+| [docs/AUDIT-test-diff-6ebcf6e.md](docs/AUDIT-test-diff-6ebcf6e.md) | **逐 hunk 核实台账**（`6ebcf6e` → 最新，`test/**`）：14 文件 / 79 hunk 全列，逐条给核实结论；查出的 T-1…T-4 **全在注释里**（断言本身 0 处缺陷），另含对本轮补丁自己的勘误 T-5（模板字符串里写反引号 ⇒ 用 `node --check` 抓住） |
+| [docs/AUDIT-docs-diff-6ebcf6e.md](docs/AUDIT-docs-diff-6ebcf6e.md) | **逐 hunk 核实台账**（`6ebcf6e` → 最新，`docs/**`）：17 文件 / 101 hunk 全列，逐条给判定；查出的 15 处**全在「指代 / 引用」上**（改名替换把主语与宾语丢在了两个时代、死路径、行号腐烂、实测对象被换掉），另含 1 处**未决**（归档横幅的「44 处/23 文件/28 编号」判据脚本已不在 ⇒ 不猜、不改数字） |
+| [docs/AUDIT-root-diff-6ebcf6e.md](docs/AUDIT-root-diff-6ebcf6e.md) | **逐 hunk 核实台账**（`6ebcf6e` → 最新，**仓库根目录那 6 个文件**：`.github/workflows/deploy.yml` / `AGENTS.md` / `README.md` / `eslint.config.js` / `package.json` / `wrangler.toml`）：45 个 hunk 全列；含查出的 R-1…R-6（已全部落地）与**全仓覆盖率对账**（146 = `src/` 19 + `public/` 90 + `test/` 14 + `docs/` 17 + 根目录 6 ⇒ 五份台账 100% 覆盖，±行数亦逐位吻合） |
 | [docs/ui-rename-v1-v2.md](docs/ui-rename-v1-v2.md) | 界面改名与提示条移除的**操作记录**（2026-09-19）：三个挂载点的取舍、为什么不是一把 `sed`、踩到的八个坑、验证结果与未做项 |
 
 ## 许可证

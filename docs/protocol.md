@@ -189,7 +189,7 @@
 | GET | `/api/time` | 200，ISO8601 当前时间（UTC） |
 | GET | `/api/version` | 200，纯文本版本号（须 ≥ 3.1.1） |
 | GET | `/api/history/{profileId}` | `profileId` 格式 `Type-Hash`；解析失败 → 400 `"Invalid profileId format. Expected format: 'Type-Hash'"`；不存在 → 404；成功 → HistoryRecordDto |
-| GET | `/api/history/{profileId}/data` | 按记录取数据文件。**profileId 解析失败也返回 404**（上游此端点不自行校验格式，而是 `GetTransferDataFileByProfileId` 返回 null）；无数据 → 404；成功 → 二进制 + `Content-Disposition`（文件名） |
+| GET | `/api/history/{profileId}/data` | 按记录取数据文件。**profileId 解析失败也返回 404**（上游此端点不自行校验格式，而是 `GetTransferDataFileByProfileId` 返回 null）；无数据 → 404；**记录里 hash 含路径分隔符的坏行（只能带外写入，本实现构造不出 R2 key）同样 404**（2026-09-20：此前会让 storage 层的断言抛成 500，而上游在同样的数据上是 404 —— 属对齐）；成功 → 二进制 + `Content-Disposition`（文件名） |
 | POST | `/api/history/query` | §3.4 过滤 + 分页，返回 `HistoryRecordDto[]` |
 | POST | `/api/history` | multipart 上传，见 §5.1 |
 | PATCH | `/api/history/{type}/{hash}` | 部分更新，见 §5.2 |
@@ -227,7 +227,7 @@ public static string GetWorkingDirName(ProfileType type, string hash)
 ```
 
 本实现的 hash 参与两处**必须同构**的用途：R2 key 的 `history/{Type}_{Hash}/{file}`
-与孤儿目录判定（`listHistoryWorkingDirs` 只按**第一个** `/` 截断工作目录名）。
+与孤儿目录判定（`listHistoryObjectsByDir` 只按**第一个** `/` 截断工作目录名）。
 一条 hash = `A/B` 的记录在 DB 侧是工作目录 `Text_A/B`，在 R2 侧却只会被识别为目录 `Text_A/`
 —— 两者不同构，会让孤儿清理误删或被绕过。此外客户端本地也以同一规则构造路径，拿到这种 hash 会抛异常。
 
@@ -501,9 +501,10 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Group zip 的重复条目 | 内容「首次落盘优先」，但 `topLevelFiles`/条目列表**不去重**（`GroupProfile.cs:644-648`）⇒ 重复条目被计入 hash 与 `totalSize` 两次 | 同名条目只取首个，且条目集与顶层条目都**去重**（`src/hash.ts:112-116`、`185-200`） | **有意偏离**：含重复条目的 zip 上两侧 hash 与 size **必然不同**。官方客户端恒不写重复条目，不可达（见 README「已知限制」第 2 条） |
 | 落库 hash 的大小写 | 原样存（`Profile.cs:86`、`TextProfile.cs:55`） | 统一 `.toUpperCase()` 落库 | 对外不可见（查询恒大小写不敏感）；避免同内容在不同设备上于 Linux 生成两个 R2 工作目录（上游在大小写敏感文件系统上会双份存储） |
 | `/api/version` 的**取值** | 版本唯一事实源是 `src/Directory.Build.props` 的 `<VersionPrefix>3.2.0</VersionPrefix>`（`<VersionSuffix>` 为空）；`SyncClipboardProperty.AppVersion` 取程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `28c7e596` **返回字符串 `3.2.0`**。（上游 `Changes.md` 顶部已写 `v3.2.1`，但该基线位于 `v3.2.0` 标签之后 14 个提交、版本号尚未 bump——上游是"发版时才 bump"。） | `wrangler.toml` 的 `[vars] VERSION = "3.2.0"`，**逐字对齐** | **本轮对齐**（2026-09-15，此前报 `3.2.1`）。两边响应形状本就一致（纯文本、三段、无引号，见 §3.1）。功能上无任何差别：客户端下限是 `Env.RequestServerVersion = "3.1.1"`，且 `AppVersion.TryParse` 失败时该检查**被静默跳过**（`OfficialAdapter.cs:151-160` 的 `if` 无 `else`）——改的是**自我描述的真实性**。跟版规则与"两套编号互不相干"的说明见 `design.md` §10 |
-| 路径**字面段**的大小写 | ASP.NET Core 路由对字面段**不区分**大小写：`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate` 全部 **200** | **同左**：`src/pathCase.ts` 在入口最前面按**位置**归一**字面段**（取值原样保留） | **本轮对齐（2026-09-15，A/B 实测驱动）**：此前 Hono 精确匹配 ⇒ 上述路径 404/400。归一表只覆盖协议面（`/ui_v2/*` 与静态资源不在其内——静态资源由 Cloudflare 直接托管、不经 Worker），且只动字面段：`/file/Statistics` 是**取值**，绝不能被改成 `statistics`。表漏项由 `test/protocol.test.ts` 的守卫（遍历 `app.routes` 断言字面段全覆盖）兜住 |
+| 路径**字面段**的大小写 | ASP.NET Core 路由对字面段**不区分**大小写：`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate` 全部 **200** | **同左**：`src/pathCase.ts` 在入口最前面按**位置**归一**字面段**（取值原样保留） | **本轮对齐（2026-09-15，A/B 实测驱动）**：此前 Hono 精确匹配 ⇒ 上述路径 404/400。归一表只覆盖协议面（三个界面前缀 `/ui`、`/ui_v1`、`/ui_v2` 不在其内——它们**确实**会先进 Worker，但那只是界面开关 `UI_ENABLED` 的需要，与"对齐 ASP.NET 的字面段大小写"无关），且只动字面段：`/file/Statistics` 是**取值**，绝不能被改成 `statistics`。表漏项由 `test/protocol.test.ts` 的守卫（遍历 `app.routes` 断言字面段全覆盖）兜住 |
 | `GET /api/time` 的格式 | `DateTimeOffset.Now` ⇒ **本机偏移**，7 位小数（`"2026-09-15T19:39:00.8230566+08:00"`） | UTC `Z`，3 位小数（`"2026-09-15T11:39:00.982Z"`） | 同一时刻、都是 ISO8601；客户端 `DateTimeOffset` 两种都能解析（实测对照） |
 | `GET /file/{name}` 的历史查找口径 | 只按历史查（暂存文件不算）→ 未命中 **404** | 同左 → **404** | **实测一致**（`PUT /file/x` 后才 `GET` 仍 404，两边相同） |
+| `profileId` / `type` 里的**负数**数字 | `Enum.TryParse<ProfileType>("-1")` **成功**（.NET 该重载接受底层类型范围内的任意整数，不要求是已定义值）⇒ `PATCH /api/history/-1/<hash>` 照常走到查询、查不到就 **404**；`POST /api/history` 的 `type=-1` 同样被接受并落库 | **400**（`src/serialization.ts` 的 `parseProfileType` 只接受 `0..INT32_MAX`） | **有意偏离**（fail-loud 优于落一条表示不出来的数据）：本实现里负数 Type 无处安放 —— `profileTypeToString` 只覆盖 0..5（负数会写成 `None`）、`workingDirName` 会拼出 `undefined_-1/` 这样的目录名。官方客户端恒发枚举名或 0..3，不可达。**2026-09-20 实测本实现**：`PATCH /api/history/-1/ABC` → 400 `Bad Request`、`POST` 带 `type=-1` → 400 `Type is invalid or missing` |
 
 ## 11. 参考实现对照表
 

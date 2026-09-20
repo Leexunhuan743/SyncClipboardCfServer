@@ -33,7 +33,11 @@
   `textContent` / `title` / `aria-label`；按钮图标来自常量表，从不拼接数据。
 - **CSP 严格且确实下发**：`default-src 'none'` + `script-src 'self'`，**没有 `unsafe-inline`/`unsafe-eval`**，
   且补了常被漏掉的 `object-src` / `base-uri` / `frame-ancestors`。实测在 `/ui_v2/app/`、
-  `/ui_v2/js/*`、`/ui_v2/` 上都带全套安全头（`run_worker_first` 经过 Worker 也保留了 `_headers`）。
+  `/ui_v2/js/*`、`/ui/` 上都带全套安全头（`run_worker_first` 经过 Worker 也保留了 `_headers`）。
+  > ⚠️ 上面第三项写的是 **`/ui/`**（**当时 V2 的入口**，那次实测就是在它上面做的；2026-09-19 改名后
+  > `/ui_v2/` 本身没有页面）。今天 `GET /ui_v2/` 回的是 Worker 出的 `notFoundPage`（`src/ui/notFound.ts`），
+  > 那套头与 `_headers` **不是同一份**：它是 `default-src 'none'; style-src 'self' 'unsafe-inline'; …`，
+  > 既没有 `script-src 'self'`，也带 `'unsafe-inline'` —— 别把这条实测读成"`/ui_v2/` 的响应头也如此"。
 - **状态与 URL 经过白名单校验**：`filtersFromUrl` 校验 `types/sort/range`、夹取 `page/pageSize`、
   截断 `search`；服务端再校验一次（`sort=constructor` 这类原型链陷阱用 `Object.hasOwn` 关掉了）。
 - **竞态守卫是真的**：`createLatestGate` 会 abort 上一个请求并丢弃过期响应；轮询/推送/概览各持一个。

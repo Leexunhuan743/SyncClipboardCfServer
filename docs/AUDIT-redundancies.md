@@ -107,7 +107,7 @@
 |---|---|---|
 | O-04 | `src/profile.ts:244-271` | PUT 路径全量内存缓冲是**已登记的架构限制**：`README.md:439-441`、`docs/design.md` §7.1、`docs/progress.md` §48.4 都记有"R2 无 move/rename、峰值≈文件大小"的推导与"改成流式＝架构级改动、当前不做"的结论。**不要因"顺带优化"而降低其等级** |
 | O-08c | `src/ui/routes.ts:158-189` | `parseRangeHeader`/`resolveRange` 是"有意的最小实现"（不做多段 Range、不做 If-Range），实现正确、注释充分 |
-| C-05 | `src/db.ts:274-284` vs `src/ui/query.ts:196-202` | 协议面不转义 / UI 面转义是**有意分面**，两侧都有注释与 `docs/protocol.md` §10 登记。**不建议统一** |
+| C-05 | `src/db.ts:274-284` vs `src/ui/query.ts:196-202` | 协议面不转义 / UI 面转义是**有意分面**，两侧都有注释；协议面的 `SearchText` 口径见 `docs/protocol.md` §3 / §5 —— 它**不是**协议差异（协议面就是照上游做的），故 §10 里没有这一条。**不建议统一** |
 | C-06 | `src/db.ts:149-153` | hash 等值匹配（上游是 LIKE 模式）属有意偏离，处置决定已记在 `docs/upstream-defects.md` 的 D1 |
 | §5.C 全部 | 前端/后端运行环境适配 | 移除会让代码在真实运行环境里坏掉（不是"少一个历史包袱"） |
 | **§10.2 路线 A / 路线 B** | 双前端 | 定位已定：`ui_old` = 产品/默认界面，V2 = 开发版且**允许破坏性重构**。⇒ **当前不收敛**。A/B 都要连带改 6+ 处"文档-测试硬耦合"、删/改 6~8 个测试文件、改 `package.json` 的 lint 路径，而 V2 本身还可能被重写——当前规划下收益为负。完整清单保留在 §10.2，供将来真要收敛时直接取用 |
@@ -351,7 +351,7 @@
 |---|---|---|---|---|---|---|
 | **C-03** | `src/pathCase.ts`（86 行）+ `src/index.ts:196-205` 的入口重写 | 兼容层（协议） | **High** | 对齐 ASP.NET Core「路由**字面段**大小写不敏感」。2026-09-15 用官方 v3.2.0 服务端发布件 A/B 实测确认 | 破坏 `/API/version`、`/SyncClipboard.JSON` 等；`test/protocol.test.ts` 有 20+ 用例 + 一条"归一表必须覆盖协议面全部字面段"的守卫会红；需同步删 `docs/protocol.md` 差异表行 | **保留**（除非愿意放弃逐字对齐）。若放弃：删 86 行 + 简化入口 |
 | **C-04** | `src/durable/SyncClipboardHub.ts:243-293`(SSE)、`295-391`(长轮询)、`52-53`(队列上限)、`src/hub.ts:27-31`(`AVAILABLE_TRANSPORTS`) | 兼容层（协议） | **High** | 对齐上游 `services.AddSignalR()` 宣告的三种传输与**宣告顺序**；`design.md` ADR **D6** 明确"已定" | `negotiate` 载荷不再与上游逐字一致（`F13` 明确记录"不再自行收敛为 Text"，正是为防止有人这么改）；`test/transports.test.ts`（约 7 条）、`test/fix-regressions.test.ts` 的 F32（断言 `availableTransports` 长度为 3）、`test/rate-limit.test.ts` 的长轮询队列封顶节会红 | **保留**。若放弃：约可减 250 行 |
-| **C-05** | `src/db.ts:274-284`（协议面 **不转义** LIKE 元字符）vs `src/ui/query.ts:196-202`（UI 面转义） | 有意分面 | Medium | 协议面**有意对齐上游**（`HistoryService.cs:153` 同样不转义）；UI 面有意收紧（用户搜 `100%` 不该退化成匹配任意） | 统一任一侧都会造成"与上游不一致"或"搜索语义退化" | **明确不做**（见 §2）。两侧注释与 `docs/protocol.md` §10 已登记 |
+| **C-05** | `src/db.ts:274-284`（协议面 **不转义** LIKE 元字符）vs `src/ui/query.ts:196-202`（UI 面转义） | 有意分面 | Medium | 协议面**有意对齐上游**（`HistoryService.cs:153` 同样不转义）；UI 面有意收紧（用户搜 `100%` 不该退化成匹配任意） | 统一任一侧都会造成"与上游不一致"或"搜索语义退化" | **明确不做**（见 §2）。两侧注释 + 协议面的 `SearchText` 口径见 `docs/protocol.md` §3 / §5（§10 未登记，因为协议面照上游做、不构成差异） |
 | **C-06** | `src/db.ts:149-153`（`LOWER(Hash)=LOWER(?)` 等值匹配，上游把 hash 当 LIKE **模式**） | 有意偏离 | Medium | 处置决定记在 `docs/upstream-defects.md` 的 D1 | 改动会破坏已登记结论 | **明确不做**。**`[待确认]`**：该差异**未找到对应测试覆盖**（§11 #12） |
 | **C-07** | `src/auth.ts:15-25,107-136` + `src/env.ts:16`（弱凭据"只告警不阻断" + `ENFORCE_STRONG_CREDENTIALS` 双模式） | 过渡期开关（`F1`） | Low | "上线前收紧"的正常设计 | 若已确定轮换完成，可把默认改为 fail-closed 并删软告警分支；但这会改变"本地默认行为"，需同步 `README.md:252`、`wrangler.toml`、`deploy.yml`、`src/env.ts` | **保留现状**；若要收紧，建议只改默认值而不删分支（保留可回退能力） |
 | **C-08** | `schema.sql:26-35`（建唯一索引前的历史重复行清洗 `DELETE`） | 一次性迁移补丁 | Low | 对全新库无意义；但**幂等、零风险** | 若线上库**曾有**重复行，删掉清洗会让 `CREATE UNIQUE INDEX` 失败 | 删可简化部署脚本。**先按 §11 #7 确认线上无重复行** |

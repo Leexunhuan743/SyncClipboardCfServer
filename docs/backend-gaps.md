@@ -13,7 +13,8 @@
 > 平台事实（免费档额度等）单独标注外链来源，不与仓库内证据混同。
 >
 > ⚠️ **那些路径今天可能指不到文件**：本文件是 `509bdef` 那一刻的快照，而 V2 在 2026-09-16
-> 重构过目录（`public/ui/js/components/*` → `public/ui_v2/js/ui/*`，`signalr.js` → `push.js`）。
+> 重构过目录（`public/ui/js/components/*` → `public/ui/js/ui/*`，`signalr.js` → `push.js`；**两句都用当时的
+> 名字** —— `public/ui/` 在这次重构里没改名，`ui_v2` 是 2026-09-19 才有的名字，见 `docs/ui-rename-v1-v2.md`）。
 > §1–§3 里引用的 V2 路径**按快照保留原样**（改了就篡改历史），要看现状请用 §8 的落地位置表
 > 或 `docs/ui-v2-design.md` 的文件树。
 >
@@ -54,7 +55,7 @@
 | 1.3 | **批量操作只有删除** | 仅 `POST /ui/api/history/batch-delete`（`src/ui/routes.ts:230`） | 回收站里逐条点「恢复」、收藏逐条点。批量写端点的形状已有，可照抄；「批量恢复」在 `docs/progress.md` §34.7 已记为未做 |
 | 1.4 | **排序 6 字段只有 3 个可点** | 白名单 `SORT_COLUMNS` 有 `id/type/size/createTime/lastModified/lastAccessed`（`src/ui/query.ts:62`），表头只给 类型 / 大小 / 时间（`list.js:254-257`） | `lastModified` / `lastAccessed` / `id` 只能手改 URL 才用得上 |
 | 1.5 | **`pageSize` 两套上限** | 服务端 ≤ 500（`src/ui/query.ts:59`），下拉只有 20/50/100/200（`filters.js:25`） | URL 写 `pageSize=500` 能工作，但 `<select>` 会落到空选，读起来像缺陷 |
-| 1.6 | **`PATCH` 响应体被丢弃** | `api.patch` 返回归一化后的条目（`public/ui_v2/js/api.js:92`），调用点只当作成功信号（`main.js:292/322/342`） | 服务端算出的 `version` / `lastModified` 未被采纳。当前无害；将来做并发冲突提示时需要 |
+| 1.6 | **`PATCH` 响应体被丢弃** | `api.patch` 返回归一化后的条目（`public/ui/js/api.js:92`，快照期 V2 的路径），调用点只当作成功信号（`main.js:292/322/342`） | 服务端算出的 `version` / `lastModified` 未被采纳。当前无害；将来做并发冲突提示时需要 |
 | 1.7 | **「清空全部」协议有、界面无** | `DELETE /api/history/clear`（`src/routes/history.ts:331-336`） | 且它**不广播**（只有删行 + 删目录 + 返回计数）。界面要接此功能须先补广播——**该判断已被 §7.5 订正**：不补广播，界面靠 `/ui/api/poll` 的变更标记收敛；本轮已接界面（见 §8） |
 | 1.8 | **`/api/time` 本站界面未使用** | 协议端点存在（`src/index.ts:185`；覆盖率见 `docs/progress.md` §11）；**官方客户端会调用它**做时钟差检查（`docs/protocol.md:430`），本仓库前端零命中 | 客户端会因服务端与本机**时钟差 > 5 分钟而中止历史同步**。端点本身有真实消费者，缺的只是**界面展示**：显示服务端时间/偏移能把这类「同步不动」的根因提前暴露（一次 fetch + 一行文案） |
 
