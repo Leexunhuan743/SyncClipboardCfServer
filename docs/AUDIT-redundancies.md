@@ -7,7 +7,7 @@
 > **修订说明**
 > **第一轮**：经 4 个独立子代理复查（事实核验 / 遗漏与误判 / 可落地性与风险 / 内部一致性）后修订。复查发现的 1 处实质事实错误与 5 处小偏差已全部修正；复查补充的落地约束已并入正文与 §12。
 > **第二轮（2026-09-18 晚）**：新增**上游 C# 源码对照**（`C:\Users\leeexx\Documents\NewProject\SyncClipboard`，检出 HEAD = `28c7e5963b8329e40586175eeeda326597c3e732`，**与本文所述基线 `28c7e596` 逐字一致**——已核对 `.git/refs/heads/master`）。据此新增 §13「上游对照：兼容性结论」，并**按两条已定定位重排优先级**：`public/ui_old` = 产品/默认界面；`public/ui`（V2）= 开发版、**允许以后破坏性重构**。因此：V2 内部死代码从 P0 **降级**；"把 V1 的三处修复回移到 V2"改写为"**写进 V2 重写的验收清单**"；§10 的三选一产品决策改为**已定策略**；并补齐原先遗漏的 **V1（产品面）死代码**（D-13）。
-> **第三轮（2026-09-18 晚，与 `docs/AUDIT-commit-9b4cdca.md` 合并后执行）**：本文不再只是审计报告，**已按 §14 落地了一批改动**（P0-a 全部 + P1 的主要项 + V2 的零成本项）。§14 是唯一的执行记录，并登记了**三处对本文自身判定的勘误**（O-08g、D-05 的文档连带、D-13 的 export 收敛）与**明确不改**的清单。**读 §2 的路线图时请配合 §14 一起看** —— 路线图描述的是"应该怎么做"，§14 描述的是"已经做了什么、以及哪些刻意没做"。
+> **第三轮（2026-09-18 晚，与 `docs/AUDIT-commit-9b4cdca.md` 合并后执行）**：本文不再只是审计报告，**已按 §14 落地了一批改动**（P0-a 全部 + P1 的主要项 + V2 的零成本项）。§14 是**第三轮**的处置记录（第四轮见 §15），并登记了**三处对本文自身判定的勘误**（O-08g、D-05 的文档连带、D-13 的 export 收敛）与**明确不改**的清单。**读 §2 的路线图时请配合 §14 与 §15 一起看** —— 路线图描述的是"应该怎么做"，§14 描述的是"已经做了什么、以及哪些刻意没做"。
 
 ---
 
@@ -828,7 +828,7 @@
 | 7 | C-08：删除 `schema.sql` 的重复行清洗 `DELETE` 是否安全 | 对全新库无意义；但若**线上库曾有重复行**，删掉会让 `CREATE UNIQUE INDEX` 失败 | 对线上 D1 执行：`SELECT COUNT(*) FROM (SELECT UserId, Type, Hash FROM HistoryRecords GROUP BY UserId, Type, Hash HAVING COUNT(*) > 1);` —— 结果为 0 才可删 |
 | 8 | T-06：`stripComments` 归一后三个守卫行为是否不变 | 三处判据不同，归一后某个文件可能从"被去注释"变成"没被去" | 归一后跑 `test/docs.test.ts` + `test/ui-contract.test.ts` + `test/ui-guard.test.ts`，并**人工核对两条元测试**（`docs.test.ts` 的「检查器不自命中」与 `ui-contract.test.ts` 的同名用例），比对"写库套件集合"与基线一致 |
 | 9 | M-02：`progress.md` 是否还有其它"旧状态被当现状"的段落 | 仅做了关键词扫描，700–5200 行的散文段未逐行核验 | 检索式：`grep -n -E '冻结|存档|20 套件|37 个文件|待实现|未实现|已废弃' docs/progress.md`，逐条人工判读 |
-| 10 | V1 `theme-init.js` 的 `getComputedStyle` 时序问题 | V2 注释断言"此刻样式表还没加载"；V1 的该脚本在 `<head>` 里、位于 `tokens.css` **之后**的**经典阻塞脚本** ⇒ 两种说法静态无法裁决 | 用 `test/manual/probe-ui-old.mjs --dark` 读 `document.querySelector('meta[name=theme-color]').content`，看它是否等于 `tokens.css` 的深色 `--bg` |
+| 10 | ✅ **已裁决（2026-09-20）**：V1 `theme-init.js` 的 `getComputedStyle` 时序 —— **V1 无需改**；V2 那两处注释给的理由被订正 | 实测：两版都把该脚本放在**全部** `<link>` 之后（V1 脚本在第 60 行、样式表 29–33；V2 在第 76 行、样式表 31–35），而经典阻塞脚本会等前置样式表 ⇒ 首帧取得到值 | V1 探针（`test/manual/probe-ui-v1.mjs`）新增两行读数：深色下 `THEMECOLOR` 报 `firstBgSeen=#191817`（`readyState=loading`、5 张表已加载）、`theme-color` 首次写入即 `#191817`（≠ HTML 静态值 `#faf8f5`）；`THEMESWITCH` 报 `#191817 → #faf8f5`（`stale:false`）。**判别力**：把脚本挪到样式表**之前** ⇒ `firstBgSeen` 为空、`writes` 为空、`meta` 停在静态值；把开关换成不改 `--bg` 的属性 ⇒ `stale:true`。结论：V2 的实现（显式映射）仍然正确，但「唯一可行」的**理由不成立**。见 `docs/progress.md` §94 第 17 行与 §94.15 |
 | 11 | 旧文档 §3.2 关于「前端 8,500+ 行」等聚合行数 | 未做全量求和 | 跑 `test/docs.test.ts` 的"代码规模统计"用例并读它的日志输出（它内部已对 `src`/`test`/`public` 求和）；或对 `src/**/*.ts`、`public/**`、`test/**` 分别求和 |
 | 12 | **T-09：两处疑似"有意偏离"是否已有测试覆盖** | `src/db.ts:149-153`（hash 等值 vs 上游 LIKE 模式）与 `src/ui/query.ts:196-201`（UI 面 LIKE 转义）**未找到对应断言** | 检索式：`grep -rn -E 'LOWER\\(Hash\\)|ESCAPE' test/`；若无命中，则两处偏离无守卫——建议各补一条断言（如"带 `%` 的 hash 请求返回 404"、"搜 `100%` 不命中 `1000`"） |
 
@@ -928,7 +928,7 @@
 > ② `public/ui_v2/js/filters.js:83` 改用 `date.setDate(date.getDate() + days)` 日历运算；
 > ③ `public/ui_v2/js/push.js` 有 `RETRY_COOLDOWN_MS = 10 * 60_000`（`:31`）、冷却定时器（`:88-97`）与
 > `start()` 里的清理（`:191-192`）。故本表只剩「重写验收断言」那一列里**要求固定 `TZ` / 假定时器**的
-> 用例仍待补（见 §11 与 `docs/AUDIT-v1-v2-divergence.md`）；V1 侧（正确的那一侧）照旧不要动。
+> 用例仍待补（见 §11 与 `docs/archive/AUDIT-v1-v2-divergence.md`）；V1 侧（正确的那一侧）照旧不要动。
 
 ### 13.4 结论（兼容性维度）
 

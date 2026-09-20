@@ -1,7 +1,7 @@
 # 前端走读报告（第三轮）：跨版漂移与遗留缺陷 —— 2026-09-19
 
 > 性质：**只读走读**，不是修复。本文件只回答"还有什么没被前两轮盖住"，每条给 `文件:行` 证据与一条最小修法。
-> 前两轮（`AUDIT-missing-states.md` 找"缺失"、`AUDIT-v1-v2-divergence.md` 找"分歧"）已在 `d0c58bd` 落地，
+> 前两轮（`AUDIT-missing-states.md` 找"缺失"、`docs/archive/AUDIT-v1-v2-divergence.md` 找"分歧"）已在 `d0c58bd` 落地，
 > 本报告刻意**不重复**它们已登记的条目（如 V2 `removeItem` 删末行焦点落 `<body>`，见 `AUDIT-missing-states.md` §3.1）。
 >
 > 与前两轮的分工：它们是"按判据全库扫"，这一轮是"**对侧已有验证过的修法，本侧漏了没**"的定向比对 ——

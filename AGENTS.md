@@ -33,8 +33,8 @@
 | **增删界面挂载点**（`public/` 下新增/改名 `ui*` 目录） | 三份事实**必须一起改**：`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 的路径规则；`test/ui-guard.test.ts` 里那组**挂载点判据**（`run_worker_first` ×2 + `isUiAsset` ×1 + `_headers` ×2）会红 —— 挂载点集合一律从 `public/` **动态发现**（不写死清单），见 §3 |
 | 增删测试套件 `test/*.test.ts` | 套件数出现在 `README.md`、`AGENTS.md`、`docs/design.md`、`docs/ui.md`、`.github/workflows/deploy.yml`；且 `docs/design.md` 的「**套件清单**」段要逐个列出套件名（名单与数字是两条独立断言） |
 | 改 `public/ui_v1/js/messages.js` 或 `public/ui_v2/js/messages.js` | **两份从第一条 `import` 起必须逐字一致**（`ui-guard` 的对等守卫会红，见 §3；文件头**有意不同** —— V1 那份解释「为什么自己有一份」，别去"对齐"掉）；改 V1 时同时看 `docs/ui.md` §3.2 |
-| 要**截断**或**统计用户看到的字符数**（提示条「已复制 N 个字符」、删除确认里的正文开头、行内 `aria-label`） | 用各自 `format.js` 的 `truncateText()` / `charCount()`，**不要写 `slice(0, n)` / `.length`** —— 按 UTF-16 码元切会切出半个代理对（渲染成 `�`），`.length` 把 10 个 emoji 报成 20。两版各有一份同名实现（**不共享**），改其一要同时改另一版；口径与例外见 `docs/AUDIT-v1-v2-divergence.md` §5.3 |
-| 改 V1 结果区的**形态**（骨架 / 表格 / 空态）或**行高** | `public/ui_v1/js/components/list.js` 的 `setView()` 是这三种形态的**唯一开关**（别处不要再直接写 `table.hidden` / `empty.hidden`）；`.skeleton__row` 的高度必须等于真实行高（`8+8+1+30 = 47px`，推导在 `components.css` 的 `.table td` 那条注释里）；`public/ui_v1/index.html` 里那份静态骨架是**挂载前**的占位，与它同源；`docs/ui.md` §9.3 的 loading 行。**补/改一个"未知"档时要过一遍该组件的每一处出口**（`update` / `showError` / `removeItem` …）—— 2026-09-18 实测：只给 `update()` 加了骨架档，`showError()` 那条出口就把「正在加载…」和「加载失败」同时留在了屏幕上；同一个哨兵值（`total === 0`）还会在**别的组件**里各写一份（分页、统计条各有自己的判据，见 `docs/AUDIT-missing-states.md`） |
+| 要**截断**或**统计用户看到的字符数**（提示条「已复制 N 个字符」、删除确认里的正文开头、行内 `aria-label`） | 用各自 `format.js` 的 `truncateText()` / `charCount()`，**不要写 `slice(0, n)` / `.length`** —— 按 UTF-16 码元切会切出半个代理对（渲染成 `�`），`.length` 把 10 个 emoji 报成 20。两版各有一份同名实现（**不共享**），改其一要同时改另一版；口径与例外见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3 |
+| 改 V1 结果区的**形态**（骨架 / 表格 / 空态）或**行高** | `public/ui_v1/js/components/list.js` 的 `setView()` 是这三种形态的**唯一开关**（别处不要再直接写 `table.hidden` / `empty.hidden`）；`.skeleton__row` 的高度必须等于真实行高 —— **两档各一条等式**：表格档 `8+8+1+30 = 47px`（推导在 `components.css` 的 `.table td` 注释里）、卡片档（≤860px）按 `tr.row` 的盒模型推出 `103px`／粗指针 `117px`（推导在 `components.css` 文件末尾那一块）；`public/ui_v1/index.html` 里那份静态骨架是**挂载前**的占位，与它同源；`docs/ui.md` §9.3 的 loading 行。**补/改一个"未知"档时要过一遍该组件的每一处出口**（`update` / `showError` / `removeItem` …）—— 2026-09-18 实测：只给 `update()` 加了骨架档，`showError()` 那条出口就把「正在加载…」和「加载失败」同时留在了屏幕上；同一个哨兵值（`total === 0`）还会在**别的组件**里各写一份（分页、统计条各有自己的判据，见 `docs/AUDIT-missing-states.md`） |
 | 改协议行为（路由、状态码、字段、响应头、哈希） | `docs/protocol.md` §10 差异登记表 —— **它是协议差异的唯一登记处**，每条带上游 `文件:行`；同一差异不要重复登记 |
 | 做了设计取舍（新方案 / 换方案 / 决定不做） | `docs/design.md` §2 加一条 ADR（编号递增），实现处注明 D 号 |
 | 修缺陷、踩到坑、量出数字 | `docs/progress.md` 追加一节（编号递增 + 日期）；**被修的行为若还有测试断言在钉它，同一次改掉断言**——别让旧断言继续固化已被判定为缺陷的行为 |
@@ -46,6 +46,22 @@
 **上表才是责任范围，门禁只兜住它的一部分。**
 
 改完代码回头看一眼上表：**有没有哪一行被我漏了？** 有就先补，再提交。
+
+**两条配套的流程惯例**（2026-09-19 按审计 F-6 落成 —— 都是**已有事实**的固化，不是新规矩）：
+
+1. **没跑完的门禁，必须在提交信息里写明"未验证"。** `d32631b` 在跑不完套件时逐字写了
+   「vitest 未跑完 ⇒ 22 套件全过这一条本次未验证，不得当作已通过引用」。**保留为惯例**：
+   「没测」与「测了、通过」在文字上必须分得开 —— 否则下一位会把它当"已通过"引用。
+2. **代码与文档拆成两笔提交是允许的，但要点明另一半在哪儿。** `d0c58bd`（只改代码）+
+   `796a3b8`（只改文档）属同一次推送内的两笔；按上面那条铁律的字面不算"同一次改动"，
+   **允许**，前提是提交信息说清「另一半在另一笔」，且**两笔都落地之后**这道 DoD 才算完成。
+
+与之对照的是这条铁律**真正的失败形态**：`e3858cd` 那次改名（121 文件）当次漏了
+`public/_headers`（功能面：两版前端同时退回平台默认 `max-age=0`）与 `test/manual/*.mjs`
+里那 17 处死路径，随后靠 `7f4de45` → `d32631b` → `1149af0` 三笔才补齐，散文里的旧地名
+又靠 `c4a9b93` + `60c510f` 两轮收敛，**仍有漏网**。
+⇒ 「按目录批量替换」与「改文档里写死的数字/文件名」属同一类：**必须全文搜一遍**（上表最后一行）。
+自查办法见 `docs/ui-rename-v1-v2.md` §3。
 
 ## 2. 完成定义（DoD）
 

@@ -404,7 +404,7 @@
 | §2.1 V1 统计条首屏失败后永久空白 | **已修** | `ui_old/js/main.js` 的 `pollOnce` 里补 `refreshOverview()` |
 | §2.2 V2 抽屉把"没取到"当成"从来没有过" | **已修** | `ui/js/ui/drawer.js`（`loaded` 标记 + `info` 空判） |
 | §2.3 V2 顶栏把「未连接」折成「定时检查中」 | **已修** | `ui/js/ui/appbar.js`（删掉无生产者的 `offline`，另补 `connecting` 的 CSS 档） |
-| §3.1 V2 删行/恢复后焦点掉 `<body>`（`neighborButton` 收到不存在的 `data-icon`） | **已修**（调用点改传真实图标名）；**残留一档**：删掉最后一行时邻行不存在，见 `AUDIT-v1-v2-divergence.md` §12.2 | `ui/js/ui/board.js`、`ui/js/boot.js` |
+| §3.1 V2 删行/恢复后焦点掉 `<body>`（`neighborButton` 收到不存在的 `data-icon`） | **已修**（调用点改传真实图标名）；**残留一档**：删掉最后一行时邻行不存在，见 `docs/archive/AUDIT-v1-v2-divergence.md` §12.2 | `ui/js/ui/board.js`、`ui/js/boot.js` |
 | §3.2 V2 四条"有 CSS、无生产者"的死规则 | **已修** | `board-v2.css`（`data-lines`、`[data-icon="pin"][aria-pressed]`）、`overlay-v2.css`（`data-tone="star"/"pin"`）；`.bar__fill[data-kind]` 改为**补上生产者**（`ui/js/ui/drawer.js` 按当天主类型写 `data-kind`） |
 | §3.3 JS 写了 `data-busy` 而 CSS 无消费者 | **已修** | `shell-v2.css` 补 `.omnibox[data-busy] .omnibox__icon` |
 | §3.4 ≤720px 没有"刷新"入口 | **已修** | `ui/js/ui/appbar.js` 的窄屏刷新按钮 + `ui/js/boot.js` 接线 |
@@ -412,11 +412,11 @@
 | §4.1 V1「下一次轮询会把后两样补齐」 | **已修**（把注释承诺的那段代码补上，见 §2.1） | `ui_old/js/main.js` |
 | §4.2 V2「`connecting` 与 `offline` 分开」 | **已修**（`offline` 已不存在，注释与 CSS 同步） | `ui/js/ui/appbar.js`、`shell-v2.css` |
 | §4.3 V2「首屏骨架必须在这里画」 | **已修**（注释与 `render()` 的真实时序对齐） | `ui/js/boot.js` |
-| §4.4 V2「主数字用的是 `--fs-display`（24–30px）」 | **只改注释，不动视觉** —— 注释改成"按设计**该**用 `--fs-display`"，并把"实际是 `--fs-title`（17px）"这条分歧写在注释里；改字号是设计决策，见 `AUDIT-v1-v2-divergence.md` §12.1 | `ui/js/ui/overview.js` |
+| §4.4 V2「主数字用的是 `--fs-display`（24–30px）」 | **只改注释，不动视觉** —— 注释改成"按设计**该**用 `--fs-display`"，并把"实际是 `--fs-title`（17px）"这条分歧写在注释里；改字号是设计决策，见 `docs/archive/AUDIT-v1-v2-divergence.md` §12.1 | `ui/js/ui/overview.js` |
 | §4.5 V2「都找不到时交给第一行的选择框」 | **已修**（注释不再承诺不存在的兜底；未覆盖的那一档写进注释，见 §3.1） | `ui/js/ui/board.js` |
 | §5.1 README / `docs/ui.md` 的 js·css 缓存策略 | **已修**（改成 `no-cache, must-revalidate` 的实况；"≤5 分钟混用窗口"已不存在） | `README.md`、`docs/ui.md` ×2 |
 | §5.2 `docs/ui.md` 内部自相矛盾（212px / 字号阶梯） | **已修**（→ **230px**；字号统一为 **13/14/16/18**） | `docs/ui.md` ×5 |
-| §5.3 `--fs-display` 是"未使用令牌" | **已修文档**（`ui-v2-audit.md` 补例外、`ui-v2-design.md` 令牌表标注"无消费者"、`overview.js` 注释写明分歧） | 见 `AUDIT-v1-v2-divergence.md` §12.1 |
+| §5.3 `--fs-display` 是"未使用令牌" | **已修文档**（`ui-v2-audit.md` 补例外、`ui-v2-design.md` 令牌表标注"无消费者"、`overview.js` 注释写明分歧） | 见 `docs/archive/AUDIT-v1-v2-divergence.md` §12.1 |
 | §5.4 `docs/ui-v2-design.md` §5 词汇表里的类名/属性不存在 | **已修**（`.spark`→`.overview__spark`；`.preview-cell`→`.entry`/`.item`；`.menu` 的 `data-open`→原生 `hidden`；`.batchbar` 的 `data-count`→`.batchbar__count`；抽屉 `data-open`→原生 `[open]`；`.sync` 的 `offline`→`connecting`） | `docs/ui-v2-design.md` |
 | §5.5 数字/路径过时 | **已修**（V1 文件计数 6/23 → **7/24**；`--control-h` 30px → **34px**；`/ui/js/theme-init.js` → **`/ui_old/js/theme-init.js`**） | `docs/ui-v2-design.md`、`docs/frontend-checklist.md`、`docs/ui.md` |
 

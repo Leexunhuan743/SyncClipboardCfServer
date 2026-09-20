@@ -196,11 +196,17 @@ V2 的三处升级：
 
 | 令牌 | 值 | 用途 |
 |---|---|---|
-| `--fs-display` | `clamp(1.5rem, 1.32rem + 0.5vw, 1.875rem)` | **⚠️ 当前无消费者**（`.overview__value` 实际挂的是 `--fs-title`，17px）—— 设计意图是概览带主数字（24 → 30px。**上限从 2.25rem 收到 1.875rem** 是 2026-09-15 第二轮实测调整：36px 会把整页视觉重心抢到概览带上，见 `tokens-v2.css` 的说明与 §13.3） |
-| `--fs-h1` | `1.0625rem` | 页面标题 |
+| `--fs-title` | `1.0625rem` | 页面标题（**17px**；概览带那个"主数字"`.overview__value` 挂的也是它） |
 | `--fs-body` | `0.875rem` | 正文、行预览 |
 | `--fs-meta` | `0.75rem` | 行第二行元数据 |
 | `--fs-micro` | `0.6875rem` | 标签、徽标 |
+
+> 这里曾有一档 `--fs-display`（`clamp(1.5rem, 1.32rem + 0.5vw, 1.875rem)` = 24 → 30px，概览带主数字用）：
+> 2026-09-17 起它没有任何消费者，2026-09-20 删除（`tokens-v2.css` 与 `shell-v2.css` 的 `≤380px` 分支
+> 一并删）。**上限从 2.25rem 收到 1.875rem** 是 2026-09-15 第二轮的实测调整（见 §13.3）——
+> 概览带的设计约束是"压成一条"（`--overview-h: 60px`）：2026-09-20 实跑过，把 `.overview__value` 改回
+> 30px 会让这条带从 **62px 撑到 76px**（+14px）⇒ 放不进，所以不要照抄回来。
+> 同一条政策（成组的保留、孤立的删）与判据见 `docs/progress.md` §94.17，守卫见 `test/ui-guard.test.ts`。
 
 ### 4.3 间距（8pt 网格，V1 是 4pt——更大的步长减少「什么都挨着」的拥挤感）
 
@@ -243,7 +249,7 @@ V2 的三处升级：
 |---|---|---|---|
 | 顶栏 | `.appbar` | — | 品牌、搜索入口、同步状态、主题、部署信息、登出 |
 | 同步状态点 | `.sync` | `data-state="live\|poll\|connecting"` | 点 + 文案，来自推送通道状态与 `/ui/api/poll`（`offline` 没有生产者，2026-09-18 已删） |
-| 概览带 | `.overview` | `data-open` | 主数字、同步、趋势、体积、类型分布 |
+| 概览带 | `.overview` | —（子节点有 `data-value` / `data-key`） | 主数字、同步、趋势、体积（`overview.js:119/145` 只写子节点 dataset；`.overview` 本身是无状态的 `<button>`） |
 | 趋势图 | `.overview__spark` | — | 内联 SVG，纯装饰（`aria-hidden`），数据来自 `/ui/api/activity` |
 | 主搜索 | `.omnibox` | `data-busy` | 44px 高，`⌘K`/`/` 聚焦，自带清空 |
 | 筛选条 | `.filters` | — | 类型 chips、收藏、回收站、时间、抽屉入口 |
@@ -254,7 +260,7 @@ V2 的三处升级：
 | 类型条 | `.item__kind` | `data-type="Text\|Image\|File\|Group"` | 4px 左色条 |
 | 预览 | `.entry`（行内）/ `.item`（外层） | — | 文本截断 / 缩略图 / 文件图标 |
 | 行操作 | `.rowops` | — | 主操作 + ☆ + 📌 + `⋯` |
-| 溢出菜单 | `.menu` | 原生 `hidden` | 预览、重命名？、删除（`data-open` 只有 `removeAttribute`、无 setter 也无消费者） |
+| 溢出菜单 | `.menu` | 原生 `hidden` | 预览、重命名？、删除（原有一句 `data-open` 的 `removeAttribute`，既无 setter 也无消费者，2026-09-19 已删 —— 见审计 N-13） |
 | 批量条 | `.batchbar` | — | 底部悬浮，选中 ≥1 条出现；条数在 `.batchbar__count` 文本里（无 `data-count`） |
 | 抽屉 | `.drawer` | 原生 `[open]` | 时间范围/页大小/排序/紧凑模式/清理状态 |
 | 按钮 | `.btn` | `data-loading`, `data-state="ok"` | 沿用 V1 的就地状态机 |
@@ -394,17 +400,22 @@ flowchart TD
 2026-09-18 核对两版调用点时带出来的结论（用户要求记在这里）：
 
 - **V1**：首屏打一次 `GET /ui/api/overview`（合成快照）；此后每次**切视图 / 写操作**只补打**轻的**
-  `GET /ui/api/statistics`（`public/ui_v1/js/main.js:411` 是唯一的调用点；首屏**不再**单独调它，
-  见同一文件 `:1240` 那句注释）。
+  `GET /ui/api/statistics`（`public/ui_v1/js/main.js:412` 是唯一的调用点；首屏**不再**单独调它，
+  见同一文件 `:1241` 那句注释）。
 - **V2**：写操作后走 `refresh({ silent: true })` **加** `refreshOverview()`
-  （`public/ui_v2/js/boot.js:669-670`、`:745-746`、`:776-777`、`:795-796`、`:1044-1045`、`:1080-1081`、`:1108-1109`；
-  切视图同理 `:492`）——也就是**每次都整只重打 overview**。
+  （`public/ui_v2/js/boot.js:670-671`、`:746-747`、`:777-778`、`:796-797`、`:1045-1046`、`:1081-1082`、`:1109-1110`；
+  切视图同理 `:493`）——也就是**每次都整只重打 overview**。
+
+> **这 9 个行号已于 2026-09-19 晚整体重指（各 +1）**：当天 `public/ui_v1/js/main.js`
+> 与 `public/ui_v2/js/boot.js` 里各新增了注释行，其上编号一律后移一行 —— 上面 V1 的
+> `:411` / `:1240` → `:412` / `:1241`，V2 的 `:669-670`…`:1108-1109` 与 `:492`、`:653`
+> → 各 +1。**对应行内容一字未变**，只是位置。再动这两个文件时照旧按行内容锚定。
 
 代价不只是"多一次请求"，两条端点的实际成本差在服务端（`src/ui/routes.ts`）：
 
 | 端点 | 一次调用做了什么 |
 |---|---|
-| `GET /ui/api/statistics`（`src/ui/routes.ts:572-588`） | `storage.totalHistorySize()`（**R2 逐页列举**，`src/storage.ts:200`）+ `db.statistics()`（1 条聚合，`src/db.ts:363`）+ `countByTypeViews()`（两个口径） |
+| `GET /ui/api/statistics`（`src/ui/routes.ts:572-588`） | `storage.totalHistorySize()`（**R2 逐页列举**，`src/storage.ts:200`）+ `db.statistics()`（1 条聚合，`src/db.ts:368`）+ `countByTypeViews()`（两个口径） |
 | `GET /ui/api/overview`（`src/ui/routes.ts:623-641`） | 上面那整套 **＋** `readChangeMarker()` **＋** `deploymentInfo()` —— 而 **2026-09-19（O-01）之前**`deploymentInfo` **自己又算了一遍** `totalHistorySize()` + `db.statistics()` + `countByTypeViews()` + 两次 Meta 读；现已拆成 `deploymentStats()`（统计层，`:76-88`）+ `deploymentMeta()`（元信息层，`:97-144`），统计层只算一次 |
 
 所以现状是：**点一次「收藏」**，V2 付的是 overview 的全套，而 V1 只付 `statistics` 那一套。
@@ -415,7 +426,7 @@ flowchart TD
 
 1. **V2 侧**：写操作后只补打 `statistics`（列表照旧 `refresh()`）。安全性有三条依据：写操作是
    **本机发起的**；`marker` / "最近同步" 不需要由它刷新 —— 在线 60s 看门狗与离线 10s 轮询
-   （`boot.js:653` 那条 `api.poll`）会带回来；部署信息（保留策略、版本、地址）不因一次收藏而变。
+   （`boot.js:654` 那条 `api.poll`）会带回来；部署信息（保留策略、版本、地址）不因一次收藏而变。
 2. **两版共享的后端**：`overview` 内部把 `statistics` / `totalHistorySize` / `countByTypeViews`
    算了**两遍**（一遍给它自己的 `stats`/`byType`，一遍在 `deploymentInfo` 里）。让 `deploymentInfo`
    接一份**已算好的快照**（或让 overview 复用它返回的 `stats`/`views`/`bytes`）就能各减一半 ——
@@ -653,7 +664,13 @@ FAILED REQUESTS  none
 | 2 | **紧凑模式从抽屉移到「创建时间」旁边** | 已做，见 §14.2 |
 | 3 | `/ui/api/clients` **暂时不用** | 不做 |
 
+> ⚠️ 本表第 1 条的"24–30px 保留"**已被取代**：`.overview__value` 自 2026-09-17 起挂的是
+> `--fs-title`（**17px**），那个 `--fs-display` 令牌 2026-09-20 删除（实测：改回 30px 会把概览带
+> 从 62px 撑到 76px，放不进 `--overview-h: 60px` 那条带）。**这条决定在当时是真的**，这里不改写它，只标注它已被取代；
+> 取证与判据见 `docs/progress.md` §94.17。
+
 ### 14.2 紧凑模式搬家（已实现并验证）
+
 
 **从**：抽屉 →「视图偏好」→「紧凑模式」开关
 **到**：列表头右侧，与「创建时间」「50 条/页」并排（一个 ☰ 图标按钮，`aria-pressed` 表达状态）

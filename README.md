@@ -370,7 +370,7 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 
 | 前缀 | 位置 | 内容 |
 |---|---|---|
-| `[cleanup]` | `src/cleanup.ts`、`src/index.ts` | 每阶段一行（`phase= status= processed= batches= truncated= cursor= subrequests= ms=`）+ 每轮一行汇总；失败另写 `[cleanup] error stage=…`，并落进 Meta 的 `cleanup:lastError` |
+| `[cleanup]` | `src/cleanup.ts`、`src/index.ts` | 每阶段一行（`phase= status= processed= batches= truncated= cursor= subrequests= ms=`；阶段被**显式关闭**时另带 `reason=`，它写的是生效值**实际来自**的那个键 —— Meta 覆盖 ⇒ `settings:retentionMinutes=0`、部署变量 ⇒ `HISTORY_RETENTION_MINUTES=0`）+ 每轮一行汇总；失败另写 `[cleanup] error stage=…`，并落进 Meta 的 `cleanup:lastError` |
 | `[DO] broadcast` | `src/durable/SyncClipboardHub.ts` | 每次写操作的广播（含在线连接数）；长轮询队列溢出另有一行 |
 | `[HISTORY …]` | `src/routes/history.ts` | 历史上传被拒的原因（如 `hash is required`、`Hash contains invalid path characters`） |
 | `[security]` | `src/auth.ts`、`src/rateLimit.ts` | 弱凭据告警（每个 isolate 一次）、认证失败突发告警 |
@@ -495,7 +495,7 @@ schema.sql              D1 建表语句
 | [docs/AUDIT-redundancies.md](docs/AUDIT-redundancies.md) | 代码审计报告（冗余 / 重复实现 / 死代码 / 兼容红线）：结论分级、可删项清单，以及唯一的已实施记录 §14（含对自身判定的三处勘误） |
 | [docs/AUDIT-commit-9b4cdca.md](docs/AUDIT-commit-9b4cdca.md) | 单次提交审核报告（`9b4cdca`）：逐行读 diff + 交叉核对服务端实现 + 跑本地质量门后的结论与整改项 |
 | [docs/AUDIT-missing-states.md](docs/AUDIT-missing-states.md) | 前端审计报告（**缺失状态 / 不可达展示**）：与"找冗余"相反方向的判据，覆盖两版共约 18,000 行；含文档担保类失准与复核中剔除的结论 |
-| [docs/AUDIT-v1-v2-divergence.md](docs/AUDIT-v1-v2-divergence.md) | 前端审计报告（第二轮：**两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约**）：含"V1 修过、V2 仍有"的定向核对表，以及安全面"无可举证注入缺陷"的逐项结论 |
+| [docs/archive/AUDIT-v1-v2-divergence.md](docs/archive/AUDIT-v1-v2-divergence.md) | 前端审计报告（第二轮：**两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约**）：含"V1 修过、V2 仍有"的定向核对表，以及安全面"无可举证注入缺陷"的逐项结论。**已归档**（2026-09-20）：封版不再更新；**§ 编号是冻结的引用锚点**（全仓 44 处），文中 `文件:行` 与数字停在归档时点 |
 | [docs/AUDIT-v1-v2-drift-2026-09-19.md](docs/AUDIT-v1-v2-drift-2026-09-19.md) | 前端走读报告（第三轮：**跨版漂移与遗留缺陷**，F1–F8）：含子代理逐条复核结论与实施记录 |
 | [docs/ui-rename-v1-v2.md](docs/ui-rename-v1-v2.md) | 界面改名与提示条移除的**操作记录**（2026-09-19）：三个挂载点的取舍、为什么不是一把 `sed`、踩到的八个坑、验证结果与未做项 |
 

@@ -162,7 +162,7 @@ SyncClipboardCfServer/
 │   │   ├── query.ts            # 列表查询层：参数解析、白名单排序、截断、变更信号
 │   │   ├── routes.ts           # /ui/api/* 路由装配
 │   │   ├── maintenance.ts      # 后台维护与自检：完整性自检 GET /ui/api/integrity 与在线保留策略 PUT /ui/api/settings
-│   │   └── notFound.ts         # /ui/* 与 /ui_v1/* 的 404 页
+│   │   └── notFound.ts         # 三个界面前缀（/ui/*、/ui_v1/*、/ui_v2/*）共用的 404 页
 │   └── durable/
 │       ├── SyncClipboardHub.ts # Durable Object：WS/SSE/长轮询三传输 + 广播 + 心跳
 │       └── signalr.ts          # SignalR JSON 协议消息编解码

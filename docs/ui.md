@@ -211,7 +211,7 @@ Worker
    第二次必须反向）；`patchItem` 采纳服务端回传的元数据（`version`/`lastModified`/`lastAccessed`，
    见 §5 第 7 条），并就地替换徽标容器——`signature()` 必须包含**会变**的展示字段（`lastModified` /
    `lastAccessed`），否则轮询刷新后行不重建、时间停在首次渲染值（按「访问」排序时看起来像排序坏了）。
-10. **深链接 `#Type-<hash>`**：`hash` 空闲（筛选状态在 query string），打开即预览那一条；
+10. **深链接 `#Text-<hash>`**：`hash` 空闲（筛选状态在 query string），打开即预览那一条；
     打开预览时把当前记录写进 hash（可分享），关闭时清掉，避免刷新又弹出上一条。
     ⚠️ 清 hash 依赖 `dialog` 的 `close` 事件：headless 的隐藏标签页里该事件不派发（页面被冻结），
     故这条行为**只在真实浏览器可靠**，本机浏览器回归未覆盖到它。
@@ -451,7 +451,11 @@ Worker
   这类 special scheme 把 `\` 视同 `/`，于是 `?next=/\evil.example` 与 `//evil.example` 一样是协议相对 URL
   而跳到站外——登录成功后与「已登录时打开登录页」两处 `location.replace` 都会中招。
   按 origin 判定后 `//evil.example`、`/\evil.example`、`javascript:alert(1)` 全部落回站内默认页 `/ui_v2/app/`，
-  站内目标（如 `?next=/ui_v2/app/?x=1`）照常可用。回归用例见 `test/next-target.test.ts`。
+  站内目标（如 `?next=/ui_v2/app/?x=1`）照常可用。**指向登录页自身**的目标也回落 —— 否则登录成功后会再次
+  落到登录页（多一跳）。判据比的是**平台的规范路径**而不是文件名：实测 `/ui_v2/app/login.html` → 307 →
+  `/ui_v2/app/login`（尾斜杠同样被 307 归一），所以带扩展名与不带扩展名两种写法都要算
+  （2026-09-19 修，原判据只认文件名 ⇒ 规范形态反而漏掉）。回归用例见 `test/next-target.test.ts`（纯函数）
+  与 `test/manual/states.mjs` 的导航计数（真实浏览器：`?next=` 自指时登录页只许加载一次）。
 - **失败路径排空请求体**：受守卫的 `PATCH` / `batch-update` / `clear` 都带 body，一旦在未读完入站体时就发出响应，
   Workers 会抛 `Can't read from request stream after response has been sent.` 并让**本 isolate 的后续请求**
   以 503 结束。已在守卫的 401/500、login 的 500、logout、三条 400 早退路径逐一排空；
@@ -558,7 +562,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 
 | 状态 | 实现 |
 |---|---|
-| loading | 骨架屏占位（保留布局，不跳）。**2026-09-18 之前这一行只是一句声明**：`list.js` 根本没有加载档，而 `boot()` 的顺序是 `render()`（items 还空）→ `refresh()`，于是首屏那次请求落地之前的整段时间里，界面画的一直是空状态 —— 库里有记录时它是一句假话（详见 `progress.md` §85）。现在由 `store.loading` 驱动：行数按当前页大小、行高与真实行同高（47px），折线以上不发生位移 |
+| loading | 骨架屏占位（保留布局，不跳）。**2026-09-18 之前这一行只是一句声明**：`list.js` 根本没有加载档，而 `boot()` 的顺序是 `render()`（items 还空）→ `refresh()`，于是首屏那次请求落地之前的整段时间里，界面画的一直是空状态 —— 库里有记录时它是一句假话（详见 `progress.md` §85）。现在由 `store.loading` 驱动：行数按当前页大小、行高与真实行同高（表格档 47px；卡片档 103px、粗指针 117px —— 2026-09-20 对齐，见 `progress.md` §94 第 16 行），折线以上不发生位移 |
 | pending | 按钮原地换标签 + `data-loading` 保持宽度（不抖），登录按钮同样 |
 | success | 留在页面上：按钮标签变「已复制 N 个字符」，行原地更新 |
 | error | 就地呈现并说明原因（`复制图片失败：<原因>`），登录错误带 `role="alert"` 且焦点回到出错的字段 |
@@ -654,7 +658,10 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | 区块重叠 / 非预期裁切 | 0（几何断言） |
 | 浏览器交互（headless Chromium，真实浏览器引擎） | 登录流、筛选/搜索/排序/分页、星标往返、单选/全选、批量删除确认（取消路径）、文本与图片预览、Esc 关闭、空状态、部署信息、主题切换与持久化、`data_missing` 的**三处可达**表现（缩略图占位/预览空态/下载提示） |
 | 路由语义 | 匿名 `/ui_v2/不存在` → 404 页；匿名 `/ui/api/*` → 401 JSON；带凭据 `/ui/api/未知` → 404 JSON；协议路径 404 语义不变 |
-| 登录跳转 `?next=`（headless Chromium 导航日志 + 纯函数用例） | 打开 `/ui_v2/app/login.html?next=/%5Cevil.example`（反斜杠变体，浏览器解析为 `http://evil.example/`）时，**零交互**的已登录跳转落在 `/ui_v2/app/`（同源），没有站外跳转；`//evil.example`、`javascript:alert(1)`、`https://evil.example`、空值同样落回默认页，`/ui_v2/app/?x=1` 与 `/` 正常返回；页面零 console 错误。用例：`test/next-target.test.ts` |
+| 登录跳转 `?next=`（headless Chromium 导航日志 + 纯函数用例） | 打开 `/ui_v2/app/login.html?next=/%5Cevil.example`（反斜杠变体，浏览器解析为 `http://evil.example/`）时，**零交互**的已登录跳转落在 `/ui_v2/app/`（同源），没有站外跳转；`//evil.example`、`javascript:alert(1)`、`https://evil.example`、空值同样落回默认页，`/ui_v2/app/?x=1` 与 `/` 正常返回；页面零 console 错误。**指向登录页自身**时（带扩展名与规范形态两种写法）
+另有一条判据：只许加载登录页**一次** —— `states.mjs` 数 `Page.frameNavigated` 而不比最终落点，
+因为两条路最终都会到 `/ui_v2/app/`，只比值区分不出来（2026-09-19 加，原判据只认文件名）。
+用例：`test/next-target.test.ts` |
 | 窄屏行布局（触屏模拟） | 内容列 84px → **239px@375 / 278px@414**、行高 170px → **106px**、操作按钮 **44×44**（独占整行、换行确定）、元信息「类型 · 时间」可见、表头排序保留、溢出 0 |
 | 桌面（1440） | 行 55px、七列齐全、`.cell-content__meta` 隐藏——窄屏改动对桌面零影响 |
 | 触屏命中区（`pointer: coarse`） | `.btn`/`.select` 44px、`.icon-btn` 44×44（含 `flex: none`）、星标 44×44、分段控件 40px、**`.th-sort` 42×44 / `.search__clear` 44×44**（本轮补） |

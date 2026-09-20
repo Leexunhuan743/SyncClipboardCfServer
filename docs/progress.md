@@ -5567,7 +5567,7 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 
 ## 87. 前端审计第二轮：两版分歧 / 竞态 / 生命周期 / 边界 / 无障碍 / 契约（2026-09-18 晚，用户"继续全面深挖"）
 
-**产物**：`docs/AUDIT-v1-v2-divergence.md`（新文件，已登记进 `README.md` §文档）。
+**产物**：`docs/archive/AUDIT-v1-v2-divergence.md`（新文件，已登记进 `README.md` §文档）。
 **口径**：与第一轮（`AUDIT-missing-states.md`：缺失状态 / 不可达展示 / 文档担保）**零重叠**，
 换七个镜头并行通读：竞态与重入、生命周期与资源、边界与数值、无障碍实质、服务端契约的两条缝、
 **V1↔V2 定向分歧核对**、安全与注入面。同样"每条由主代理人独立逐行复核"。
@@ -5629,7 +5629,7 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 ## 88. 前端两轮审计的修复落地（2026-09-18 晚，用户"合理完善修复"）
 
 §86 / §87 两轮审计共留下 20 余条"确认"级条目（`docs/AUDIT-missing-states.md` §1~§5、
-`docs/AUDIT-v1-v2-divergence.md` §1~§7）。本轮把它们落进代码，并在两份审计文档各加一节
+`docs/archive/AUDIT-v1-v2-divergence.md` §1~§7）。本轮把它们落进代码，并在两份审计文档各加一节
 **实施记录**（前者 §10、后者 §12）—— **那里是"已修 / 明确不改"的权威口径**，本节只记
 过程中的判断与意外。
 
@@ -6103,7 +6103,11 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
 4. `public/ui_v2/js/boot.js:1147` 的 `isModalOpen: () => Boolean(document.querySelector('dialog[open]'))`
    **漏了行菜单**：菜单是 `ui/menu.js` 的 `div.menu` + `.menu-backdrop`（不是 `<dialog>`），于是
    菜单开着时 `keys.js:27` 的模态早退不生效 —— `/` 与 `Ctrl/Cmd+K` 会把焦点移到遮罩**底下**的搜索框、
-   `r` 会刷新列表而菜单不关。**未改**：属行为改动，按 DoD 必须有真实浏览器验证，本轮跑不了。
+   `r` 会刷新列表而菜单不关。**已修（2026-09-19 晚，见 §94 第 2 条）** —— 原文是“未改：属行为改动，
+   按 DoD 必须有真实浏览器验证，本轮跑不了”。修法：把菜单开态纳入 `isModalOpen`。V2 的菜单不是
+   `<dialog>`，开态**只由原生 `hidden` 表达**（`ui/menu.js`），行菜单 `openRowMenu` 与排序菜单
+   `openSortMenu` 共用同一个 `createMenu()` 实例 ⇒ 一个选择器 `.menu:not([hidden])` 就够；顺带删掉
+   `ui/menu.js` 里 `data-open` 的死代码（既无 setter、也无 CSS 消费者）。
 5. `docs/AUDIT-redundancies.md` 里 C-05 / C-06 引用的 `src/db.ts:149-153`、`src/ui/query.ts:196-202`
    等行号已漂。**未改**：那几份是审计报告的**当轮快照**，与 `progress.md` 的历史数字同理。
 6. `docs/progress.md:3177` 的"V1 时的基线是 **323** 例"与同一轮 §48.3 / §49.3 / §50.3 记的
@@ -6133,7 +6137,7 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
   `:976` 的 `提示条指向 /api/app/` → `/ui/app/`（并注明该提示条 2026-09-19 已移除）。
 - `docs/AUDIT-missing-states.md:99` 与 `:138`：正文写"**未修**"，而同文件 §10 的对照表写"**已修**" ——
   两处补上"本轮未修；随后已修，见 §10"。
-- `docs/AUDIT-v1-v2-divergence.md:238`（§10 结论说三条"原文未动、仍在"，§12 却记"已修"）与
+- `docs/archive/AUDIT-v1-v2-divergence.md:238`（§10 结论说三条"原文未动、仍在"，§12 却记"已修"）与
   `:272`（行首的 `§1` 其实指第一轮 `AUDIT-missing-states.md` 的 §1.3/§1.4/§1.5 与 §3.1）。
 - `docs/AUDIT-v1-v2-drift-2026-09-19.md:5`：焦点那条在 `AUDIT-missing-states.md` §3.1，不在 divergence §3.1。
 - `docs/upstream-parity.md:286-287`（句子被自己的列表项拦腰截断）与 `:303`（U3 已在 §4.2 记"已修复"、
@@ -6157,6 +6161,9 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
    `:1111-1113`（`≤720px` 块里 `:root{--control-h-sm:40px}` 压掉了 `tokens-v2.css:270-281` 的
    `--hit-min` 44px —— 手机上触屏命中区反而**变小**，且该块标题还写着"都要让开安全区"）。
    **未改**：文件属另一路，第二条更是样式行为改动，需要真机量。
+   ⚠️ **随后**：第二条已被 `ed179c3` 改成 `var(--hit-min)`（不再压小），又于本轮按审计 **F-5**
+   把这**整条声明删掉** —— 命中区统一归 `tokens-v2.css` 的 `(pointer: coarse)` 块负责（它覆盖
+   任意宽度）；真正的根因是「探针没有触摸模拟 ⇒ 把窄窗口桌面的取值当成了手机」。见 §94.10。
 5. `public/ui_v2/css/shell-v2.css:342`（注释按 `--ink-faint = warm-500` 论证，而它 2026-09-16 已改为
    `warm-550`）与 `:658-662`（"720–1079 中屏档"并不存在，"隐藏类型分布"的机制也已移除）。
    **未改**：文件属另一路。
@@ -6172,6 +6179,15 @@ git push origin --delete backup/pre-squash-2026-09-15 backup/pre-squash-2026-09-
    写库，却既没有 `afterAll` 收尾、也没有"有意留残留"的说明（同批的 `cleanup` / `query-filters` / `ui`
    都显式收尾，`test/support/target-guard.ts` 记的正是残留累积的后果）。**未改**：属补测试，而本轮
    不跑套件、加完无法验证。
+   ⚠️ **这份登记不全 —— 2026-09-19 按审计 §12.15① 扩为 9 个**（判据：套件里真有
+   `method:'PUT'/'POST'/'PATCH'/'DELETE'` 的写请求）：`dto-validation`(8 处) / `fix-regressions`(54) /
+   `hardening`(1) / `limits`(2) / `protocol`(19) / `rate-limit`(14) / `signalr`(3) / `transports`(8) /
+   `ui-guard`(2)。有 `afterAll` 的写库套件只有 3 个：`cleanup` / `query-filters` / `ui`。
+   ⚠️ **但"缺 `afterAll` = 违反纪律"这个定性是错的**：`test/support/target-guard.ts:6-8` 逐字写着
+   「加一行守卫比给每个套件补 `afterAll` 更便宜，且能防复发」—— 本仓库**有意**用硬守卫替代逐套件清理。
+   ⇒ 本条的真缺陷只是**清单少登记了 6 个**，不是"有人漏了清理"；**不补 `afterAll`**（见 §94.10）。
+   （边界：「有写请求」≠「留残留」—— `hardening:108` 与 `limits:181/371` 很可能只是负向断言
+   （期望被拒），未必真写进去。逐条定性要读每个套件的断言，本轮只做到"候选全集"这一层。）
 
 
 
@@ -6246,3 +6262,1129 @@ placeholder 写"当前 10080 / 当前 1000"，注释里写明"'跟随部署变�
 本部署 `wrangler.toml` 的 `[vars]` 恒设这两个变量 ⇒ **该状态在线上不可达**；要闭合需把 V1 那两个常量
 （连同注释）搬进 V2 抽屉，而本环境造不出该状态来验证（要临时删 `[vars]` 再跑探针），故留到下一轮。
 
+**2026-09-19 晚追加第二个症状（同根、同一决策）**：那两栏上方的「来源」一行也塌掉了第三态 ——
+V2 `js/ui/drawer.js:602-603` 的 `sourceLabel` 只有两值（`meta` ⇒ 「此处设置」、其余 ⇒ 「部署环境变量」），
+而它在 `:437-439` 被**无条件**用于「保留期来源：」/「条数上限来源：」两行 ⇒ 该状态下 V2 写
+「保留期来源：部署环境变量」，而 V1 的 `retentionEffectiveText`（`js/components/info.js:158-160`，先按
+`raw === null` 判）写「内置默认」。⇒ 要闭合就是**同一处**改动：把 `sourceLabel` 补成三值。
+本轮**仍不动**（界面措辞与服务端日志是两件事）：第 15 行改的是服务端的 `reason=`，两版界面**无同步项**，
+见 §94.13 与 `docs/archive/AUDIT-v1-v2-divergence.md` §13.5。
+
+## 94. 按第三方审计报告逐项完善（2026-09-19 晚）
+
+**来源**：`.audits/audit-today-17-commits-2026-09-19.md`（本机工作区，不进版本库）。那份报告对今天
+17 笔提交做了独立复核（不采信提交自述，每条都取 git/代码真值），本节逐项落地它确认的条目。
+**每完成一项即把对应行标 ✅，并同步改代码里的注释与相关文档** —— 与 `AGENTS.md` §1 的“同一次改动”一致。
+条目编号沿用审计报告（`N-*` = 真缺陷/漏改，`F-*` = 事实错误，`§X.Y` = progress 内部漂移）。
+
+| # | 条目（审计报告编号） | 性质 | 处置 | 落地位置 |
+|---|---|---|---|---|
+| 1 | **N-1** V2 `push.js` 漏移植 V1 今天刚加的 `pending` 判据 | 功能性 | ✅ 已修 | `public/ui_v2/js/push.js` —— 去掉注释后两版 `teardown` 代码体**逐字相同**；记录见 `docs/archive/AUDIT-v1-v2-divergence.md` §13.1 |
+| 2 | **N-13** V2 `isModalOpen` 只查 `dialog[open]`，漏掉菜单 | 功能性 | ✅ 已修 | `public/ui_v2/js/boot.js`；顺带删 `public/ui_v2/js/ui/menu.js` 里从未被设置的 `data-open` 死代码、订正 `docs/ui-v2-design.md` §5 词汇表的假引用、清理 `test/manual/states.mjs` 的死选择器；记录见 `docs/archive/AUDIT-v1-v2-divergence.md` §13.2 |
+| 3 | **§10.1** V2 骨架行高写死 64px ≠ 实测行高 77px | 视觉 | ✅ 已修 | `public/ui_v2/css/board-v2.css` 的 `.ghost` → `calc(var(--row-h) + var(--sp-3) + 1px)`（推导写在原地注释里）；**实测 1440×900：宽松 77↔77、紧凑 65↔65，差 0px**（修前各差 13px、50 行满页 650px）；几何断言已加进 `states.mjs` |
+| 4 | **F-1 + N-4** `ui-guard.test.ts` 的历史叙述与自相矛盾 | 注释 | ✅ 已修 | `test/ui-guard.test.ts:270-286` —— 历史名写回 `ui_old`/`/ui/` 并注明「不要随改名替换」；「没有一条断言碰过」改为「**在这一节加入之前**…」。另在 `docs/ui-rename-v1-v2.md` §3 登记这类残留（测试/注释里的历史叙述此前不在任何清单里）。独立复核见 §94.3 |
+| 5 | **N-2 / N-3 / N-12** + 6 处同族：改名残留注释 | 注释 | ✅ 已修 | 真缺陷 **4 处**已改（`ui-contract.test.ts:90`、`public/ui_v1/js/api.js:86`、`test/manual/shoot.mjs:256/259`、`ui-contract.test.ts:85`）；审计列的 6 处候选里 **5 处经复核判为可接受**（不改，判据见 §94.4）；实跑 `shoot.mjs --only v1` 验证通过 |
+| 6 | **N-5 / N-6 / N-7 / N-9 / N-10 / N-11 + F-7**：注释与事实不符 | 注释 | ✅ 已修 | **8 个文件各一处**：`src/cleanup.ts:522-524`、V1 `js/components/preview.js:117-121`、V1 `js/signalr.js:22`、V1 `index.html:85-86`、V1 `README.md:44-45`、V1 `js/main.js:165-166`、V2 `js/boot.js:459-460`、`test/protocol.test.ts:118`。F-7 按「改一版必须问另一版」**两版同改**。副产物：两个文件各 +1 行 ⇒ 活文档 `docs/ui-v2-design.md` §8.1 的 **18 个行号**已同批重指、并逐条实测过。逐条真值与判据见 §94.6；N-5 顺带发现的第二层另立第 15 行 |
+| 7 | `db.ts:363` / `README.md:418` 等的 `文件:行` 引用漂移（各扩散 3 份） | 引用 | ✅ 已修 | 43 条空行/越界候选里**只有 1 条属活文档** ⇒ 已改 `docs/ui-v2-design.md:412` 的 `src/db.ts:363` → `:368`（改完把该文 **8 条引用连目标行内容**逐条验过）；其余 42 条按**快照不改**处置（`docs/ui-rename-v1-v2.md:153` ＋ §93.5 第 5 条 ＋ `AGENTS.md` §6）。另**订正了审计自身一处**：它说 `docs/design.md:494` 那句在 `:500`，实测 **495**。见审计报告 **§12.13** 与新增的 **§12.20**；逐条分类见 §94.7 |
+| 8 | 文档口径与自相矛盾（`AUDIT-redundancies` §10/§1056、`design` §165、`backend-gaps` §73/§209、`progress` §91/§93.2） | 口径 | ✅ 已修 | **7 处 / 5 个文件**：`docs/design.md:165`（补 `/ui_v2/*`）、`docs/backend-gaps.md:65/73/109/209`（前三条按文件头声明**写回快照名**、§8 那条写**现状** `/ui_v2/app/`）、`docs/AUDIT-redundancies.md:10`（漏掉的 §15）、`docs/ui-rename-v1-v2.md` §3（新增「快照文档要按段落切」这条坑）、`public/ui_v2/js/boot.js:1265`（深链接占位符与 V1 统一）；`docs/progress.md:5877` 按历史段**不改**。逐条真值、与审计的一处分歧、以及顺带查出的「`e559b4c` 只改回一半」见 §94.8 |
+| 9 | 判别力提升：F-2 回退支、F-3 探针断言与退出码、`ui-contract` 弱下界、`probe.mjs` 补 `overflowers` | 测试 | ✅ 已修 | **4 个文件**：`test/ui-logic.test.ts`（注释写实 + 新增一条**注入式**回退支用例，用例数 413 → 414）、`test/ui-contract.test.ts:225-245`（`toBeGreaterThan(3/2/2)` → 实测规模 **index 33/32/5、login 5/4/3**）、`test/manual/probe.mjs`（新增 `check()` 判据层 + 逐元素 `overflowers` + 退出码）、`test/manual/probe-ui-v1.mjs`（`findings` 汇总进退出码）。三处判据都做了「**让它真的红一次**」的验证；逐条真值、与审计的两处分歧见 **§94.9** |
+| 10 | 文档登记与流程约定：F-4 / F-5 / F-6、`afterAll` 清单、`AGENTS.md` §1 | 流程 | ✅ 已修 | **5 个文件**：`docs/upstream-defects.md`（D3/D4 改挂「不改但需知」为 K1/K2 + 新增 §2.5 + 订正 §1 表两行说明）、`docs/progress.md`（本行 + §93.6 第 9 条清单 3 → **9** 个并订正定性、§93.6 第 4 条补「随后已改」、新增 §94.10）、`public/ui_v2/css/overlay-v2.css`（删掉 `≤720px` 里那条与 `tokens-v2.css` 原则相反的 `--control-h-sm` 声明）、`test/manual/probe.mjs`（新增 `--touch` 触摸模拟 + `pointerCoarse`/`controlHSm` 读数 + 一条钉「命中区按指针精度」的判据）、`AGENTS.md`（§1 补两条流程惯例）。逐条真值、与审计的两处分歧见 **§94.10** |
+| 11 | **N-14** `test/manual/states.mjs` 有语法错 ⇒ **整份文件自 2026-09-18 起不可运行** | 探针 | ✅ 已修 | `test/manual/states.mjs:1272-1274`（模板字符串内的裸反引号，转义即可）；记录见审计报告 §12.17 |
+| 12 | **N-15** `states.mjs` 把**页面 URL 的词表**（`deleted=1`）当成 **API 的词表**（应为 `deleted=true`）⇒ 该断言恒 400、不可能通过 | 探针 | ✅ 已修 | `test/manual/states.mjs:1270`；记录见审计报告 §12.17 |
+| 13 | **N-16**（修 §10.1 时实测新发现）窄屏卡片模式（≤720px）骨架仍差 48px | 视觉 | ✅ 已修 | `board-v2.css` 窄屏块：`.ghost` 改成按**卡片盒模型**推出的高度（`2×--sp-3 + 2px + 2×--sp-1 + --card-thumb + --sp-2 + 1px + --control-h`）、把骨架做成卡片（padding/border/radius/bg/shadow）+ 补上卡片间距（`.board:has(> .ghost)` 的 `gap: --sp-2`）；新立令牌 `--card-thumb: 48px` 供缩略图与公式共用。**实测四档全绿：1440→77↔77、720→125↔125、390→125↔125、390 粗指针→135↔135**（修前卡片档是 77 vs 125 / 135）。V1 的同族项实测后**只订正注释、行为不动**，两版要不要对齐另立第 16 行；逐条真值、判别力证据与两处与登记的差异见 §94.11 |
+| 14 | **N-8** `public/ui_v2/js/next-target.js` 的「登录页自身」判据只认 `.html` 形态 | 注释 + 行为（轻） | ✅ 已修 | 审计把它放在 §7.2（注释层），但**实测显示它同时是行为问题**：`if (url.pathname === '/ui_v2/app/login.html') return fallback;`（`:24`）只认带扩展名的形态，而实测 `GET /ui_v2/app/login.html` → **307 → `/ui_v2/app/login`**（200）⇒ 平台的**规范形态是无扩展名**，于是 `?next=/ui_v2/app/login` 不会被判成「登录页自身」，登录后**多一跳**（不致死循环：登录页在已登录态会再跳 `app/`）。⚠️ **为什么单列而不并入第 6 行**：扩判据就是改 `next-target.js` 这个文件头自称「**安全边界，不是显示逻辑**」的函数，且 V1（`public/ui_v1/js/next-target.js`）同形、按 `AGENTS.md` §1 必须同步，还要配 `test/next-target.test.ts` 的回归用例 —— 那是一次独立决策，不该藏在「改注释」里。**落地（5 个文件）**：两版 `js/next-target.js` 把判据从「比文件名」改成「按平台规范形态归一 —— 去 `.html` + 去尾斜杠，再与唯一一个字面量比较」（带扩展名 / 无扩展名 / 尾斜杠三种写法都回落）；`test/next-target.test.ts` 扩 V2 自指用例并**新增 V1 那份同形函数的整个 `describe`**（V1 这条安全边界此前没有任何单测）；`test/manual/states.mjs` 新增 `Page.frameNavigated` 导航计数判据；`test/ui-guard.test.ts` 登记 V1 的新表达式。实测「多一跳」= 登录页被加载 **2 次 → 1 次**。逐条真值、三条判别力证据与**两处与审计登记不同的地方**见 §94.12 |
+| 15 | **N-5 的第二层**（修 N-5 时实测发现）：`disabledReason` 的返回值会写进 `reason=` 诊断日志，而它**恒以 env 变量名叙述成因** | 可观测性 | ✅ 已修 | `src/cleanup.ts:526-527` 返回的字面量是 `HISTORY_RETENTION_MINUTES=0` / `MAX_SAVED_HISTORY_COUNT=0`（断言成因是 env），`:612` 把它拼进日志的 `reason=` 字段；而两个实参来自 `:560` 的 `readRetentionSettings`（**Meta 优先、env 只是回落**）⇒ 当那个 0 是界面写的 Meta 覆盖时，日志会把成因指向一个**不是来源**的旋钮。**为什么单列而不并入第 6 行**：要修就得改返回值、或额外带出「来源」，属行为改动 + 对外措辞决策（`retention=0（来源：界面 Meta）` 还是拆两个键），不该藏在「改注释」里。**落地（2 个文件）**：`src/cleanup.ts` 的 `disabledReason` 改成按**生效值的实际来源**取键名（Meta 覆盖 ⇒ `settings:retentionMinutes` / `settings:maxSavedHistoryCount`，env ⇒ 部署变量名）—— 来源字段 `retentionSource` / `maxCountSource` **本来就在 `RetentionSettings` 里**，是调用点只取了两个数、把它丢掉了（接线缺口，不是缺数据）；`settings` 整份 hoist 到 `try` 之外以带出这两个来源。`test/cleanup-budget.test.ts` 新增 3 条用例（真实 `runCleanup` + 真 sqlite + 真 Meta 表）。**实测**：Meta 那条**修前红**（`expected "HISTORY_RETENTION_MINUTES=0" to be "settings:retentionMinutes=0"`）、修后绿；env 那条与「内置默认（10080 / 1000）不可能是 0」那条**修前就绿** ⇒ 证明改动是**定向**的，不是把整段重写。逐条复核、措辞决策与门禁见 §94.13 |
+| 16 | **N-16 的另一半**（修第 13 行时实测发现）：V1 的骨架在卡片模式下与真实卡片差 56px/行 | 视觉 + 跨版一致性 | ✅ 已修 | V1 `components.css` 的 `.skeleton__row` 在卡片档（**≤860px**）原本写死 47px（那是表格档的等式），而实测真实卡片 **103px**（细指针）/ **117px**（粗指针）⇒ 每行差 **56 / 70px**、50 行差 2800 / 3500px。第 13 行按「成文的刻意决定」只订正注释、把决策单列成这一行（见 `docs/archive/AUDIT-v1-v2-divergence.md` §13.3）；**2026-09-20 用户裁定对齐** —— 理由有两条：那条豁免（折线下的分页与页脚不计入 CLS）**不覆盖可见的骨架行本身**，且 `list.js` 自己写下的设计意图是「行数贴近真实页大小，落地时折线以上的内容一点不动」，而卡片档下这个保证是假的。**落地**：文件末尾那一块新增 `.skeleton { padding: 0; gap: 0 }` + `.skeleton__row { height: calc(2 * 10px + 1px + var(--sp-1) + 48px + 30px) }`（卡片盒模型逐项实测，推导写在原地），块后紧跟一条 `@media (max-width: 860px) and (pointer: coarse)` 把操作行换成 `var(--hit-min)` ⇒ 117px。**判据**：`test/manual/probe-ui-v1.mjs` 新增两条（骨架行高 = 真实行高、卡片档骨架行距 = 卡片行距），两条各自「先证红再转绿」；四档实测 390 → **103↔103**、390 粗指针 → **117↔117**、1440 → 47↔47（表格档不动）。逐条真值、判别力证据与门禁见 §94.14 |
+| 17 | **§2.2**（本清单第 10 项 / `AUDIT-redundancies.md` §11 #10）：V1 `theme-init.js` 的 `getComputedStyle` 时序 | 可观测性 / 跨版一致性 | ✅ **复核后不成立（V1 无需改）** | 审计给的两条 V1 影响（「顶栏/状态栏颜色停在 HTML 静态值、不跟主题」「应用内切主题后 `theme-color` 慢一拍」）**都经浏览器实测证伪**。首帧：`theme-init.js` 是 `<head>` 里位于**全部** `<link>` 之后的经典阻塞脚本（V1 第 60 行 vs 样式表 29–33），按 HTML 规范解析器会等前置样式表 ⇒ `getComputedStyle` 在 `readyState` 还是 `loading` 时就读到了 `--bg`（实测 `#191817`，5 张表已加载），`theme-color` 的**首次**写入也在 `loading`、值 `#191817` ≠ HTML 静态值 `#faf8f5`。运行期：同一同步块里改完 `data-theme` 再读，计算值立刻是新主题的 `--bg`（`#191817 → #faf8f5`），**不是**「立即返回旧值」。**判别力（两条读数各自证明会红）**：① 把脚本临时挪到样式表**之前**（即 V2 注释假设的排布）⇒ `firstBgSeen` 为空、`writes` 为空、`meta` 停在 `#faf8f5`；② 把开关实验从 `data-theme` 换成不改 `--bg` 的 `data-density` ⇒ `stale:true`（两次实验都 `try/finally` 还原并逐字节校验）。**顺带订正**：V2 `theme-init.js` 与 `theme.js` 各有一处注释以「时序上不可用 / 计算值会慢一步」为由解释为何用显式映射 —— 显式映射**仍然是对的**（不依赖加载时序），但那两条**理由不成立**，已按实测改写。读数与门禁见 §94.15；「问另一版」结论：V2 不读计算值 ⇒ **无同步项** |
+| 18 | **§4.2**（第二轮审计「生命周期与资源」）：两版**关闭预览后不释放正文** | 资源驻留 | ✅ 已修 | 缺陷形态：`<dialog>` 是**启动期创建、常驻 `body`** 的节点，关闭时只 `dialog.close()`，正文（整条记录的全文）与页脚按钮的闭包要等**下次打开预览**才被换掉 ⇒ 只要用户不再预览第二条，那段内容到页面销毁才释放（单条上限：V2 `api.js` 的 8 MiB、V1 的 `request()` 连这个上限都没有）。**两版同一次改**：V1 `js/components/preview.js`、V2 `js/ui/dialog.js`（顺带清 `errorBox` —— `open()` 只把它 `hidden`，于是那条**服务端错误信息**会一直留着）。⚠️ **关键是"不能立刻清"**：`.dialog` 有退出过渡（实测 V1 `0.3s`×4、V2 `0.2s`×4，`@starting-style` + `transition-behavior: allow-discrete`），在 `close` 里同步 `replaceChildren` 会让人看见"框还在淡出、字先没了"，内容一撤框高还会跳 ⇒ 判据交给浏览器自己：`requestAnimationFrame` 轮询到 `display` 变回 `none` 再清（1s 兜底；等待期间又被打开就作废）。**判据两条各钉一半**（`test/manual/probe-ui-v1.mjs` 与 `test/manual/probe.mjs` 各新增 `PRVCLOSE` 段）：① 过渡跑完后正文与页脚必须为空；② 过渡**还在跑**的那一帧（t+150ms）正文必须还在。**判别力（三个实验都做了）**：不调用清理 ⇒ 两版探针都红（`after.kids=1`，读数里还躺着正文本身）；改成同步清 ⇒ 两版都报"退出过渡期间正文已被清（框仍是 `block`、正文 0 vs 打开时 1）"；把 `--url` 指到空结果页 ⇒ 两版都报"判据前提"（不是静默放行）。逐条真值与门禁见 §94.16 |
+| 19 | **§12.1**（第二轮审计「修复过程中新发现的一条」）：`--fs-display` 是孤儿令牌 | 死代码 + **判据缺口** | ✅ 已定案：**删令牌 + 删死 `@media` + 把「令牌不空转」补到 V2** | 三条**可复核**的事实：① `var(--fs-display)` 在全部 `public/**` 里 **0 命中**（它现在只剩下"曾在此"的说明）；② 本仓库自己的令牌政策就是「成对的、成阶的按**整组**保留，**孤立的单点令牌才删**」，而字号七档里只有它没有消费者；③ **git 取证**：`b59e022`（2026-09-16）它还是 `.overview__value` 的字号，`b0244c0`（2026-09-17「V2 界面生产完善」）改成 `--fs-title` 却**没跟着收** —— 而**同一笔提交**的 §17.2「删除死代码」恰好删掉了另外四个未使用令牌 ⇒ 这是一次**漏收**，不是设计没做完。**真正让它躺三天的是判据缺口**：「令牌不空转」这条守卫此前**只扫 V1**（原话是"V2 有成组保留的例外" —— 那句话只对**成组**的成立）⇒ 本次扩到 V2，代价是把豁免写成一份**带理由的名单**（`--c-warm-*` 色阶、`--kind-*-soft` 配对、`--shadow-*`）。**判别力**：守卫**在令牌还活着时**先落地 ⇒ 红，且报的**只有它一个**（那 8 个成组令牌没被误报）；删掉后 ⇒ 绿。**"问另一版"**：V1 没有这个令牌 ⇒ **无同步项**（V1 早在 2026-09-18 就删过自己那个同类的 `--fs-stat`，用的是同一套判据）。**顺带订正**：`--shadow-inset` 的注释自称"搜索框在用"，实测搜索框挂的是 `--shadow-xs`（改注释、按 shadow 组政策保留）；设计文档里的 `--fs-h1` 是 **V1** 的令牌名，V2 应为 `--fs-title`。逐条真值与门禁见 §94.17 |
+| 20 | **收尾**（不是审计条目）：把第二轮审计报告 `docs/archive/AUDIT-v1-v2-divergence.md` 标记为**已归档（快照）** | 治理 / 文档状态 | ✅ 已归档（2026-09-20） | 该报告里**可落地**的条目已全部落地或裁决 ⇒ 封版。加归档横幅，写明三条口径：① **§ 编号冻结为引用锚点**（全仓 **44 处**具体引用 / **23 个文件** / **28 个编号**，含两版源码 26 处、服务端 1 处、探针 3 处）⇒ 不重排、不合并、不删节；② 文中 `文件:行` 与数字**冻结在归档时点**、不随代码漂移（与第 7 行的「快照不改」同口径）；③ **「归档」≠「全修了」** —— 横幅列明 §8 两处边界、§9 剔除/降级表、§12.2「明确不改」表、§3.4/§4.3 都是**刻意保留**，并警示 §2.2 已被推翻。同批改 `README.md` 的文档表该行。逐条与「问另一版」结论见 §94.18 |
+
+### 94.1 本轮验证记录（都是**实跑**出来的，不是推断）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `tsc --noEmit` | ✅ 无错 |
+| 规范 | `eslint public/ui_v2/js public/ui_v1/js` | ✅ 无错 |
+| 单测 | 先起 `wrangler dev`，再 `node node_modules/vitest/vitest.mjs run --no-file-parallelism`（22 个文件） | ✅ **413 / 413 通过**（⚠️ **漏掉 `--no-file-parallelism` 会得到 5 条假失败** —— 并行文件执行时各套件抢同一台 `:8787` 上的「当前 profile」，见 §94.6） |
+| 浏览器探针 | 先起 `wrangler dev`，再 `node test/manual/states.mjs` | ✅ **45 条读数、107 处 `expect` 全绿，末行 `✅ 全部断言通过`；`console errors none`；`RUN_EXIT=0`**（读数为实跑输出计数，断言为源码计数） |
+| 几何不变式 | 同上脚本里的「骨架行与真实行同高（宽松/紧凑）」 | ✅ 1440×900 实测 **77↔77 / 65↔65（差 0px）**；修前两档各差 **13px**（50 行满页 650px） |
+
+⚠️ 单测与浏览器探针**都必须先起 `wrangler dev`（`:8787`）**；否则 9 个套件会以 `ECONNREFUSED` 集体失败 —— 那是**环境没起，不是代码坏了**（本轮实测踩过）。
+⚠️ `states.mjs` 在 **N-14 修好之前一行都跑不了**；上表那行「45 条读数」是修好之后**第一次**真正产生的。这也意味着：**审计报告 §12.16 里"要用真实浏览器闭合 `states.mjs`、本轮做不到"的结论是误判** —— 本环境有可驱动的 Chromium。
+
+### 94.2 §10.1 的独立复核与落地（2026-09-19）
+
+审计报的 §10.1 我没有直接采信，而是**自己量了一遍**（CDP + 真实 Chromium，`--window-size` 与
+Emulation 各档；脚本 `.audits/_measure-row.mjs`）。结论：**报告的数字逐位复现**，且它的修法可以再往前推一步 ——
+**`+13` 不是拟合出来的常数，是可推导的**：
+
+| 组成 | 出处 | 贡献 |
+|---|---|---|
+| 行内最高的内容 | `.item__kind { height: calc(var(--row-h) - var(--sp-3)) }`（`board-v2.css:414`） | `--row-h − 12` |
+| 单元格上下内边距 | `.board__cell { padding: var(--sp-3) }`（`:254`） | `+2×12` |
+| 行自身的下边框 | `.item { border-bottom: 1px }`（`:217`） | `+1` |
+
+⇒ 真实行高 = `(--row-h − --sp-3) + 2×--sp-3 + 1` = **`calc(var(--row-h) + var(--sp-3) + 1px)`**。
+
+**实测（修前 → 修后）**：
+
+| 视口 / 档位 | `--row-h` | 真实行 | 骨架（修前） | 差 | 骨架（修后） | 差 |
+|---|---|---|---|---|---|---|
+| 1440×900 宽松 | 64px | 77 | 64 | **13px** | **77** | **0px** |
+| 1440×900 紧凑 | 52px | 65 | 52 | **13px** | **65** | **0px** |
+| 390×844 窄屏 | 64px | **125** | 64 | **61px** | 77 | **48px** |
+
+- 文档高度 `4496px`（宽松）与我上次读数**逐位相同**，说明探针环境可信。
+- **窄屏是另一回事**：≤720px 时 `.item` 被重排成 `display: grid`（`board-v2.css:724-756`），卡片高由
+  **内容**撑出（子盒实测 48 / 43 / 20，非线性于 `--row-h`）⇒ 上面的算式**不适用**。已登记为 **N-16**（§94 第 13 行），
+  **不猜数值** —— 与本仓库既有的那条纪律一致（`progress.md:5490` 对 V1 的窄屏是同一处置）。
+- **不变式现在是"被钉住"的，不只是被注释声明的**：`states.mjs` 新增两条几何断言
+  （`骨架行与真实行同高（宽松/紧凑）`），在两档下都要求两者**逐像素相等**。
+
+### 94.3 F-1 与 N-4 的独立复核与落地（2026-09-19）
+
+审计指 `test/ui-guard.test.ts:270-277` 那段历史叙述被 2026-09-19 的改名替换打偏、且与同一 describe 里的
+断言自相矛盾。两个指控都没直接采信，而是**取改名前的原文逐字比对**（`git show e3858cd^:test/ui-guard.test.ts`）：
+
+| | 改名前的原文（`e3858cd^`） | 今天（改前） | 真值 |
+|---|---|---|---|
+| 目录名 | `public/ui_old/` | `public/ui_v1/` | 事发时叫 `ui_old` —— **`ui_v1` 这个名字 2026-09-19 才存在** |
+| 改写方向 | `/ui/` → `/ui_old/` | `/ui_v2/` → `/ui_v1/` | 事发时是 `/ui/` → `/ui_old/` |
+| 被带偏的前缀 | `/ui_old/api/*` | `/ui_v1/api/*` | 同上 |
+
+⇒ 改名替换把**同一个句子里的两个名字分别**换掉了（`ui_old` → `ui_v1`、`/ui/` → `/ui_v2/`），于是叙述
+成了「把 V1 存档到 `public/ui_v1/` 时 `/ui_v2/` → `/ui_v1/`」——**一件从未发生过的事**。
+
+**句子里的数字也单独量了一遍**（没有采信「17 处」这个跨 4 份文档反复出现的口径）：
+
+| 断言 | 复核方法 | 结果 |
+|---|---|---|
+| 「17 处接口前缀」 | 数 `git show b59e022:public/ui_old/js/api.js` 里的 `/ui_old/api` | **17 处**（15 调用点 + 2 注释）；`api.js` 也是唯一 >1 的文件（其余 7 个文件各 1 处，合计 24） |
+| 「`/ui/` → `/ui_old/`」确在那笔提交 | 父 `public/ui/js/api.js` 有 **18** 处 `/ui/api`、0 处 `/ui_old/api`；子 `public/ui_old/js/api.js` 有 **17** 处 `/ui_old/api`、0 处 `/ui/api` | **确认**：档案改名与整片前缀被带偏都发生在 `b59e022` |
+| 「改名后 17 处全指向错前缀」 | 逐处列出父 18 / 子 17 的每一行 | **成立**；但同一笔提交里 `api.js` **还被裁剪过**（去掉 `batch-meta`/`overview`/`activity`、加上 `statistics`）⇒ 只能断言「改名**后** 17 处全指向 `/ui_old/api/*`」，**不能**断言「改写恰好动了 17 处」。注释按前者写 |
+
+**落地**：
+
+1. `test/ui-guard.test.ts:270-286` —— 历史名写回 `ui_old` / `/ui/`，并加一句「**改这段时不要顺手把名字
+   替换成 `ui_v1`/`ui_v2`**」+ 复核命令 `git show <改名前的提交>:<文件>`。这是留给「下一个改名的人」的
+   那一句，也正是 F-1 危害③要的结构性防护。
+2. 同处的 N-4：「**没有一条断言碰过 V1 的接口前缀**」→「**在这一节加入之前**，没有任何断言碰过 V1 的
+   接口前缀（下面 describe 的判据 ① 专门补这个缺口）」。顺带把「`ui-guard` 只验证 `/ui_v1/` 的静态资源…」
+   里那个现在时的 `/ui_v1/` 去掉 —— 事发时它叫 `ui_old`，写现在时同样自相矛盾。
+3. `docs/ui-rename-v1-v2.md` §3 新增一条「**同一个坑还漏了 `test/ui-guard.test.ts`**」，写明**测试文件与
+   代码注释里的历史叙述同样在替换范围内，而它此前不在任何清单里**。§3 原有那条（`README.md`/`api.js`）
+   当时定的写法是「不写具体字面量」；本仓库现在两种并存（`api.js:11` 用「它自己的目录」；`README.md:9`、
+   `ui-guard.test.ts:685`、`docs/ui.md:67` 用「写回旧名」）。**后一种更可核**（能直接对着 `git show` 验），
+   故本条按「写回旧名 + 注明当时叫什么」处置。
+
+**门禁**：`tsc --noEmit` ✅（`tsconfig.json` 的 `include` 含 `test`，所以这次改的测试文件确实被类型检查覆盖）、
+`eslint public/ui_v2/js public/ui_v1/js` ✅、`vitest run` ✅（22 文件 413 用例，见 §94.1 同款命令）。
+
+### 94.4 改名残留同族：逐处裁决（第 5 行，2026-09-19）
+
+审计把这类问题写成「F-1、N-2、N-3 三处实体 + **6 处候选**」并建议「一并扫」。逐处读过之后**没有一并扫** ——
+那 6 处里只有 1 处与 F-1 同类。判据如下（写出来是为了让下一个审的人能直接反驳，而不是重新猜一遍）：
+
+> **算缺陷**：句子里用**改名后才存在的名字**去叙述**一件按那个名字从未发生过的事**。
+> 例（F-1）：「把 V1 存档到 `public/ui_v1/` 时 `/ui_v2/` → `/ui_v1/` 的批量改写」—— 当时既无 `ui_v1` 也无 `ui_v2`。
+> **可接受**：用**今天的名字**指代**今天的实体**，同时给出某状态**起始的日期** —— 路径就在紧邻的代码里可核，
+> 读者不会被指向一个不存在的过去。
+
+| # | 位置 | 现状 | 裁决 | 依据 |
+|---|---|---|---|---|
+| N-2 | `test/ui-contract.test.ts:90` | 「`/ui_v2/` 这个路径留给目录索引，应用本体在 `/ui_v2/app/`」 | **改** | **实测 `/ui_v2/` → 404**（1725 字节的 404 页，含「这个地址没有页面」；`/ui_v2`、`/ui_v2/json` 同）；`public/ui_v2/` 下**没有** `index.html`（只有 `app/`、`css/`、`js/`、图标、manifest）。改名前的原句「`/ui/` 留给目录索引」是**真的**（`public/ui/index.html` 当时就是 V2 的页面）——替换后没重判语义，才变成假话 |
+| N-3 | `public/ui_v1/js/api.js:86` | 「V2 在同一处抛 502（`ui/js/api.js`）」 | **改** | `public/ui/js/api.js` **不存在**（`public/ui/js/` 只剩 `redirect-hash.js`）。真值是 `public/ui_v2/js/api.js` 里那句 `new ApiError(502, '服务器返回了无法读取的数据…')`（实读确认）。**按纪律不写行号**（行号会漂，那正是第 7 行的题目） |
+| N-12 | `test/manual/shoot.mjs:256/259` | 路径已改 `/ui_v1/`，但场景键仍是 `wants('old')`、产物名仍是 `07-ui-old` | **改** | 同一处残留的两个半边，一起改成 `wants('v1')` / `shoot('07-ui-v1')`。全库检索确认 `07-ui-old` 与 `--only old` **没有任何文档引用**（`:9` 的示例用的是 `list,dark`）⇒ 改名不破坏用法 |
+| 同族① | `test/ui-contract.test.ts:85` | 「2026-09-15 的 V1→V2 交接后，V2 落在 `public/ui_v2/`」 | **改** | 与 F-1 **同类**：把 09-15 的事件用 09-19 的名字说。那天 V2 在 `public/ui/`、V1 在 `public/ui_old/`（git 实证：`b59e022^` 的 `public/ui/js/api.js` 有 18 处 `/ui/api`，`b59e022` 的 `public/ui_old/js/api.js` 有 17 处 `/ui_old/api`）。按 F-1 的体例补一句「那天它叫 `public/ui/`」 |
+| 同族② | `public/ui_v2/app/index.html:135` | 「2026-09-18 定位翻转后这一条改叫「默认界面」：`/ui_v1/` 是默认入口」 | **不改** | 可接受：被叙述的「改名」是**标签**（改成「默认界面」），`/ui_v1/` 是今天的位置，且 `href` 就在下一行 |
+| 同族③ | `public/ui_v2/app/login.html:46` | 「（2026-09-18 起默认界面是 V1 `public/ui_v1/`）」 | **不改** | 可接受：日期标的是「默认界面变成 V1」这个**状态**的起点，实体用今天的名字。同 ④⑤⑥ |
+| 同族④ | `public/ui_v2/js/ui/appbar.js:114` | 「（2026-09-18 定位调整：默认界面变成 V1 `public/ui_v1/`…）」 | **不改** | 同 ③ |
+| 同族⑤ | `test/manual/probe-ui-v1.mjs:3` | 「2026-09-17 起 `public/ui_v1/` 从「冻结存档」重新变成**在维护的**界面」 | **不改** | 同 ③ |
+| 同族⑥ | `test/ui-contract.test.ts:4` | 「V1（`public/ui_v1/**`）从 **2026-09-17 起重新纳入维护**」 | **不改** | 同 ③ |
+
+⇒ **6 处候选里 1 处是缺陷、5 处不是。** 该裁决已回写审计报告（见那里的 §12.19）。
+
+**门禁（第 4 + 5 两行合并跑）**：`tsc --noEmit` ✅；`eslint public/ui_v2/js public/ui_v1/js` ✅；
+`vitest run` ✅ **22 文件 / 413 用例**；`node --check test/manual/shoot.mjs` ✅；
+**实跑 `node test/manual/shoot.mjs --only v1 --width 1440 --height 900` → 产出 `.shots/07-ui-v1.png`、退出码 0**
+（改名后的场景键与产物名真的可用，不是「只改了字符串」）。
+
+### 94.5 本文档自身的两处缺陷（2026-09-19 晚自查发现）
+
+写 §94.4 时顺手把**这张表本身**核了一遍，抓到两处：
+
+1. **漏登记 N-8**：审计 §7.2 的最后一行 N-8（`public/ui_v2/js/next-target.js` 的登录页判据只认 `.html`）
+   从头到尾没进过本表 —— 建表时按「注释类」把 §7.2 的 N-5/N-6/N-7 抄了进来，**漏掉了同节的最后一行**。
+   已补为**第 14 行**，并附上我自己的实测（`/ui_v2/app/login.html` → 307 → `/ui_v2/app/login`）。
+   ⚠️ 提醒：从审计报告往表里搬条目的这一步，**要按节逐条数一遍，不能凭印象**。
+2. **第 6~10 行的「见审计报告 §N」全部指错**（用脚本按标题建「行号 → 节号」映射核出来的）：
+
+| 行 | 条目**实际**所在节 | 表里原写 |
+|---|---|---|
+| 6 | `§7.2`（N-5/N-6/N-7）＋ `§8.2`（N-9/N-10/N-11）＋ `§3`（F-7） | ❌ §9 |
+| 7 | `§12.13`（全 docs 的 `文件:行` 总核对，1,046 条） | ❌ §10 |
+| 8 | `§6`（补充：文档域复核） | ❌ §11 |
+| 9 | `§3`（F-2/F-3）＋ `§12.15`（弱下界）＋ `§12.16`（`probe.mjs`） | ❌ §12 与 §9 |
+| 10 | `§3`（F-4/F-5/F-6）＋ `§10.2`/`§12.15`（`afterAll`）＋ `§5`（`AGENTS.md` §1） | ❌ §12 |
+
+⇒ 五处都已订正，并在原位置留了「原写 X，指错了」的痕迹（免得有人拿旧版对照时以为是我改坏的）。
+**教训**：引用类字段（`文件:行`、`§N`）正是本仓库一直在抓的那类漂移 —— 这次它出现在**我自己的表**里；
+而「引用」这个动作本身，两边都要能落到实体上才算数。
+
+### 94.6 第 6 行的独立复核与落地（2026-09-19 晚）
+
+审计把 7 条注释问题归成一段（`§7.2` 的 N-5/N-6/N-7、`§8.2` 的 N-9/N-10/N-11、`§3` 的 F-7）。
+这 7 条**没有一条是照抄的** —— 每条都自己回代码/服务端核过真值，再决定怎么改：
+
+| # | 位置 | 原注释说的 | 真值（自己核出来的） | 处置 |
+|---|---|---|---|---|
+| N-5 | `src/cleanup.ts:522` | 「阶段被 env 显式关闭（0 = 关闭…）」 | 两个实参来自 `:560` 的 `readRetentionSettings` 返回值，而它 **Meta 优先、env 只是回落**（Meta 读失败才走 `:565-566` 的 env 分支）⇒ 那个 `0` **通常来自界面**（`PUT /ui/api/settings`），不是 env | 注释改成「值 = 0 ⇒ 关闭该阶段」并点明 0 的来源是 Meta；**顺带发现第二层**，登记为第 15 行 |
+| N-6 | V1 `js/components/preview.js:117` | 「size 对 Text 就是字符数」 | 服务端对 Text 取 `text.length`、客户端侧是声明来的 `dto.size` ⇒ 是 **UTF-16 码元数**（emoji 算 2）。V2 同一格用 `charCount()` | 注释点明是码元数、V2 用 `charCount()`、**两版可能显示不同的数字**；并写明**有意不改代码**（V1 在此处拿不到全文，只有服务端给的 size） |
+| N-7 | V1 `js/signalr.js:22` | 「连续失败到这一次数就停止重连」 | 同文件下面就有 `RETRY_COOLDOWN_MS` 冷却重连（冷却后仍会重试）；V2 的 `push.js` 早已把同一句写成「停下快速重连」 | 改成「**停下快速重连**（不是永久放弃，见下面的冷却）」—— 两版措辞对齐 |
+| N-9 | V1 `index.html:85` | 「每页条数存在 localStorage，静态页面读不到」 | V1 只把**主题**写 localStorage（`js/main.js` 的 `sb-ui-theme`）；页大小来自 **URL**（`?pageSize=`，默认 50，`js/filters.js`） | 改成 URL 口径，并说明静态文件没法按查询串吐出不同行数 |
+| N-10 | `test/protocol.test.ts:118` | 「（`/ui` 是我们自己的面，上游无参系物）」 | 现在有**三个**界面面：`/ui`（跳转壳）、`/ui_v1`、`/ui_v2` | 改成「`/ui`、`/ui_v1`、`/ui_v2` 都是我们自己的界面面，上游无对应物」 |
+| N-11 | V1 `README.md:44` | 「没有列显示开关与多列排序」 | 5 列（类型 / 大小 / 创建 / 修改 / 访问）都能在表头点着排，只是**同一时刻只有一键**（`js/main.js` 的 `onSort` 只写一个 `sort` 字段）⇒ 缺的是**多键**排序，不是排序本身 | 改成「没有列显示开关与**多键**排序」，并写出这 5 列与单键的成因 |
+| F-7 | V1 `js/main.js:165` + V2 `js/boot.js:459` | 「服务端为 `search` 生成 `Text LIKE ?`」 | 真值是 `src/ui/query.ts` 的 `Text LIKE ?N ESCAPE '\'`；而「UI 面转义、协议面不转义」正是这句注释想表达的意思 | 两处都补上 `ESCAPE '\'`（**按「改一版必须问另一版」两版同改**） |
+
+**改完顺手核了一件容易漏的事：这 8 个文件里有两个各多了一行，会不会把别处的 `文件:行` 顶偏？**
+
+会 —— 但精确地只影响**一份活文档**。判据一并写出来（免得下一轮重新判一遍）：
+
+| 文档类别 | 例 | 处置 | 依据 |
+|---|---|---|---|
+| **活文档**（现状口径） | `docs/ui-v2-design.md` §8.1 引 `boot.js:669-670` / `main.js:411` 等 | **已同批重指** | `AGENTS.md` §1 铁律：代码改动要在同一次改动里把对应文档改完 |
+| 审计报告的**当轮快照** | `docs/AUDIT-*.md` 里的行号 | 不改 | `progress.md` §93.5 第 5 条已立的约定（与 progress.md 的历史数字同理）；`AGENTS.md` §6 |
+| `progress.md` 的历史日志段 | §93.x / §94.x 里叙述**当时**行号的句子 | 不改 | `AGENTS.md` §6（历史快照不要顺手校准） |
+| 自己声明了快照的文档 | `docs/backend-gaps.md`（`:11` 明文写「`文件:行` 取自 `master`（`509bdef`）」） | 不改 | 审计 §12.13 已把这种「声明快照」评为**唯一被证明是稳的**做法 |
+
+重指的量：`docs/ui-v2-design.md` 里 **18 个行号**（3 处 patch，整体 +1 —— V1 `main.js` 的 `411` / `1240`
+→ `412` / `1241`；V2 `boot.js` 的 `669-670`…`1108-1109` 与 `492`、`653` 各 +1），并在原地留了一段
+「这 9 个行号已于 2026-09-19 晚整体重指（各 +1）」的说明 + 原因（只挪位置、行内容一字未变）。
+**改完不是靠眼看**：列了一张「行号 → 那一行应该是什么」的期望表逐条实测，**18/18 命中**
+（`.audits/_row6-refcheck3.cjs`，不依赖 `HEAD` 基线）。检测脚本留在 `.audits/`：
+`_row6-refcheck2.cjs`（按 HEAD 基线找「被顶偏的引用」，能处理同一行里的续引 `、`:NNN``）、
+以及第一版 `_row6-refcheck.cjs`（**未**处理续引与同名基名歧义 —— 它把 `ui_v2/app/index.html:120`
+这类引用误判成 `ui_v1/index.html`，是典型假阳性来源，留作对照）。
+
+**门禁**（都实跑）：`tsc --noEmit` ✅；`eslint public/ui_v2/js public/ui_v1/js` ✅；
+`node node_modules/vitest/vitest.mjs run --no-file-parallelism` ✅ **22 文件 / 413 用例全过**。
+
+⚠️ **一个必须写下来的坑**：我先按 `vitest run`（**漏了 `--no-file-parallelism`**）跑了一遍，出来 **5 个失败** ——
+`protocol.test.ts` 与 `fix-regressions.test.ts` 里「当前 profile」的断言红了，收到的值分别是
+`ui-sort-mu8gwx3f-b…` 与 `cron-del-mu8gwx2u.bin`（**同一轮里别的套件刚写进去的夹具**，前缀 `mu8gwx`
+就是同一轮的 RUN 号），另有 3 条 SignalR 握手 `Expected a handshake response from the server`。
+根因不是代码：22 个套件都是**对同一台 `:8787` 的集成测试**，而「当前 profile」是**全局单例** ⇒
+并行文件执行时谁最后 `PUT` 谁赢；握手失败同理（同一时刻多个套件在抢 hub 连接）。
+`package.json` 的 `test` 脚本本来就带 `--no-file-parallelism`（`AGENTS.md` §2 第 3 条也把命令写全了），
+是我漏了那个参数。⇒ **凡引用全量结果，命令一律写全并带上该参数**；本文档 §94.1 那一行已按此订正。
+
+### 94.7 第 7 行的独立复核与落地（2026-09-19 晚）
+
+审计 §12.13 报了「全 docs 的 `文件:行` 总核对（1,046 条）」，并点名两处「同一处失效扩散到 3 份」
+（`src/db.ts:363`、`README.md:418`），修法写的是「三处一起改」。**先复核，再落。**
+
+**① 真值复核**（逐条实测，不采信）：
+
+| 被引 | 审计说真值 | 我实测 | 结论 |
+|---|---|---|---|
+| `src/db.ts` 的 `async statistics(` | `:368` | **`:368`**（363 是空行，364–367 是别处的注释） | ✅ 审计对 |
+| `README.md` 的 `.audits/cfserver-audit-003` 那句 | `:419` | **`:419`**（418 是空行；README 共 516 行） | ✅ 审计对 |
+| `docs/ui.md` 的 `.sr-only` 那句 | `:591` | **`:591`** | ✅ 审计对 |
+| `src/routes/webdav.ts` 的 `302 → /ui_v1/` | `:37` | **`:37`** | ✅ 审计对 |
+| `src/ui/maintenance.ts:54` | 空行 | **空行** | ✅ 审计对 |
+| `src/auth.ts:202-208` | 越界（该文件 200 行） | **共 200 行** | ✅ 审计对 |
+| `docs/design.md:494` 的「22 个套件」 | **`:500`** | **`:495`** | ❌ **审计错**（500 是「守卫：套件数与前端资源数必须与实际一致」那半句） |
+
+⇒ 已把第 7 条回写成新增的 **§12.20**。
+
+**② 审计的「三处一起改」与本仓库已立的约定冲突，我按后者办。** 冲突的两边：
+
+- 审计 §12.13 ①②：修法「**三处一起改**成 `:368` / `:419`」—— 那 6 处里 **4 处在 `docs/AUDIT-*.md`**、
+  1 处在 `docs/progress.md`、1 处在 `docs/upstream-defects.md`。
+- 本仓库的约定：**审计报告与 `progress.md` 历史段里的行号是「当轮快照」，不回头改** ——
+  `progress.md` §93.5 第 5 条、`docs/ui-rename-v1-v2.md:153`（原文：「**历史文档未改**：`docs/progress.md`
+  （按轮次的历史快照）与 `docs/AUDIT-*.md`（审计证据）里仍写着…」）、`AGENTS.md` §6
+  （历史快照数字不要「顺手校准」）。而且本仓库对**上一版**审计的做法正是**出版勘误而不是改写它**
+  （`docs/AUDIT-redundancies.md:120` 就写着「其『文件:行』引用错误率很高…本节先给出勘误」）。
+
+⇒ 于是判据收敛成一句：**看「承载引用的文档」是哪一类，不看「被引的文件」是哪一类。**
+
+| 承载引用的文档 | 处置 | 依据 |
+|---|---|---|
+| 活文档（现状口径） | **改** | `AGENTS.md` §1 |
+| `docs/AUDIT-*.md` | 不改 | `ui-rename-v1-v2.md:153` ＋ §93.5 第 5 条 |
+| `docs/progress.md` 的历史段（含 §93.x / §94.x） | 不改 | `AGENTS.md` §6 |
+| `docs/backend-gaps.md` §1–§3 | 不改 | 该文件自己声明「`文件:行` 取自 `master`（`509bdef`）」「那些路径今天可能指不到文件」 |
+| `docs/upstream-defects.md` §5（「本轮」记录） | 不改 | 同历史段 |
+
+**③ 落地：43 条候选里只有 1 条属活文档。** 用审计留下的 `.audits/_all-docs-citations.cjs`，
+再加上新写的 `.audits/_dump-cites.mjs`（把一份文档的**每条引用连目标行内容**一起打出来，
+用来判「语义是否也指对了」，而不只是「那行非空」）跑了一遍：
+
+| 承载文档 | 空行/越界候选 | 处置 |
+|---|---|---|
+| `docs/AUDIT-redundancies.md` | 20 | 快照不改 |
+| `docs/progress.md` | 7（其中 **2 条是本表第 7 行自己引的「待修问题原文」**，不是引用，见下） | 不改 |
+| `docs/AUDIT-commit-9b4cdca.md` / `docs/AUDIT-missing-states.md` / `docs/archive/AUDIT-v1-v2-divergence.md` | 4 / 4 / 4 | 快照不改 |
+| `docs/backend-gaps.md` | 2（都是 `src/hub.ts:32`） | 自称快照；审计也已按 `509bdef` 验成**正确** |
+| `docs/upstream-defects.md` | 1 | 历史段 |
+| **`docs/ui-v2-design.md`** | **1** | ✅ **已改** |
+
+**唯一那处改动**：`docs/ui-v2-design.md:412` 的 `src/db.ts:363` → `:368`。改完把该文档**全部 8 条引用**
+连目标行内容逐条看了一遍，**8/8 连语义也对**：`routes.ts:572-588` 正好是 `guarded.get('/ui/api/statistics'`、
+`storage.ts:200` 正好是 `async totalHistorySize(`、`db.ts:368` 正好是 `async statistics(`、
+`boot.js:654` 正好是那条 `api.poll`、`boot.js:670-671` 正好是写操作后的 `refresh + refreshOverview`、
+`main.js:412` 正好是 `api.statistics(` 的调用点。
+
+**④ 顺带核了活文档自身的「现状事实」**（引用地址错了 ≠ 事实错了）。审计点名的「22 个套件」7 处地址，
+实测 **4 处对、3 处已漂**：`README.md:135` ✓、`:208` ✓、**`:465` → `:468`**、**`docs/design.md:494` → `:495`**、
+**`:547` → `:548`**、**`docs/ui.md:631` → `:651`**、`deploy.yml:56` ✓。
+但这 7 处地址**只出现在 `docs/AUDIT-redundancies.md`（快照）里**；而活文档**真的都写着 22**
+（实测 README `135/208/468`、design `495/548`、ui.md `651`、`deploy.yml:56` 各一处，`docs.test.ts` 也在钉）
+⇒ **活文档无需改动**。
+
+**⑤ 一处核对器的假阳性（跨仓引用）**：`docs/upstream-issues.md:492` 引上游 `README_DOCKER.md:54` 等，
+本仓核对器报「文件不存在」—— 那是**上游**的裸文件名。按 `AGENTS.md` §4 去本机上游源码
+（`../SyncClipboard`）逐条读了：`README_DOCKER.md:54` 正好是 `-v /path/to/appsettings.json:/app/appsettings.json`、
+`Dockerfile:17` 正好是 `ENTRYPOINT [… "--contentRoot", "/app/data"]`、`Program.cs:48` 正好是
+`EnsureAppSettingsExists(` ⇒ **三条都对**，是「跨仓引用」这类假阳性。
+
+**⑥ 记一句工具口径**：本表第 7 行**自己**写着 `db.ts:363` / `README.md:418` —— 那是**待修问题的原文**
+（转述审计的点名），不是引用。任何按「文件名:行」扫引用的脚本都会把它当成缺陷报出来。
+⇒ 这类脚本文档里要留一句「豁免名单」说明（审计 §12.13 自己也踩过同一个坑：第一版把裸文件名一律落到
+改名后的同名文件上，产出十几条假警报）。
+
+**门禁**：`tsc --noEmit` ✅；`eslint public/ui_v2/js public/ui_v1/js` ✅；
+`node node_modules/vitest/vitest.mjs run --no-file-parallelism` ✅ **22 文件 / 413 用例**
+（其中 `docs.test.ts` 7 例钉着那 5 个现状文档的套件数与资源数）。
+
+### 94.8 第 8 行的独立复核与落地（2026-09-19 晚）
+
+审计 §6 的表列了 4 条「确认成立」的文档口径问题。**先取原文与 git 真值，再落。**
+
+**① 逐条复核**
+
+| # | 位置 | 审计的说法 | 我实测 | 处置 |
+|---|---|---|---|---|
+| 1 | `docs/backend-gaps.md:73`、`:209` | 深链接写成 `/ui_v2/#Text-<hash>`（「打开即预览」），而该 URL 落到 404 页 | ✅ **成立**。`public/` 下只有 `ui/index.html`、`ui_v1/index.html`、`ui_v2/app/index.html` 三张页 ⇒ `/ui_v2/` 没有页面；`docs/ui-rename-v1-v2.md:150-152` 也自己写着「`/ui_v2/` 本身没有目录索引」。且 `git show e3858cd -- docs/backend-gaps.md` 证明这两个串是**改名那轮**把 `/ui/#Text-<hash>` 机械改写成 `/ui_v2/#…` 的产物 —— 而 V2 的**页面**根在那轮里挪到了 `/ui_v2/app/`，`/ui_v2/` 只是命名空间 | **改**（两行改法**不同**，见 ②） |
+| 2 | `docs/design.md:165` | 目录树注释只写「`/ui/*` 与 `/ui_v1/*` 的 404 页」，漏 `/ui_v2/*` | ✅ **成立**。真值：`src/index.ts:241-252` 一条 `isUiAsset` 分支、三前缀共用同一条回落链（`src/ui/notFound.ts:1` 的文件头也写着「界面命名空间（`/ui`、`/ui_v1`、`/ui_v2`）」）；活文档 `docs/ui.md:113`/`:552` 早已写全三个 | **改** |
+| 3 | `docs/AUDIT-redundancies.md:10` | 仍写「§14 是唯一的执行记录」，而 `:1021` 有 §15 | ✅ **成立**。且成因比「没改」更具体：`git show e559b4c -- docs/AUDIT-redundancies.md` 显示那笔**把 §14 与 §15 都补进了目录**（原目录两条都缺），却把正文这一句原样留着 —— 碰到了**邻行**、没碰**这一句** | **改** |
+| 4 | `docs/progress.md:5877` | 「全表 19 类」与明细对不上（表内实有 20 行，其中 2 行自注「不是改名造成的」） | ✅ **成立**（审计自己已标「历史日志，不必改」） | **不改**（append-only 历史段，`AGENTS.md` §6） |
+
+**② 与审计分歧的一处（第 1 条的两行要分开办）。** 审计说两处都「应写 `/ui_v2/app/#Text-<hash>`」。但：
+
+- `:73` 在 **§2**，而该文件头自己声明「**§1–§3 里引用的 V2 路径按快照保留原样（改了就篡改历史）**」
+  ⇒ 该行应**写回快照名** `/ui/#Text-<hash>`。而且它**今天仍然有效**：`public/ui/js/redirect-hash.js:11`
+  会把 fragment 一起带给 `/ui_v1/`（`README.md:339` 就是这么写的）。
+- `:209` 在 **§8（落地位置表 = 现状口径）** ⇒ 审计对，写 `/ui_v2/app/#Text-<hash>`。
+
+⇒ 两行处置不同，正是本表第 7 行立的「**看承载段落是哪一类**」判据的又一次应用 —— 判据作用在**段落**上，不是文件上。
+
+**③ 顺带查出的一处（审计没报、同一文件）**：`e559b4c` 的提交信息自称
+「backend-gaps（**快照期的 V2 路径应为 `public/ui/js/...`**）」，但它的 diff 只改了 **2 处**
+（文件头示例、§1.2），漏了 **3 处**：§2.1 的 `public/ui_v2/js`、§2.9 的 `public/ui_v2/js/`、
+§6「实测」那一条的 `public/ui_v2/js/`。结果是同一个文件里**一半旧名、一半新名** —— 比两种极端都更糟：
+文件头的声明对着 §1.2 为真、对着 §2.1/§2.9 为假。已按同一条纪律一起改回。
+
+**④ 落地（9 个文件 15 处：7 个被订正的文档/代码 + 本记录 + 审计报告）**
+
+| 文件 | 改动 |
+|---|---|
+| `docs/design.md:165` | `# /ui/* 与 /ui_v1/* 的 404 页` → `# 三个界面前缀（/ui/*、/ui_v1/*、/ui_v2/*）共用的 404 页`（与 `docs/ui.md:113`/`:552` 同一口径） |
+| `docs/backend-gaps.md:65`（§2.1） | `public/ui_v2/js` → `public/ui/js`（快照期 V2 的路径）；`目前` → `当时` |
+| `docs/backend-gaps.md:73`（§2.9） | `/ui_v2/#Text-<hash>` → `/ui/#Text-<hash>`；`public/ui_v2/js/` → `public/ui/js/`（快照期 V2 的路径） |
+| `docs/backend-gaps.md:109`（§6 实测） | 同上（只改路径） |
+| `docs/backend-gaps.md:209`（§8） | `/ui_v2/#Type-<hash>` → `/ui_v2/app/#Text-<hash>`，并补 V1 的同形入口 |
+| `docs/AUDIT-redundancies.md:10` | 「§14 是唯一的执行记录」→「§14 是**第三轮**的处置记录（第四轮见 §15）」；同句「配合 §14 一起看」→「配合 §14 与 §15 一起看」 |
+| `docs/ui-rename-v1-v2.md` §3 | 新增一条坑：**「快照文档」要按段落切、不能按文件名切**（这是本仓库第 5 类改名残留的**载体**侧教训） |
+| `public/ui_v2/js/boot.js:1265` | 深链接占位符 `#Type-<hash>` → `#Text-<hash>`（见 ⑥） |
+| `docs/ui.md:214`、`docs/frontend-checklist.md:79` | 同上（两处都是活文档，一并统一） |
+
+**⑤ 「当时」只加在 §2.1 一处，不是遗漏。** §2.9 / §6 里那句是 `（实测：…）`／`**实测（本机实例）**：`
+的括号内内容 —— 「实测」本身就把它定格成过去时；而 §2.1 的 `目前零 SignalR 代码` 是**现在时**
+（`目前`），今天读来与 §8 的 `✅ 推送通道` 直接打架，故只改那一处的时态。
+
+**⑥ 一处占位符统一（改 4 处）。** 深链接的片段有两套写法 —— `#Text-<hash>`（`README.md` 3 处、
+V1 `main.js` 4 处、`public/ui/index.html:29`、`public/ui/js/redirect-hash.js:5`、`backend-gaps.md` §2.9）
+与 `#Type-<hash>`（V2 `boot.js:1265`、`backend-gaps.md` §8、`docs/ui.md:214`、`docs/frontend-checklist.md:79`）。
+两套都是「类型-哈希」的元变量记法，但 `#Type-` **照抄不可用**：`boot.js:1268` 的 `^#([A-Za-z]+)-(.+)$`
+会把 `Type` 当成记录类型去查，查不到就弹「链接指向的记录不存在」⇒ 四处统一成 `#Text-<hash>`
+（统一后实测分布 **Text 13 处 : Type 0 处**）。其中 `docs/ui.md:214` 与 `docs/frontend-checklist.md:79`
+是**活文档**，故一并改；`docs/progress.md:1859`（§36，2026-09-14 的历史记录）按历史段**不改**。
+V2 侧只动了这一句注释、V1 与本仓顶层文档本就如此，两版因此一致。
+
+**⑦ 对第 7 行表格的一处订正。** §94.7 把「`docs/backend-gaps.md` §1–§3」整块列为**不改**。**引用地址**
+（`文件:行` 的数值）确实不改 —— 但**引用里的路径名**不属此列：它是被改名改写的、且与文件头声明矛盾，
+本轮已改回。判据因此要再收紧一格：
+
+> 「**冻结的证据**」与「**活的正文**」可以在同一份文件里共存 ⇒ 判据作用在**段落**上，不在文件上。
+> `docs/AUDIT-*.md` 整体冻结；`docs/progress.md` 的 §1–§92 是历史段、§94.x 是活的工作记录；
+> `docs/backend-gaps.md` 是「§1–§6 冻结 + §8 现状」；`docs/ui-rename-v1-v2.md` 与
+> `docs/AUDIT-redundancies.md` 是**自我修订的活文档**（后者自己就带 §7/§14/§15 三轮处置记录）。
+
+**门禁**：`tsc --noEmit` ✅；`eslint public/ui_v2/js public/ui_v1/js` ✅；
+`node node_modules/vitest/vitest.mjs run --no-file-parallelism` ✅ **22 文件 / 413 用例**。
+本轮无行为改动（唯一进 `src/**`/`public/**` 的是 `boot.js` 的一句注释），故 §2 的「真实浏览器量一次」
+沿用上一轮同一轮次的实测（探针 URL 与页面结构均未变）。
+
+### 94.9 第 9 行的独立复核与落地（2026-09-19 晚）
+
+审计 **§3**（F-2 / F-3）、**§12.15④**（弱下界）、**§12.16③ 与其中的🔎**（退出码、两版溢出的证据强度不对称）四处。
+**先复核判据，再落。**
+
+**① 逐条复核**
+
+| # | 位置 | 审计的说法 | 我实测 | 处置 |
+|---|---|---|---|---|
+| 1 | `test/ui-logic.test.ts:637` | `charCount(FAMILY)` 的 `: 5` 那一臂在 CI 永不执行 | ✅ **成立**。Node **v22.22.2** 上 `typeof Intl.Segmenter === 'function'`；同一进程里模块级 `SEGMENTER`（`format.js:138-141`）永不 `null` ⇒ `hasSegmenter` 恒 `true`、ternary 的 `: 5` 是**死代码**。夹具本身是对的：家庭 emoji 字素簇 **1** 段、`Array.from` **5** 段（都实跑过） | **改**（注释写实 **＋** 真的钉住它，见 ②） |
+| 2 | `test/ui-contract.test.ts:225-227` | 三条 `toBeGreaterThan` 是弱下界 | ✅ **成立**。本轮实测规模：`index.html` 闭包 **33** / 预载 **32** / 样式表 **5**；`login.html` **5 / 4 / 3** —— 而下界只有 `3 / 2 / 2` | **改**（换成与实测一致的精确值） |
+| 3 | `test/manual/probe.mjs` | 只打印、无判据 | ✅ **成立**。全文 `PASS`/`FAIL` 的命中只有 `const PASS = arg('pass','admin')` 与一句 `console.log('FAILED REQUESTS', …)`，都不是断言 | **改**（补判据层 + 退出码） |
+| 4 | `test/manual/probe-ui-v1.mjs` | 有判据但不改退出码（`states.mjs` 是正例） | ✅ **成立**。`AUDIT_EXPR`（`:644-720`）逐节点收 `findings`、`runAudit` 被调 6 次，但全文件没有一处写 `process.exitCode` | **改**（累计 `findings`，末尾定退出码） |
+| 5 | `test/manual/probe.mjs`（§12.16 的🔎，读者没看见） | V2 探针缺 V1 那条**逐元素**溢出证据 | ✅ **成立**。V1 有 `overflowers`（`:430-446`，量 `getBoundingClientRect().right`）；V2 全文只命中 `:194` 的 `sparkBox` | **改**（补 `overflowers`） |
+
+**② 与审计的两处分歧**
+
+- **审计给的是二选一，我两个都做**（第 1 条）。审计说「要么把断言改成与实现同源的诚实表述，要么真的钉住它」。
+  只做前者 ⇒ 回退支仍然**没有任何验证**；只做后者 ⇒ 那一行读起来仍像「两支都断言了」。
+  故：注释写实（说明本环境只有 `1` 那支会跑、`: 5` 是死代码）**并**新增一条注入式用例 ——
+  `vi.stubGlobal` 摘掉 `Intl.Segmenter` ＋ `vi.resetModules()` ＋ 动态 `import()` 两版 `format.js`，
+  断言回退口径 `=== 5`、且截断仍不切出半个代理对。
+- **判别方法我换了**（第 2 条）。审计建议的验证是「把 `public/ui_v2/js/` 下的模块删掉一半（保留被 import 的），跑该套件」。
+  实测这条路**证明不了我的断言**：删掉被 import 的模块会让 `importsOf()` 的 `readFileSync` 先抛 `ENOENT`，
+  套件是为**另一个原因**变红的。改用**值扰动**（把 `modules: 33` 临时改成 `32`）—— 它把失败精确地逼到这一条断言上，见 ④。
+
+**③ 落地（4 个代码/测试文件 ＋ 本记录 ＋ 审计报告 ＋ 2 个 `.audits/` 验证脚本）**
+
+| 文件 | 改动 |
+|---|---|
+| `test/ui-logic.test.ts:635-640` | 注释写实：本环境 `Intl.Segmenter` 恒存在 ⇒ `: 5` 那一臂是死代码（审计 §3 F-2） |
+| `test/ui-logic.test.ts:644-685` | 新增 `it('回退支（宿主没有 Intl.Segmenter 时）按码点切，仍不切出半个字符')` —— 注入式 |
+| `test/ui-contract.test.ts:225-245` | `toBeGreaterThan(3/2/2)` → `EXPECTED_GRAPH` 精确值（另加一条「新增页面须同步登记」的 `toBeDefined` 守卫） |
+| `test/manual/probe.mjs:36-42` | 新增 `problems` / `check()` 收集器 |
+| `test/manual/probe.mjs`（STATE 读取块） | 新增逐元素 `overflowers`（与 V1 `:430-446` 同一口径） |
+| `test/manual/probe.mjs`（末尾判据块） | **25 条**不变式断言 ＋ `AUDIT problems=…` ＋ `process.exitCode` |
+| `test/manual/probe-ui-v1.mjs:721-732` | `runAudit` 累计 `findings` |
+| `test/manual/probe-ui-v1.mjs`（末尾） | `AUDIT SUMMARY` ＋ `process.exitCode` |
+
+**④ 判别力验证（三处判据都「真的红过一次」）**
+
+| 验证 | 手法 | 结果 |
+|---|---|---|
+| `ui-contract` 精确规模 | 临时把 `index.html` 的 `modules: 33` 改成 `32`（脚本 `try/finally` 还原 ＋ 逐字节校验） | ✅ 该用例变红：`expected 33 to be 32`；恢复后与原始字节**完全一致** |
+| `probe.mjs` 判据层 | 故意把 `--url` 指到 `?search=zzz-none-zzz`（必然空列表） | ✅ **5 条**不变式失败、**退出码 1**；默认 URL 下 `problems=0`、退出码 0 |
+| `probe-ui-v1.mjs` 退出码 | 临时向 `AUDIT_EXPR` 注入一条合成 finding | ✅ `AUDIT SUMMARY ["initial: self-test body"]`、**退出码 1**；恢复后字节一致 |
+
+**⑤ 两处刻意的取舍**
+
+- **`probe.mjs` 的判据只描述「默认（未筛选）列表页」。** 把 `--url` 指到带 `search` 的页面上，
+  「列表渲染出了行」「看板标题带上了同一个数字」等几条会红 —— 那不是误报，而是
+  「**没落在探针认识的那个视图上**」。这次验证正是用它来证明判据会红的，故已在文件里写明这个前提。
+- **判据只钉不变式，不钉绝对条数。** 审计本轮读到 `kinds=["782","37","151","39"]`，
+  我这一轮读到 `["793","36","144","36"]`（开发库涨了）。所以钉的是**四条之间的一致性**
+  （四类之和 == 「全部」芯片 == 概览总数 == 看板标题里那个数），不是那四个数字本身。
+  这也是「要写死得先量」的反面用法：**量得出来、但会漂的数，不该写进断言**。
+
+**⑥ 顺带记一个容易踩的 JS 事实（注入式用例的前提）。**
+
+`Intl` 的成员**不可枚举**（`Object.keys(Intl)` 实测为 `[]`），所以不能写 `{ ...Intl, Segmenter: undefined }`：
+那会把 `Intl` 摊成**空对象**，`typeof Intl.Segmenter === 'function'` 同样为假、用例**照样过** ——
+但它验的已经不是「只摘掉 `Segmenter`」这一件事，而是一个**没有 `Intl` 的宿主**。
+必须用 `Object.getOwnPropertyNames(Intl)` 逐个搬。
+
+**门禁**：`tsc --noEmit` ✅；`eslint public/ui_v2/js public/ui_v1/js` ✅；
+`node node_modules/vitest/vitest.mjs run --no-file-parallelism` ✅ **22 文件 / 414 用例**（413 → 414：新增的注入式回退支用例）；
+两个探针**实跑**：`probe.mjs` → `AUDIT problems=0`、退出码 0（`overflowers` 已进读数）；`probe-ui-v1.mjs` → `AUDIT SUMMARY findings=0`、退出码 0。
+本轮进 `src/**` 的改动为**零**，进 `public/**` 的也是**零**（只动了测试与探针）⇒ §2 的「真实浏览器量一次」由上面两个探针实跑满足。
+
+> ⚠️ **2026-09-19 晚补注（第 10 行）**：上面这一句只对**第 9 行**成立。第 10 行改过
+> `public/ui_v2/css/overlay-v2.css`（删掉一条 `--control-h-sm` 声明，审计 F-5）⇒ 从那行起
+> `public/**` 不再是零。第 10 行的门禁与实测另见 §94.10。
+
+### 94.10 第 10 行的独立复核与落地（2026-09-19 晚）
+
+审计把这一行写成「文档登记与流程约定：F-4 / F-5 / F-6、`afterAll` 清单、`AGENTS.md` §1」。
+五件事逐条自己核过真值再动手 —— **两处与审计的判断不同**（一处改法更具体、一处定性相反），都写在下面。
+
+**① F-4 `docs/upstream-defects.md` 的 D 类口径**
+
+| 项 | 内容 |
+|---|---|
+| 审计的话 | 摘要表写「D · 待办 2」，而 §2.4 列了 D1–D4 **四条** ⇒「会让数数的人当场卡住」，建议把 D3/D4 改挂到「不改但需知」名下 |
+| 我核过的 | `§1` 表五行：A 10 / B 5 / C 2 / D 2 / 不改但需知 2 = **21** ✓；`§2.1`（Q1–Q10 = 10）、`§2.2`（Q11–Q15 = 5）、`§2.3`（Q16–Q17 = 2）与表一致 ✓ ⇒「D = 2」指的是 **D1/D2**（两条**文档缺口**，同轮已补齐），而 D3/D4 本来就是「不改但需知 2」那两条。**摘要表没错**，错的是 §2.4 把四条并排在一个「待办（D 类）」标题下 |
+| 落地 | §2.4 标题改为「待办（D 类，2 条）」；**新增 §2.5「不改但需知（2 条）」**并把 D3/D4 移入，编号改 **K1/K2**（K = 需知，避免与 D 类混淆），各自标题留「（原 D3）/（原 D4）」痕迹；§1 表两行的说明句订正（原「本轮新发现的文档缺口，与 1 条有意不做（含理由）」把两类混在一格）；`§4` 表里唯一一处对 D3 的引用同步改成 K1 |
+| 扩散面（核过、**无需改**） | `README.md:423`、`README.md:490`、`docs/upstream-issues.md:8`、`docs/upstream-parity.md:278` 四处都写「D 待办 2 / 不改但需知 2」—— **本来就是对数**（审计也这么说）✓；`AUDIT-redundancies.md:58/111/355` 引用的 `upstream-defects.md D1` 仍成立（D1 未改名）✓ |
+
+**② `afterAll` 清单：真缺陷是「清单少登记 6 个」，不是「违反纪律」**
+
+- 审计 §12.15① 驳回读者的「signalr 缺 `afterAll` ⇒ 违反清理纪律」，我复核后**同意**，
+  并把登记处 `docs/progress.md` §93.6 第 9 条的清单从 **3 个扩到 9 个**（判据与计数写在该条原地）。
+- 依据是 `test/support/target-guard.ts:6-8` 逐字那句「加一行守卫比给每个套件补 `afterAll` 更便宜，且能防复发」
+  ⇒ 本仓库**有意**用硬守卫替代逐套件清理。故本次**只改登记**：不补 `afterAll`、不判任何人违规。
+- 保留审计的边界声明：「有写请求」≠「留残留」（`hardening:108`、`limits:181/371` 很可能是负向断言），
+  本轮只做到「候选全集」这一层。
+
+**③ F-5 命中区：删掉那条与令牌层原则相反的声明（含实测）**
+
+| 项 | 内容 |
+|---|---|
+| 审计的话 | `overlay-v2.css:1118` 的 `--control-h-sm: var(--hit-min)` 落在**宽度**媒体查询里 ⇒ 窄窗口的**细指针**（桌面）也变 44px；注释自称"触屏与桌面都是 44px"，**属有意选择**；若本意只是"手机上"就该写成 `and (pointer: coarse)` |
+| 核①（来历） | 两块**都由 `0c0a49d` 引入**（不是"后来者覆盖前者"）：`tokens-v2.css` 的 `@media (pointer: coarse)`（含注释「正交维度是指针精度，不是视口宽度」）与 `overlay-v2.css` 的 `≤720px { --control-h-sm: 40px }`。本文件最后加载、与前者同特异性 ⇒ 宽度块确实会**数值上盖掉**触屏档；`ed179c3` 把 `40px` 改成 `var(--hit-min)` 并写下「用同一个令牌后，触屏与桌面都是 44px」—— 修掉了"盖小"这一半，但**没修掉"宽度即条件"这一半**，反而把 44px 扩到了细指针 |
+| 核②（原则） | `tokens-v2.css:267-269` 逐字写着「用 `(pointer: coarse)` 而不是宽度断点……**窄窗口的桌面却可以保持紧凑**。这两件事的正交维度是'指针精度'，不是'视口宽度'」；**V1 同样只认指针**（`ui_v1/css/components.css:1662` 的命中区块、`tokens.css:109`「桌面控件可以紧凑，触屏命中区不能低于 44px」） |
+| 核③（那条注释的真实来历 —— 审计没提） | 宽度块想解决的实测现象（390px 下小控件仍是 28px）**根因是探针没有触摸模拟**：无头浏览器恒为细指针 ⇒ `(pointer: coarse)` 不成立 ⇒ 量到的本来就是**桌面值**。作者把"窄"当成"手机"，于是拿宽度查询去补 —— **这个推断才是缺陷的源头** |
+| 落地 | **删掉该声明**（粗指针由令牌层在任意宽度管住 ⇒ 这条既冗余又与原则冲突），原地留一段说明沿革 +「别照截图改回来」的注释；并把「手机」变成**可测**：`probe.mjs` 新增 `--touch`、`pointerCoarse` / `controlHSm` 两个读数与一条判据 |
+
+**④ 门禁与实测（全部实跑）**
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `node node_modules/typescript/bin/tsc --noEmit` | **exit 0**（0 错） |
+| 规范 | `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` | **exit 0**（0 告警） |
+| 全量套件 | `node node_modules/vitest/vitest.mjs run --no-file-parallelism`（dev server 在 `:8787`） | **22 files / 414 tests 全过**（75.69s） |
+| V2 探针 1440×900（细指针） | `probe.mjs --port 9341 --width 1440 --height 900` | `AUDIT problems=0`、退出码 0；`--control-h-sm` = **28px** |
+| V2 探针 390×844（细指针） | 同上 `--port 9344 --width 390 --height 844` | `problems=0`、退出码 0；**28px**（⚠️ **修前是 44px**） |
+| V2 探针 390×844（**粗指针**） | 同上加 `--touch` | `problems=0`、退出码 0；`pointerCoarse=true`、**44px** |
+| V1 探针 1440×900 | `probe-ui-v1.mjs --port 9345 --width 1440 --height 900` | `AUDIT SUMMARY findings=0`、退出码 0 |
+| **新判据的判别力** | 先只加判据、**不动 CSS**，跑 390 细指针 | ✅ **真的红**：`小控件命中区只随指针精度变…（读到 44px / coarse=false）`、**退出码 1**；改完 CSS 后转绿 |
+
+**⑤ JS / CSS 事实（这次实测出来的）**
+
+- **`max-width: 720px` 不是手机的判据**：无头浏览器（以及任何鼠标设备）在 390px 下
+  `(pointer: coarse)` 实测仍为 **false** —— 所以 F-5 那条注释当年是照着「窄窗口桌面」的取值写的。
+- **`Emulation.setTouchEmulationEnabled` 单开就够**：`{enabled:true, maxTouchPoints:5}` 已能让
+  `(pointer: coarse)` 变真（实测 `pointerCoarse: true`），**不需要**再叠
+  `Emulation.setDeviceMetricsOverride({mobile:true})` —— 后者会**换掉视口语义**：实测同一份页面在
+  390px 下多出一个与命中区无关的横向溢出读数（`chip` right=427 > 390，`sparkBox` 也从 424 变成 332），
+  两个模式就不可比了。先用错、后改对，这条已写进 `probe.mjs` 的注释里。
+- `--touch` 与 `--width` 正交：视口仍由 `--window-size` 决定，指针类型由触摸模拟决定。
+
+**⑥ 与审计的三处分歧（已回写审计报告 §12.23）**
+
+1. **F-4 的改法要比审计的建议更具体**：审计只说"把 D3/D4 改挂到不改但需知名下"；落到文件上还得说明
+   「**摘要表本来就是对的**」（否则会顺手去改那个 2），并给这两条新编号（否则 `D3`/`D4` 前缀仍读成 D 类）。
+2. **F-5 我不认同"属有意选择就够了"这个结论就到此为止**：两块由**同一次提交**引入、彼此的注释互相矛盾
+   （一个说"正交维度是指针精度"、一个说"触屏与桌面都是 44px"），而 V1 只认指针 ——
+   所以这不是"两种都行的偏好"，而是**其中一条必须改**；改法选了「向令牌层看齐」。
+3. **审计没提的一条**：`Emulation.setDeviceMetricsOverride({mobile:true})` 会污染几何读数（见 ⑤），
+   做触摸模拟时**不要**顺手加上它。
+
+**⑦ F-6 与 `AGENTS.md` §1**
+
+审计的 F-6 不是新缺陷，是"改名那笔没做到同一次改动"+ 两条值得固化的惯例。落地：
+`AGENTS.md` §1 末尾补「两条配套的流程惯例」（`d32631b` 的"未跑完不得当作已通过" + 拆笔提交的边界），
+并把它与真正的失败形态（`e3858cd` 那次改名）放在一起对照；未新增规矩之外的约束。
+
+### 94.11 第 13 行的独立复核与落地（2026-09-19 晚）
+
+第 13 行是修 §10.1 时**实测**冒出来的：表格档的骨架行高修好了（77↔77），而同一份 CSS 里
+`≤720px` 那一档走的是**卡片重排**，行高不线性于 `--row-h`，于是骨架 77px 对真实卡片 125px。
+原登记的处置是「按本仓库纪律不猜数值、留待定量后处理」—— 本轮就是去定量，然后修齐。
+
+**① 先量：卡片高到底是怎么拼出来的（CDP，细指针与粗指针各一遍）**
+
+| 档 | 实际视口 | 真实卡片 | 骨架（修前） | 差 |
+|---|---|---|---|---|
+| 表格 | 1416×808（`--width 1440`） | **77** | 77 | 0 ✅（§10.1 已修） |
+| 卡片·细指针 | 492×808（`--width 390`） | **125** | 77 | **48** |
+| 卡片·粗指针 | 同上 + `--touch` | **135** | 77 | **58** |
+
+⚠️ 顺带记一条环境事实：`--window-size=390` 在无头 Edge 上拿到的视口是 **492**（Windows 的窗口
+最小宽度在那儿），不是 390。卡片档的判据是 `≤720px`，492 落在里面，所以不影响本行结论；
+但要拿到真正的 390 视口得用 `Emulation.setDeviceMetricsOverride` —— 而那条会污染几何读数
+（§94.10 ⑤ 踩过），本轮**刻意不用**。
+
+卡片高逐项拆开（卡片档 `.item` 是 `display: grid`，三个网格行：类型格 0 高、内容格、操作格）：
+
+| 项 | 来源 | 值 |
+|---|---|---|
+| 内边距 | `.item { padding: var(--sp-3) }` | 2×12 |
+| 边框 | `.item { border: 1px }` | 2 |
+| 两条行距 | `.item { gap: var(--sp-1) }`（类型格 0 高也占一行） | 2×4 |
+| 内容格 | `.entry__thumb`（卡片档 48px；`row.js` 的 `renderEntry` **无条件**建它 ⇒ 这就是卡片高的下限） | `--card-thumb` |
+| 操作格 | `padding-top: var(--sp-2)` + 上边框 1px + `.icon-btn` 的 `--control-h` | 8 + 1 + 34 |
+
+⇒ **125 = 24 + 2 + 8 + 48 + 8 + 1 + 34**；粗指针下 `--control-h` 变成 44（`tokens-v2.css` 的
+`(pointer: coarse)` 块）⇒ **135**。这一条直接决定了公式**必须**用令牌写、不能写死 125：
+写死会让触摸设备上的骨架矮 10px。实测也逐项对上（内容格 48、操作格 43 = 8+1+34、行距 4、
+`.item__kind` 99 = 125−2−12−12 —— 它是绝对定位，不参与撑高）。
+
+还有**第二处**差异：真实卡片之间由 `.board__table tbody { gap: var(--sp-2) }` 分开，而骨架的
+包裹层是 `ui/ghost.js` 建出来的**另一个 `.board`**（里面装 div 而不是 table）⇒ 不加间距时
+50 行骨架再短 8×49 = **392px**。
+
+**② 落地（5 个文件）**
+
+| 文件 | 改动 |
+|---|---|
+| `public/ui_v2/css/board-v2.css` | 窄屏块里新立令牌 `--card-thumb: 48px`（**声明在 `:root`**：探针把骨架注入 `document.body`，挂 `.board` 上读不到）；`.ghost` 换成上面那条公式 + 卡片外观；新增 `.board:has(> .ghost) { display: flex; column; gap: var(--sp-2) }`（`:has()` 在本仓库已有先例：`ui_v1/css/layout.css:453`）；订正 §10.1 修好后过期的那句「骨架仍 64px（差 61px）」 |
+| `public/ui_v2/js/ui/ghost.js` | 两处「窄屏卡片模式不适用」改为「两档各有一套、都有实测与判据」 |
+| `public/ui_v2/js/ui/board.js` | 同上（原文还挂着 N-16 的编号） |
+| `test/manual/probe.mjs` | 新增 `ghostH` / `rowModeH` / `cardMode` / `ghostWrap` 四个读数与**两条判据**（行高、间距） |
+| `public/ui_v1/css/components.css` | 只改注释：`约 98px` → 实测 **103px**、`≤720px` → **≤860px**，并写明那条刻意不改的理由覆盖到什么、不覆盖什么（行为**不动**，见 ⑤） |
+
+**③ 判据为什么取「众数」而不是最小/最大**
+
+第一版判据取的是**最小**行高，实测立刻撞上假红：末张卡片少一条下边框 ⇒ 末行是 **124**（表格档
+76.5），而骨架 125 ⇒ `125 ≠ 124` 红。真正的离群值有两个方向：最小的是**末行**、最大的是
+**内容更长**的卡片（卡片档行高由内容撑开）。所以判据取**众数**——「典型的那一档」，也是骨架
+该对齐的那一档。第二版判据（间距）也踩过一次：量包裹层**总高**时混进了 `.board` 在表格档的
+1px 边框（实测 156 而期望 154）⇒ 改成量**两行之间的实际间距**（第二行上边缘 − 第一行下边缘）。
+两处都记在 `probe.mjs` 的注释里 —— 判据本身也要能被证伪，这两次都是它自己先红了才发现的。
+
+**④ 门禁与实测（全部实跑）**
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `node node_modules/typescript/bin/tsc --noEmit` | **exit 0**（0 错） |
+| 规范 | `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` | **exit 0**（0 告警） |
+| 全量套件 | `node node_modules/vitest/vitest.mjs run --no-file-parallelism`（dev server 在 `:8787`） | **22 files / 414 tests 全过**（73.42s） |
+| V2 探针 1440 | `probe.mjs --width 1440` | `problems=0`、退出码 0；`ghostH 77 / rowModeH 77 / cardMode false / between 0` |
+| V2 探针 720 | `probe.mjs --width 720` | `problems=0`、退出码 0；`125 / 125 / true / between 8` |
+| V2 探针 390（细指针） | `probe.mjs --width 390` | `problems=0`、退出码 0；`125 / 125 / true / between 8` |
+| V2 探针 390（**粗指针**） | 同上加 `--touch` | `problems=0`、退出码 0；`135 / 135 / true / between 8`（`pointerCoarse=true`） |
+| V2 状态探针 | `states.mjs` | 45 条读数、**末行「✅ 全部断言通过」**、`console errors none`；其中桌面的「骨架行与真实行同高」仍是 77↔77 / 65↔65 |
+| V1 探针 | `probe-ui-v1.mjs` | `findings=0`、退出码 0、无控制台错误 |
+| **新判据的判别力（行高）** | 先只加读数与判据、**不动 CSS**，跑 390 | ✅ **真的红**：`骨架行高 = 真实行的典型行高…（读到 骨架 77 vs 真实众数 125）`、**退出码 1**；改完 CSS 转绿 |
+| **新判据的判别力（间距）** | 把 `gap` 临时改成 `0px`，跑 390 | ✅ **真的红**：`骨架之间的间距…（读到 两行之间 0px（期望 8））`、**退出码 1**；且**行高那条仍绿**（两条判据互不遮蔽）；还原后转绿 |
+
+**⑤ V1 的处置：只订正数字，行为不动（按 `AGENTS.md` §1 要问另一版）**
+
+同族缺陷 V1 也有，而且 V1 **早就写过决定**（`ui_v1/css/components.css:1570-1578`）：卡片模式下
+**刻意不改**，理由是「那一档下面的是分页与页脚，而 50 行 × 47px 已经把两者推到任何手机视口的
+折线以下，落地时它们本来就不在视口里，位移不计入 CLS」。
+
+- 本轮实测把那段里两个**未测量的数字**换掉了：真实卡片行高 **103px**（不是「约 98px」；
+  836 与 576 两个宽度各 50 行全部 103px），卡片块的宽度档是 **≤860px**（不是「≤720px」）。
+- 同时写明那条理由的**边界**：它只覆盖「折线以下的东西」，**不覆盖可见的骨架行本身** ——
+  骨架行与卡片不同形仍然是看得见的。
+- 但**不改** V1 的行为：它有成文的刻意决定，推翻它 + 两版对齐是一次独立决策 ⇒ 立为第 16 行。
+  （这条理由本身不受本轮实测影响：47px 还是 103px，分页与页脚都在折线以下。）
+- **⚠️ 随后已改**（2026-09-20，第 16 行）：那次独立决策由用户裁定为**对齐** —— V1 卡片档的骨架
+  行已按卡片盒模型推高（103px / 粗指针 117px）、容器节奏一并归零。本段以上「行为不动」只描述
+  **第 13 行当时**的状态，不要拿它当现状读。见 §94.14。
+
+**⑥ 与登记/审计不同的三处小地方**
+
+1. 登记里那句「实测真实行 125px 而**骨架仍 64px**（差 61px）」是**过期**的 —— 64/61 是 §10.1
+   修好**之前**的数：修好后骨架在这一档已经是 77px（差 48px）。已就地订正，并在 `board-v2.css`
+   的原注释里留下沿革（改过的数字要跟着事实走，别留一个听起来更严重的旧值）。
+2. 登记的「留待定量后处理」只覆盖了**行高**。本轮定量时发现还有**间距**（8×49 = 392px）与
+   **分组标题**（`.daymark`，骨架里没有）两处相邻差异：前者一并修了（同一处节奏问题），
+   后者**刻意不修**并把「总量级 41px 是这么推出来的」写进注释 —— 骨架不该假装知道数据分成几天。
+3. 顺带订正 `board-v2.css` 里一句与自身规则不符的注释：缩略图那条写「放大到全宽」，而规则是
+   `48px`（桌面档 40px）。
+
+**⑦ 这一行为什么值得修（而不是像 V1 那样记下就完）**
+
+V1 的理由是 **CLS**：折线以下的东西不计入位移。这条对 V2 同样成立，但 V2 还有一件 V1 没有的
+东西：**三处注释都在宣称「骨架行与真实行同高」（`board-v2.css`、`ui/ghost.js`、`ui/board.js`）**，
+而卡片档的等式当时是**假的**。要么改等式、要么改话术；本轮选了改等式 —— 判断是：骨架存在的
+意义就是「把等在后面的东西提前画出来」（`ghost.js` 文件头），画成 77 而落地是 125，就不算画对。
+
+### 94.12 第 14 行的独立复核与落地（2026-09-19 晚）
+
+审计把它归在 `§7.2`（**注释层**，`.audits/audit-today-17-commits-2026-09-19.md:165`），但登记进本表时已经实测出它**同时是行为问题**。
+本轮把审计说的每一句都自己量了一遍，结论：**断言成立，但有两处它没说清**。
+
+**① 逐条复核审计的断言（`wrangler dev` + `curl`）**
+
+| 审计说 | 复核方法 | 结果 |
+|---|---|---|
+| `/ui_v2/app/login.html` → 307 → `/ui_v2/app/login`（后者 200） | `curl -o /dev/null -w` | ✅ **逐位成立**。另测出它没提的两条：尾斜杠 `/ui_v2/app/login/` **也** 307 归一；`/ui_v2/app/Login` 与 `/ui_v2/app/login.html/` 是 **404**（大小写、多余扩展名都不认） |
+| 「V1 同形」 | 同上，V1 三个路径 | ✅ 成立（`/ui_v1/login.html` → 307 → `/ui_v1/login` → 200；`/ui_v1/login/` 亦然） |
+| 「登录后**多一跳**」 | `states.mjs` 新增 `Page.frameNavigated` 计数 | ✅ 成立，而且**量出了次数**：规范形态下登录页被加载 **2 次**（`login?next=…login → login → app/`），带扩展名的形态 **1 次** |
+| 「不致死循环」 | 同上，看导航链是否收敛 | ✅ 成立。机制也核了：返回值只含 `pathname + search + hash`、**不带 `?next`** ⇒ 第二次加载时它已经丢了，于是落回默认页 |
+| 「无扩展名比 `.html` **更容易被用户/日志产生**」 | 全仓找 `?next=` 的生产者 | ⚠️ **没能证实 ⇒ 改变表述**（见 ③.1） |
+
+**② 为什么是「归一」而不是「多列一个字面量」**
+
+两版都改成：先把 pathname 归一（去一层 `.html` + 去尾斜杠），再与**唯一一个**字面量比较。三条理由都不是风格偏好：
+
+1. 归一后**带扩展名 / 无扩展名 / 尾斜杠**三种写法同时被覆盖 —— 三者在平台上都是同一个页面（每条都有实测），列字面量则要列三个。
+2. 本仓库**早就是这条取向**：`docs/AUDIT-redundancies.md` 的 D-09 当初正因为「`/ui/login.html` 这个路径不存在」而**删掉**了多余的那个字面量；再添一个等于把它加回来。
+3. V1 的挂载点守卫把这处字面量**按行**管着（`test/ui-guard.test.ts:481-489`）⇒ 归一后仍只有一处，守卫的「一处常量 + 一处有理由的例外」不必放宽。
+
+**③ 与审计登记不同的两处（＋一条附带发现）**
+
+1. **「更容易产生」没有证据。** 全仓 `?next=` 的**唯一**生产者是 `api.js` 的 `redirectToLogin()`，而它写的是**带扩展名**的形态 ⇒ 「哪一种更容易被产生」量不出来。量得出来的是**平台把值交到登录页手里时已经是规范形态**（307 保留查询串）。何况判据的合同是「不接受任何指向登录页自身的目标」—— 两种形态都该挡，**谁更容易出现不改变结论**。表里那句已改成实测口径。
+2. **审计只说了「多一跳」，没说它靠什么不致死循环。** 本轮把机制写进注释：返回的串里没有 `?next`，第二次加载时它已经丢了 —— 读者最可能问的就是「那会不会死循环」。
+3. **附带发现（不属本行）**：那个「挂载点字面量」守卫只 walk `public/ui_v1/js`（`test/ui-guard.test.ts:476`，它就在
+   「V1 界面（public/ui_v1）的接口前缀与两页一致性」这个 describe 里）⇒ **V2 的挂载点字面量没有任何守卫**：
+   今天把 `/ui_v2/` 改名/搬目录，`api.js` / `next-target.js` 里那几处字面量不会有任何断言变红。
+   本轮**没有**顺手补（加一条新守卫是独立决策，且它自己也必须先证明会红），只在此登记。
+
+**④ 门禁与实测（全部实跑）**
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `node node_modules/typescript/bin/tsc --noEmit` | **exit 0**（0 错） |
+| 规范 | `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` | **exit 0**（0 告警） |
+| 全量套件 | `node node_modules/vitest/vitest.mjs run --no-file-parallelism`（dev server 在 `:8787`） | **22 files / 417 tests 全过**（73.51s；上轮 414 ⇒ 本轮 **+3**，正是新增的 V1 三条） |
+| 状态探针（V2，真实浏览器） | `node test/manual/states.mjs --no-shots` | **末行「✅ 全部断言通过」**、`console errors none`；新增的两条导航链读数都只剩 **1 次**登录页 |
+| V1 探针（真实浏览器） | `node test/manual/probe-ui-v1.mjs` | `findings=0`、`CONSOLE ERRORS none`、`FAILED REQUESTS none` |
+| **判别力（单测）** | **先只加用例、不动源码**，跑 `next-target.test.ts` | ✅ **真的红**：V2 那条 `expected '/ui_v2/app/login' to be '/ui_v2/app/'`、V1 那条 `expected '/ui_v1/login' to be null`；**退出码 1**；改完转绿（11/11） |
+| **判别力（E2E）** | 同上顺序，跑 `states.mjs` | ✅ **真的红**：`?next=/ui_v2/app/login 只加载登录页一次（不因自指多跳） — 登录页被加载 2 次`；**退出码 1**；改完转绿 |
+| **判别力（守卫）** | 只改 V1、**先不改白名单**，跑 `ui-guard -t 挂载点字面量` | ✅ **真的红**：`挂载点字面量出现在未登记的位置 … js/next-target.js:28 → if (canonical(u.pathname) === '/ui_v1/login') return null;`；登记后转绿 |
+
+⚠️ 三条判别力都执行了「**先证伪、再证真**」：单测与 E2E 在改源码**之前**跑、守卫在登记白名单**之前**跑。
+⚠️ `states.mjs` 两次都加 `--no-shots`（本轮不为它产出截图；截图与判据是两条独立产物）。
+⚠️ `probe.mjs`（V2 几何）本轮**未重跑**，理由：改动只落在 `next-target.js`，它**只被登录页 import**（`login.js`），
+与列表页的骨架/几何无关；列表页那一面由 `states.mjs` 的读数覆盖。
+
+**⑤ 落地（5 个文件）**
+
+| 文件 | 改动 |
+|---|---|
+| `public/ui_v2/js/next-target.js` | 判据改成「归一后比唯一字面量」（`/ui_v2/app/login`）；注释写实测的三种写法、失败后果、以及不致死循环的机制 |
+| `public/ui_v1/js/next-target.js` | 同上（`/ui_v1/login`）—— 按 `AGENTS.md` §1 同步；两版**签名不同**（fallback vs null），所以是「同一修法」而非逐字相同，见 `docs/archive/AUDIT-v1-v2-divergence.md` §13.4 |
+| `test/next-target.test.ts` | V2 自指用例扩到三种写法；**新增** V1 那份同形函数的整个 `describe`（**此前 V1 这条安全边界没有任何单测**）；顶部新增第二个 `@ts-expect-error TS7016` |
+| `test/manual/states.mjs` | 新增 `Page.frameNavigated` 导航计数判据（本轮 `expect(` 调用点 **107 → 108** —— 与 §94.1 记的 107 对得上，正好说明这个数没漂）。**为什么不能只比最终路径**：修前修后最终都会到 `/ui_v2/app/`，只比值区分不出来 —— 判据必须落在「中间加载了几次登录页」上 |
+| `test/ui-guard.test.ts` | 挂载点白名单登记 V1 的新表达式（那处字面量被按行管着，改了就必须跟着走） |
+
+### 94.13 第 15 行的独立复核与落地（2026-09-19 晚）
+
+第 15 行是修 N-5 时**顺手发现**的第二层：注释改了，但**行为**还在说假话 —— `disabledReason` 的返回值会被拼进
+每个阶段的 `[cleanup] … reason=` 日志，而它**恒以 env 变量名叙述成因**。
+
+**① 逐条复核登记的断言**
+
+| 登记说 | 复核方法 | 结果 |
+|---|---|---|
+| 返回值恒以 env 变量名叙述成因 | 读 `src/cleanup.ts:526-527`（改前） | ✅ 成立：两个分支分别返回字面量 `HISTORY_RETENTION_MINUTES=0` / `MAX_SAVED_HISTORY_COUNT=0` |
+| 两个实参来自 `readRetentionSettings`，且它 **Meta 优先、env 只是回落** | 读 `:165-177`（`fromMeta.x ?? parseSettingValue(env.X)`，`retentionSource` 按「Meta 里有没有这个键」判） | ✅ 成立 |
+| 「界面写的 Meta 覆盖」这条通路存在 | `src/ui/maintenance.ts:126` 的 PUT 落库用的是**同一个** `SETTINGS_META_KEYS` | ✅ 成立：界面写的键 = 日志该说的键（故键名可直接复用那个常量） |
+| 失败后果「把成因指向一个不是来源的旋钮」 | **实测**（见 ②） | ✅ 成立，拿到逐字输出 |
+
+**② 先证伪：新用例在**不改源码**时真的红了**
+
+`test/cleanup-budget.test.ts` 新增 3 条（真实 `runCleanup` + 真 sqlite 库 + 真 Meta 表 + 抓 console）：
+
+| 用例 | 修前 | 修后 |
+|---|---|---|
+| 0 来自界面写的 **Meta 覆盖** | ❌ **红**：`AssertionError: reason 指向了不是来源的旋钮：HISTORY_RETENTION_MINUTES=0: expected "HISTORY_RETENTION_MINUTES=0" to be "settings:retentionMinutes=0"`（退出码 1，1 failed / 2 passed） | ✅ 绿 |
+| 0 来自**部署变量** | ✅ 绿（**本来就说对了** —— 改动只换掉说不准的那一种） | ✅ 绿 |
+| Meta 与部署变量**都没设** ⇒ 走内置默认 | ✅ 绿（**反证「内置默认不可能是 0」** ⇒ 成因只有两态） | ✅ 绿 |
+
+⇒ 第一条**同时**是「实测复现」与「判别力证据」；后两条修前就绿，正说明这次改动是**定向**的。
+
+**③ 措辞决策：不写「来源：界面 Meta」这种散文，而是写**那个真正的键名****
+
+登记时留的问题是「`retention=0（来源：界面 Meta）` 还是拆两个键」。两个选项都没选：
+
+1. `phase=` 已经点明了是哪个旋钮（`retention` ⇒ 保留期、`trim` ⇒ 条数上限），`status=disabled` 已经说明它为 0
+   ⇒ 再说一遍旋钮名、再说一遍 `0` 都是**冗余**；日志真正缺的信息只有一件：**这个 0 是谁写的**。
+2. 把成因写成**实际生效的那个键名** ⇒ 一行日志直接可执行：看到 `settings:retentionMinutes=0` 就去界面清覆盖，
+   看到 `HISTORY_RETENTION_MINUTES=0` 就去 `wrangler.toml` 改变量。
+3. 键名**不新造字面量**：Meta 那侧取自 `SETTINGS_META_KEYS`（与界面 PUT 落库同一个常量，两边永不漂）；
+   env 那侧沿用原有的两个变量名字面量。
+4. 保持 `key=value` 形状 —— 与它替换掉的 `HISTORY_RETENTION_MINUTES=0` 同形，不引入新的解析形态
+   （`reason=` 目前没有任何解析方：全仓只有 `src/cleanup.ts` 产出它，测试与文档都没有消费方）。
+
+**④ 「问另一版」（`AGENTS.md` §1）：结果是「无同步项」，但留下纸面**
+
+| 项 | 内容 |
+|---|---|
+| 改动面 | 只影响 `[cleanup] phase=… reason=` 这一行**服务端**日志；`/ui/api/info` 的响应形状未动 |
+| 检索 | 全仓 `public/**` 里的 `disabledReason` / `HISTORY_RETENTION_MINUTES` / `MAX_SAVED_HISTORY_COUNT` |
+| 结果 | **零命中**（`public/**` 只有 UI 自己的 `MAX_SAVED_HISTORY_COUNT_MAX` 上限常量，与日志无关）⇒ **V1 / V2 都没有消费方** |
+| 但同一词表上… | 「生效值的来源」是**三分**（Meta 覆盖 / 部署变量 / 内置默认），而 V2 `js/ui/drawer.js:602-603` 的 `sourceLabel` 只有**两值** ⇒ 在「两者都没设」时它写「部署环境变量」、V1 写「内置默认」。**与 §93.7 已登记的占位符那条同根、同一独立决策；本轮仍不动**，只把第二症状原地追加进 §93.7 那段 |
+| 留痕 | `docs/archive/AUDIT-v1-v2-divergence.md` 新增 §13.5 —— 该文 §13.2 已有「这一条 V1 不需要跟」的先例，**问出「无同步项」也要写下来**，否则后人分不清「问过了」与「忘了问」 |
+
+**⑤ 与登记不同的地方（两处）**
+
+1. 登记写「要修就得改返回值、或额外带出「来源」」—— 实测**两条都不用**：`RetentionSettings` 里**早就有**
+   `retentionSource` / `maxCountSource`（`:148-150`），是调用点（改前 `:560`）只取了两次数、把它丢掉了
+   ⇒ 这属于**接线缺口**，不是缺数据，因此改动不含任何接口变更。
+2. 登记举例的 `retention=0（来源：界面 Meta）` 被换成了键名形态（理由见 ③）。
+
+**⑥ 顺手订正一份活文档的一处漏列**
+
+`README.md` 的「日志约定」表把 `[cleanup]` 的字段**逐个列了出来**（`phase= status= processed= batches=
+truncated= cursor= subrequests= ms=`），但**漏了 `reason=`** —— 一张自称列举字段的表，漏一个就是不真。
+本轮补上它并写明取值的两种形态。（`docs/progress.md` §42.3 是这张表的**出处快照**，按历史段不动。）
+
+**⑦ 门禁（全部实跑）**
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `node node_modules/typescript/bin/tsc --noEmit` | **exit 0**（0 错） |
+| 规范 | `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` | **exit 0**（0 告警） |
+| 全量套件 | `node node_modules/vitest/vitest.mjs run --no-file-parallelism`（dev server 在 `:8787`） | **22 files / 420 tests 全过**（73.61s；上轮 417 ⇒ 本轮 **+3**，正是新增的三条） |
+| 判别力（单测） | **先只加用例、不动源码**，跑 `cleanup-budget -t 关闭成因的措辞` | ✅ **真的红**：`expected "HISTORY_RETENTION_MINUTES=0" to be "settings:retentionMinutes=0"`；**退出码 1**；改完 **3/3 绿** |
+
+⚠️ 本轮**没有**跑浏览器探针：改动是服务端日志的一句话，`public/**` 零命中（④ 的检索），探针（`states.mjs` /
+`probe.mjs` / `probe-ui-v1.mjs`）的读数与它无因果关系。
+
+**⑧ 落地（5 个文件）**
+
+| 文件 | 改动 |
+|---|---|
+| `src/cleanup.ts` | 新增 `DISABLED_KEY`（阶段 × 来源 → 键名，Meta 侧引用 `SETTINGS_META_KEYS`）；`disabledReason` 加第 4 个参数 `source`（`retentionSource` / `maxCountSource` 两个来源字段）并按它取键名；`settings`（`RetentionSettings`）**整份 hoist 到 `try` 之外** —— 这就是本层的**根因**所在；注释重写为实测口径 |
+| `test/cleanup-budget.test.ts` | 补 `SETTINGS_META_KEYS` 的 import；新增整个 `describe('关闭成因的措辞…')`（3 条）。**为什么住在这个文件**：它是仓库里唯一用真实 `runCleanup` + 真库跑清理并抓 console 的地方（`test/cleanup.test.ts` 要 dev server + `--test-scheduled`，摆布不了 env 与 Meta） |
+| `README.md` | 「日志约定」表：`[cleanup]` 行的字段清单补上漏掉的 `reason=` 并说明取值形态 |
+| `docs/archive/AUDIT-v1-v2-divergence.md` | 新增 §13.5（「问另一版」= 无同步项的**留痕** + 同一词表上那处已登记分歧的第二症状） |
+| `docs/progress.md` | 本行 ✅ + 本节；§93.7 那段原地追加第二症状 |
+
+### 94.14 第 16 行的独立复核与落地（2026-09-20）
+
+第 16 行是修第 13 行（N-16）时**实测发现**的另一半：那次只处理了 V2 的窄屏卡片档，而 V1（`public/ui_v1/`）同一档位的骨架行还写死着**表格档**的等式 —— 骨架 **47px**、真实卡片 **103px**（细指针）/ **117px**（粗指针），每行差 **56 / 70px**（50 行 2800 / 3500px）。第 13 行当时按「V1 有成文的刻意决定」把决策**单列**给第 16 行（只订正注释、行为不动）；本次由用户裁定为**对齐**（翻案理由见 ⑤）。
+
+**① 逐条复核登记的断言**
+
+| 登记说 | 复核方法 | 结果 |
+|---|---|---|
+| V1 卡片档骨架行写死 47px | 读 `public/ui_v1/css/components.css:1589-1596`（改前） | ✅ 成立：`height: 47px`，而 47 = 8+8+1+30 正是**表格档** `.table td` 的等式 |
+| 真实卡片是 103 / 117px | CDP 探针实测（见 ②） | ✅ 成立：492 与 836 两个宽度各 50 行**全部** 103px（细指针）；粗指针 117px |
+| 「V1 行为不改」是一条成文的刻意决定 | 读 `list.js` 的写法 + 豁免理由的措辞 | ✅ 成立，但**理由的边界**只覆盖折线以下（见 ⑤） |
+
+**② 先量真值：把 103 / 117 拆成盒模型的逐项**（仪器 `.audits/_r16-internals.mjs`，CDP 实测）
+
+| 项 | 值（细指针） | 来源 |
+|---|---|---|
+| 卡片上 / 下内边距 | 10px + 10px | `.table tr.row` 的 padding |
+| 下边框 | 1px | 行分隔线 |
+| 内容行 ↔ 操作行的间距 | `var(--sp-1)` = 4px | `tr.row` 的 row-gap |
+| 内容行 | 48px | 22（`.cell-content__line` 的 min-height）+ 2（body 的 gap）+ 2（`.cell-content__meta` 的 margin-top）+ 22（meta 自身高） |
+| 操作行 | 30px / 44px | `.icon-btn` 高（`--hit-min` 被 `(pointer: coarse)` 从 30 抬到 44） |
+| **合计** | **103 / 117** | 2×10 + 1 + 4 + 48 + 30 = 103；末项换成 44 即 117 |
+
+容器节奏也各差一截：`.skeleton` 自带 `padding: var(--sp-4)`（16px）+ `gap: var(--sp-3)`（12px），而真实卡片是 **0 间距 + 1px 分隔线** ⇒ 只改行高不改容器，每行仍差 12px（50 行 600px）。`.skeleton` 与 `.table` 是 `.results` 内的**兄弟**，把 `.skeleton` 的 padding 归零即让骨架行宽 = 卡片宽。
+
+**③ 先证伪：新判据在不改 CSS 时真的红了**
+
+`test/manual/probe-ui-v1.mjs` 新增 `SKELETON` 判据块（`:738-804`：就地造一份**真的**骨架放进 `.results`、量完摘掉，不进截图与别的分支），给出两条判据，各自单独先证红：
+
+| 判据 | 改 CSS 前 | 改 CSS 后 |
+|---|---|---|
+| 骨架行高 = 真实行高（`gap = realMin − skeleton`） | ❌ **红**：390 读数 `{"mode":"card","realMin":103,"skeleton":47,"gap":56}`；`AUDIT SUMMARY` 报「card 档 骨架 47 vs 真实 103，差 56px」；**退出码 1** | ✅ 绿（`gap:0`） |
+| 表格档不被误伤（判别力） | ✅ 绿：1440 读数 `gap:0` ⇒ 红**不是**来自「判据恒红」 | ✅ 绿 |
+| 卡片档骨架**行距** = 卡片行距 | ❌ **红**：临时把 `.skeleton` 的 `gap` 改回 `12px` ⇒ `skPitch:115 vs realPitch:103`（脚本 `.audits/spec-r16-tmp-gap.mjs`，验完 `try/finally` 还原） | ✅ 绿（`skPitch:103`） |
+
+⇒ 第三条红的时候第一条**仍是绿的**（`gap` 仍 0）—— 证明两条判据各守各的、不共命；第三条也顺带证明「只修行高、不修容器」会被抓住。
+
+**④ 「问另一版」（`AGENTS.md` §1）：这一次是 V1 跟 V2，且写法刻意不同**
+
+V2 的等价实现早在（`board-v2.css:863-865`，第 13 行那次落的），本行是 **V1 补课**。
+
+| 项 | 内容 |
+|---|---|
+| 两版写法**刻意不同** | V2 用 `calc(2 * --sp-3 + 2px + 2 * --sp-1 + --card-thumb + --sp-2 + 1px + --control-h)`（**令牌化**）；V1 **没有** `--card-thumb` / `--row-h` 这类令牌，卡片内边距与内容区在源码里就是裸 px（`10px` / `48px`）⇒ V1 的 `calc()` 只能用**字面量**（`2 * 10px + 1px + var(--sp-1) + 48px + 30px`），并在注释里**逐个点名来源**（同 V1 `.table td` 那条 `8+8+1+30` 的老做法，见「要写死得先量」） |
+| 断点也不同 | V2 的卡片档是 `≤720px`；V1 是 **`≤860px`**（它的卡片块就在 860） |
+| V1 比 V2 多出来的两件事 | ② 的**容器节奏归零**（V2 那一档本来就没有节奏差）＋ 一条 `@media (max-width: 860px) and (pointer: coarse)` 把操作行换成 `var(--hit-min)` |
+
+**⑤ 与登记不同的地方（两处，都是「翻案」）**
+
+1. **「有成文的刻意决定」≠「这个决定是对的」。** 第 13 行据以「不改」的唯一理由是「折线下的分页与页脚不计入 CLS」—— 复核后确认**那条豁免只覆盖折线以下**，而**可见的骨架行本身**就在折线以上、它的不同形是**看得见**的。
+2. **设计意图反证：** `public/ui_v1/js/components/list.js:355-359` 自己写着「行数贴近真实页大小，于是内容落地时折线以上的内容**一点不动**」—— 而卡片档下这个保证是**假的**（骨架 47px 撑不起一张 103px 的卡片）⇒ 结论从「不改」改成「改」。
+
+**⑥ 落地（8 个文件）**
+
+| 文件 | 改动 |
+|---|---|
+| `public/ui_v1/css/components.css` | ① 注释块（`:1570-1588`）重写成**两档各一条等式**（表格档 47px、卡片档 103 / 117px），并写明原「不改」理由的边界；② 卡片块（`:1912-1942`）新增 `.skeleton { padding: 0; gap: 0 }` ＋ `.skeleton__row { height: calc(2 * 10px + 1px + var(--sp-1) + 48px + 30px); border-radius: 0; border-bottom: 1px solid var(--border) }`；③ 块后（`:1945-1952`）新增 `@media (max-width: 860px) and (pointer: coarse)` 覆盖成 `var(--hit-min)`（⇒ 117px） |
+| `test/manual/probe-ui-v1.mjs` | 新增 `SKELETON` 判据块（`:738-804`）：读 `realMin / realMax / realPitch / skeleton / skPitch`，判 `gap === 0`，且卡片档下 `skPitch === realPitch` |
+| `public/ui_v1/index.html:88-89` | 静态骨架注释：47px → 「表格档 47px；卡片档 103px、粗指针 117px」 |
+| `public/ui_v1/js/components/list.js:24` / `:356-357` | 「50 行 × 47px」→ 两档并列（表格档 50×47；卡片档 50×103）；`renderSkeletonRows` 上方注释：绑 `.table td` → 绑「表格档 `.table td`、卡片档 `.table tr.row`」 |
+| `AGENTS.md:37` | 同步表：`.skeleton__row` 高度写全两档等式 |
+| `docs/ui.md:565` | §9.3 loading 行补卡片档 103 / 粗指针 117 |
+| `docs/progress.md` | 本行 ✅ + 本节；§94.11 尾巴追加「随后已改」（第 13 行那段「行为不动」只描述当时） |
+| `docs/archive/AUDIT-v1-v2-divergence.md` | §13.3：处置格追加「⇒ 2026-09-20 裁定对齐，✅ 已修」、标题改「先实测不动、后按第 16 行对齐」、新增**补记**段（翻案经过 + 两版写法差异 + 教训），§13.3 / §13.4 / §13.5 的三处引用各补「那一行的结论 2026-09-20 被推翻」 |
+
+**⑦ 门禁（全部实跑，dev server 在 `:8787`）**
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `node node_modules/typescript/bin/tsc --noEmit` | **exit 0**（0 错） |
+| 规范 | `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` | **exit 0**（0 告警） |
+| 全量套件 | `node node_modules/vitest/vitest.mjs run --no-file-parallelism` | **22 files / 420 tests 全过**（本行未改单测 ⇒ 与 §94.13 同数） |
+| V1 探针（细指针） | `node test/manual/probe-ui-v1.mjs --width 390` / `--width 1440` | ✅ 两档 `findings=0`；390 `skeleton:103 / skPitch:103 / gap:0`，1440 `skeleton:47 / gap:0` |
+| V1 探针（粗指针） | `node test/manual/probe-ui-v1.mjs --width 390 --touch` | ✅ `skeleton:117 / skPitch:117 / gap:0`、`findings=0` |
+| V2 探针（回归） | `node test/manual/probe.mjs --width {1440,720,390,390 --touch}` ＋ `node test/manual/states.mjs` | ✅ 四档 `problems=0`；`states.mjs` 全部断言通过（ghost 77↔77 / 65↔65） |
+
+⚠️ 本行的改动面就是 ⑥ 表里那 8 个文件（不含服务端、不含 V2 代码）—— V2 的四档回归是确认「没被顺手带坏」。三档 V1 探针均**零 console 错误、零失败请求**。
+
+⚠️ **本节编号的由来**：本行是第 16 行，而小节号接着 §94.13（第 15 行）往下排 ⇒ 是 **§94.14**。**行号与小节号只在 §94.1–§94.13 这一段恰好相差 2**，别把行号当小节号用（`grep '^### 94\.'` 可数）。
+
+### 94.15 第 17 行的独立复核与落地（2026-09-20）：`theme-init` 的「时序不可用」被实测推翻
+
+第 17 行不是新缺陷，是**对一条旧结论的复核**。`docs/archive/AUDIT-v1-v2-divergence.md` §2.2 断定 V1 的
+`theme-init.js` 用 `getComputedStyle` 读首帧前的令牌**必然取不到值**；而 `docs/AUDIT-redundancies.md`
+§11 把同一件事登记为「**静态无法裁决**」。两条互斥的结论从 2026-09-18 起并排放着 ⇒ 本轮用浏览器量掉它。
+
+**① 复核对象：三方说法**
+
+| 出处 | 说法 |
+|---|---|
+| `docs/archive/AUDIT-v1-v2-divergence.md` §2.2 | V1 首帧脚本读不到 `--bg` ⇒ 顶栏/状态栏颜色停在 HTML 静态值；运行期 `theme-color` 慢一拍 |
+| `AUDIT-redundancies.md` §11 #10 | 该脚本在 `<head>` 里、位于 `tokens.css` **之后**的经典阻塞脚本 ⇒ 静态判不了，需实测 |
+| V2 源码两处注释 | `theme-init.js:8-9`「此刻样式表还没加载…永远停在静态值上」；`theme.js:9-10`「切换后 `getComputedStyle` 会立即返回**旧值**，于是 theme-color 总是慢一步」 |
+
+**② 量法：两支"不改源码"的观测（加在 V1 探针上）**
+
+1. `THEMECOLOR` —— 导航前注入 `Page.addScriptToEvaluateOnNewDocument`：① 包装 `getComputedStyle`，
+   记下**第一笔**调用看到的 `--bg`（那笔就是 `theme-init` 的）；② 用 `MutationObserver` 记下
+   `meta[name=theme-color]` 的 `content` **首次**被写入时的 `readyState` 与已加载样式表数。
+2. `THEMESWITCH` —— 同一个**同步块**里改 `data-theme` → 读计算值 → 立刻还原（`data-theme` 与
+   `theme-color` 两样都还原、中间态不渲染）⇒ 直接量"计算值会不会返回旧值"。
+
+**③ 读数（深色档，`node test/manual/probe-ui-v1.mjs --dark`）**
+
+```
+THEMECOLOR  {"theme":"dark","meta":"#191817","nowBg":"#191817","firstBgSeen":"#191817",
+             "firstSeenReady":"loading","firstSeenSheets":5,
+             "writes":[{"content":"#191817","ready":"loading","sheets":5}]}
+THEMESWITCH {"from":"dark","to":"light","before":"#191817","after":"#faf8f5","stale":false,
+             "restoredTheme":"dark","restoredMeta":"#191817"}
+```
+
+`tokens.css` 的两个真值：浅色 `--bg: #faf8f5`（`:17`）、深色 `--bg: #191817`（`:156`）；HTML 里静态的
+`theme-color` 也是 `#faf8f5`。⇒ 首帧那笔读到的就是**深色**令牌、发生在 `loading`、5 张样式表已加载；
+运行期改完属性再读**立刻**得到新值。**两条影响都不成立。**
+
+**④ 判别力：两条读数各自"先证红"**
+
+| 读数 | 红路径怎么造 | 红时读数 |
+|---|---|---|
+| `THEMECOLOR` | 把 `<script …theme-init.js>` 临时挪到**全部** `<link>` 之前（＝ V2 注释假设的那种排布） | `firstBgSeen:""`、`firstSeenSheets:0`、`writes:[]`、`meta` 停在 `#faf8f5` —— 与正路径逐字不同 |
+| `THEMESWITCH` | 把开关实验的属性从 `data-theme` 换成**不改** `--bg` 的 `data-density` | `before === after` ⇒ `stale:true` |
+
+两次实验都 `try/finally` **逐字节**还原（第二次另比对 sha256 前 12 位 `91400d0412bb`）。⇒ 「绿」不是恒绿。
+
+**⑤ 为什么两版实现都不用动、但要改注释**
+
+保证这件事的**是排布本身**：`theme-init.js` 是 `<head>` 里位于全部 `<link>` **之后**的经典阻塞脚本，
+规范要求解析器等前置样式表加载完再执行它（实测 5/5 张已加载）。V2 改用显式映射**同样正确**
+（不依赖加载时序、两行、不必关心表加载顺序），所以**实现不动**；被推翻的只是它注释里的**理由**——
+一条注释断言"另一条路不可用"，而实测它可用，那就是一句会误导后人的话。按 `AGENTS.md` §1 改写两处。
+
+**⑥ 「问另一版」（`AGENTS.md` §1）**
+
+| 项 | 内容 |
+|---|---|
+| 改动面 | ① `test/manual/probe-ui-v1.mjs` 新增两条读数；② `public/ui_v2/js/theme-init.js` 与 `theme.js` 的**注释** |
+| 问法 | V2 是否也需要同一支读数？ |
+| 结论 | **无同步项**：V2 的首帧与运行期路径都**不读计算值**（显式映射），没有同一失效模式 ⇒ 加同款读数只是重复。V2 拿到的是**注释订正** —— 那两句断言恰好就是关于 V1 的 |
+
+**⑦ 门禁**
+
+| 门 | 结果 |
+|---|---|
+| `node --check test/manual/probe-ui-v1.mjs` | 通过（探针不在 `tsc` / `eslint public/ui_v*/js` 的射程内，故这两项与本次改动无关） |
+| V1 探针（深色 / 正路径） | 两行读数见 ③；`AUDIT SUMMARY findings=0`、`CONSOLE ERRORS none`、`FAILED REQUESTS none` |
+| 判别力 | 两次红路径实验都按预期**红**，且还原后逐字节一致（sha256 `91400d0412bb`） |
+| 全量套件 | `node node_modules/vitest/vitest.mjs run --no-file-parallelism`（dev server 在 `:8787`） | **22 files / 420 tests 全过**（74.28s）。本次只加了两条**探针读数**与两处**注释**，但 `eslint public/ui_v*/js` 的射程**包含**被改的那两个 V2 文件、`docs.test.ts` 又有行数比值断言 ⇒ 仍然整跑一遍，确认没被带坏 |
+
+**⑧ 教训**
+
+1. **注释里的「因为…所以…」与「已成文的决定」是同一种东西，都要按判据复核。** 这次的两句理由
+   （"样式表还没加载"、"计算值会慢一步"）**全反了**，而且其中一句被第二轮审计当成**事实**引用，
+   变成了一条"确认级"的 V1 缺陷（§2.2）。
+2. **两条互斥的结论不能并排放着等下次。** §2.2 与 §11 #10 并存了两天，直到有人愿意为它跑一次浏览器 ——
+   而这次的总成本只是探针里二十几行观测加两次运行。
+
+### 94.16 第 18 行的独立复核与落地（2026-09-20）：两版「关闭预览即清正文」
+
+**① 缺陷形态与它长什么样**
+
+`<dialog>` 是**启动期创建、常驻 `body`** 的节点（V1 `components/preview.js` 构造时 `document.body.append(dialog)`；
+V2 `ui/dialog.js` 的 `createDialog` 同理）。关闭走的是 `dialog.close()`，正文与页脚**只在下次 `open()` 时才被
+换掉** ⇒ 用户看完这条、不再预览第二条时，那棵 `<pre>`（整条全文）与页脚按钮的闭包会一直抓着一整条记录，
+到页面销毁才释放。口径与审计 §4.2 一致：**不是泄漏代码，是"峰值驻留"** —— 但它有一个用户看得见的近亲：
+V2 `open()` 只把 `errorBox` 设成 `hidden`，那条**服务端错误信息**（可能包含路径、状态码）会一直留在 DOM 里。
+
+**② 实测：关闭之后"框"还会画多久**（`1440×900`，`.audits/_r18-measure.mjs`，两版都跑）
+
+| 版 | `transition-duration` | `close` 事件到达 | `display` 变 `none` | 退出过渡期间正文可见吗 |
+|---|---|---|---|---|
+| V1 | `0.3s ×4` | t+16ms | t+450ms 之前（t+250 仍是 `block`，t+450 已 `none`） | 是（t+250 时 `opacity` 才刚落到 `0.00`） |
+| V2 | `0.2s ×4` | t+16ms | t+250ms | 是（t+120 时 `opacity` 还是 `0.02`） |
+
+两个副产品读数也是有用的：`close` 事件**确实会到达**（t+16ms）——V1 的清 hash 与 V2 的 `spec.onClose` 都靠它；
+V2 的 `location.hash` 在关闭后为空，`onClose` 链路完好。
+
+**③ 修法：为什么"在 `close` 里立刻清"是错的**
+
+`.dialog` 有**退出过渡**（`motion.css` / `overlay-v2.css` 的 `@starting-style` +
+`transition-behavior: allow-discrete`）。在 `close` 里同步 `replaceChildren` 的写法**能通过"关完有没有释放"
+那条判据**，但用户会看见「框还在淡出、字先没了」，而且内容一撤、框的高度也会跟着跳（`height` 没有过渡）。
+所以判据不写死时长（那就把 `--dur-*` 抄成了第二个事实源），而是**问浏览器自己**：
+
+```
+requestAnimationFrame 轮询 → 直到 getComputedStyle(dialog).display === 'none' 才清
+```
+
+- 减弱动效（`prefers-reduced-motion: reduce`）或浏览器不支持 `allow-discrete` 时**根本没有过渡**，
+  第一帧就是 `none` ⇒ 立即清，同样不会闪 —— 这正是"轮询 `display`"比"等 300ms"稳的地方。
+- 等待期间又被打开（关掉后马上点下一行）：`dialog.open` 为真 ⇒ 本轮作废，下一次 `close` 会重新排。
+- 1s 只是**兜底**（不是设计值）：标签页进后台时 `requestAnimationFrame` 会被饿死，那也不能永远不清。
+
+**④ 判别力：三个实验，都真跑过**
+
+| 实验 | 怎么做的 | 结果 |
+|---|---|---|
+| ① 「没释放」 | 临时**不调用** `discardBody()` / `discardContent()`（其余代码原样） | 两版探针都红：V1 `preview-close: 关闭后没释放（正文 1 个节点 / 17 字符，页脚 3 个）`；V2 同名判据 `problems=1`。读数里 `bodyTextAfter` 直接躺着**正文本身** |
+| ② 「字先没了」 | 把调用换成**同步清**（`body.replaceChildren()` 就写在 `close` 处理器里） | 两版都红，且**各报自己那句**：V1 `正文在退出过渡期间就被清了（框仍是 block、正文 0 vs 打开时 1）`、V2 `框仍是 block 时正文已变成 0 个节点（打开时 1）`（两者的 `duringFade` 都读到 `kids:0` + `display:"block"`）⇒ 这条判据真的只放行"清得是时候"的写法 |
+| ③ 前提守卫 | 把 `--url` 指到空结果页（`?search=zzz-none-zzz`，读不到行） | 两版都红，而且报的是**前提**不是结论：V1 `AUDIT SUMMARY ["skeleton: no rows","preview-close: no rows"]`（**2 条**，其中 `preview-close: no rows` 指名前提）；V2 `problems=7`，一条正是 `预览关闭前后能读到对话框（判据前提）（读到 no rows）`，其余 6 条是同一个空结果的下游（`列表渲染出了行（读到 0）` 等）⇒ 读不到东西时**不会静默变绿** |
+
+①②的实验都 `try/finally` 还原，并按 sha256 逐字节校验（`_r18-mutate.mjs` 的 `restore`：`d1c34ad2bfa5` /
+`38643eea385e`，实验标记残留 0 处）。三个实验的原始读数都留在 `.audits/`，本节引的每句都是从日志里
+**逐字**抄的：① `_r18-v1-revert.log` / `_r18-v2-revert.log`、② `_r18-v1-naive.log` / `_r18-v2-naive.log`、
+③ `_r18-v1-premise.log` / `_r18-v2-premise.log`。
+
+**⑤ 「问另一版」（`AGENTS.md` §1）**
+
+| 项 | 内容 |
+|---|---|
+| 改动面 | V1 `components/preview.js`、V2 `ui/dialog.js`、两版探针各一段 |
+| 问法 | 这是"V1 修过、V2 仍有"吗？（审计 §4.2 标的是**两版都有**） |
+| 结论 | **不是同步项，是同一次改动**：缺陷形态两版同形（都常驻 `dialog`、都只在下次 `open` 才换正文），所以一次改两版。差异只在参数（V1 `0.3s` / V2 `0.2s`）与"清哪些节点"（V2 多清一个 `errorBox`） |
+
+**⑥ 门禁**
+
+| 门 | 结果 |
+|---|---|
+| `node --check` ×4（两个组件 + 两个探针） | 通过；行尾 CRLF 保持（裸 LF 0） |
+| `tsc --noEmit` / `eslint public/ui_v2/js public/ui_v1/js` | 均 `exit 0` |
+| V1 探针 `PRVCLOSE` | `before{kids:1,chars:17}` → `duringFade{kids:1,display:"block"}` → `after{kids:0,chars:0,footKids:0,display:"none"}`；`findings=0`、无 console 错误、无失败请求 |
+| V2 探针 `PRVCLOSE` | 同形（`footKids:2` 起步，V2 页脚只有「下载/复制 + 关闭」）；`problems=0` |
+| 全量套件 | `node node_modules/vitest/vitest.mjs run --no-file-parallelism` ⇒ **22 files / 421 tests 全过**（本次只加探针段与两处组件改动，但整跑一遍确认没被带坏） |
+
+**⑦ 教训**
+
+1. **"清得干净"与"清得是时候"是两条判据，只写一条会放过一个错解。** 只钉"关完有没有释放"，同步清就能过；
+   加上"过渡期间还在不在"，错解才现形。这也是为什么这次的判据条数是 2 而不是 1。
+2. **时长不写死。** `--dur-standard` / `--dur-base` 已经是两个事实源了，探针里再写一个 `300` 就是第三个；
+   问 `display` 是不是 `none` 既准确又对"没有过渡"的配置天然成立。
+3. **审计说的"确认"级条目也可能被后来的代码改出新形态。** 这条 2026-09-18 就登记过，当时的处置是"记为观察"；
+   这次真正动手的触发点是**它顺带暴露的 `errorBox` 永久驻留**（那条有用户可见面）—— 修一条时把同族的一起收掉。
+
+### 94.17 第 19 行的独立复核与落地（2026-09-20）：`--fs-display` 是孤儿令牌 —— 删令牌、删死 `@media`，并把「令牌不空转」补到 V2
+
+**① 缺陷形态：一个「有存在感」却没人用的令牌**
+
+`--fs-display` 定义在 `public/ui_v2/css/tokens-v2.css` 的字号阶梯里
+（`clamp(1.5rem, 1.32rem + 0.5vw, 1.875rem)`，即 24–30px），它是「概览带主数字」那一档。但全仓
+`var(--fs-display)` 是 **0 命中**。它**不是**「没人用但留着备用」那种无害的闲置，恰恰相反 ——
+
+- `public/ui_v2/js/ui/overview.js` 的一段注释、`docs/ui-v2-design.md` §4.2 的令牌表**都写着**「概览带主数字用它」
+  ⇒ 它是被当成**当前设计**存在的，而实测 `.overview__value`（`shell-v2.css:295`）挂的是 `--fs-title`（17px）。
+  一个只在定义处出现的令牌会让人以为「主数字是 30px」。
+- 更隐蔽的一层：`shell-v2.css` 里还有一条 `@media (max-width: 380px) { :root { --fs-display: 1.5rem } }`
+  —— 那是「极窄时把主数字降一档」的**死规则**。**一次重新定义**会让「这令牌有没有人用」的朴素判据误判成「有」
+  （它确实在别的文件里出现过），只有按 `var(--x` / `'--x'` 数**消费者**才看得出来。
+
+**② 三条可复核的事实**（决策依据；「要写死得先量」）
+
+| # | 事实 | 怎么核 |
+|---|---|---|
+| ① | `var(--fs-display)` 在 `public/**` **0 命中** | `Grep --fs-display public/`：删后只剩 `tokens-v2.css` 的删除说明与 `shell-v2.css` 的「为何这里曾有过」；`test/ui-guard.test.ts` 也报 0 |
+| ② | 本仓既有的令牌政策就是「成对的、成阶的**整组**保留；**孤立的单点令牌才删**」 | `tokens-v2.css` 里的书面政策段；既有先例 `--r-xl` / `--z-dialog` / `--dur-instant` / `--ink-inverse` 都是按这条删的（`tokens-v2.css:95`） |
+| ③ | 它是**漏收**，不是设计没做完 | `git log`：`b59e022`（2026-09-16）`.overview__value` 还是 `font-size: var(--fs-display)`；`b0244c0`（2026-09-17「V2 界面生产完善」）把它改成 `var(--fs-title)` 却**没跟删令牌** —— 而**同一笔提交**里 §17.2「删除死代码」恰好删掉了另外四个未使用令牌 ⇒ 同一次清理漏了一个 |
+
+**③ 为什么选「删」而不是「用回去」**
+
+「用回去」意味着改 `.overview__value` 的字号 —— 而那个字号是 **2026-09-17 有意改的**（概览主数字从 24–30px
+收到 17px，是那一版界面重做的一部分）。把令牌接回去等于把那次决定翻回来：令牌只是那次决定的**遗留**，
+不是一件待办。⇒ 删令牌 + 删死 `@media`。
+
+> **「用回去」要付的代价：实测过。** `.audits/_r19-overview-fit.mjs` 在真实浏览器里把 `.overview__value`
+> 的字号原地改成 30px（CSSOM 覆盖，跑完撤回并核对无残留）：概览带从 **62px 撑到 76px**（+14px，越过
+> `min-height: 60px`）—— 拆开看是内容 36 → 50px（数字行 18 → 32px），padding 与边框不变。
+> ⇒ 「用回去」不是改一行字号，得连带改带高、骨架条高度与标签间距，属一次视觉重排（与 §12.1.1 第 2 条同结论）。
+> ⚠️ 一条环境事实：站点有 CSP，**注入 `<style>` 不生效** —— 第一次实测就是这么"假绿"的（读数全是 17px，
+> 差值 0）；改 CSSOM（`el.style.fontSize`）才真的改到。⇒ 取读数前先确认**读数本身变了**，否则量的是没生效的那一版。
+
+**④ 落地清单（6 个文件）**
+
+| 文件 | 改动 |
+|---|---|
+| `public/ui_v2/css/tokens-v2.css` | 删 `--fs-display` 定义；字号阶梯注释改写（记下这次删除与「别抄回来」）；顺带订正 `--shadow-inset` 的注释 |
+| `public/ui_v2/css/shell-v2.css` | 删 `≤380px` 那条 `--fs-display` 死 `@media`，原处留一句「为什么这里曾有过」 |
+| `public/ui_v2/js/ui/overview.js` | 占位注释只留下它**自己**的理由（骨架条），删掉对已删令牌的引用 |
+| `docs/ui-v2-design.md` | §4.2 令牌表删 `--fs-display` 行、把 `--fs-h1` 订正为 V2 的 `--fs-title`；§14.1 那格「24–30px 保留」标为**已被推翻** |
+| `docs/ui-v2-audit.md` §5.3 | 「未使用令牌…例外：`--fs-display`」改为**清零**，并注明那个例外是被**判据缺口**放行的 |
+| `test/ui-guard.test.ts` | **把「令牌不空转」扩到 V2**（新 `describe` + 一份带理由的 `KEPT_GROUPS`）；`walkFiles` 提到模块级 |
+
+**⑤ 判别力：守卫要「在令牌还活着时」先红**
+
+| 步 | 做法 | 结果 |
+|---|---|---|
+| 红 | 先只落地**守卫**（令牌与文档都还没删） | `test/ui-guard.test.ts` 直接红：`expected [ '--fs-display' ] to deeply equal []` —— 报的**正好只有它一个**，那 8 个成组令牌（3 个 `--c-warm-*`、4 个 `--kind-*-soft`、`--shadow-inset`）一处都没被误报 |
+| 绿 | 删掉令牌 + 死 `@media` 后再跑 | **26/26** 全过 |
+
+> 这比「事后注入一个孤儿令牌」强：注入只能证明判据**会**看见孤儿，证明不了它在**真实的**仓库里真的抓到过。
+> 这里抓到的是**真**缺陷；而「只报它一个」同时证明了 `KEPT_GROUPS` 豁免名单**没有过宽**。
+> 删前实测 `public/ui_v2/**` 的孤儿令牌是 **9 个**（`--fs-display` + 其余 8 个成组），删后**正好剩那 8 个**。
+> 原始读数：`.audits/_r19-guard-red.log`（`26 tests | 1 failed`，且 `Received` 里**只有** `"--fs-display"` 一项）、
+> `.audits/_r19-guard-green.log`（`26 passed`）。
+
+**⑥ 「问另一版」（`AGENTS.md` §1）**
+
+| 项 | 内容 |
+|---|---|
+| 问法 | V1 有没有同一个令牌？没有的话是不是该「补一个」？ |
+| 结论 | **无同步项**：V1 **没有** `--fs-display`。而且 V1 早在 **2026-09-18** 就删过自己的同族令牌 `--fs-stat`（clamp 24–30px，「统计条主数字」那一档）—— `public/ui_v1/css/tokens.css:72-75` 留着那段理由：「一个只在定义处出现的令牌会让人以为『数字是 30px』」。**同一条判据、同一个缺陷形态** ⇒ V2 这次是**收敛到 V1 已经立好的规矩**，不是新立规矩 |
+
+**⑦ 门禁**
+
+| 门 | 结果 |
+|---|---|
+| `tsc --noEmit` / `eslint public/ui_v2/js public/ui_v1/js` | 均 `exit 0` |
+| `vitest run --no-file-parallelism test/ui-guard.test.ts` | **26/26**（新 `describe` 与 V1 那节同口径） |
+| 全量套件 | **22 files / 421 tests 全过** |
+| 两个探针 | V1 `findings=0` / V2 `problems=0`；`CONSOLE ERRORS none`、`FAILED REQUESTS none` |
+| 「30px 放不进那条带」的实测 | `.audits/_r19-overview-fit.mjs`（真实浏览器、CSSOM 原地改字号）：概览带 **62 → 76px**（+14px）；撤回后回 62px、无残留 |
+
+**⑧ 教训**
+
+1. **「令牌没人用」与「令牌有人提到」是两回事。** `@media` 里的一次重新定义、注释里的一句「主数字用它」，
+   都会让这令牌显得「有存在感」，但都不算消费者。判据必须数 `var()`，而且**定义行本身不算引用**。
+2. **守卫的射程缺口会让缺陷躺得住。** 这条令牌 2026-09-17 就成了孤儿，直到 2026-09-20 才被发现 ——
+   而 V1 那节守卫当时**明写**了「V2 有成组保留的例外」，那句话只对**成组**成立，却顺手把整个 V2 挡在外面。
+   豁免要**按组**给（`KEPT_GROUPS` 带理由），不是**按版本**给。
+3. **「问另一版」也可能得到「另一版早就做过了」。** 这次 V1 给的不是「要不要跟」，而是一段**可引用的先例**
+   （`--fs-stat`）—— 它把「该不该删」从口味问题变成了「跟既有判据齐不齐」。
+
+### 94.18 收尾（2026-09-20）：第二轮审计报告标记为**已归档（快照）**
+
+**① 为什么是现在**
+
+`docs/archive/AUDIT-v1-v2-divergence.md` 的条目已**全部走到终点**：§1–§11 的缺陷在 §12 / §13 记了落地，
+本轮又把最后两条（§4.2、§12.1）收掉 ⇒ 这份报告作为**待办清单**已经空了，剩下的全是**刻意保留**。
+继续让它处于「可追加」状态没有收益、反而有害：它有一处**已被推翻**的结论（§2.2）、一大片冻结的
+`文件:行`，而读者无从知道哪些还能改、哪些已经是定论。
+
+> ⚠️ **只归档了这一份。** 仓库里另外四份审计报告（`AUDIT-missing-states.md` / `AUDIT-v1-v2-drift-2026-09-19.md` /
+> `AUDIT-redundancies.md` / `AUDIT-commit-9b4cdca.md`）**本次未动** —— 本次是照用户指示单独标记这一份；
+> 它们要不要一起归档、以及「归档」是否要立成一条通用惯例，属另一项决定。
+
+**② 「归档」在本文里的三条具体口径**
+
+| # | 口径 | 为什么 |
+|---|---|---|
+| ① | **§ 编号冻结**：不重排、不合并、不删节 | 全仓 **44 处**具体引用分布在 **23 个文件**、覆盖 **28 个编号**（源码 27：`public/ui_v1/js/**` 10、`public/ui_v2/js/**` 16、`src/ui/query.ts` 1；探针 3；文档与记忆 14）⇒ 编号是**外部契约**，动它会一次性打断 23 个文件里的注释与引用 |
+| ② | **`文件:行` 与数字冻结在归档时点**，不随代码漂移 | 它们描述的是**缺陷当时**的样子（§8 引的 `ui_old/js/…` 就是当时的目录名）⇒ 与第 7 行「快照不改」同一条口径 |
+| ③ | **归档 ≠ 全修了** | 横幅里点名列明「刻意保留」清单（§8 两处边界、§9 剔除/降级表、§12.2「明确不改」表、§3.4/§4.3），否则下一位会把它们当成漏改 |
+
+**③ 落地（3 个文件）**
+
+| 文件 | 改动 |
+|---|---|
+| `docs/archive/AUDIT-v1-v2-divergence.md` | H1 下新增归档横幅（状态 + 三条口径 + 保留清单 + §2.2 已推翻的警示）；**`## 0`–`## 13` 与 14 个二级标题一字未动** |
+| `README.md` | 文档表该行注明「**已归档**（2026-09-20）：封版不再更新；§ 编号是冻结的引用锚点」 |
+| `docs/progress.md` | 第 20 行 + 本节 |
+
+**④ 「问另一版」（`AGENTS.md` §1）**
+
+| 项 | 内容 |
+|---|---|
+| 问法 | 这是跨版治理动作，V1 / V2 要不要各做什么？ |
+| 结论 | **无同步项**：归档是**文档状态**，两版代码一行未动。反过来说，本文那 **27 处源码引用**（V1 10 / V2 16 / 服务端 1）**正是不能动编号的理由** —— 归档恰恰是为了**保住**它们 |
+
+**⑤ 门禁**
+
+| 门 | 结果 |
+|---|---|
+| 结构 | 横幅在 H1 之后、原 `>` 引语之前；二级标题仍 **14 个**；§ 编号零改动 |
+| 引用完整性 | 改后重跑统计（`.audits/_r20-refcount.mjs`）：**44 处 / 23 个文件 / 28 个编号**，与改前**逐位相同** ⇒ 归档动作没有打断任何引用。横幅与第 20 行本身也**不新增**引用 —— 它们里的 `§8` / `§2.2` / `§12.2` 是**文内自指**，前面不带文件名，故不被计数器计入 |
+| 门禁 | 本次只改文档（+ `README.md` 一句）⇒ `tsc` / `eslint` 与代码无关；`vitest run --no-file-parallelism` 整跑一次，确认 `docs.test.ts` 未被带红 |
