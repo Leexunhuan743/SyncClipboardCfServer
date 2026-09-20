@@ -400,8 +400,8 @@ flowchart TD
 2026-09-18 核对两版调用点时带出来的结论（用户要求记在这里）：
 
 - **V1**：首屏打一次 `GET /ui/api/overview`（合成快照）；此后每次**切视图 / 写操作**只补打**轻的**
-  `GET /ui/api/statistics`（`public/ui_v1/js/main.js:412` 是唯一的调用点；首屏**不再**单独调它，
-  见同一文件 `:1241` 那句注释）。
+  `GET /ui/api/statistics`（`public/ui_v1/js/main.js` 的 `refreshStats()` 是唯一的调用点；首屏**不再**单独调它，
+  见同一文件里那句注释（说明首屏为何不再单独调它））。
 - **V2**：写操作后走 `refresh({ silent: true })` **加** `refreshOverview()`
   （`public/ui_v2/js/boot.js:670-671`、`:746-747`、`:777-778`、`:796-797`、`:1045-1046`、`:1081-1082`、`:1109-1110`；
   切视图同理 `:493`）——也就是**每次都整只重打 overview**。
@@ -415,7 +415,7 @@ flowchart TD
 
 | 端点 | 一次调用做了什么 |
 |---|---|
-| `GET /ui/api/statistics`（`src/ui/routes.ts:572-588`） | `storage.totalHistorySize()`（**R2 逐页列举**，`src/storage.ts:200`）+ `db.statistics()`（1 条聚合，`src/db.ts:368`）+ `countByTypeViews()`（两个口径） |
+| `GET /ui/api/statistics`（`src/ui/routes.ts:572-588`） | `storage.totalHistorySize()`（**R2 逐页列举**，`src/storage.ts:200`）+ `db.statistics()`（1 条聚合，`src/db.ts` 的 `statistics()`）+ `countByTypeViews()`（两个口径） |
 | `GET /ui/api/overview`（`src/ui/routes.ts:623-641`） | 上面那整套 **＋** `readChangeMarker()` **＋** `deploymentInfo()` —— 而 **2026-09-19（O-01）之前**`deploymentInfo` **自己又算了一遍** `totalHistorySize()` + `db.statistics()` + `countByTypeViews()` + 两次 Meta 读；现已拆成 `deploymentStats()`（统计层，`:76-88`）+ `deploymentMeta()`（元信息层，`:97-144`），统计层只算一次 |
 
 所以现状是：**点一次「收藏」**，V2 付的是 overview 的全套，而 V1 只付 `statistics` 那一套。
@@ -426,7 +426,7 @@ flowchart TD
 
 1. **V2 侧**：写操作后只补打 `statistics`（列表照旧 `refresh()`）。安全性有三条依据：写操作是
    **本机发起的**；`marker` / "最近同步" 不需要由它刷新 —— 在线 60s 看门狗与离线 10s 轮询
-   （`boot.js:654` 那条 `api.poll`）会带回来；部署信息（保留策略、版本、地址）不因一次收藏而变。
+   （`boot.js` 里那条 `api.poll` 调用）会带回来；部署信息（保留策略、版本、地址）不因一次收藏而变。
 2. **两版共享的后端**：`overview` 内部把 `statistics` / `totalHistorySize` / `countByTypeViews`
    算了**两遍**（一遍给它自己的 `stats`/`byType`，一遍在 `deploymentInfo` 里）。让 `deploymentInfo`
    接一份**已算好的快照**（或让 overview 复用它返回的 `stats`/`views`/`bytes`）就能各减一半 ——
