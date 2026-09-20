@@ -185,7 +185,8 @@ export function createDrawer(handlers) {
         // 两条例外，都是"别在用户不知情时改他的配置"：
         //   ① `oddMetaMinutes` 非 null：Meta 里存着一个整天表示不出来的值 ⇒ 原样发回，不能清除；
         //   ② `retentionKnown` 为假（部署信息一次都没取到）：**省略该字段** —— 服务端把"缺省"
-        //      理解为"不改动"（`src/ui/maintenance.ts:102`），发 null 会清掉一条用户看不见的覆盖。
+        //      理解为"不改动"（`src/ui/maintenance.ts` 里 `PUT /ui/api/settings` 那段注释），
+        //      发 null 会清掉一条用户看不见的覆盖。
         const payload = {};
         if (days !== null) payload.retentionMinutes = days * 1440;
         else if (retentionKnown) payload.retentionMinutes = oddMetaMinutes;

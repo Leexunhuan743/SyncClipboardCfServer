@@ -69,7 +69,7 @@ export function createPager({ onPage }) {
   return {
     el: root,
 
-    update({ page, pageSize, total, loading = false }) {
+    update({ page, pageSize, total, loading = false, error = false }) {
       const pages = Math.max(1, Math.ceil((total ?? 0) / pageSize));
       currentPage = Math.min(Math.max(1, page), pages);
 
@@ -81,11 +81,17 @@ export function createPager({ onPage }) {
       // 分页没有骨架可画（它这一格就一行文字），只把那条断言换成一句不表态的等待文案。
       // 见 `docs/AUDIT-missing-states.md` §1.4。
       const pending = loading && (total ?? 0) === 0;
+      // 失败档：**条数未知**。与加载档分开写 —— 「共 0 条」是一条确定的断言，而失败这一刻
+      // 我们并不知道库里有几条（本文件上面那段"还没到 ≠ 真的没有"是同一条判据的加载版）。
+      // 两版必须同答：V1 的 `components/pagination.js` 有同一个 `unknown` 档。
+      const unknown = error && (total ?? 0) === 0;
       status.textContent = pending
         ? '正在加载…'
-        : pages <= 1
-          ? `共 ${total ?? 0} 条`
-          : `${from}–${to} · 共 ${total ?? 0} 条 · 第 ${currentPage}/${pages} 页`;
+        : unknown
+          ? ''
+          : pages <= 1
+            ? `共 ${total ?? 0} 条`
+            : `${from}–${to} · 共 ${total ?? 0} 条 · 第 ${currentPage}/${pages} 页`;
 
       prev.disabled = currentPage <= 1;
       next.disabled = currentPage >= pages;

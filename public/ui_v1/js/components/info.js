@@ -459,7 +459,10 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
           }),
           el('div', { class: 'panel__actions' }, [retry]),
         );
-        // 已经有快照的调用方会先开壳、再在刷新失败时用 open(null) 覆盖它 ——
+        // 调用方（`main.js` 的 `openInfo`）会**多次**调 `open()`，而第二次进来时对话框已经开着：
+        //   · 有快照 —— 先 `open(cached)` 开壳，那次请求回来再 `open(fresh)` 覆盖；
+        //   · 没有快照且请求失败 —— 走 `open(null)`（指出「暂时取不到部署信息」），
+        //     用户点「重试」会原样再走一遍，于是又是 `open(null)`。
         // 对一个已经打开的 <dialog> 再调 showModal() 会抛 InvalidStateError，故必须判开合状态。
         if (!dialog.open) dialog.showModal();
         return;
@@ -520,10 +523,10 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         dangerSection(),
       );
 
-      // 与上面的 `!info` 分支同一条判据：有快照的调用方会先 `open(fresh)`，刷新失败时再
-      // `open(null)` 覆盖它 —— 第二次进来对话框已经开着，直接 showModal() 会抛
-      // InvalidStateError，被调用方 catch 吞掉后还会把刚画好的数据换回「暂时取不到部署信息」
-      // （重试成功却显示成失败）。
+      // 与上面的 `!info` 分支同一个理由：`open()` 会被**多次**调用（先 `open(cached)` 开壳、
+      // 请求回来再 `open(fresh)`；从「重试」按钮进来同样再走一遍）—— 第二次起对话框已经开着，
+      // 直接 showModal() 会抛 InvalidStateError，被调用方 catch 吞掉后还会把刚画好的数据
+      // 换回「暂时取不到部署信息」（重试成功却显示成失败）。
       if (!dialog.open) dialog.showModal();
     },
   };

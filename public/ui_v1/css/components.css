@@ -1914,7 +1914,9 @@ th[aria-sort="descending"] .th-sort__arrow {
    * 盒模型完全不同。逐项（2026-09-20 CDP 实测，492 与 836 两个宽度各 50 行，行高全部一致）：
    *   `2 * 10px`       `.table tr.row` 的上下内边距
    * + `1px`            它的 border-bottom
-   * + `var(--sp-1)`    它的 row-gap（卡内「内容行」与「操作行」之间）
+   * + `var(--sp-1)`    它的行间距（卡内「内容行」与「操作行」之间）。⚠️ `tr.row` 那条规则里
+   *                    写的是字面量 `gap: 4px var(--sp-2)` —— 与 `--sp-1` **同值但不同源**，
+   *                    改 `tr.row` 的行间距时这里不会自动跟着走（见本段末尾那条约定）
    * + `48px`           「内容行」= `.cell-content__body` 实测 48 =
    *                    22（`.cell-content__line` 的 min-height）+ 2（body 的 gap）
    *                    + 2（`.cell-content__meta` 的 margin-top）+ 22（meta 自身的高度）

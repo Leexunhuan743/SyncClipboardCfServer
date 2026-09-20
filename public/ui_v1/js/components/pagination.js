@@ -66,7 +66,7 @@ export function createPagination({ onPage }) {
 
   return {
     el: node,
-    update({ page, pageSize, total, loading = false }) {
+    update({ page, pageSize, total, loading = false, error = false }) {
       currentPage = page;
       totalPages = Math.max(1, Math.ceil(total / pageSize));
       const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -77,6 +77,9 @@ export function createPagination({ onPage }) {
       // 列表补了骨架档（见 components/list.js），分页没有骨架可画，故这里只把两处断言
       // 换成一句不表态的等待文案（同一时刻列表与分页说的必须是同一件事）。
       const pending = loading && total === 0;
+      // 失败档：**条数未知**。它既不是"正在取"，也不是"一条都没有" —— 后两句都是确定的断言，
+      // 而失败这一刻我们并不知道库里有几条。故这一档什么都不说（错误态正文在上面那块里）。
+      const unknown = error && total === 0;
 
       // 防御性夹取：真正的修法在 main.js（fetch 落地后把越界页码夹回末页，见那里的注释）。
       // 这一条是第二道保险 —— 万一将来有别的路径把越界页码送进来，也不该渲染出
@@ -84,10 +87,12 @@ export function createPagination({ onPage }) {
       const safeFrom = total === 0 ? 0 : Math.min(from, total);
       range.textContent = pending
         ? '正在加载…'
-        : total === 0
-          ? '没有可显示的记录'
-          : `第 ${safeFrom}–${to} 条，共 ${total} 条`;
-      pageLabel.textContent = pending ? '' : `第 ${page} / ${totalPages} 页`;
+        : unknown
+          ? ''
+          : total === 0
+            ? '没有可显示的记录'
+            : `第 ${safeFrom}–${to} 条，共 ${total} 条`;
+      pageLabel.textContent = pending || unknown ? '' : `第 ${page} / ${totalPages} 页`;
       prev.disabled = page <= 1;
       next.disabled = page >= totalPages;
       jump.max = String(totalPages);

@@ -15,10 +15,9 @@
 // 2026-09-19 起：probe 不只打印，还在文件末尾用 check() **自己断言一批不变式**（审计 §3 F-3）；
 // 不达标会打印一行 AUDIT 失败清单并把退出码置 1 —— 此前「探针读到空数组」与「读到 1009」
 // 在终端里长得一样，任何缺陷都不会让它变红。
-// 在终端里长得一样，任何缺陷都不会让它变红。
 // 同日晚（审计 F-5）：新增 `--touch`（`Emulation.setTouchEmulationEnabled`）与
 // `--control-h-sm` / `(pointer: coarse)` 两个读数（外加一条判据）。**探针默认是细指针** ——
-// `--width 390` 量到的是「窄窗口桌面」而不是手机；这一条不写明，就会有人把宽度规则“修”回去。
+// `--width 390` 量到的是「窄窗口桌面」而不是手机；这一条不写明，就会有人把宽度规则"修"回去。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -255,9 +254,14 @@ try {
       return h;
     })(),
     // 取**众数**而不是最小/最大：实测三个组合里真实行的分布各有一个离群值 ——
-    // 最小的那张是**末行**（末张卡片没有下边框，少 1px：125 → 124 / 77 → 76.5），
+    // 最小的那张是**末行**（末行没有下边框），而「少掉多少」**随模式不同**：
+    //   · 卡片档（≤720px）：行不再是表格行，下边框是**整条 1px** ⇒ 125 → 124；
+    //   · 表格档（>720px）：board-v2.css 的 .board__table 用了 border-collapse: collapse，
+    //     那条分隔线由相邻两行**各担一半**、末行只少自己那一半 ⇒ 77 → 76.5。
+    //     （同一条账也在 .ghost 的等式里：表格档 +1px = 两个 0.5 之和。）
     // 最大的那张是**内容更长**的卡片（卡片档行高由内容撑开，见 board-v2.css 的推导）。
     // 众数 = 「典型的那一档」，也正是骨架该对齐的那一档。
+    // ⚠️ 本块是模板字符串，注释里**不许出现反引号**（会提前终止模板，N-14 形态）。
     rowModeH: (() => {
       const hs = [...document.querySelectorAll('tr.item')].map((n) =>
         Math.round(n.getBoundingClientRect().height),

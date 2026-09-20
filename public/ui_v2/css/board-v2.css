@@ -744,7 +744,7 @@ button.entry:focus-visible {
    * 按 Enter 会异步改排序且没有任何可见反馈。
    * `visibility: hidden`（不是 `display: none`）刚好：把按钮移出 Tab 顺序与无障碍树，
    * 而 `<th>` 的列名「内容」不在这里面，照旧留在树里给单元格提供列上下文。
-   * 见 `docs/AUDIT-missing-states.md` §6.1。 */
+   * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §6.1。 */
   .board__head-row .sort-btn {
     visibility: hidden;
   }

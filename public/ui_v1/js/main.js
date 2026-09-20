@@ -49,6 +49,10 @@ const store = createStore({
   // 「还没到」会被读成「一条都没有」，于是页面一打开就断言「还没有任何记录」（2026-09-18 修）。
   // 初始为 true：组件被建出来的那一刻，数据必然还没到。
   loading: true,
+  // 最近一次列表请求失败的原因（成功即清空）。**它和 loading 是两件事**：失败路径不调
+  // `render()`（那会把刚画好的错误态换成空状态），所以列表与分页各自要有一个"此刻不该表态"
+  // 的判据 —— 那两个组件读的就是这一位（对应 V2 `boot.js` 的 `state.error` / `boardState()`）。
+  error: null,
   stats: null,
   info: null,
   username: null,
@@ -303,12 +307,10 @@ function syncHeader() {
   });
 }
 
-function render() {
+// 分页那一格的**唯一**绘制点：`render()` 与失败路径共用它 —— 失败路径不能整块 `render()`
+// （`list.update()` 会把刚画好的错误态换成空状态），但分页照样要跟着从加载档落下来。
+function renderPagination() {
   const state = store.get();
-  syncHeader();
-  stats.update(state.stats);
-  toolbar.update({ filters: state.filters, byType: countsForView(state) });
-  list.update(state);
   pagination.update({
     page: state.filters.page,
     pageSize: state.filters.pageSize,
@@ -317,7 +319,19 @@ function render() {
     // 首屏那一帧它此前写的是「没有可显示的记录」，与列表刚修掉的那句是同一个谎，
     // 只是换了个控件（2026-09-18 补）。
     loading: state.loading,
+    // 失败时条数**未知**：加载档那句（正在加载…）与空档那句（没有可显示的记录）都不成立，
+    // 分页这时什么都不说 —— 说明由列表的错误态正文承担（`serverUnreachable` 那条横幅只管连通性）。
+    error: Boolean(state.error) && state.total === 0,
   });
+}
+
+function render() {
+  const state = store.get();
+  syncHeader();
+  stats.update(state.stats);
+  toolbar.update({ filters: state.filters, byType: countsForView(state) });
+  list.update(state);
+  renderPagination();
 }
 
 // ===== 数据 =====
@@ -367,7 +381,7 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 过渡本身就要 ~60ms 主线程（布局与样式各上百毫秒级——它要对 `.results` 整块做快照，
     // 成本随页大小上升），换来的只是一个数据表上的交叉淡入；而列表现在是一帧落地，
     // 本就没有「换面」需要掩饰。跨文档过渡（登录页 → 列表页）保留，那条由 CSS 声明、不走这里。
-    store.set({ items: page.items, total: page.total, flashKeys, loading: false });
+    store.set({ items: page.items, total: page.total, flashKeys, loading: false, error: null });
     render();
 
     if (announce) toasts.info(`已刷新，共 ${page.total} 条记录`);
@@ -375,16 +389,21 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 被更新的请求 abort 掉不是失败：静默退出，由那次请求负责呈现
     if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
-    // 失败也要把 loading 收掉：否则「加载失败 + 重试」之上还压着一层骨架，
-    // 那个可操作的错误态根本露不出来。
-    store.set({ loading: false });
-    if (serverUnreachable(error)) setStale(true);
     // 翻译成人话的那几条（400 搜索词过长 / 429 限速 / 其余原样）在**两版共用**的文案表里：
     // 此前 V1 与 V2 各写一份，症状是"同一件事两个界面说不同的话"。
     const message = describeListError(error, store.get().filters.search);
+    // 失败也要把 loading 收掉：否则「加载失败 + 重试」之上还压着一层骨架，
+    // 那个可操作的错误态根本露不出来。
+    // `error` 一并进 store：失败时条数**未知**，列表与分页都不该把「取不到」画成「真的没有」
+    // （`list.update` 与 `renderPagination` 都读这一位）。
+    store.set({ loading: false, error: message });
+    if (serverUnreachable(error)) setStale(true);
     if (store.get().items.length === 0) {
       // 首屏失败：给出可操作的错误态，而不是把骨架屏永远留在那里
       list.showError(message, () => refresh());
+      // 分页那一格也要跟着落到失败档 —— 失败路径不整块 `render()`（理由见上面的 store 说明），
+      // 少了这一句它会**永远**停在加载档写下的「正在加载…」，与正下方的「加载失败」互相矛盾。
+      renderPagination();
     } else {
       // 已经有内容时保留旧数据 + 一条提示。带上「重试」：网络抖动这类瞬时故障占多数，
       // 而重试的成本正好是刚刚失败的那一次列表请求 —— 此前只能让用户自己再点一次刷新。
@@ -447,7 +466,8 @@ async function refreshStats() {
 //   ① 走 `overviewGate`：有更新的快照在飞时，这次的结果不许落地（latest-gate）；
 //   ② `view` 在**请求时定格**并原样盖章 —— 落地时再读 `filters.deleted` 的话，
 //      一份"活跃视图"的快照会被标成"回收站视图"，而 `countsForView` 会因此认为归属一致、
-//      把活跃记录的计数当回收站的计数画出来（同一类缺陷 refreshStats 在 `:371` 有显式守卫）。
+//      把活跃记录的计数当回收站的计数画出来（同一类缺陷 refreshStats 里有
+//      `if (view !== store.get().filters.deleted) return;` 这条显式守卫）。
 async function refreshOverview() {
   const view = store.get().filters.deleted;
   const ticket = overviewGate.begin();

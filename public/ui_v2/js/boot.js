@@ -322,6 +322,9 @@ function boot() {
       total: current.total,
       // 分页也要能区分「还没到」与「真的没有」（见 ui/pager.js）
       loading: current.loading,
+      // 失败时条数未知，分页不许说「共 0 条」—— 判据与列表**共用** `boardState()`，
+      // 免得两处对"现在是不是失败态"给出不同答案（V1 的 `renderPagination` 同一档）。
+      error: boardState(current) === 'error',
     });
   }
 
@@ -373,6 +376,7 @@ function boot() {
       pageSize: current.filters.pageSize,
       total: current.total,
       loading: current.loading,
+      error: boardState(current) === 'error',
     });
 
     // 列表**头**也要在这里刷（只刷头，不碰行 —— 行由 `render()` 的对账负责）。
@@ -731,7 +735,8 @@ function boot() {
       board.patchItem(next, { pop: field === 'starred' ? 'star' : null });
       // 这一行若在选择集里，选择集里那份也要换成新对象（F5）：批量条的方向与文案
       // （置顶/取消置顶、收藏/取消收藏）读的正是选择集里的对象 —— 只更新列表而不更新它，
-      // 批量操作会按**旧快照**算方向（"已置顶的记录选择条还说置顶"）。V1 `main.js:538-544` 同源。
+      // 批量操作会按**旧快照**算方向（"已置顶的记录选择条还说置顶"）。V1 的对应段落在
+      // `ui_v1/js/main.js` 的 `toggleFlag` 里（"这一行如果在选择集里…"那一段），两边同源。
       const selection = state().selection;
       if (selection.has(next.key)) {
         const synced = new Map(selection);

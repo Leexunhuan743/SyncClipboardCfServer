@@ -32,7 +32,7 @@ export function createBoard(handlers) {
   // `block / flex / grid`（卡片流），而 `display` 一改，浏览器就不再从元素类型推导出
   // 表格语义 ⇒ 读屏听到的是一串没有列上下文的单元格值。
   // V1 早就这么做了（`ui_v1/js/components/list.js` 逐格补 `role`，`components.css` 的
-  // 窄屏块里逐字记着这件事），V2 漏了。见 `docs/AUDIT-missing-states.md` §6.3。
+  // 窄屏块里逐字记着这件事），V2 漏了。见 `docs/archive/AUDIT-v1-v2-divergence.md` §6.3。
   const table = el('table', { class: 'board__table', role: 'table' });
   const colgroup = el('colgroup');
   const headRow = el('tr', { class: 'board__head-row', role: 'row' });
