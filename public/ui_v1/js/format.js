@@ -26,7 +26,7 @@ export function formatSize(bytes) {
   // 于是全新实例（或记录已被清空）的「存储占用」显示成破折号 —— 它读作"取不到/坏了"，
   // 而同一行的「记录 0 条」「已收藏 0 条」都是 `0`，自相矛盾；`docs/upstream-issues.md`
   // 还记着上游 `catch {}` 会让 `totalFileSizeMB` 静默变 0，那个 0 同样是真值。
-  // 见 `docs/AUDIT-v1-v2-divergence.md` §5.2：V2 概览带那**一格**用的是它自己的短写函数
+  // 见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.2：V2 概览带那**一格**用的是它自己的短写函数
   // `ui_v2/js/ui/overview.js` 的 `formatSizeShort()`，那里显式给 `'0 B'`。
   // ⚠️ 别误读成"两版口径一致"：V2 的 `formatSize()`（`ui_v2/js/format.js`）对 0 给的是 `'—'`，
   // 与这里**有意不同**（它那支的理由写在它自己文件里）。两支函数同名不同物，改的时候别只改一支。
@@ -109,7 +109,7 @@ export function formatAbsolute(iso) {
  *
  * 注意与服务端 `src/ui/query.ts` 的同名函数**不是一回事**：那个只修代理对边界、按码元计数，
  * 因为它的 500 是**协议上限**（`UI_LIST_TEXT_LIMIT`）；这里量的是"用户看到的字符"。
- * 见 `docs/AUDIT-v1-v2-divergence.md` §5.3。
+ * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3。
  */
 const SEGMENTER =
   typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'

@@ -83,7 +83,8 @@ async function request(path, { method = 'GET', body, signal, timeout = REQUEST_T
     // `docs/frontend-checklist.md` 记的那类事故）会让调用方读到 `total: undefined`，
     // 列表据此渲染成「还没有任何记录」，**而且没有任何错误提示**。
     // 这是同一个谎的第三个成因（前两个：`total === 0` 既当"还没到"又当"真的没有"，
-    // 见 `docs/AUDIT-missing-states.md` §1）。V2 在同一处抛 502（`ui/js/api.js`）。
+    // 见 `docs/AUDIT-missing-states.md` §1）。V2 在同一处抛 502（`public/ui_v2/js/api.js` 里那句
+    // `new ApiError(502, '服务器返回了无法读取的数据…')`）。
     let unreadable = false;
     if (text) {
       try {

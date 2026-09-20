@@ -127,7 +127,7 @@ function setStale(stale) {
  * 404 —— 它们都不会让「恢复后会自动刷新」成真，而横幅里那句"暂时失去联系"会让用户去
  * **重启服务**（V2 的注释逐字记着这次实测）。V1 此前是任何失败都无地点亮，
  * 于是搜索词过长时屏幕上同时出现「搜索词过长…」与「与服务器暂时失去联系」两种说法
- * （`docs/AUDIT-v1-v2-divergence.md` §2.1）。
+ * （`docs/archive/AUDIT-v1-v2-divergence.md` §2.1）。
  */
 function serverUnreachable(error) {
   return !(error instanceof ApiError) || error.status >= 500;
@@ -162,7 +162,8 @@ async function fetchFull(item, retry = null) {
 // 而批量删除/收藏仍按选择集逐条在服务端执行 —— 那等于对"看不见的行"动手（F3）。
 // 排序 / 翻页 / 页大小**不在列**：它们不改变集合。
 // ⚠️ **搜索在列**（2026-09-19 复查补入）：它是筛选，不是"高亮"—— 服务端为它生成
-// `Text LIKE ?`（见 `src/ui/query.ts`），被它滤掉的行看不见、却仍留在选择集里 ⇒ 与 F3 同型。
+// `Text LIKE ? ESCAPE '\'`（`src/ui/query.ts`：UI 面转义、协议面不转义），被它滤掉的行
+// 看不见、却仍留在选择集里 ⇒ 与 F3 同型。
 const MEMBERSHIP_KEYS = ['types', 'starred', 'deleted', 'range', 'after', 'before', 'search'];
 
 function setFilters(patch, { push = false, scroll = false } = {}) {
@@ -1209,7 +1210,7 @@ async function boot() {
   // 于是重复求值的那一份仍会多做一遍模块级的接线 —— 守卫管不到它本该管的东西。
   // （提示条那一处已在 2026-09-19 随提示条一起删除，见 `docs/ui-rename-v1-v2.md`。）
   // 模块级那几行（`createToasts` / `createConfirm` / …）在**模块求值时**就往 body 里塞
-  // 常驻 `<dialog>`，那一段这里管不到，见 `docs/AUDIT-v1-v2-divergence.md` §4.1
+  // 常驻 `<dialog>`，那一段这里管不到，见 `docs/archive/AUDIT-v1-v2-divergence.md` §4.1
   // （V2 的解法是把这些创建搬进守卫之后）。
   const root = document.documentElement;
   if (root.dataset.appBooted === '1') return;

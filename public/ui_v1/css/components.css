@@ -1572,10 +1572,20 @@ th[aria-sort="descending"] .th-sort__arrow {
  * （正文行的 30px 图标按钮）= 8+8+1+30（推导写在 `.table td` 那条规则的注释里）。
  * ⇒ **改 `.table td` 的内边距、或改行内控件的高度，就要同步改这里**（见 AGENTS.md §1）。
  *
- * 窄屏（≤720px）是卡片模式，真实行高约 98px，与这里不一致——**刻意不改**：
- * 那一档下面的是分页与页脚，而 50 行 × 47px 已经把它们推到任何手机视口的折线以下，
- * 落地时它们本来就不在视口里，位移不计入 CLS。要写死一个卡片行高，得先量出来（本仓库
- * 对"猜的数值"有一条明确的纪律），而不是照着这里 ×2。 */
+ * 表格档与卡片档是**两个**盒模型，各有各的等式；这一条只负责表格档。卡片模式（**≤860px**）
+ * 由文件末尾那一块覆盖成真实卡片的高度 —— 那一档的「行」不是 `td` 而是 `tr.row`
+ * （flex 盒：`padding: 10px` + `border-bottom: 1px` + `row-gap: var(--sp-1)`），
+ * 2026-09-20 实测 **103px**（细指针）/ **117px**（粗指针），与 47px 差 56 / 70px，
+ * 50 行差 2800 / 3500px。推导与覆盖都写在那一块里。
+ *
+ * 这一档原先**刻意不改**（唯一理由是"折线下的分页与页脚不计入 CLS"），2026-09-20 改成对齐。
+ * 改的理由：那条理由**只覆盖折线以下的东西，不覆盖可见的骨架行本身** —— 骨架行与卡片不同形
+ * 是看得见的；而且 `list.js` 自己写下的设计意图正是"行数贴近真实页大小，落地时折线以上的内容
+ * 一点不动"。V2 已在 2026-09-19 对齐（board-v2.css 窄屏块的 .ghost），两版于是在同一处对齐。
+ * 全过程见 docs/progress.md §94 第 16 行。
+ *
+ * 这一段的数字**全部来自实测**：47 是；上面那两个 103 / 117 也是；原先写的"约 98px"与
+ * "≤720px"都是估计（本仓库对"猜的数值"有明确纪律），2026-09-19 一并订正。 */
 .skeleton__row {
   flex: none;
   height: 47px;
@@ -1897,6 +1907,47 @@ th[aria-sort="descending"] .th-sort__arrow {
   .row .col-actions {
     flex: 1 1 100%;
     justify-content: flex-end;
+  }
+
+  /* ---- 骨架行 = 一张卡片的盒模型（2026-09-20，docs/progress.md §94 第 16 行）----
+   * 上面那条 `.skeleton__row` 的 47px 是「`.table td` 的盒模型」；这一档的「行」是 `tr.row`，
+   * 盒模型完全不同。逐项（2026-09-20 CDP 实测，492 与 836 两个宽度各 50 行，行高全部一致）：
+   *   `2 * 10px`       `.table tr.row` 的上下内边距
+   * + `1px`            它的 border-bottom
+   * + `var(--sp-1)`    它的 row-gap（卡内「内容行」与「操作行」之间）
+   * + `48px`           「内容行」= `.cell-content__body` 实测 48 =
+   *                    22（`.cell-content__line` 的 min-height）+ 2（body 的 gap）
+   *                    + 2（`.cell-content__meta` 的 margin-top）+ 22（meta 自身的高度）
+   * + `30px`           「操作行」= `.icon-btn` 的高度（它这一档是固定 30px）
+   * = **103px**。粗指针下 `.icon-btn` 走 `--hit-min`（44）⇒ **117px**，见本块之后那条组合
+   * 媒体查询（写在块外是必须的：与块内这条特异性相同，靠顺序取胜）。
+   *
+   * ⚠️ 表达式里那三个常量（10 / 48 / 30）与真实卡片的规则**绑在一起**：改 `tr.row` 的
+   * padding 或 row-gap、改 `.cell-content__*` 的尺寸、或改 `.icon-btn` 的高度，就要同步改
+   * 这里（同上面那条注释的约定，见 AGENTS.md §1）。取值全部来自实测，不是估的。
+   *
+   * 容器也要一起去掉节奏差：真实卡片之间是 0 间距 + 1px 分隔线，而 `.skeleton` 自己是
+   * `padding: var(--sp-4)` + `gap: var(--sp-3)` —— 只改行高不改它，等于每行仍差 12px
+   * （50 行 600px），骨架整页照样短一截。 */
+  .skeleton {
+    padding: 0;
+    gap: 0;
+  }
+
+  .skeleton__row {
+    height: calc(2 * 10px + 1px + var(--sp-1) + 48px + 30px);
+    /* 卡片是方角 + 一条分隔线（`tr.row` 的 border-bottom），不是圆角小条 */
+    border-radius: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+/* 卡片档 + 粗指针：卡片里只有「操作行」跟着变高（`.icon-btn` 走 `--hit-min` = 44px），
+ * 故骨架行 = 103 + (44 − 30) = **117px**（2026-09-20 实测，390px × 粗指针，50 行全部 117）。
+ * 这段**必须**排在卡片块之后：两条 `.skeleton__row` 特异性相同，靠顺序取胜。 */
+@media (max-width: 860px) and (pointer: coarse) {
+  .skeleton__row {
+    height: calc(2 * 10px + 1px + var(--sp-1) + 48px + var(--hit-min));
   }
 }
 

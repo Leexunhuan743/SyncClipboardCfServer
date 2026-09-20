@@ -63,7 +63,7 @@ export function svg(pathData, { size = 16, class: classNames = '' } = {}) {
  * 为什么必须有（2026-09-18 补）：搜索框的 Esc / 清空按钮 / 原生 `search` 事件都会直接调
  * `onSearch('')`，而输入事件排期的那次去抖调用无法取消 ⇒ 260ms 后它读一次已经清空的输入框、
  * **又发一次同样的列表请求**。V2 的 `debounce` 一直带 `cancel`，且五处调用都用上了
- * （`ui/omnibox.js`）；见 `docs/AUDIT-v1-v2-divergence.md` §3.3。
+ * （`ui/omnibox.js`）；见 `docs/archive/AUDIT-v1-v2-divergence.md` §3.3。
  */
 export function debounce(fn, wait) {
   let timer = 0;

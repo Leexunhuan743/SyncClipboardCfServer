@@ -8,7 +8,7 @@ import { resolveNext } from './next-target.js';
 // 监听器再绑一次 ⇒ **一次提交打两次 `POST /ui/api/login`**（第二次带着已被消费的凭据，
 // 用户看到的是"用户名或密码不正确"，而其实是重复提交）。列表页一直在守这件事
 // （`main.js` 的 `dataset.appBooted`），登录页此前完全没有等价守卫 ——
-// 见 `docs/AUDIT-v1-v2-divergence.md` §4.1。
+// 见 `docs/archive/AUDIT-v1-v2-divergence.md` §4.1。
 // 重复的那一份仍会求值（ES 模块顶层不能 `return`），但**不再产生任何副作用**。
 const APP_ROOT = document.documentElement;
 const DUPLICATE_EVAL = APP_ROOT.dataset.appBooted === '1';
@@ -59,7 +59,7 @@ async function submitLogin(event) {
   // 重入守卫（2026-09-18 补）：`setLoading(true)` 会把按钮 `disabled`，但那挡不住**已经派发
   // 出去**的第二次 submit（双击、按住回车重复触发、或模块被求值两次而绑了两份监听器）。
   // V2 的 `ui/login.js` 一直是 `if (submit.hasAttribute('data-loading')) return;` ——
-  // 这道防线 V1 此前没有（`docs/AUDIT-v1-v2-divergence.md` §4.1）。
+  // 这道防线 V1 此前没有（`docs/archive/AUDIT-v1-v2-divergence.md` §4.1）。
   if (submit.dataset.loading === 'true') return;
 
   const username = usernameInput.value.trim();

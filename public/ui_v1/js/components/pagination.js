@@ -44,7 +44,7 @@ export function createPagination({ onPage }) {
     // 清空输入框（留着会让人以为「还没跳」），但**不 `blur()`**（2026-09-18 修）：
     // 此前这里 `jump.blur()`，注释写的是"交还焦点"，而那只是把焦点丢回 `<body>` ——
     // 键盘用户下一次 Tab 要从文档开头重来。V2 的 `ui/pager.js` 已删掉同一个 `blur()`，
-    // 注释逐字记着症状；见 `docs/AUDIT-v1-v2-divergence.md` §1.7 / §2.3。
+    // 注释逐字记着症状；见 `docs/archive/AUDIT-v1-v2-divergence.md` §1.7 / §2.3。
     // 焦点留在输入框里是安全的：分页条是常驻节点，翻页只改它的文本与服务端数据。
     jump.value = '';
     if (!Number.isFinite(target)) return;

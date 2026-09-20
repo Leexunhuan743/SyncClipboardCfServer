@@ -21,7 +21,7 @@ import { DEFAULT_FILTERS } from '../filters.js';
 const ENTER_STAGGER_LIMIT = 12; // 超过 12 行就不再错峰：延迟累积会让第 50 行等两秒
 
 // 骨架的行数区间。上限 50 与 V2 的 `board.js` 同源：行数只需把折线以下的内容先推开，
-// 而 50 行 × 47px 已经远超任何视口，每页 500 行时画 500 条骨架没有意义；
+// 而 50 行（表格档 50 × 47px；卡片档 50 × 103px）都远超任何视口，每页 500 行时画 500 条骨架没有意义；
 // 下限 3 是"页面看起来在加载"的最小量。行数**必须**贴近真实页大小，理由见 renderSkeletonRows。
 const SKELETON_MAX_ROWS = 50;
 const SKELETON_MIN_ROWS = 3;
@@ -353,7 +353,8 @@ export function createList(actions) {
   setView('loading');
 
   // 画骨架行。行数按**当前页大小**给 —— 这不是审美取舍，是布局正确性：
-  // 骨架行高与真实行同高（`.skeleton__row` 的高度绑定 `.table td`，见 components.css），
+  // 骨架行高与真实行同高（`.skeleton__row` 的高度：表格档绑 `.table td`、卡片档绑
+  // `.table tr.row` 的盒模型，两处推导都在 components.css），
   // 行数又贴近真实页大小，于是内容落地时折线以上的内容**一点不动**。
   // 反例是 V2 实测过的（A-02）：6 行骨架（384px）对 50 行真实表（3930px），
   // 内容一到，页脚与分页从视口里被整段顶出去 —— CLS 0.90。

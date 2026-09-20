@@ -16,9 +16,15 @@ export function resolveNext(raw, origin) {
     return null;
   }
   if (u.origin !== origin) return null;
-  // 解析成功但指向**登录页自身**时同样回落：否则登录成功后会再落到登录页（多一跳、看起来像死循环）。
-  // 只列本版真实存在的登录页。这个字面量在本模块里不可避免（文件头说明了它刻意不 import
-  // `api.js` 的 `PAGE_BASE` —— 保持"纯函数、可被测试直接覆盖"），守卫只要求它出现一次。
-  if (u.pathname === '/ui_v1/login.html') return null;
+  // 解析成功但指向**登录页自身**时同样回落：否则登录成功后会再落到登录页（多一跳）。
+  //
+  // 比的是**平台的规范路径**，不是文件名（实测 wrangler dev，2026-09-19）：
+  //   `/ui_v1/login.html` → 307 → `/ui_v1/login`（后者 200）；`/ui_v1/login/` 同样 307 归一。
+  // ⇒ 先「去扩展名 + 去尾斜杠」归一到规范形态，再与**唯一一个**字面量比较，
+  //   带扩展名与尾斜杠两种写法都被覆盖，不必列第二个、第三个。
+  // 这个字面量在本模块里不可避免（文件头说明了它刻意不 import `api.js` 的 `PAGE_BASE`
+  // —— 保持"纯函数、可被测试直接覆盖"），守卫只要求它出现一次。
+  const canonical = (pathname) => pathname.replace(/\.html$/, '').replace(/\/+$/, '');
+  if (canonical(u.pathname) === '/ui_v1/login') return null;
   return u.pathname + u.search + u.hash;
 }

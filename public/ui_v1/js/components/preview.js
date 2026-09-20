@@ -54,8 +54,45 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   });
   // 关闭事件对外播一次（Esc、点背景、按钮关闭都会走到这里）。
   // 调用方用它收尾：例如清掉 URL 里的深链接 hash——否则刷新页面会突然弹出上一条看过的记录。
-  dialog.addEventListener('close', () => onClose?.());
+  dialog.addEventListener('close', () => {
+    onClose?.();
+    discardBody();
+  });
   document.body.append(dialog);
+
+  // 关闭之后丢弃正文与页脚。
+  //
+  // 为什么必须做：`dialog` 是**启动期创建、常驻 `body`** 的节点 —— 正文那棵 `<pre>` 装着
+  // 整条记录的全文、页脚按钮的闭包抓着 `item`/`text`。不清就只有"下次打开预览"这一个释放点，
+  // 用户不再预览第二条时，这段内容要到页面销毁才释放（`docs/archive/AUDIT-v1-v2-divergence.md` §4.2）。
+  //
+  // ⚠️ **不能**在 `close` 里立刻清：`.dialog` 有退出过渡（`motion.css` 的 `@starting-style` +
+  // `transition-behavior: allow-discrete`，`--dur-standard` = 0.3s）。这一刻清掉，用户看到的是
+  // 「框还在淡出、字先没了」，而且内容一撤、框的高度也会跟着跳。
+  // ⇒ 判据交给浏览器自己：轮询到 `display` 变回 `none`（= 退出过渡真的跑完）再清。
+  //   减弱动效、或浏览器不支持 `allow-discrete` 时根本没有过渡，第一帧就是 `none`
+  //   ⇒ 立即清，同样不会闪。
+  // 实测（1440×900，`test/manual/probe-ui-v1.mjs` 的 `PRVCLOSE`）：点 ✕ 之后 `display: block`
+  // 一直持续到 ~400ms 才变 `none`，正文在这之前始终可见。
+  let discardFrame = null;
+  function discardBody() {
+    if (discardFrame !== null) return; // 已经在等退出过渡了
+    const started = performance.now();
+    const tick = () => {
+      discardFrame = null;
+      // 等待期间又被打开（点完关闭马上点下一行）：本轮作废，下一次 `close` 会重新排。
+      if (dialog.open) return;
+      // 1s 只是**兜底**（不是设计值）：标签页进后台时 `requestAnimationFrame` 会被饿死，
+      // 那也不能让正文永远留在 DOM 里。
+      if (getComputedStyle(dialog).display === 'none' || performance.now() - started > 1000) {
+        body.replaceChildren();
+        footer.replaceChildren();
+        return;
+      }
+      discardFrame = requestAnimationFrame(tick);
+    };
+    discardFrame = requestAnimationFrame(tick);
+  }
 
   // 对话框里的操作按钮：与行内按钮同一套反馈（进行中 → 结果留在按钮上）
   function actionButton({ icon, label, run, successLabel }) {
@@ -114,8 +151,11 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     title.textContent = item.type === 'Text' ? '文本内容' : (item.dataName ?? item.type);
     typeChip.className = `chip ${typeChipClass(item.type)}`;
     typeChipLabel.textContent = typeLabel(item.type);
-    // 文本显示字符数（size 对 Text 就是字符数，见 profile.ts 的口径说明），
-    // 其余类型显示字节数——一个 27 B 的文本说"27 B"远不如说"27 个字符"有用。
+    // 文本显示「字符数」，其余类型显示字节数——一个 27 B 的文本说"27 B"远不如说"27 个字符"有用。
+    // ⚠️ 但这个数值是 **UTF-16 码元数**，不是字素簇数：服务端对 Text 取 `text.length`／客户端声明的
+    // `dto.size`（见 `src/profile.ts`），emoji 之类会算 2。V2 同一格改用 `charCount()`，所以同一条
+    // 记录两版可能显示不同的数字。此处**有意不改代码**：V1 在这个位置拿不到全文（列表正文截断到 500），
+    // 能用的只有服务端给的 size。
     const sizeText =
       item.type === 'Text' ? `${Number(item.size) || 0} 个字符` : formatSize(item.size);
     meta.textContent = `${sizeText} · ${formatAbsolute(item.createTime)}`;
