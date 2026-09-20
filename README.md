@@ -149,13 +149,12 @@ flowchart LR
      - `Account` - `D1: Edit`
      - `Account` - `R2: Edit`
    - `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账户 ID。可在 Cloudflare 控制台 Workers 页面右侧栏复制。
-   - `USERNAME` / `PASSWORD`：可选。自定义的同步用户名和密码。
+   - `USERNAME` / `PASSWORD`：可选。自定义的同步用户名和密码。配置后部署流程会自动将其写入 Cloudflare Worker，无需手动执行 `wrangler secret put`；不填则需通过命令行手动设置。
 4. **配置 GitHub Variables（部署开关）**：
    在同页面的 `Variables` 选项卡中，可按需添加以下仓库变量（不填则使用默认值）：
 
    | 变量名 | 默认值 | 作用说明 |
    |---|---|---|
-   | `SYNC_AUTH_CREDENTIALS` | `false` | 设为 `true` 时，Actions 在部署时会自动将 Secrets 里的 USERNAME / PASSWORD 同步写入 Worker。若为 `false`，则需通过命令行手动执行一次 `wrangler secret put`。 |
    | `UI_ENABLED` | `true` | 是否开启 Web 历史界面。设为 `false` 时关闭全部 WebUI 路由与静态资源，仅保留协议同步功能。 |
    | `MAX_SAVED_HISTORY_COUNT` | `1000` | 历史记录保留条数上限（超过的旧记录会在定时清理时被软删除）。 |
    | `HISTORY_RETENTION_MINUTES` | `10080` | 历史记录保留时长（单位分钟，默认 10080 分钟即 7 天）。 |

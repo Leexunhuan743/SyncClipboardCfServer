@@ -7,16 +7,15 @@
 #     CLOUDFLARE_API_TOKEN  — Cloudflare API Token，权限：
 #                             Workers Scripts:Edit、D1:Edit、R2:Edit、Account Settings:Read
 #     CLOUDFLARE_ACCOUNT_ID — Cloudflare 账户 ID（dashboard 右侧栏）
-#     USERNAME / PASSWORD   — 可选。Basic Auth 凭据，用于 CI 自动同步到 Worker
+#     USERNAME / PASSWORD   — 可选。Basic Auth 凭据，配置后 CI 自动同步写入 Worker
 #   Variables:
-#     SYNC_AUTH_CREDENTIALS — 可选，设为 "true" 时由 CI 把上述凭据写入 Worker secrets
-#     DEPLOY_URL            — 可选，部署后地址，用于冒烟检查（未设置则跳过）
+#     DEPLOY_URL            — 可选，部署后地址，用于冒烟检查（未设置则自动使用部署输出的地址）
 #
 # 凭据管理两种用法（任选）：
-#   A) 只用手动设置一次：`npx wrangler secret put USERNAME / PASSWORD`，
-#      不配 SYNC_AUTH_CREDENTIALS —— CI 不触碰凭据。
-#   B) 交给 CI：配好 USERNAME/PASSWORD secrets 并把 SYNC_AUTH_CREDENTIALS 设为 true，
-#      每次部署同步一次，轮换密码只需改 GitHub Secrets 一处。
+#   A) 手动设置：在本地执行 `npx wrangler secret put USERNAME / PASSWORD`，
+#      GitHub Secrets 不填这两个凭据 —— CI 不触碰凭据。
+#   B) 交给 CI（推荐）：在 GitHub Secrets 配好 USERNAME 与 PASSWORD，
+#      每次部署自动同步至 Cloudflare Worker，无需敲命令行。
 
 name: Deploy
 
@@ -313,28 +312,20 @@ jobs:
             AUTH_RATE_LIMIT_BURST_WARN
 
       - name: Sync Basic Auth credentials
-        # 可选步骤：在仓库变量 SYNC_AUTH_CREDENTIALS=true 且已配置 USERNAME/PASSWORD secrets 时执行。
-        # （secrets 上下文不能直接用于 if，故用 vars 开关 + 步骤级 env。）
+        # 自动同步：只要在 GitHub Secrets 中配置了 USERNAME 与 PASSWORD，就自动写入 Cloudflare Worker。
+        # 未配置时跳过（适合在本地通过 wrangler secret 手动管理凭据的用户）。
         #
         # 安全说明：
-        # - 凭据只注入**本步骤**的 env（不设 job 级 env），否则 `npm ci` 的 postinstall
-        #   脚本也能读到它们，形成供应链暴露面。
+        # - 凭据只注入本步骤的 env（不设 job 级 env），否则 npm ci 的 postinstall 脚本也能读到它们。
         # - GitHub 会自动在日志中掩码 secrets 值。
-        # - 放在 Deploy 之后：wrangler 在非交互环境虽能自动创建不存在的 Worker，
-        #   先部署可避免"只创建空 Worker"的中间状态。
-        if: ${{ vars.SYNC_AUTH_CREDENTIALS == 'true' }}
+        # - 放在 Deploy 之后：先完成部署，确保 Worker 实体已存在。
+        if: ${{ secrets.USERNAME != '' && secrets.PASSWORD != '' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           AUTH_USERNAME: ${{ secrets.USERNAME }}
           AUTH_PASSWORD: ${{ secrets.PASSWORD }}
         run: |
-          if [ -z "$AUTH_USERNAME" ] || [ -z "$AUTH_PASSWORD" ]; then
-            echo "SYNC_AUTH_CREDENTIALS=true 但 USERNAME/PASSWORD secrets 未配置"; exit 1
-          fi
-          # 用 printf 而非 echo：wrangler 会对输入做 trimEnd()（node_modules/wrangler/.../cli.js
-          # 中的 trimTrailingWhitespace），故 echo 的换行不会真的进入密文；这里用 printf
-          # 只是显式表达意图，不依赖上游的 trim 行为。
           printf '%s' "$AUTH_USERNAME" | npx wrangler secret put USERNAME
           printf '%s' "$AUTH_PASSWORD" | npx wrangler secret put PASSWORD
           echo "credentials synced to Worker"
