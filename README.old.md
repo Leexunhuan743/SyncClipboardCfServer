@@ -1,5 +1,8 @@
 # SyncClipboard CfServer
 
+> ⚠️ **归档文档（历史备份）**：本文档为旧版说明备份，现行使用与部署指南请直接查阅 [**`README.md`**](README.md)。
+> 注：旧版中出现的 `SYNC_AUTH_CREDENTIALS` 开关已在最新版中废除，改为只要配置了 `USERNAME`/`PASSWORD` secrets 即自动同步写入 Cloudflare Worker。
+
 [SyncClipboard](https://github.com/Jeric-X/SyncClipboard) 官方同步服务器的 **Cloudflare Workers 复刻版**。
 
 用 TypeScript 重写官方 ASP.NET Core 服务端，部署在 Cloudflare 边缘网络上。**官方客户端无需任何改动**，
@@ -225,7 +228,7 @@ npm run deploy
   | `CLOUDFLARE_API_TOKEN` | Secret | ✅ | — | 权限：Workers Scripts:Edit、D1:Edit、R2:Edit、Account Settings:Read |
   | `CLOUDFLARE_ACCOUNT_ID` | Secret | ✅ | — | Cloudflare 账户 ID |
   | `USERNAME` / `PASSWORD` | Secret | 可选 | — | Basic Auth 凭据（见下方两种用法）；配了它冒烟检查才会跑"带凭据"的三条断言 |
-  | `SYNC_AUTH_CREDENTIALS` | Variable | 可选 | `false` | 设为 `true` 时由 CI 把凭据写入 Worker secrets |
+  | `SYNC_AUTH_CREDENTIALS` | Variable | 可选 | `false` | （**已废除**，最新版改为配置 Secrets 后自动同步，见 README.md） |
   | `DEPLOY_URL` | Variable | 可选 | 部署输出的地址 | 自定义域名时用它做冒烟目标；不设则用 `wrangler-action` 输出的 `workers.dev` 地址（**已不再跳过**） |
   | `UI_ENABLED` | Variable | 可选 | `true` | 是否提供 Web 历史界面（见下方「部署开关」） |
   | `ENFORCE_STRONG_CREDENTIALS` | Variable | 可选 | `false` | 置 `true` 后弱口令 fail-closed（轮换完凭据之后开） |
@@ -299,9 +302,9 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 
 - **A. 手动设置一次**（默认）：`npx wrangler secret put USERNAME` / `PASSWORD`。
   不配 `SYNC_AUTH_CREDENTIALS`，CI 完全不接触凭据——凭据只存在于 Cloudflare。
-- **B. 交给 CI 统一管理**：配好 `USERNAME`/`PASSWORD` secrets 并把 `SYNC_AUTH_CREDENTIALS`
-  设为 `true`。每次部署同步一次，**轮换密码只需改 GitHub Secrets 一处**，适合想要"配置集中、
-  全自动部署"的场景。
+- **B. 交给 CI 统一管理（推荐）**：配好 `USERNAME`/`PASSWORD` secrets，
+  每次部署自动同步至 Cloudflare Worker（旧版曾需 `SYNC_AUTH_CREDENTIALS`，现已废除改为自动同步），
+  **轮换密码只需改 GitHub Secrets 一处**。
 
   代价是凭据会同时存在于 GitHub 与 Cloudflare 两处。实际增量风险很低：
   CI 里的 `CLOUDFLARE_API_TOKEN` 本身就有 D1/R2 的编辑权限（可读写全部剪贴板数据）

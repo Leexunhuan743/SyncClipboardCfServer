@@ -8500,4 +8500,17 @@ V1 另有次生位移：挂载瞬间 `.stats` 2px→92px、`.toolbar` 0px→36px
 `HEAD` 上同口径是 71/31/36，其中 `ui_v2` 16 → **19** 恰好等于 F-11 的三处修复
 （`board-v2.css:747` §6.1、`tokens-v2.css:293` §6.2、`board.js:35` §6.3）⇒ 又一次印证 §102.6「先确认自己在哪棵树上数」。
 
+## 104. 废除 SYNC_AUTH_CREDENTIALS 部署开关（2026-09-20）
+
+### 104.1 背景与收敛
+
+用户在审查部署体验时指出：若已在 GitHub Secrets 配置了 `USERNAME` / `PASSWORD`，说明其意图本就是交给 CI 托管；原设计要求额外在 Variables 声明 `SYNC_AUTH_CREDENTIALS=true` 才能同步写入 Worker，属于过度防御，且容易导致用户配置了密码却因未开开关而在部署后遇到 500。
+
+### 104.2 变更落地
+
+1. **`.github/workflows/deploy.yml`**：将凭据同步步骤触发条件收敛为 `if: ${{ secrets.USERNAME != '' && secrets.PASSWORD != '' }}`。配置了即自动同步，未配置则自动跳过（本地管理凭据场景不受影响）；
+2. **`README.md`**：移除 Variables 表格中的废弃开关项，并在 Secrets 处明确说明自动写入机制；
+3. **`README.old.md`**：增加顶部归档警告横幅，并在对应开关处标注已废除。
+
+
 
