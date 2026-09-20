@@ -427,8 +427,6 @@ Cloudflare 侧**没有"日志级别"这个东西**（上游的 `Logging:LogLevel
 
 ## 已知限制
 
-- SignalR **三种传输**均已实现（WebSockets → ServerSentEvents → LongPolling，与上游宣告顺序一致），
-  故 WS 被代理/防火墙阻断时客户端会自动降级，不会失联
 - 第三方**畸形 zip**（隐式目录、重复条目、`a` 与 `a/` 同名冲突）的语义与上游存在 minor 差异
   ——官方客户端恒写显式目录条目且无重复，该路径不可达
 - `Content-Type` 映射表小于 .NET 的 `FileExtensionContentTypeProvider`（客户端按文件名落盘，不校验该头）
