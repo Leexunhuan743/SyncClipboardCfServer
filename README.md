@@ -359,4 +359,6 @@ test/                   测试套件（集成测试、协议回归测试、文�
 - [SyncClipboard](https://github.com/Jeric-X/SyncClipboard) —— 客户端与服务端协议定义
 - [clipserver](https://github.com/ting1e/clipserver) —— 同类服务端的参考实现与 Web 历史界面灵感来源
 - [Hono](https://hono.dev/) —— 轻量 Workers Web 框架
-- [fflate](https://github.com/101arrowz/fflate) —— 纯 JS zip 解压（Workers 兼容）
+- [fflate](https://github.com/101arrowz/fflate) —— 纯 JS zip 流式解压（Workers 内存安全兼容）
+- [Microsoft ASP.NET Core SignalR](https://github.com/dotnet/aspnetcore) —— 实时推送协议规范与测试套件通信基准
+- [Lucide Icons](https://lucide.dev/) —— Web 管理界面的内嵌极简 SVG 矢量图标
