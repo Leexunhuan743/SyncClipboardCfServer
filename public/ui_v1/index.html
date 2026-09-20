@@ -83,8 +83,11 @@
              那一个往返），JS 一挂上就被 `list.el` 整体替换（见 js/main.js 的 boot）。
              挂载之后的加载态由 js/components/list.js 自己画：行数按**当前页大小**给。
              这 3 行是静态 HTML 能给出的最大信息量 —— 每页条数来自 **URL**（`?pageSize=`，默认 50，见 js/filters.js），
-             静态文件没法按查询串吐出不同的行数；而 V1 只把**主题**写 localStorage（js/main.js），那里没有页大小；
-             而它的高度对布局没有影响（挂载时顶栏/统计/工具栏同时就位，整页本来就要重排一次）。
+             静态文件没法按查询串吐出不同的行数；而 V1 只把**主题**写 localStorage（js/main.js），那里没有页大小。
+             ⚠️ 它的高度**有**布局影响（2026-09-20 实测订正）：不预留时加载中文档高 = 视口高、页脚就在
+             视口里，数据落地后列表撑到 3900+px ⇒ 页脚被推走，首屏 **CLS = 0.928**（探针 PERF 组）。
+             预留高度由 css/layout.css 的 `#results-mount { min-height: 70vh }` 承担（与 V2 同一条判据）；
+             这 3 行静态骨架只负责"别是空白"，不承担预留。
              行高必须与真实行同高（表格档 47px；卡片档 103px、粗指针 117px），
              那两条都绑在 css/components.css 的 `.skeleton__row` 上（记录见 docs/progress.md §94 第 16 行）。 -->
         <div id="results-mount">

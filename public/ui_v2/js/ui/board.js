@@ -434,7 +434,7 @@ export function createBoard(handlers) {
     return el('div', { class: 'board' }, [
       renderBlank(kind, {
         onAction(key) {
-          if (key === 'clear') handlers.onClearFilters({ keepView: true });
+          if (key === 'clear') handlers.onClearFilters();
           else if (key === 'back') handlers.onExitTrash();
           else handlers.onOpenDrawer();
         },

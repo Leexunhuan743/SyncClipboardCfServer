@@ -1318,7 +1318,9 @@ try {
   })()`));
   record('回收站筛选清空与计数', JSON.stringify(trashSearch));
   expect('回收站的空搜索不能谎报回收站为空', trashSearch.kind === 'filter', JSON.stringify(trashSearch));
-  expect('清除筛选保留回收站且恢复记录', trashSearch.keptTrash && trashSearch.cleared && trashSearch.rows > 0, JSON.stringify(trashSearch));
+  // 2026-09-20 定案（ADR D19）：两处「清除筛选」统一为**回到活跃列表** ⇒ 清完之后 URL 里不该再有 `deleted`。
+  // 此前这条断言钉的是相反的行为（"保留回收站"），是 2026-09-18 只改了空状态那一处的遗留。
+  expect('清除筛选回到活跃列表且恢复记录', !trashSearch.keptTrash && trashSearch.cleared && trashSearch.rows > 0, JSON.stringify(trashSearch));
   expect('回收站类型计数使用删除记录口径', trashSearch.chipTotal === trashSearch.expected, JSON.stringify(trashSearch));
   // 上面那条只覆盖「全部」chip（它读 total，与视图无关的那条聚合）。这条覆盖**按类型的四个 chip**：
   // 它们的数字来自 overview 的 `byType`，只有 overview 真的透传了 `deleted` 才会等于

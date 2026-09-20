@@ -182,6 +182,58 @@ try {
     }
   });
 
+  // 首屏性能读数（2026-09-20 补）：把「A-02 那族数」（804→4454 / CLS 0.90）从**历史读数**变成
+  // **每次都能复核**的读数。两件事：
+  //  · cls   = layout-shift 的**非输入**位移之和（buffered ⇒ 含本页加载期全部位移）
+  //  · marks = 加载各阶段的高度快照 ⇒ 把 `.board-area`「首帧就要把页脚推到折线以下」这条
+  //            契约（`min-height: 70vh` 的**存在理由**）变成可判定的断言
+  // ⚠️ 注入串里**不许出现反引号**（模板字面量，N-14 形态；2026-09-20 在 probe-ui-v1.mjs 上踩过）。
+  await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      const P = { cls: 0, shifts: [], marks: [] };
+      window.__probePerf = P;
+      try {
+        new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) {
+            if (e.hadRecentInput) continue;
+            P.cls += e.value;
+            if (P.shifts.length < 6) {
+              P.shifts.push({
+                v: Math.round(e.value * 1e5) / 1e5,
+                src: (e.sources || []).slice(0, 3).map((s) => (s.node ? (s.node.className || s.node.tagName) : '?') + ''),
+              });
+            }
+          }
+        }).observe({ type: 'layout-shift', buffered: true });
+      } catch (e) { P.err = String(e); }
+      const snap = (why) => {
+        const f = document.querySelector('.footer');
+        P.marks.push({
+          why: why,
+          ready: document.readyState,
+          t: Math.round(performance.now()),
+          docH: document.documentElement ? document.documentElement.scrollHeight : null,
+          innerH: window.innerHeight,
+          footerTop: f ? Math.round(f.getBoundingClientRect().top) : null,
+          ghost: document.querySelectorAll('.ghost').length,
+        });
+      };
+      snap('pre-doc');
+      document.addEventListener('readystatechange', () => {
+        if (document.readyState === 'interactive') {
+          snap('interactive');
+          requestAnimationFrame(() => snap('rAF1'));
+        }
+      });
+      document.addEventListener('DOMContentLoaded', () => snap('DCL'));
+      window.addEventListener('load', () => {
+        snap('load');
+        setTimeout(() => snap('load+300'), 300);
+        setTimeout(() => { P.clsAtLoad = P.cls; snap('load+1500'); }, 1500);
+      });
+    })()`,
+  });
+
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, SETTLE));
 
@@ -321,6 +373,38 @@ try {
     })(),
   })`);
   console.log('STATE  ', state);
+
+  // ── 首屏性能：CLS 与加载各阶段高度（A-02 那族数的**可复核**版本）──
+  // 读点放在**首屏刚落地、探针还没开始交互**的位置：再往后探针自己会点按钮、切筛选，
+  // 那些位移多为 `hadRecentInput`（已排除），但读在末尾会混进"当前视图"的高度 —— 实测踩过：
+  // 放在末尾时读到 `rows:0 / daymarks:[]`（那一刻页面已被切到别的状态）。
+  const perf = JSON.parse(
+    await read(`JSON.stringify({
+      cls: Math.round((window.__probePerf ? window.__probePerf.cls : -1) * 1e4) / 1e4,
+      clsAtLoad: window.__probePerf && window.__probePerf.clsAtLoad !== undefined
+        ? Math.round(window.__probePerf.clsAtLoad * 1e4) / 1e4 : null,
+      shifts: window.__probePerf ? window.__probePerf.shifts : null,
+      marks: window.__probePerf ? window.__probePerf.marks : null,
+      docH: document.documentElement.scrollHeight,
+      rows: document.querySelectorAll('.item').length,
+      rowH: document.querySelector('.item') ? Math.round(document.querySelector('.item').getBoundingClientRect().height) : null,
+      listH: (() => { const t = document.querySelector('.board__table tbody') || document.querySelector('.board'); return t ? Math.round(t.getBoundingClientRect().height) : null; })(),
+      daymarks: [...document.querySelectorAll('.daymark')].map((d) => Math.round(d.getBoundingClientRect().height)),
+      footerTop: document.querySelector('.footer') ? Math.round(document.querySelector('.footer').getBoundingClientRect().top) : null,
+    })`),
+  );
+  console.log('PERF    ', JSON.stringify(perf));
+  const preJs = (perf.marks ?? []).find((m) => m.why === 'interactive');
+  check(
+    '首屏 CLS 没退化（判据取 0.1 = "good" 阈值，其职责是抓回归：修前那两条是 0.85 / 0.93）',
+    (perf.clsAtLoad ?? perf.cls) >= 0 && (perf.clsAtLoad ?? perf.cls) <= 0.1,
+    'clsAtLoad=' + String(perf.clsAtLoad) + ' cls=' + String(perf.cls) + ' shifts=' + JSON.stringify(perf.shifts),
+  );
+  check(
+    '首帧（JS 未跑）页脚已在折线以下 —— min-height: 70vh 的契约',
+    preJs === undefined || preJs.footerTop === null || preJs.footerTop >= preJs.innerH,
+    JSON.stringify(preJs),
+  );
 
   // 打开抽屉（概览带整条是按钮）
   await read(

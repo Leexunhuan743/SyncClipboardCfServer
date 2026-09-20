@@ -7,15 +7,19 @@
 > 协议逐条行为 → [`docs/protocol.md`](docs/protocol.md)；界面 → [`docs/ui.md`](docs/ui.md)。
 > **本文件不抄这些内容的副本**，只写"干活时必须遵守什么"。
 >
-> **引文说明**：代码与文档里引用了两份**不在本仓库**的文档，它们来自 `motion-web` 技能
-> （ADR D14 允许取用其设计系统/打磨层）：
->   · `components.md` —— 组件状态矩阵九格（rest / hover / `:active` / `:focus-visible` /
+> **引文说明**：代码与文档里引用了**不在本仓库**的文档，分两类：
+>   · 来自 `motion-web` 技能的两份（ADR D14 允许取用其设计系统/打磨层）：
+>     `components.md` —— 组件状态矩阵九格（rest / hover / `:active` / `:focus-visible` /
 >     disabled / loading / error / empty / success），其中 error 格要求：信息挨着控件、
 >     被 `aria-describedby` 关联、不靠颜色单独传达（"never colour alone"）；
->   · `handfeel.md` §7 —— "跟随"类动作（相机 / 光标 / 导轨 / tooltip）：必须到达并停住。
-> ⚠️ 这两份文档当前环境里都拿不到（仓库与 git 历史都没有）。因此凡是引用它们的地方，
-> 都必须把要求**就地写全** —— 照做不需要去找原文件（最完整的一处在 `docs/ui.md`
-> 硬约束第 19 条；九格逐格核对的结果在 `docs/progress.md` §69.1）。
+>     `handfeel.md` §7 —— "跟随"类动作（相机 / 光标 / 导轨 / tooltip）：必须到达并停住。
+>     ⚠️ 这两份当前环境里都拿不到（仓库与 git 历史都没有）。因此凡是引用它们的地方，
+>     都必须把要求**就地写全** —— 照做不需要去找原文件（最完整的一处在 `docs/ui.md`
+>     硬约束第 19 条；九格逐格核对的结果在 `docs/progress.md` §69.1）。
+>   · `v4.1.md` —— **外部审计文档**（2026-09-19/20 两轮逐条复核的输入）。它同样不在本仓库
+>     （`git log --all -- v4.1.md` 与工作区都没有它），但角色与上两份不同：它是**证据来源**、
+>     不是要求来源 ⇒ 引用处只要写明"该文件不在本仓库"即可，不必把内容抄进来
+>     （已经落地的部分在 `docs/AUDIT-*-diff-6ebcf6e.md` 与 `docs/progress.md` §94–§102）。
 
 ## 1. 铁律：改代码顺手维护文档
 
@@ -49,8 +53,9 @@
 
 **两条配套的流程惯例**（2026-09-19 按审计 F-6 落成 —— 都是**已有事实**的固化，不是新规矩）：
 
-1. **没跑完的门禁，必须在提交信息里写明"未验证"。** `d32631b` 在跑不完套件时逐字写了
-   「vitest 未跑完 ⇒ 22 套件全过这一条本次未验证，不得当作已通过引用」。**保留为惯例**：
+1. **没跑完的门禁，必须在提交信息里写明"未验证"。** `d32631b` 在跑不完套件时写下了这条惯例
+   （**原文**见该提交的提交信息：`vitest 未跑完（按用户指示"别跑测试"时中断于 transports.test.ts，日志无汇总行）
+   ⇒ "22 套件全过"这一条本次未验证，不得当作已通过引用`）。**保留为惯例**：
    「没测」与「测了、通过」在文字上必须分得开 —— 否则下一位会把它当"已通过"引用。
 2. **代码与文档拆成两笔提交是允许的，但要点明另一半在哪儿。** `d0c58bd`（只改代码）+
    `796a3b8`（只改文档）属同一次推送内的两笔；按上面那条铁律的字面不算"同一次改动"，
@@ -70,6 +75,11 @@
 1. **类型**：`node node_modules/typescript/bin/tsc --noEmit` → 0 错。
    （`npm run <script>` 在本机 Git Bash 里会被安全策略拦，直接调 `node node_modules/...` 的 CLI 入口。）
 2. **静态检查**：`node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` → 0 告警。
+   外加**四个 `test/manual/*.mjs` 的语法门**：`node --check test/manual/probe.mjs`、
+   `.../probe-ui-v1.mjs`、`.../states.mjs`、`.../shoot.mjs` → 全 0。它们既不在 `tsc` 的 include 里、
+   也不进任何套件，而**模板字面量里的一个反引号就能让整份探针不可运行**（N-14 形态：
+   2026-09-18 在 `states.mjs` 上发生过一次，2026-09-20 在 `probe-ui-v1.mjs` 上**又发生了一次** ——
+   这次是"给注释补出处"时写进去的，`node --check` 一条命令即可拦下）。
 3. **全量套件**：先起 dev server（**端口必须 8787，测试里写死 `http://127.0.0.1:8787`**）
    `node node_modules/wrangler/bin/wrangler.js dev --test-scheduled --port 8787 --ip 127.0.0.1`，
    再 `node node_modules/vitest/vitest.mjs run --no-file-parallelism`。

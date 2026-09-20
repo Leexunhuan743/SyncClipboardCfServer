@@ -497,9 +497,9 @@ function boot() {
     if (viewChanged) void refreshOverview();
   }
 
-  function resetFilters({ keepView = false } = {}) {
+  function resetFilters() {
     store.patch({ selection: new Map() });
-    setFilters({ ...DEFAULT_FILTERS, deleted: keepView && state().filters.deleted }, { push: true, scroll: true });
+    setFilters({ ...DEFAULT_FILTERS }, { push: true, scroll: true });
   }
 
   function scrollToResults() {

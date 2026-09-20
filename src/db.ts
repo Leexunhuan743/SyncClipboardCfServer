@@ -316,9 +316,11 @@ export class HistoryDb {
   // 「Invoice_2026-08_ACME-Corporation_final-signed-version-2.pdf」就 59 字节（`%/` + 名字 = 61 > 50）。名字 ≥49 字节时
   // 这条查询**直接报错**，`GET /file/{name}` 恒 500（实测：48 字节 404、49 字节 500；
   // CJK 20 字 = 60 字节同样 500），而「下载」正是客户端唯一的取数据路径。
-  // 改用 `substr(…, -length(?2))`：没有通配符、没有模式长度限制。它比 LIKE 更**宽**（不锚定前一个
-  // 分隔符，且大小写敏感），但候选集的**语义由调用方那道 `basename(...) === fileName` 定义**
-  // （与上游 `Path.GetFileName(...) == fileName` 同义）—— 预筛只要不漏候选即可，多给的会被滤掉。
+  // 改用 `substr(…, -length(?2))`：没有通配符、没有模式长度限制。它与 LIKE 的偏差**两个方向都有**：
+  // 更宽的地方是"不锚定前一个分隔符"，**更严**的地方是大小写（`=` 对 TEXT 是 BINARY，而 LIKE 对 ASCII
+  // 不区分大小写）。两者对最终候选集的影响都会被调用方那道精确过滤吸收，所以终态与改前逐条相同 ——
+  // 候选集的**语义由调用方的 `basename(...) === fileName` 定义**（与上游 `Path.GetFileName(...) == fileName` 同义）
+  // —— 预筛只要不漏候选即可，多给的会被滤掉。
   async listTransferFileCandidates(fileName: string): Promise<HistoryRecordEntity[]> {
     // 空名：上游 `string.IsNullOrEmpty(fileName)` 直接返回 null（也让 SQL 不碰 substr 的 0 边界）
     if (fileName === '') return [];

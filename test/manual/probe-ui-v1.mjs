@@ -226,6 +226,66 @@ try {
     });
   }
 
+  // 首屏性能读数（2026-09-20 补，与 V2 的 `probe.mjs` 同形）：V1 的文档里一直写着
+  // 「连续重载 5 次 … CLS 全 0」（`docs/ui.md` §9 第 10 条），但**没有任何判据守着它**。
+  //  · cls   = layout-shift 的**非输入**位移之和（buffered ⇒ 含本页加载期全部位移）
+  //  · marks = 加载各阶段的高度快照（docH / 页脚位置 / 骨架行数 / readyState）
+  // ⚠️ 注入串里**不许出现反引号**（模板字面量，N-14 形态；本文件 2026-09-20 刚踩过一次）。
+  await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      const P = { cls: 0, shifts: [], marks: [] };
+      window.__probePerf = P;
+      try {
+        new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) {
+            if (e.hadRecentInput) continue;
+            P.cls += e.value;
+            if (P.shifts.length < 6) {
+              P.shifts.push({
+                v: Math.round(e.value * 1e5) / 1e5,
+                src: (e.sources || []).slice(0, 3).map((s) => (s.node ? (s.node.className || s.node.tagName) : '?') + ''),
+              });
+            }
+          }
+        }).observe({ type: 'layout-shift', buffered: true });
+      } catch (e) { P.err = String(e); }
+      const snap = (why) => {
+        const f = document.querySelector('.app-footer');
+        const h = (sel) => {
+          const n = document.querySelector(sel);
+          return n ? Math.round(n.getBoundingClientRect().height) : null;
+        };
+        const mount = document.querySelector('#results-mount');
+        P.marks.push({
+          why: why,
+          ready: document.readyState,
+          t: Math.round(performance.now()),
+          docH: document.documentElement ? document.documentElement.scrollHeight : null,
+          innerH: window.innerHeight,
+          footerTop: f ? Math.round(f.getBoundingClientRect().top) : null,
+          skeleton: document.querySelectorAll('.skeleton__row').length,
+          headerH: h('.app-header'),
+          statsH: h('.stats'),
+          toolbarH: h('.toolbar'),
+          mountTop: mount ? Math.round(mount.getBoundingClientRect().top) : null,
+        });
+      };
+      snap('pre-doc');
+      document.addEventListener('readystatechange', () => {
+        if (document.readyState === 'interactive') {
+          snap('interactive');
+          requestAnimationFrame(() => snap('rAF1'));
+        }
+      });
+      document.addEventListener('DOMContentLoaded', () => snap('DCL'));
+      window.addEventListener('load', () => {
+        snap('load');
+        setTimeout(() => snap('load+300'), 300);
+        setTimeout(() => { P.clsAtLoad = P.cls; snap('load+1500'); }, 1500);
+      });
+    })()`,
+  });
+
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, SETTLE));
 
@@ -458,7 +518,13 @@ try {
           overflow: Math.round(right - cellRect.right),
         };
       })(),
-      noticeVisible: q('.notice-bar') ? !q('.notice-bar').hidden : null,
+      // 提示条已于 2026-09-19 随改名一起移除（见 docs/ui-rename-v1-v2.md；progress.md §89 把本项
+      // 记作"提示条确已移除"的证据）⇒ 这是一条**缺席断言**：恒为 true，若有人把它加回来就变 false。
+      // （原来写作「q('.notice-bar') ? !q('.notice-bar').hidden : null」—— 那个 null 既不能区分
+      //  "按预期移除"与"选择器打错"，也不再有任何变化空间。）
+      // ⚠️ 本条注释里不能出现反引号：整段是模板字面量，一个反引号就会把它提前结束（N-14 形态，
+      // 见下方 overflowers 那条同款提醒）—— 2026-09-20 这处正是这么把整份探针写坏过一次。
+      noticeBarRemoved: q('.notice-bar') === null,
       pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       // 横向溢出的**肇事者**：scrollWidth > clientWidth 只说"有溢出"，
       // 定位还得逐元素量右边缘。取最靠右的前 5 个，附标签名与类名。
@@ -483,6 +549,35 @@ try {
     });
   })()`);
   console.log('STATE   ', state);
+
+  // ── 首屏性能：CLS 与加载各阶段高度（把「CLS 全 0」变成判据）──
+  // 读点放在**首屏刚落地、探针还没开始交互**的位置（同 V2 的 `probe.mjs`，理由见那边的注释）。
+  const perf = JSON.parse(
+    await read(`JSON.stringify({
+      cls: Math.round((window.__probePerf ? window.__probePerf.cls : -1) * 1e4) / 1e4,
+      clsAtLoad: window.__probePerf && window.__probePerf.clsAtLoad !== undefined
+        ? Math.round(window.__probePerf.clsAtLoad * 1e4) / 1e4 : null,
+      shifts: window.__probePerf ? window.__probePerf.shifts : null,
+      marks: window.__probePerf ? window.__probePerf.marks : null,
+      docH: document.documentElement.scrollHeight,
+      rows: document.querySelectorAll('.table tr.row').length,
+      rowH: document.querySelector('.table tr.row') ? Math.round(document.querySelector('.table tr.row').getBoundingClientRect().height) : null,
+      listH: document.querySelector('.table') ? Math.round(document.querySelector('.table').getBoundingClientRect().height) : null,
+      footerTop: document.querySelector('.footer') ? Math.round(document.querySelector('.footer').getBoundingClientRect().top) : null,
+    })`),
+  );
+  console.log('PERF    ', JSON.stringify(perf));
+  const preJs = (perf.marks ?? []).find((m) => m.why === 'interactive');
+  check(
+    '首屏 CLS 没退化（判据取 0.1 = "good" 阈值，其职责是抓回归：修前 V1 是 0.928）',
+    (perf.clsAtLoad ?? perf.cls) >= 0 && (perf.clsAtLoad ?? perf.cls) <= 0.1,
+    'clsAtLoad=' + String(perf.clsAtLoad) + ' cls=' + String(perf.cls) + ' shifts=' + JSON.stringify(perf.shifts),
+  );
+  check(
+    '首帧（JS 未跑）页脚已在折线以下 —— #results-mount 的 min-height 契约',
+    preJs === undefined || preJs.footerTop === null || preJs.footerTop >= preJs.innerH,
+    JSON.stringify(preJs),
+  );
 
   // ===== 静止即静止（handfeel §7 的落点：到达并停住）=====
   // 判据不是"看着不动"，而是 `document.getAnimations()` 里没有还在跑的动画。允许的例外只有
