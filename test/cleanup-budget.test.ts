@@ -457,6 +457,29 @@ describe('F11 · 清理任务的子请求预算', () => {
     // 活跃记录的数据仍在
     expect(f.bucket.objects.has('history/Text_STAR0/STAR0.bin')).toBe(true);
   });
+
+  it('单个目录超过一次 delete 的上限（>1000 个对象）时仍能清掉：按 1000 个 key 分块', async () => {
+    // 正常写路径每目录 1 个对象，但异常/历史数据可以更多，而 `deleteHistoryKeys` 对 >1000 个 key
+    // **直接抛错** ⇒ 修前该目录**每轮都删不掉**：失败进 failures、对象一个不少地留在 R2 里
+    // （这也是这条用例的判据：修前 failures 非空且对象还在）。
+    const f = fixture({ expired: 0, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: MAX_COUNT });
+    for (let i = 0; i < 1200; i++) {
+      f.bucket.objects.set(`history/Text_BULKY/big-${String(i).padStart(4, '0')}.bin`, 4);
+    }
+    const logs = captureConsole();
+
+    const result = await cronRun(f);
+
+    expect(result.failures, '分块失败被记成 failure（修前正是这条）').toEqual([]);
+    expect(logs.errors, '失败路径会打 console.error（修前有）').toEqual([]);
+    expect(result.orphans).toBe(1);
+    expect([...f.bucket.objects.keys()].filter((k) => k.startsWith('history/Text_BULKY/'))).toEqual([]);
+    // 分块的单位是 **key 数**（不是目录数）：1200 个 key ⇒ 两次批量删（1000 + 200）
+    expect(f.bucket.deleteCalls).toBe(2);
+    // 每块各记一次子请求，且总账仍在预算内
+    expect(measuredSubrequests(f)).toBeLessThanOrEqual(result.subrequests);
+    expect(result.subrequests).toBeLessThanOrEqual(SUBREQUEST_BUDGET);
+  });
 });
 
 

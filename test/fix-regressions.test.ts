@@ -890,3 +890,54 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     }
   });
 });
+
+// ================================================== D1 的 LIKE 模式上限（50 字节）引发的 500
+// 两条都是**真 D1 才复现**的形态（node:sqlite 不管模式长度），故只能在这一层钉。
+describe('平台级约束：文件名 / 搜索串不能再把 D1 拖成 500', () => {
+  it('GET /file/{name}：名字 ≥49 字节 → 404，不再是 500', async () => {
+    // 修前：候选预筛用 `TransferDataFile LIKE '%/' || ?2`，而 D1 的 LIKE 模式上限是 50 字节
+    // ⇒ 名字 48 字节（模式 50）通过、**49 字节（模式 51）整条查询报错** ⇒ 这条路由恒 500。
+    // 文件名完全由客户端给（`Invoice_…-final-signed-v2.pdf` 就 61 字节），故这是真实可达路径。
+    for (const name of ['a'.repeat(48), 'a'.repeat(49), 'a'.repeat(60), '中'.repeat(20)]) {
+      const res = await req(`/file/${encodeURIComponent(name)}`);
+      expect(res.status, `名字 ${Buffer.byteLength(name)} 字节`).toBe(404);
+    }
+  });
+
+  it('端到端：61 字节名字的 File 记录仍能上传与下载（修前 GET /file/<它> 恒 500）', async () => {
+    const name = `Invoice_2026-08_ACME-Corporation_final-signed-v2-${RUN}.pdf`;
+    expect(Buffer.byteLength(name), '前提：名字必须超过 48 字节，否则本用例没有判别力').toBeGreaterThan(48);
+    const content = Buffer.from(`long-name-${RUN}`);
+    const hash = sha256(`${name}|${sha256(content)}`);
+
+    expect((await req(`/file/${encodeURIComponent(name)}`, { method: 'PUT', body: content })).status).toBe(200);
+    const saved = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'File', hash, text: name, hasData: true, dataName: name, size: content.length }),
+    });
+    expect(saved.status).toBe(200);
+
+    const dl = await req(`/file/${encodeURIComponent(name)}`);
+    expect(dl.status, '修前这里是 500（LIKE 模式 61+2 字节 > 50）').toBe(200);
+    expect(Buffer.from(await dl.arrayBuffer()).equals(content)).toBe(true);
+    // 协议面的 /data 出口同一份数据也要能取到（它走的是 profileId，不受本次影响，作为对照）
+    expect((await req(`/api/history/File-${hash}/data`)).status).toBe(200);
+
+    // 收尾：软删（协议面没有删单条的端点，PATCH isDelete 与界面走同一条写路径）
+    const del = await req(`/api/history/File/${hash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isDelete: true, version: 1, lastModified: new Date(Date.now() + 1000).toISOString() }),
+    });
+    expect(del.status).toBe(200);
+  });
+
+  it('UI 搜索：25 个 % → 400（修前 500）；24 个 % 与普通搜索仍 200', async () => {
+    // 转义把 25 个 % 变成 50 字节 ⇒ 模式 52 字节 > 50 ⇒ D1 报错。修后解析期就拒为 400。
+    const q = (s: string) => req(`/ui/api/history?search=${encodeURIComponent(s)}&pageSize=1`);
+    expect((await q('%'.repeat(25))).status).toBe(400);
+    expect((await q('%'.repeat(24))).status).toBe(200);
+    expect((await q('x'.repeat(48))).status).toBe(200);
+  });
+});

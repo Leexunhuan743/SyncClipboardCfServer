@@ -200,6 +200,35 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
   return isValidProfileHash(hash) ? 'ok' : 'corrupt';
 }
 
+// 字段的 JSON 类型必须与上游 `[FromBody] ProfileDto` 的模型绑定同口径：类型不符在
+// System.Text.Json 里是**反序列化失败 ⇒ 400**。
+// 此前四个字段一律 `as string` / `as boolean` 强转，于是 `{"hash":123}`、`{"text":[1,2]}`、
+// `{"dataName":123,"hasData":true}` 会一路走到字符串运算里抛 TypeError ⇒ 未处理的 **500**
+// （2026-09-20 实测 5 例；`{"hasData":"false"}` 更糟：字符串被当真值，于是「没有数据」被判成
+// 「有数据」，只是恰好被后面那条 400 文案掩盖了）。F6 已按同一口径收紧 size / version，
+// 这里补齐其余四个字段。
+//
+// ⚠️ `null` 的处置**按字段的可空性分两类**（判据就是上游 `ProfileDto` 的声明）：
+//   · 非空**引用**类型 —— `Hash` / `Text`（`string`）、`DataName`（`string?`）：STJ 允许 null
+//     （运行时不做 NRT 校验）⇒ null 与缺省同义，本实现回落成 `''` / `null`；
+//   · 非空**值**类型 —— `Type`（`ProfileType`）、`HasData`（`bool`）：STJ 把 null 判成
+//     反序列化失败 ⇒ **400**，故这两个字段的显式 null 一律拒绝；而**键缺失**仍是缺省
+//     （`Type` → Text、`HasData` → false）。
+//     （对照：`HistoryRecordUpdateDto` 的字段全是 `bool?` / `int?` / `DateTimeOffset?`，
+//     那边 null 就是「未提供」—— 两处口径不同，是因为上游的声明不同。）
+function readString(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new Error(`${field} must be a string`);
+  return value;
+}
+
+// `undefined` = 键缺失（缺省）；显式 `null` 落到下面的类型判定 ⇒ 抛错（`bool` 是非空值类型）。
+function readBool(value: unknown, field: string): boolean | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`);
+  return value;
+}
+
 // 解析：大小写不敏感取值（客户端总发 camelCase，防御性容忍其他大小写）
 // type 处理与上游一致：键缺失 → Text；非法枚举名 → 抛错（上游 JsonException → 400）；
 // Unknown/None → 抛错（上游 Profile.Create 抛 NotSupportedException）。
@@ -216,7 +245,9 @@ export function parseProfileDto(json: string): ProfileDto {
   };
   const rawType = get('type');
   let type: ProfileType;
-  if (rawType == null) {
+  // ⚠️ 只把**键缺失**当缺省（→ Text）：`ProfileType` 是非空值类型，`null` 在上游是反序列化
+  // 失败 ⇒ 400。从前写成 `== null`，于是 `{"type":null}` 被静默当成 Text 并覆盖当前 profile。
+  if (rawType === undefined) {
     type = ProfileType.Text;
   } else {
     type = resolveStrictProfileType(rawType);
@@ -224,10 +255,10 @@ export function parseProfileDto(json: string): ProfileDto {
   const size = get('size');
   const dto: ProfileDto = {
     type,
-    hash: (get('hash') as string) ?? '',
-    text: (get('text') as string) ?? '',
-    hasData: (get('hasData') as boolean) ?? false,
-    dataName: (get('dataName') as string | null) ?? null,
+    hash: readString(get('hash'), 'hash') ?? '',
+    text: readString(get('text'), 'text') ?? '',
+    hasData: readBool(get('hasData'), 'hasData') ?? false,
+    dataName: readString(get('dataName'), 'dataName'),
   };
   // size 对齐上游 `ProfileDto.Size`（`long?`）的模型绑定：非空值必须是**整数**（且 JS 能精确
   // 表示 ⇒ Number.isSafeInteger），否则绑定失败 → 400。此前只判 `typeof === 'number'`：
@@ -368,15 +399,21 @@ export function parseHistoryRecordUpdateDto(json: string): HistoryRecordUpdateDt
     }
     dto.version = version;
   }
-  // 日期字段在解析期就校验：上游是 DateTimeOffset? 模型绑定，非法串在反序列化阶段失败并返回 400；
-  // 若放行到 fromIso 才抛错，路由无 catch-all → 500（F7）。
-  if (typeof lastModified === 'string' && lastModified !== '') {
-    assertParsableDate(lastModified);
-    dto.lastModified = lastModified;
-  }
-  if (typeof lastAccessed === 'string' && lastAccessed !== '') {
-    assertParsableDate(lastAccessed);
-    dto.lastAccessed = lastAccessed;
+  // 日期字段在解析期就校验，口径与上游 `DateTimeOffset?` 的 `[FromBody]` 绑定一致：
+  //   · `null` / 键缺失 → 「未提供」（上游得到 null，该字段不参与更新）
+  //   · 其余取值**必须**是能解析的日期串 —— 类型不符（数字/对象/数组）与**空串**
+  //     在 System.Text.Json 里都是反序列化失败 ⇒ **400**
+  // 此前只判 `typeof === 'string' && !== ''`，于是 `{"lastModified":123}` 被**静默忽略**：
+  // 请求方以为改掉了、服务端没改（F6 给 version 收紧类型时是同一条口径，这里补齐）。
+  // F7 的原有作用保持不变：非法串在解析期抛错，不会拖到 fromIso 才炸成 500。
+  for (const [field, value] of [
+    ['lastModified', lastModified],
+    ['lastAccessed', lastAccessed],
+  ] as const) {
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string') throw new Error(`${field} must be a date string`);
+    assertParsableDate(value);
+    dto[field] = value;
   }
   return dto;
 }
@@ -411,11 +448,19 @@ export function entityToUpdateDto(e: HistoryRecordEntity): HistoryRecordUpdateDt
   };
 }
 
-// ===== 搜索串上限（G6）=====
-// D1 的 LIKE 模式有字节上限，超长会让查询直接报错（表现为未处理的 500，非资源类缺陷）。
-// 实测：48 字节通过、49 字节失败（模式为 `%…%`）。以**字节**而非字符计，避免 CJK/emoji
-// 搜到一半才炸。两个边界（协议 /api/history/query 与 UI /ui/api/history）共用此判定。
-export const MAX_SEARCH_BYTES = 48;
+// ===== LIKE 模式上限（G6）=====
+// 约束不是「搜索串有多长」，而是**拼出来的 LIKE 模式**有多长：D1 上越过它的查询直接报错，
+// 表现为未处理的 500（非资源类缺陷）。实测（2026-09-20 本地 dev server，两个 LIKE 站点各测一次）：
+//   · `Text LIKE '%…%'`                 —— 搜索串 48 字节 ⇒ 模式 50 字节 **通过**；49 字节 ⇒ 51 **报错**
+//   · `TransferDataFile LIKE '%/' || ?` —— 名字   48 字节 ⇒ 模式 50 字节 **通过**；49 字节 ⇒ 51 **报错**
+// 即引擎口径是「模式 ≤ MAX_LIKE_PATTERN_BYTES」，下面的「搜索串预算」由它减掉前后两个 % 推出。
+// 以**字节**而非字符计，避免 CJK/emoji（一字 3~4 字节）搜到一半才炸。
+//
+// ⚠️ 消费者必须保证**送进 SQL 的最终模式**不超上限：LIKE 转义会把 `%`、`_` 与反斜杠各自变成
+// 两个字符，那一步之后要**再校一次**（`assertLikePatternFits`）—— 否则 48 字节的入参能拼出
+// 98 字节的模式。
+export const MAX_LIKE_PATTERN_BYTES = 50;
+export const MAX_SEARCH_BYTES = MAX_LIKE_PATTERN_BYTES - 2;
 const SEARCH_ENCODER = new TextEncoder();
 
 export function normalizeSearchText(raw: string | null): string | null {
@@ -424,4 +469,15 @@ export function normalizeSearchText(raw: string | null): string | null {
     throw new InvalidQueryValueError(`SearchText must be at most ${MAX_SEARCH_BYTES} bytes`);
   }
   return raw;
+}
+
+// **转义之后**的预算校核（LIKE 元字符转义会把一个字符变成两个）。不转义的那一侧（协议面）
+// 用 normalizeSearchText 就够了；转义的那一侧（UI 面）必须再校这一道 —— 实测 25 个 %（25 字节，
+// 离上面那条线还差一半）在真 D1 上正是 500。
+export function assertLikePatternFits(escapedText: string): void {
+  if (SEARCH_ENCODER.encode(escapedText).length > MAX_SEARCH_BYTES) {
+    throw new InvalidQueryValueError(
+      `SearchText must be at most ${MAX_SEARCH_BYTES} bytes after LIKE escaping (each of % _ \\ counts as 2)`,
+    );
+  }
 }

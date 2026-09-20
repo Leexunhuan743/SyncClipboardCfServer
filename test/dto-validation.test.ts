@@ -16,6 +16,7 @@ import type { Hono } from 'hono';
 import { parseHistoryRecordUpdateDto, parseProfileDto } from '../src/serialization';
 import { createHistoryRoutes } from '../src/routes/history';
 import { createWebdavRoutes } from '../src/routes/webdav';
+import { createUiRoutes } from '../src/ui/routes';
 import { fileProfileHash, sha256Hex } from '../src/hash';
 import { INT32_MAX, INT32_MIN } from '../src/types';
 import type { Bindings } from '../src/env';
@@ -35,6 +36,10 @@ class FakeD1 {
   constructor(schemaSql: string) {
     this.db = new DatabaseSync(':memory:');
     this.db.exec(schemaSql);
+  }
+  /** 直写一条 SQL：给「带外写入的坏数据」用 —— 三条写路径都不接受那种行，只能这样造 */
+  exec(sql: string): void {
+    this.db.exec(sql);
   }
   prepare(sql: string) {
     const db = this.db;
@@ -85,6 +90,9 @@ interface Harness {
   env: Bindings;
   history: Hono<{ Bindings: Bindings }>;
   webdav: Hono<{ Bindings: Bindings }>;
+  ui: Hono<{ Bindings: Bindings }>;
+  /** 直接往库里写一行（见 FakeD1.exec 的说明） */
+  exec: (sql: string) => void;
 }
 
 function makeHarness(): Harness {
@@ -104,7 +112,13 @@ function makeHarness(): Harness {
     USERNAME: 'admin',
     PASSWORD: 'admin',
   } as unknown as Bindings;
-  return { env, history: createHistoryRoutes(), webdav: createWebdavRoutes() };
+  return {
+    env,
+    history: createHistoryRoutes(),
+    webdav: createWebdavRoutes(),
+    ui: createUiRoutes(),
+    exec: (sql: string) => db.exec(sql),
+  };
 }
 
 // 进程内请求：十几处调用共用同一发送路径（URL 前缀 + env 注入），避免各写一份 new Request
@@ -329,6 +343,56 @@ describe('F6 · PUT size 只接受安全整数（上游 long? 模型绑定）', 
   });
 });
 
+// ============================================================ PUT 字段的 JSON 类型
+describe('PUT 的 hash / text / dataName / hasData 只接受对应 JSON 类型（上游 [FromBody] 模型绑定）', () => {
+  it('类型不符 → 解析期抛错（修复前一律 as string 强转，5 例变成未处理的 500）', () => {
+    for (const raw of ['123', '{}', '[]', 'true']) {
+      expect(() => parseProfileDto(`{"type":"Text","hash":${raw}}`), `hash:${raw} 应被拒`).toThrow();
+      expect(() => parseProfileDto(`{"type":"Text","text":${raw}}`), `text:${raw} 应被拒`).toThrow();
+      expect(
+        () => parseProfileDto(`{"type":"Text","hasData":true,"dataName":${raw}}`),
+        `dataName:${raw} 应被拒`,
+      ).toThrow();
+    }
+    // hasData 必须是布尔：字符串 "false" 会被当**真值**，于是"没有数据"被判成"有数据"
+    // `null` 同样被拒 —— 上游 `ProfileDto.HasData` 是 `bool`（非空值类型），STJ 反序列化失败 ⇒ 400
+    for (const raw of ['"false"', '0', '1', '[]', '{}', 'null']) {
+      expect(() => parseProfileDto(`{"type":"Text","hasData":${raw}}`), `hasData:${raw} 应被拒`).toThrow();
+    }
+  });
+
+  it('null 等价于缺省**只限引用类型字段**；值类型字段的显式 null 是类型错误（见上一条）', () => {
+    expect(
+      parseProfileDto('{"type":"Text","hash":null,"text":null,"dataName":null}'),
+    ).toMatchObject({ hash: '', text: '', hasData: false, dataName: null });
+    // `type` 是非空值类型 ⇒ 显式 null 与「键缺失」不同，按类型错误处理
+    expect(() => parseProfileDto('{"type":null}')).toThrow();
+  });
+
+  it('HTTP：类型不符 → 400，且理由是模型绑定失败（不是被后面的业务判据顺手拒掉）', async () => {
+    const h = makeHarness();
+    const bodies = [
+      '{"type":"Text","hash":123,"text":"x"}',
+      '{"type":"Text","hash":"","text":[1,2]}',
+      '{"type":"Text","hash":"","text":"x","hasData":true,"dataName":123}',
+      // 判别性最强的一条：修前它也回 400，但理由是"HasData 为真却没有 dataName"（字符串被当真值）
+      '{"type":"Text","hash":"","text":"x","hasData":"false"}',
+      // 非空值类型的显式 null（2026-09-20 起对齐上游的 400）
+      '{"type":"Text","hash":"","text":"x","hasData":null}',
+      '{"type":null,"hash":"","text":"x"}',
+    ];
+    for (const raw of bodies) {
+      const res = await send(h.webdav, h.env, '/SyncClipboard.json', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: raw,
+      });
+      expect(res.status, `PUT ${raw} 应 400`).toBe(400);
+      expect(await res.text(), `PUT ${raw} 应报 JSON 类型错误`).toBe('Invalid JSON body');
+    }
+  });
+});
+
 // ============================================================ F5 · /data 出口编码
 describe('F5 · /data 的 Content-Disposition 对任意 dataName 都必须合法', () => {
   // `harnessStorageGap`：NUL 名称在本 harness 的存储层（node:sqlite + 内存 R2 stub）上的往返
@@ -385,5 +449,86 @@ describe('F5 · /data 的 Content-Disposition 对任意 dataName 都必须合法
     const legacy = `attachment; filename*=UTF-8''${encodeURIComponent(name)}; filename="${name.replace(/"/g, '')}"`;
     // 这就是「POST 200 但 /data 恒 500」的机制：头值里的裸 CR/LF 让 Response 构造抛 TypeError
     expect(() => new Response('x', { headers: { 'content-disposition': legacy } })).toThrow();
+  });
+});
+
+// ============================================================ PATCH 的日期字段
+describe('PATCH 的 lastModified / lastAccessed：类型与格式（上游 [FromBody] DateTimeOffset? 绑定）', () => {
+  it('类型不符与空串 → 解析期抛错（修复前被**静默忽略** ⇒ 服务端没改、请求方以为改了）', () => {
+    for (const raw of ['123', '{}', '[]', 'true', '""']) {
+      expect(() => parseHistoryRecordUpdateDto(`{"lastModified":${raw}}`), `lastModified:${raw} 应被拒`).toThrow();
+      expect(() => parseHistoryRecordUpdateDto(`{"lastAccessed":${raw}}`), `lastAccessed:${raw} 应被拒`).toThrow();
+    }
+    // null 与键缺失 = 「未提供」（上游得到 null，该字段不参与更新）
+    expect(parseHistoryRecordUpdateDto('{"lastModified":null}').lastModified).toBeUndefined();
+    expect(parseHistoryRecordUpdateDto('{"lastAccessed":null}').lastAccessed).toBeUndefined();
+    expect(parseHistoryRecordUpdateDto('{"starred":true}').lastModified).toBeUndefined();
+    // 合法串（含 C# 的 7 位小数形态）不受影响
+    expect(parseHistoryRecordUpdateDto('{"lastModified":"2026-09-12T10:20:30.1234567Z"}').lastModified).toBe(
+      '2026-09-12T10:20:30.1234567Z',
+    );
+  });
+
+  it('HTTP：类型不符 → 400，且记录一个字段都没被改动（修复前：忽略该字段 + 静默推进版本与时间戳）', async () => {
+    const h = makeHarness();
+    const hash = await createTextRecord(h, 'date-type');
+    for (const raw of ['{"lastModified":123}', '{"lastAccessed":[]}', '{"lastModified":""}', '{"lastAccessed":{}}']) {
+      const res = await send(h.history, h.env, `/api/history/Text/${hash}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: raw,
+      });
+      expect(res.status, `PATCH ${raw} 应 400（修复前 200：字段没改、版本却推进了）`).toBe(400);
+      expect((await readVersion(h, hash)).version, `${raw} 被拒后版本不得变动`).toBe(0);
+    }
+    // null 表示"未提供"：整条仍应正常更新
+    const ok = await send(h.history, h.env, `/api/history/Text/${hash}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lastModified: null, lastAccessed: null, starred: true, version: 1 }),
+    });
+    expect(ok.status).toBe(200);
+  });
+});
+
+// ============================================================ 带外写入的坏行
+// 为什么这一组住在本文件：这里的 harness 是仓库里唯一同时具备「读真 schema.sql 的 D1 假实现 + 内存 R2 +
+// 可注入 env + 三条路由面」的**进程内**环境 —— 而这一族要的正是「直接往库里写一行**写路径都拒绝**的数据」。
+// 三条写路径都拒 hash 含 `/`（PUT /SyncClipboard.json、POST /api/history、UI PATCH 各有一道校验），
+// 故这种行只能来自"库被外部改坏" —— 而那恰恰是自检端点存在的理由。
+describe('库里的坏行（hash 含路径分隔符）：诊断面与读路径都不该 500', () => {
+  const BASIC = 'Basic ' + Buffer.from('admin:admin').toString('base64');
+
+  function insertCorruptRow(h: Harness, hash: string): void {
+    h.exec(
+      `INSERT INTO HistoryRecords
+         (UserId, Type, Text, Size, TransferDataFile, FilePaths, Hash, CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted)
+       VALUES ('default_user', 0, 'corrupt-row', 11, 'a.bin', '["a.bin"]', '${hash}', 1, 1, 1, 0, 0, 0, 0)`,
+    );
+  }
+
+  it('GET /ui/api/integrity → 200：坏行按「取不到」计，并把它的 hash 原样列出来', async () => {
+    const h = makeHarness();
+    insertCorruptRow(h, 'AA/BB');
+    const res = await send(h.ui, h.env, '/ui/api/integrity', { headers: { authorization: BASIC } });
+    expect(res.status, '修复前这里是 500（historyKey 内部的 assertHashForPath 抛出）').toBe(200);
+    const body = (await res.json()) as {
+      recordsWithData: number;
+      missingCount: number;
+      missing: { hash: string }[];
+    };
+    expect(body.recordsWithData).toBe(1);
+    expect(body.missingCount).toBe(1);
+    // 清单里露出坏 hash 正是它可诊断的地方（不做静默跳过）
+    expect(body.missing.map((m) => m.hash)).toContain('AA/BB');
+  });
+
+  it('GET /api/history/{id}/data → 404（不是 500）：构造不出 key 的记录按缺数据计', async () => {
+    const h = makeHarness();
+    insertCorruptRow(h, 'AA/BB');
+    const res = await send(h.history, h.env, '/api/history/Text-AA%2FBB/data');
+    expect(res.status, '修复前这里是 500（storage 层的 assertHashForPath 抛出）').toBe(404);
+    // 对照：同一行的**元数据**端点不受影响（它不碰 R2 key 构造）
+    expect((await send(h.history, h.env, '/api/history/Text-AA%2FBB')).status).toBe(200);
   });
 });

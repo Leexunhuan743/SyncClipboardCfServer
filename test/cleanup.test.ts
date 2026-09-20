@@ -55,9 +55,16 @@ function multipart(
   return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
-// 触发真实的 scheduled handler（miniflare 的测试端点）
+// 触发真实的 scheduled handler（miniflare 的测试端点）。
+// ⚠️ 响应体必须**读掉**：`/__scheduled` 是本套件里唯一「服务端工作在响应之后还在继续」的端点
+// （scheduled handler 走 `ctx.waitUntil`），不排空时这条连接在 undici 侧一直不算完。
+// 2026-09-20 实测：整套跑时偶发的 `Error inside ProxyWorker … Network connection lost`（500，
+// 且服务端**没有**该请求的日志行）两次都落在它之后的第一个请求上。这里按"排空"写 ——
+// 但**这不代表已证因果**（隔离跑 7/7 通过、cron→POST 序列 10/10 通过）：证据与判据见
+// `docs/progress.md` §95.8 的那条注。
 async function triggerCron(): Promise<number> {
   const res = await fetch(`${BASE}/__scheduled?cron=${encodeURIComponent('17 * * * *')}`);
+  await res.text();
   return res.status;
 }
 
@@ -72,9 +79,11 @@ let cronAvailable = false;
 
 beforeAll(async () => {
   const root = await fetch(`${BASE}/`, { headers: H });
+  await root.text(); // 排空（理由见 triggerCron 上方那段）
   if (!root.ok) throw new Error(`dev server 不可用 (${BASE}): ${root.status}`);
   // 未以 --test-scheduled 启动时，/__scheduled 会落到 Worker 路由 → 404
   const probe = await fetch(`${BASE}/__scheduled?cron=${encodeURIComponent('17 * * * *')}`);
+  await probe.text(); // 排空（理由见 triggerCron 上方那段）
   cronAvailable = probe.status !== 404;
   if (!cronAvailable) {
     console.warn(

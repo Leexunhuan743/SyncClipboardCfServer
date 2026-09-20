@@ -331,15 +331,22 @@ async function sweepWorkingDirs(
   let removedDirs = 0;
   let complete = true;
 
+  // ⚠️ 必须按 R2_DELETE_BATCH **分块**：`keys` 是按**目录**收进来的，而单个目录能装下任意多个
+  // 对象（正常写路径是每目录 1 个，异常/历史数据不然）。不分块时 `deleteHistoryKeys` 的断言
+  // （>1000 个直接抛）会让**该目录每轮都删不掉**：失败被记成 failure、对象永远留在 R2 里
+  // （2026-09-20 实测：一个目录放 1200 个对象，修改前一个都不少）。每块各记一次子请求；
+  // 正常数据永远只有一块，与改动前逐位相同。
   const flush = async (): Promise<boolean> => {
     if (keys.length === 0) return true;
-    if (run.budget.roomFor(phase) < SUBREQUESTS_PER_SWEEP_CALL) return false;
-    run.budget.spend(SUBREQUESTS_PER_SWEEP_CALL);
-    try {
-      await run.storage.deleteHistoryKeys(keys);
-    } catch (err) {
-      recordFailure(run.failures, phase, err);
-      return false;
+    for (let i = 0; i < keys.length; i += R2_DELETE_BATCH) {
+      if (run.budget.roomFor(phase) < SUBREQUESTS_PER_SWEEP_CALL) return false;
+      run.budget.spend(SUBREQUESTS_PER_SWEEP_CALL);
+      try {
+        await run.storage.deleteHistoryKeys(keys.slice(i, i + R2_DELETE_BATCH));
+      } catch (err) {
+        recordFailure(run.failures, phase, err);
+        return false;
+      }
     }
     removedDirs += pendingDirs.length;
     keys = [];
@@ -470,15 +477,18 @@ async function cleanOrphans(run: CleanupRun): Promise<PhaseOutcome> {
   let keys: string[] = [];
   let pendingDirs: string[] = [];
 
+  // 分块理由与 sweepWorkingDirs 的 flush 完全相同（单目录可超一次 delete 的上限）
   const flush = async (): Promise<boolean> => {
     if (keys.length === 0) return true;
-    if (run.budget.roomFor('orphans') < SUBREQUESTS_PER_SWEEP_CALL) return false;
-    run.budget.spend(SUBREQUESTS_PER_SWEEP_CALL);
-    try {
-      await run.storage.deleteHistoryKeys(keys);
-    } catch (err) {
-      recordFailure(run.failures, 'orphans', err);
-      return false;
+    for (let i = 0; i < keys.length; i += R2_DELETE_BATCH) {
+      if (run.budget.roomFor('orphans') < SUBREQUESTS_PER_SWEEP_CALL) return false;
+      run.budget.spend(SUBREQUESTS_PER_SWEEP_CALL);
+      try {
+        await run.storage.deleteHistoryKeys(keys.slice(i, i + R2_DELETE_BATCH));
+      } catch (err) {
+        recordFailure(run.failures, 'orphans', err);
+        return false;
+      }
     }
     processed += pendingDirs.length;
     keys = [];

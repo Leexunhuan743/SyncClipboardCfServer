@@ -13,7 +13,7 @@ import { stores } from '../stores';
 import { historyKey } from '../storage';
 import { drainRequestBody } from '../auth';
 import { toIso } from '../serialization';
-import { ProfileType } from '../types';
+import { isValidProfileHash, ProfileType } from '../types';
 import { truncateText } from './query';
 import { readRetentionSettings, SETTINGS_META_KEYS } from '../cleanup';
 
@@ -76,7 +76,16 @@ export function createUiMaintenanceRoutes(): Hono<{ Bindings: Bindings }> {
       // history/{Type}_{Hash}/{basename(TransferDataFile)}。
       // Hash 用 DB 里的**原样大小写**：R2 key 区分大小写，写入时用的就是这个值
       // （查记录可以大小写不敏感，key 不能，两者不能混）。
-      if (objectKeys.has(historyKey(r.type, r.hash, basename(r.transferDataFile)))) continue;
+      //
+      // ⚠️ hash 含路径分隔符的**坏行**（只能由带外写入产生 —— 三条写路径都拒）会让 `historyKey()`
+      // 内部的断言抛错，于是**整个自检端点 500**：而它恰恰是数据坏掉时唯一该工作的诊断面
+      // （2026-09-20 实测：插一行 hash=`a/b` 的活跃记录 ⇒ `GET /ui/api/integrity` 变 500）。
+      // 这种行按「取不到」计：它在**本实现里没有任何读路径**能取到数据（key 规则构造不出来）
+      // ⇒ 对使用者与缺失等价；而它的 hash 原样出现在清单里，正是让运维认出「这是坏行」的东西。
+      const reachable = isValidProfileHash(r.hash);
+      if (reachable && objectKeys.has(historyKey(r.type, r.hash, basename(r.transferDataFile)))) {
+        continue;
+      }
       missingCount++;
       if (missing.length < MISSING_LIMIT) {
         missing.push({

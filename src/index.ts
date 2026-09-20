@@ -226,7 +226,11 @@ export default {
     // 必须原样交给下面的 Hono，绝不能被当成界面资源去问静态资源，也不能在关闭态被换成 404 页
     // （关闭态它返回与 routes.ts 兜底同形的 JSON，见 src/uiEnabled.ts）。
     const path = url.pathname;
-    const isUiApi = path.startsWith('/ui/api/');
+    // ⚠️ 裸 `/ui/api` 也算接口面（2026-09-20）：它与 `/ui/api/` 是同一个命名空间的两种写法，
+    // 而 Hono 侧的守卫中间件与 `app.all('/ui/api/*')` **都**匹配裸形态（实测）⇒ 交给 Hono 才是
+    // 「API 命名空间返回 JSON」那条路。此前它落进界面资源分支，回的是**一张 HTML 404 页** ——
+    // 同一命名空间两种写法两种形态，调用方（代码）拿到的是给人看的页。
+    const isUiApi = path.startsWith('/ui/api/') || path === '/ui/api';
     // ⚠️ 这份前缀清单**不是**唯一事实源：`public/` 下的 `ui*` 目录才算数，`wrangler.toml` 的
     // run_worker_first、`public/_headers` 的规则是另外两处副本。三处由 `test/ui-guard.test.ts` 钉在一起
     // （这条的判据是「前缀集合 == `public/` 的挂载点集合」）—— 新增/改名挂载点时三处必须一起改。

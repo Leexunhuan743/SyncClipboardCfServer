@@ -298,8 +298,12 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // ===== 受保护端点（会话 Cookie 或 Basic）=====
   const guarded = new Hono<{ Bindings: Bindings }>({ strict: false });
   // 作用域必须收窄到 /ui/api/*：写成 '*' 会匹配到 UI 命名空间下的**所有**路径
-  // （中间件先于更晚注册的兜底路由命中），于是未认证访问 /ui_v2/不存在 会得到 401 JSON
-  // 而不是 404 页——实测发现。收窄后守卫只管 API，页面本身是公开的（与登录页一致）。
+  // （中间件先于更晚注册的兜底路由命中），于是未认证访问 `/ui/不存在` 会得到 401 JSON
+  // 而不是 404 页——实测发现。
+  // ⚠️ 地名按**当时**写：那是 2026-09-19 改名之前的实测（当时 V2 挂在 `/ui/`，
+  // `git show 380b5da:src/ui/routes.ts` 可核）。改成 `/ui_v2/不存在` 会变成一件**从未发生过**
+  // 的事，而今天那条路径也到不了这里 —— 入口 `src/index.ts` 的 isUiAsset 分支已把它处理掉。
+  // 收窄后守卫只管 API，页面本身是公开的（与登录页一致）。
   guarded.use('/ui/api/*', uiAuthMiddleware());
 
   // GET /ui/api/history —— 列表（筛选/搜索/排序/分页）
@@ -699,6 +703,10 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // `/ui/*` 的兜底 404（只覆盖 UI 命名空间；协议路径的 404 语义不动）。
   // Hono 的路由器让更具体的路由优先，故这一条只在没有其它匹配时命中。
   // API 命名空间返回 JSON（调用方是代码），页面命名空间返回 404 页（调用方是人）。
+  //
+  // ⚠️ 后两条（页面 404 与 `/ui` 跳转）**今天都到不了**：入口 `src/index.ts` 已按 `UI_ENABLED`
+  // 在三个挂载点上决定"404"或"转静态资源"，界面路径根本不会进到本文件。留着是因为它们定义的是
+  // "界面命名空间的兜底"这件事本身，不依赖入口那一段的写法（改名／挪动入口顺序时它们是最后一道网）。
   app.all('/ui/api/*', (c) => Response.json({ error: 'not_found' }, { status: 404 }));
   app.all('/ui/*', (c) => notFoundPage(c.env));
   app.get('/ui', (c) => c.redirect('/ui/', 302));

@@ -100,6 +100,18 @@ describe('G6 · SearchText 上限（按字节）', () => {
     );
   });
 
+  it('UI 入口按**转义后**的长度判预算：25 个 %（25 字节，离 48 字节线还差一半）也必须被拒', () => {
+    // 修前：转义把 25 个 % 变成 50 字节 ⇒ LIKE 模式 52 字节 > D1 的 50 字节上限 ⇒ 真 D1 上是**未处理的 500**
+    // （实测：24 个 % 200、25 个 % 500）。HTTP 级的 400 见 test/fix-regressions.test.ts。
+    expect(() => parseUiHistoryQuery(new URLSearchParams({ search: '%'.repeat(25) }))).toThrow(
+      /after LIKE escaping/,
+    );
+    // 边界：24 个 % → 转义后 48 字节 ⇒ 模式正好 50 字节，卡在上限内，必须仍被接受
+    expect(parseUiHistoryQuery(new URLSearchParams({ search: '%'.repeat(24) })).search).toBe('%'.repeat(24));
+    // 无元字符的普通搜索额度不受影响（仍是 48 字节）
+    expect(parseUiHistoryQuery(new URLSearchParams({ search: 'x'.repeat(48) })).search).toBe('x'.repeat(48));
+  });
+
   it('协议入口 POST /api/history/query：49 字节 → 400（修复前会走到 D1 并 500）', async () => {
     // 校验发生在接触 env.DB 之前，故用空 env 即可驱动（若走到 DB 会抛错 → 那就不是 400）
     const app = createHistoryRoutes();

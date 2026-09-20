@@ -5,7 +5,13 @@
 // 总数与批量选择，改动官方语义会破坏与客户端的兼容。故此处单开一层，
 // 但仍读写同一张表、复用同一套行映射（db.ts 的 rowToEntity）与 DTO 序列化。
 import { DbRow, rowToEntity, basename } from '../db';
-import { entityToDto, normalizeSearchText, parseProfileTypeFilter, InvalidQueryValueError } from '../serialization';
+import {
+  entityToDto,
+  normalizeSearchText,
+  assertLikePatternFits,
+  parseProfileTypeFilter,
+  InvalidQueryValueError,
+} from '../serialization';
 import { HistoryRecordDto, HistoryRecordEntity, ProfileType, ProfileTypeFilter, HARD_CODED_USER_ID } from '../types';
 
 export type UiSortField = 'id' | 'type' | 'size' | 'createTime' | 'lastModified' | 'lastAccessed';
@@ -142,6 +148,10 @@ export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
   let search: string | null;
   try {
     search = normalizeSearchText(searchText);
+    // ⚠️ 预算要按**转义后**的串再校一次：`%`、`_` 与反斜杠各自都会变成 2 个字符，48 字节的入参
+    // 最多撑到 96 字节，直接越过 D1 的 LIKE 模式上限（见 serialization.ts 的 MAX_LIKE_PATTERN_BYTES）
+    // —— 实测 25 个 `%` 就是一次未处理的 500，而它离 normalizeSearchText 那条线还差一半。
+    if (search !== null) assertLikePatternFits(escapeLike(search));
   } catch (err) {
     if (err instanceof InvalidQueryValueError) throw new UiQueryError(err.message);
     throw err;
@@ -166,6 +176,12 @@ export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
 
 // 单用户部署：与协议面共用同一个 UserId 常量（此前这里另写一份字面量 'default_user'，O1）
 const USER_ID = HARD_CODED_USER_ID;
+
+// LIKE 元字符转义：**只此一处**（解析期要用它算转义后的长度，拼 SQL 时要用它做替换）。
+// 转义符本身是反斜杠 ⇒ 反斜杠必须先被转义，否则「字面反斜杠 + %」会被解释成「字面反斜杠 + 通配符」。
+function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
 
 function buildWhere(q: UiHistoryQuery): { clause: string; params: (string | number)[] } {
   const where: string[] = ['UserId = ?1'];
@@ -195,10 +211,10 @@ function buildWhere(q: UiHistoryQuery): { clause: string; params: (string | numb
   }
   if (q.search !== null) {
     // 转义 LIKE 元字符：用户搜「100%」时不该退化成「匹配任意」。
-    // 官方 API 未转义（与上游 Contains 的差异见 docs/protocol.md），故这里是**有意**不同。
-    const escaped = q.search.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    // 官方 API 未转义（与上游 Contains 的差异见 docs/protocol.md），故这里是**有意**不同；
+    // 转义后的长度预算已在 parseUiHistoryQuery 里校过（转义函数与那里共用同一个 escapeLike）。
     where.push(`Text LIKE ?${idx++} ESCAPE '\\'`);
-    params.push(`%${escaped}%`);
+    params.push(`%${escapeLike(q.search)}%`);
   }
   if (q.starred !== null) {
     where.push(`Stared = ?${idx++}`);
@@ -454,7 +470,7 @@ export async function readBatchMeta(
   // 而这里的候选集本来就极小（≤100 条记录、去重后更少），多筛一次是免费的。
   // 库里存的是大写（`docs/protocol.md` §10：落库 hash 统一 `.toUpperCase()`），而调用方可能发小写 ——
   // 故先把参数统一成大写：否则小写入参在**这一步**就被 `Hash IN (…)` 的等值比较滤掉，
-  // 下面那句\"大小写不敏感\"的过滤根本没机会生效。
+  // 下面那句「大小写不敏感」的过滤根本没机会生效。
   const hashes = [...new Set(items.map((i) => i.hash.toUpperCase()))];
   const placeholders = hashes.map((_, i) => `?${i + 2}`).join(',');
   const res = await db

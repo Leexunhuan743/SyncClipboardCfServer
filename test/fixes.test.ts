@@ -824,7 +824,7 @@ describe('F18 · 历史保留与清理（对齐上游 HistoryCleaner）', () => 
     await db.insert(make('KEEP'));
     await db.insert(make('GONE', { isDeleted: true }));
     const dirs = await db.listActiveWorkingDirs();
-    // 尾斜杠不是风格问题：cleanup 用它和 R2Storage.listHistoryWorkingDirs()（由 R2 key 截取，
+    // 尾斜杠不是风格问题：cleanup 用它和 R2Storage.listHistoryObjectsByDir()（由 R2 key 截取，
     // 形如 `Text_KEEP/`）做集合比较。形式不一致 → active.has() 恒 false → 全部历史数据被当孤儿删除。
     expect(dirs.has('Text_KEEP/')).toBe(true);
     expect(dirs.has('Text_GONE/')).toBe(false);

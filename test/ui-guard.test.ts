@@ -198,6 +198,9 @@ describe('UI 部署开关（UI_ENABLED）', () => {
       ['/ui/api/session', 'api'],
       ['/ui/api/login', 'api'],
       ['/ui/api/history', 'api'],
+      // 裸 /ui/api（无尾斜杠）：与 /ui/api/* 同属接口命名空间 ⇒ 关闭态也必须是**同形**的 JSON 404。
+      // 修复前它落进界面资源分支，回的是给人看的 HTML 404 页（"这个地址没有页面"）。
+      ['/ui/api', 'api'],
     ];
     for (const [path, kind] of cases) {
       // 注意：不带任何凭据——界面开关在**鉴权之前**判定，未认证也必须拿到 404（而不是 401）
@@ -252,6 +255,21 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     const api = await worker.fetch(new Request('https://sync.example.com/ui/api/__nope__'), env, CTX);
     expect(api.status).toBe(401); // 未带凭据 ⇒ 先被守卫拦下
     expect(seen, '/ui/api/* 不该去问静态资源').toEqual(['/ui_v2/__missing__']);
+
+    // 裸 /ui/api（2026-09-20）：与 /ui/api/ 是同一命名空间的两种写法，必须同形 —— 未认证 401、
+    // 认证后 JSON 404，且都不碰静态资源。修复前它是**一张 HTML 404 页**（落进了界面资源分支）。
+    const basic = 'Basic ' + Buffer.from(`${USER}:${PASS}`).toString('base64');
+    const bare = await worker.fetch(new Request('https://sync.example.com/ui/api'), env, CTX);
+    expect(bare.status).toBe(401);
+    expect(bare.headers.get('content-type') ?? '').toContain('application/json');
+    const bareAuthed = await worker.fetch(
+      new Request('https://sync.example.com/ui/api', { headers: { authorization: basic } }),
+      env,
+      CTX,
+    );
+    expect(bareAuthed.status).toBe(404);
+    expect(await bareAuthed.text()).toBe('{"error":"not_found"}');
+    expect(seen, '裸 /ui/api 同样不该去问静态资源').toEqual(['/ui_v2/__missing__']);
   });
 
   // V1（`public/ui_v1/`，2026-09-18 起是**默认界面**，见该目录 README）与 V2 共用同一个界面开关。

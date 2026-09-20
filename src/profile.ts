@@ -418,7 +418,7 @@ export async function addRecordDto(
       existing.isDeleted = incoming.isDeleted;
       await db.updateEntity(existing);
       await notify.notifyHistory(entityToDtoWire(existing));
-      await deleteDataIfNeed(db, storage, existing);
+      await deleteDataIfNeed(storage, existing);
     }
     return entityToDto(existing);
   }
@@ -452,14 +452,15 @@ export async function addRecordDto(
 
   if (!(await isLocalDataValid(db, storage, entity))) {
     // ⚠️ `tranfer` 是**上游的拼写**，不是笔误：这条 400 文案是逐字复刻的协议契约
-    // （见 docs/upstream-parity.md 的「状态码/文案」条目、docs/protocol.md §3），
+    // （见 docs/upstream-parity.md 的「状态码/文案」条目、docs/protocol.md §5.1 与 §8.1 ——
+    // 按**节名**引用而不是行号：§3 是 DTO 定义，文案并不在那里），
     // 改成正确拼写就会变成一处新的协议偏离；test/fixes.test.ts 也是按这个串断言的。
     throw new BadRequestError('Needs tranfer data.');
   }
 
   const inserted = await db.insert(entity);
   await notify.notifyHistory(entityToDtoWire(inserted));
-  await deleteDataIfNeed(db, storage, inserted);
+  await deleteDataIfNeed(storage, inserted);
   return entityToDto(inserted);
 }
 
@@ -622,9 +623,10 @@ async function ensureExistingRecordData(
   }
 }
 
-// IsDeleted 时删除历史工作目录（上游 DeleteProfileDataIfNeed）
+// IsDeleted 时删除历史工作目录（上游 DeleteProfileDataIfNeed）。
+// 只用到 entity 与存储：调用方一直传的 `db` **从来没被用过**（`tsconfig` 未开 noUnusedLocals、
+// `eslint` 也不覆盖 `src/`，故它一直静默留着）—— 2026-09-20 删掉这个形参，两处调用点同步。
 async function deleteDataIfNeed(
-  db: HistoryDb,
   storage: R2Storage,
   entity: HistoryRecordEntity,
 ): Promise<void> {

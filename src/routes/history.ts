@@ -259,6 +259,13 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     if (!rec || rec.transferDataFile === '') {
       return c.text('Not Found', 404);
     }
+    // 库里的坏行（hash 含路径分隔符，只能带外写入）：`storage` 层的 key 构造会断言抛错 ⇒ 500。
+    // 这种记录的数据**取不到就是取不到**（本实现的 key 规则构造不出它）⇒ 按缺数据 404 ——
+    // 与 notFound.ts 头部写的那条契约一致（"例如 `GET /api/history/{id}/data` 缺数据必须 404"），
+    // 也把"手写坏一行数据就能让该条 /data 恒 500"换成一个可解释的语义。
+    if (!isValidProfileHash(rec.hash)) {
+      return c.text('Not Found', 404);
+    }
     const fileName = basename(rec.transferDataFile);
     const obj = await storage.getHistory(rec.type, rec.hash, fileName);
     if (!obj) {
