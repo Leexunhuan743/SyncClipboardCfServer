@@ -349,10 +349,10 @@ jobs:
         # ② 已认证 /api/version → 200 且 body 等于 wrangler.toml 的 VERSION：凭据可用 **且**这次部署真生效
         # ③ 已认证 /api/history/statistics → 200 JSON：D1 绑定与查询路径可用
         # ④ 已认证 /SyncClipboard.json → 200 JSON：Meta /「当前 profile」读路径可用
-          # ⑤ 界面可达性按 UI_ENABLED 断言：true → 三个挂载点（/ui_v1/ = 默认界面 V1、
-          #    /ui_v2/ 与 /ui_v2/app/ = 开发测试版 V2、/ui/ = 跳转壳）的页面与入口 JS
-          #    各 200，且 Content-Type 对得上（守住 run_worker_first + ASSETS 转发链路 ——
-          #    它坏了界面就整片 404）；false → 三个挂载点都必须 404
+        # ⑤ 界面可达性按 UI_ENABLED 断言：true → 三个挂载点（/ui_v1/ = 默认界面 V1、
+        #    /ui_v2/ 与 /ui_v2/app/ = 开发测试版 V2、/ui/ = 跳转壳）的页面与入口 JS
+        #    各 200，且 Content-Type 对得上（守住 run_worker_first + ASSETS 转发链路 ——
+        #    它坏了界面就整片 404）；false → 三个挂载点都必须 404
         # 未配置 USERNAME/PASSWORD secrets 时 ②③④ 降级为 ::notice:: 跳过（本仓库按 README「方式 A」
         # 把凭据只放在 Cloudflare —— 那是预期状态，不该让部署变红）。
         env:
@@ -424,9 +424,9 @@ jobs:
           #
           # ⚠️ **入口名必须跟着界面走**：2026-09-16 的 V2 重做把入口从 `js/main.js` 换成了
           # `js/boot.js`，而这条断言仍写着旧名 ⇒ 连续两次流水线在冒烟步骤变红（`wrangler deploy`
-          # 其实成功了，红的是这条断言）。V1 那一对是 2026-09-17 补的：它重新纳入维护后，
-          # 它同样要有真实可达的页面与模块。**2026-09-19 改名**（ui_old→ui_v1、ui→ui_v2，
-          # 且 `/ui/` 降为跳转壳）：下面五条路径全部跟着变过一次，漏改就是又一次"部署成功但冒烟红"。
+          # 其实成功了，红的是这条断言）。V1 那一对是 2026-09-17 补的：它重新纳入维护后同样要有
+          # 真实可达的页面与模块。**2026-09-19 改名**（ui_old→ui_v1、ui→ui_v2，且 `/ui/` 降为
+          # 跳转壳）：下面六条路径全部跟着变过一次，漏改就是又一次"部署成功但冒烟红"。
           check_asset() { # $1=路径 $2=说明 $3=期望的 Content-Type 前缀
             local p="$1" what="$2" want="$3" code ctype
             read -r code ctype <<<"$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "$base$p" || echo '000 -')"
@@ -459,6 +459,7 @@ jobs:
             done
           else
             check_asset '/ui/' '跳转壳（老书签入口，指向默认界面 /ui_v1/）' 'text/html' || fail=1
+            check_asset '/ui/js/redirect-hash.js' '跳转壳脚本（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
             check_asset '/ui_v1/' '默认界面入口（V1）' 'text/html' || fail=1
             check_asset '/ui_v1/js/main.js' 'V1 模块（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
             check_asset '/ui_v2/app/' 'V2 开发测试版本体' 'text/html' || fail=1

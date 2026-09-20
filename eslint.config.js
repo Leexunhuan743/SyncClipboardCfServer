@@ -15,8 +15,11 @@ export default [
     // 覆盖两版前端：V2（`public/ui_v2/`，开发测试版）与 V1（`public/ui_v1/`，默认界面）。
     // 顺带修掉一个过渡期的**真缺陷**：脚本此前写死 `public/ui/js`，V1 一被改名，`npm run lint`
     // 就报 `No files matching the pattern` 并以退出码 1 结束（= `npm run check` 与 CI quality 步骤
-    // 全红）——而那是"配置引用了不存在的路径"，不是"代码有问题"。glob 式写法对两个目录都成立，
-    // 将来再改名也不会重演（2026-09-19 的 ui_old→ui_v1 / ui→ui_v2 就是这么改过来的）。
+    // 全红）——而那是"配置引用了不存在的路径"，不是"代码有问题"。glob 式写法对两个目录都成立。
+    // ⚠️ 但**改名时两处必须一起改**：这一份的 `files` 与 `package.json` 的 `lint` 脚本 ——
+    // 2026-09-19 的 ui_old→ui_v1 / ui→ui_v2 就是两处一起改过来的。只改一处时，脚本那半会直接以
+    // 「No files matching the pattern」失败（即上方那个缺陷），而配置这半失配**不一定会有人替你报到** ——
+    // 故「改完跑一次没红」不能替代逐处核对（见 AGENTS.md §1 最后一行）。
     files: ['public/ui_v2/js/**/*.js', 'public/ui_v1/js/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,

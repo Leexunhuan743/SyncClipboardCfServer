@@ -43,7 +43,8 @@ VERSION = "3.2.0"
 # HISTORY_RETENTION_MINUTES，会以 --var 覆盖此处；不配就用这里的默认值（下游：src/cleanup.ts）。
 MAX_SAVED_HISTORY_COUNT = "1000"
 HISTORY_RETENTION_MINUTES = "10080"
-# Web 界面开关（默认开）。GitHub 仓库变量 UI_ENABLED=false 可关掉整个界面：/ui 与 /ui/api/* 一律 404，
+# Web 界面开关（默认开）。GitHub 仓库变量 UI_ENABLED=false 可关掉整个界面：三个挂载点
+# （/ui、/ui_v1、/ui_v2 及各自的 /*，含静态资源）与 /ui/api/* 一律 404，
 # 根路径对浏览器也不再跳转；协议面（/api/*、/SyncClipboard.json、/file/*、Hub）完全不受影响。
 # 判定与行为见 src/uiEnabled.ts；**只有显式 "false" 才关**，其余（含未设置）都是开。
 # 注：默认值写在这里而不是只放 CI，是为了"本地 wrangler dev 与线上同一套默认行为"。
