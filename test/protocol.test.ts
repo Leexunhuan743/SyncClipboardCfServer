@@ -115,7 +115,7 @@ describe('路径字面段大小写（对齐 ASP.NET Core 路由）', () => {
       ['/api/history/Text-ABC', null],
       ['/api/history/Text-ABC/data', null], // 末段已是规范写法，取值未被触碰
       ['/api/version/x', null], // 位置错了就不动（宁可 404，也不猜）
-      ['/ui_v2/API/session', null], // 超出协议面（/ui 是我们自己的面，上游无参系物）
+      ['/ui_v2/API/session', null], // 超出协议面（/ui、/ui_v1、/ui_v2 都是我们自己的界面面，上游无对应物）
       ['/ui_v2/JS/main.js', null],
       ['/', null],
       ['/robots.txt', null],

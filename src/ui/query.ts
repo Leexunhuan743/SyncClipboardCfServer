@@ -223,7 +223,7 @@ export const UI_LIST_TEXT_LIMIT = 500;
 // ⚠️ 与前端 `public/ui_v{1,2}/js/format.js` 的 `truncateText` **同名但不同义**，别去"统一"：
 // 那一边量的是**用户看到的字符**（`Intl.Segmenter` 字素簇，emoji 算 1 个），这一边量的是
 // **UTF-16 码元**——因为这里的 500 是**协议上限**（约束 JSON 体积），不是展示口径。
-// 差异的登记处是 `docs/AUDIT-v1-v2-divergence.md` §5.3。
+// 差异的登记处是 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3。
 export function truncateText(text: string, limit: number): string {
   if (text.length <= limit) return text;
   let cut = text.slice(0, limit);

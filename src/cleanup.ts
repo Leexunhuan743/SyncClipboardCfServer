@@ -519,10 +519,31 @@ function runPhase(
   }
 }
 
-// 阶段被 env 显式关闭（0 = 关闭，与 parseNonNegativeInt 的语义一致）
-function disabledReason(phase: CleanupPhase, retentionMinutes: number, maxCount: number): string | null {
-  if (phase === 'retention' && retentionMinutes <= 0) return 'HISTORY_RETENTION_MINUTES=0';
-  if (phase === 'trim' && maxCount <= 0) return 'MAX_SAVED_HISTORY_COUNT=0';
+// 关闭成因里那个「旋钮」的键名：按生效值的**实际来源**取 —— Meta 覆盖用 SETTINGS_META_KEYS 里那个键
+// （界面 `PUT /ui/api/settings` 写下的正是它），env 回落用部署变量名。
+const DISABLED_KEY = {
+  retention: { meta: SETTINGS_META_KEYS.retentionMinutes, env: 'HISTORY_RETENTION_MINUTES' },
+  trim: { meta: SETTINGS_META_KEYS.maxSavedHistoryCount, env: 'MAX_SAVED_HISTORY_COUNT' },
+} as const;
+
+/**
+ * 该阶段是否被**显式关闭**（生效值 = 0 ⇒ 关闭该阶段，与 parseNonNegativeInt / parseSettingValue 的语义一致）。
+ * 关闭时返回写进 `reason=` 的成因串。
+ *
+ * ⚠️ 成因里的键名必须按**生效值的实际来源**取：生效值来自 `readRetentionSettings`（Meta 覆盖优先、
+ * env 只是回落），所以那个 0 **通常来自界面**（`PUT /ui/api/settings` 写下的 Meta 覆盖）—— 恒写 env
+ * 变量名会把维护者指向一个**不是来源**的旋钮（实测：界面把保留期填成 0 之后，日志正是
+ * `reason=HISTORY_RETENTION_MINUTES=0`，而那一刻部署变量仍是 10080）。
+ * 第三种来源（内置默认 10080 / 1000）不可能是 0 ⇒ `reason` 只有「Meta 键」与「env 变量名」两种形态。
+ */
+function disabledReason(
+  phase: CleanupPhase,
+  retentionMinutes: number,
+  maxCount: number,
+  source: Pick<RetentionSettings, 'retentionSource' | 'maxCountSource'>,
+): string | null {
+  if (phase === 'retention' && retentionMinutes <= 0) return `${DISABLED_KEY.retention[source.retentionSource]}=0`;
+  if (phase === 'trim' && maxCount <= 0) return `${DISABLED_KEY.trim[source.maxCountSource]}=0`;
   return null;
 }
 
@@ -551,18 +572,24 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
     };
     // 保留策略：Meta 覆盖优先、env 回落（§2.5 在线可调）。读失败按「未配置」处理并记一条失败 ——
     // 与读游标同一条纪律：诊断面出问题不能把清理整体拖停（此时回落 env/内置默认，等价于改动前的行为）。
-    let retentionMinutes: number;
-    let maxCount: number;
+    // settings 整份留在外层：除了算生效值，它的**来源**字段还要写进每个阶段的 `reason=`（见 disabledReason）
+    let settings: RetentionSettings;
     try {
       run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);
-      const settings = await readRetentionSettings(run.db, env);
-      retentionMinutes = settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES;
-      maxCount = settings.maxSavedHistoryCount ?? DEFAULT_MAX_SAVED_HISTORY_COUNT;
+      settings = await readRetentionSettings(run.db, env);
     } catch (err) {
       recordFailure(run.failures, 'meta', err);
-      retentionMinutes = parseNonNegativeInt(env.HISTORY_RETENTION_MINUTES, DEFAULT_RETENTION_MINUTES);
-      maxCount = parseNonNegativeInt(env.MAX_SAVED_HISTORY_COUNT, DEFAULT_MAX_SAVED_HISTORY_COUNT);
+      // 读 Meta 失败 ⇒ 按「没有 Meta 覆盖」处理、整份回落 env（与 readRetentionSettings 的「无覆盖」
+      // 分支同义），故两个来源都记 'env'；取值仍用 parseNonNegativeInt，与改动前逐位相同。
+      settings = {
+        retentionMinutes: parseNonNegativeInt(env.HISTORY_RETENTION_MINUTES, DEFAULT_RETENTION_MINUTES),
+        maxSavedHistoryCount: parseNonNegativeInt(env.MAX_SAVED_HISTORY_COUNT, DEFAULT_MAX_SAVED_HISTORY_COUNT),
+        retentionSource: 'env',
+        maxCountSource: 'env',
+      };
     }
+    const retentionMinutes = settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES;
+    const maxCount = settings.maxSavedHistoryCount ?? DEFAULT_MAX_SAVED_HISTORY_COUNT;
     const startedAt = new Date(run.nowMs).toISOString();
 
     // 上一轮的游标：读失败不阻断清理（按 0 处理并照常记账/落库）
@@ -578,7 +605,7 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
 
     for (const phase of CLEANUP_PHASES) {
       const phaseStartMs = Date.now();
-      const off = disabledReason(phase, retentionMinutes, maxCount);
+      const off = disabledReason(phase, retentionMinutes, maxCount, settings);
       let processed = 0;
       let batches = 0;
       let status: 'done' | 'truncated' | 'disabled' | 'error';

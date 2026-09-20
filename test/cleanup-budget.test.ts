@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import type { DatabaseSync as DatabaseSyncCtor } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import { CLEANUP_META_KEYS, CLEANUP_PHASES, SUBREQUEST_BUDGET, runCleanup } from '../src/cleanup';
+import { CLEANUP_META_KEYS, CLEANUP_PHASES, SETTINGS_META_KEYS, SUBREQUEST_BUDGET, runCleanup } from '../src/cleanup';
 import type { CleanupResult } from '../src/cleanup';
 import type { Bindings } from '../src/env';
 
@@ -456,5 +456,79 @@ describe('F11 · 清理任务的子请求预算', () => {
     expect(leftovers).toEqual([]);
     // 活跃记录的数据仍在
     expect(f.bucket.objects.has('history/Text_STAR0/STAR0.bin')).toBe(true);
+  });
+});
+
+
+// ===== `reason=` 的成因措辞：必须指向**真正的来源**（docs/progress.md §94.13） =====
+//
+// 为什么这组住在本文件：本文件是仓库里唯一用**真实 runCleanup + 真库**跑清理、并把 console 抓下来的
+// 地方（`test/cleanup.test.ts` 那条路要 dev server + `--test-scheduled`，没法精确摆布 env 与 Meta）。
+//
+// 生效值的来源有三态（Meta 覆盖 / 部署变量 / 内置默认，见 src/cleanup.ts 的 readRetentionSettings），
+// 但 `reason=` 只在「阶段被显式关闭（生效值 = 0）」时出现，而**内置默认（10080 / 1000）不可能是 0**
+// ⇒ 这条日志只有前两态。前两个用例按这两态各钉一条，第三个用例把「第三态不可能产出 reason=」反证掉。
+describe('关闭成因的措辞（reason= 指的必须是真正的来源）', () => {
+  // 直接写 Meta 表 = PUT /ui/api/settings 的落库效果（键名取自同一个常量，免得测试自造一个键名，
+  // 那样即使实现和接口一起漂走也会"通过"）
+  const putMeta = (f: Fixture, key: string, value: string): void => {
+    f.sqlite.prepare('INSERT INTO Meta (Key, Value) VALUES (?1, ?2)').run(key, value);
+  };
+
+  const lineOf = (lines: string[], phase: string): string => {
+    const line = lines.find((l) => l.startsWith(`[cleanup] phase=${phase} `));
+    expect(line, `缺 ${phase} 的日志行`).toBeDefined();
+    return line ?? '';
+  };
+
+  const reasonOf = (lines: string[], phase: string): string => {
+    const line = lineOf(lines, phase);
+    const m = /(?:^| )reason=(\S+)/.exec(line);
+    expect(m, `${phase} 的日志行没有 reason= 字段：${line}`).not.toBeNull();
+    return m?.[1] ?? '';
+  };
+
+  it('0 来自界面写的 Meta 覆盖 ⇒ reason 指向 Meta 键，不得说成部署变量', async () => {
+    // fixture 的 env 把两个变量都设成了正数 ⇒ 这里出现的 0 **只可能**来自 Meta
+    const f = fixture({ expired: 0, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: MAX_COUNT });
+    putMeta(f, SETTINGS_META_KEYS.retentionMinutes, '0');
+    const logs = captureConsole();
+
+    const result = await cronRun(f);
+
+    expect(result.expired).toBe(0);
+    // 这个串写成字面量（不让实现自证）：它正是 PUT /ui/api/settings 落进 Meta 的那个键
+    expect(SETTINGS_META_KEYS.retentionMinutes).toBe('settings:retentionMinutes');
+    const reason = reasonOf(logs.lines, 'retention');
+    expect(reason, `reason 指向了不是来源的旋钮：${reason}`).toBe('settings:retentionMinutes=0');
+    expect(reason, '0 来自 Meta，日志却把成因指向部署变量').not.toContain('HISTORY_RETENTION_MINUTES');
+  });
+
+  it('0 来自部署变量 ⇒ reason 指向变量名（改动只换掉说不准的那一种）', async () => {
+    const f = fixture({ expired: 0, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: 0 });
+    const logs = captureConsole();
+
+    const result = await cronRun(f);
+
+    expect(result.trimmed).toBe(0);
+    expect(reasonOf(logs.lines, 'trim')).toBe('MAX_SAVED_HISTORY_COUNT=0');
+    // 保留期这一档没被关掉，故它不该带 reason=
+    expect(lineOf(logs.lines, 'retention')).not.toContain('reason=');
+  });
+
+  it('Meta 与部署变量都没设 ⇒ 走内置默认，两个阶段都不会被判为关闭（故 reason= 只有两态）', async () => {
+    const f = fixture({ expired: 0, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: MAX_COUNT });
+    const env = f.env as unknown as Record<string, unknown>;
+    delete env.HISTORY_RETENTION_MINUTES;
+    delete env.MAX_SAVED_HISTORY_COUNT;
+    const logs = captureConsole();
+
+    await cronRun(f);
+
+    for (const phase of ['retention', 'trim']) {
+      const line = lineOf(logs.lines, phase);
+      expect(line, `${phase} 被当成关闭了（内置默认不可能是 0）`).toContain('status=done');
+      expect(line, `${phase} 不该有 reason=`).not.toContain('reason=');
+    }
   });
 });
