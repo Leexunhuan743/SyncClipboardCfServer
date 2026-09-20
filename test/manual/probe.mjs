@@ -7,9 +7,18 @@
 // 用法（需 dev server 已启动）：
 //   node test/manual/probe.mjs
 //   node test/manual/probe.mjs --url "/ui_v2/app/?deleted=1"
+//   node test/manual/probe.mjs --width 390 --touch        ← 触摸模拟：不加上它，(pointer: coarse) 永远不成立
 //
 // 与 shoot.mjs 的关系：两者共用同一套 CDP 起浏览器/登录/注入 Cookie 的做法，
 // 但目的不同 —— shoot 出图（给人看），probe 出值（给断言看）。
+//
+// 2026-09-19 起：probe 不只打印，还在文件末尾用 check() **自己断言一批不变式**（审计 §3 F-3）；
+// 不达标会打印一行 AUDIT 失败清单并把退出码置 1 —— 此前「探针读到空数组」与「读到 1009」
+// 在终端里长得一样，任何缺陷都不会让它变红。
+// 在终端里长得一样，任何缺陷都不会让它变红。
+// 同日晚（审计 F-5）：新增 `--touch`（`Emulation.setTouchEmulationEnabled`）与
+// `--control-h-sm` / `(pointer: coarse)` 两个读数（外加一条判据）。**探针默认是细指针** ——
+// `--width 390` 量到的是「窄窗口桌面」而不是手机；这一条不写明，就会有人把宽度规则“修”回去。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +37,16 @@ const PORT = Number(arg('port', '9341'));
 const WIDTH = Number(arg('width', '1440'));
 const HEIGHT = Number(arg('height', '900'));
 const SETTLE = Number(arg('settle', '4500'));
+// 触摸模拟（审计 F-5）：没有它，`(pointer: coarse)` 在无头浏览器里恒为假。
+const TOUCH = process.argv.includes('--touch');
+
+// ===== 判据的收集器（2026-09-19 补，审计 §3 F-3）=====
+// 只钉不变式：不含会随开发库里记录数漂的绝对条数（审计当时读到 1009，本轮已变）。
+const problems = [];
+function check(name, ok, detail) {
+  if (ok) return;
+  problems.push(detail === undefined || detail === '' ? name : name + '（读到 ' + detail + '）');
+}
 
 const BROWSERS = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -118,6 +137,15 @@ try {
   await send('Runtime.enable');
   await send('Network.enable');
 
+  if (TOUCH) {
+    // 触摸模拟：只有开了它，`(pointer: coarse)` 才成立 —— 无头浏览器默认恒为细指针，
+    // 390px 下量到的是“窄窗口桌面”而不是手机（审计 F-5 的根因）。
+    // ⚠️ 只开触摸模拟、**不**动 `Emulation.setDeviceMetricsOverride`：后者（`mobile: true`）
+    // 会换掉视口语义，实测同一份页面在 390px 下会多出一个与命中区无关的横向溢出读数
+    // —— 那样两个模式就不可比了。视口继续由 `--window-size` 决定。
+    await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  }
+
   // 真实登录接口 → 服务端签发的会话 Cookie（不是伪造已登录状态）
   const login = await fetch(`${BASE}/ui/api/login`, {
     method: 'POST',
@@ -204,7 +232,89 @@ try {
     // tbody 的第一个 tr 是**分组小标题**（.daymark），tr:first-of-type 命中的是它 ⇒
     // 这一项会恒为空数组（看起来像"行内没有操作按钮"，实测 2026-09-18）。
     firstRowOps: [...(document.querySelector('.item')?.querySelectorAll('.rowops .icon-btn') ?? [])].map((b) => b.dataset.icon),
+    // 命中区令牌与指针类型（审计 F-5）：「--control-h-sm」只应随**指针精度**变、不随视口宽度变。
+    // （本块是模板字符串 ⇒ 注释里不许出现反引号。）
+    pointerCoarse: matchMedia('(pointer: coarse)').matches,
+    controlHSm: getComputedStyle(document.documentElement).getPropertyValue('--control-h-sm').trim(),
+    // 骨架行高 vs 真实行高（2026-09-19 修 N-16）。注入一行骨架来量：fast path 下
+    // 骨架只存在一帧，走正常流程量不到。
+    // 判据取真实行的**下限**而不是第一行：两档的真实行高都由「内容」决定，而内容随数据变
+    // （表格档由 --row-h 定高、卡片档由缩略图与文本行数撑开），骨架不该跟着内容猜；
+    // 唯一由设计保证的是下限 —— 表格档是 height: var(--row-h) 那条，卡片档是每个真实行
+    // 都有的固定尺寸缩略图（row.js 的 renderEntry 无条件建它）。
+    // （本块是模板字符串 ⇒ 注释里不许出现反引号。）
+    ghostH: (() => {
+      const probe = document.createElement('div');
+      probe.className = 'ghost';
+      probe.innerHTML = '<span class="ghost__bar ghost__bar--kind"></span>'
+        + '<span class="ghost__bar ghost__bar--wide"></span>'
+        + '<span class="ghost__bar ghost__bar--short"></span>';
+      document.body.append(probe);
+      const h = Math.round(probe.getBoundingClientRect().height);
+      probe.remove();
+      return h;
+    })(),
+    // 取**众数**而不是最小/最大：实测三个组合里真实行的分布各有一个离群值 ——
+    // 最小的那张是**末行**（末张卡片没有下边框，少 1px：125 → 124 / 77 → 76.5），
+    // 最大的那张是**内容更长**的卡片（卡片档行高由内容撑开，见 board-v2.css 的推导）。
+    // 众数 = 「典型的那一档」，也正是骨架该对齐的那一档。
+    rowModeH: (() => {
+      const hs = [...document.querySelectorAll('tr.item')].map((n) =>
+        Math.round(n.getBoundingClientRect().height),
+      );
+      if (!hs.length) return null;
+      const tally = new Map();
+      for (const h of hs) tally.set(h, (tally.get(h) ?? 0) + 1);
+      return [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
+    })(),
+    // 卡片档的判据就是 CSS 里那个媒体查询本身（board-v2.css 的 @media (max-width: 720px)），
+    // 用它把下面两条判据的期望值分成两档。
+    cardMode: matchMedia('(max-width: 720px)').matches,
+    // 骨架的**包裹层节奏**（N-16 的第二半）：ui/ghost.js 建的是 div.board > div.ghost…，
+    // 而真实卡片之间由 .board__table tbody 的 gap: var(--sp-2) 分开。这里按原样搭一份
+    // 「包裹层 + 两行骨架」再量 —— 真实骨架只在 fast path 的一帧里存在，量不到。
+    // （本块是模板字符串 ⇒ 注释里不许出现反引号。）
+    // 量的是**两行之间的实际间距**（第二行的上边缘 − 第一行的下边缘），不是包裹层的总高：
+    // 包裹层自己是 .board，表格档那条基础规则带 1px 边框，总高会混进 2px 与间距无关的量
+    // （第一版判据就踩了这个：实测 156 而期望 154）。
+    ghostWrap: (() => {
+      const wrap = document.createElement('div');
+      wrap.className = 'board';
+      wrap.innerHTML = '<div class="ghost"></div><div class="ghost"></div>';
+      document.body.append(wrap);
+      const cs = getComputedStyle(wrap);
+      const rects = [...wrap.children].map((n) => n.getBoundingClientRect());
+      const out = {
+        display: cs.display,
+        gap: cs.rowGap,
+        between: rects.length === 2 ? Math.round(rects[1].top - rects[0].bottom) : null,
+      };
+      wrap.remove();
+      return out;
+    })(),
     pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    // 横向溢出的**肇事者**：上面那个标量只说「有没有溢出」，定位还得逐元素量右边缘；
+    // 而 html/body 的 overflow-x: clip（base-v2.css:17/32）只影响绘制与滚动、**不改变布局盒**，
+    // 所以 getBoundingClientRect 即使在被 clip 掩着时也看得见肇事者 —— 这正是 V1 探针一直有、
+    // 而 V2 缺的那条证据（审计 §12.16）。取最靠右的前 5 个，附标签名与类名。
+    // （本段在模板字符串里，注释中不能出现反引号。）
+    overflowers: (() => {
+      const limit = document.documentElement.clientWidth;
+      return [...document.querySelectorAll('body *')]
+        .map((node) => {
+          const r = node.getBoundingClientRect();
+          return { node, right: r.right, width: r.width };
+        })
+        .filter((e) => e.right > limit + 1 && e.width > 0)
+        .sort((a, b) => b.right - a.right)
+        .slice(0, 5)
+        .map((e) => ({
+          tag: e.node.tagName.toLowerCase(),
+          cls: (e.node.className || '').toString().slice(0, 60),
+          right: Math.round(e.right),
+          w: Math.round(e.width),
+        }));
+    })(),
   })`);
   console.log('STATE  ', state);
 
@@ -227,6 +337,58 @@ try {
   console.log('DRAWER ', drawer);
   await read(`document.querySelector('.drawer')?.close(), 'closed'`);
 
+  // ===== 预览关闭即释放正文（2026-09-20，`docs/archive/AUDIT-v1-v2-divergence.md` §4.2）=====
+  //
+  // 缺陷形态：对话框是**启动期创建、常驻 `body`** 的节点（`ui/dialog.js` 里 `createDialog`
+  // 一进来就 `document.body.append(dialog)`），关闭时只 `dialog.close()`，正文与页脚一直留在
+  // DOM 里，直到**下次 `open()`** 才被 `clear(body)` 换掉。用户不再预览第二条 ⇒ 整条记录
+  // （文本全文可达 `api.js` 的响应上限）到页面销毁都不释放。
+  //
+  // 两条判据各钉一半（只钉一条会放过一个错解）：
+  //   ① 关闭、等退出过渡跑完之后，正文与页脚必须是空的 —— 钉"到底有没有释放"；
+  //   ② 关闭之后、退出过渡**还在跑**的那一帧里正文必须还在 —— 钉"释放得是不是时候"。
+  // ② 的理由：`.dialog` 有 0.2s 的退出过渡（`overlay-v2.css` 的 `@starting-style` +
+  // `transition-behavior: allow-discrete`），在 `close` 里立刻 `clear(body)` 的写法**能过 ①**
+  // 、但用户会看见"框还在淡出、字先没了"（框高也会跟着跳）。量过：点「关闭」之后
+  // `display: block` 持续到 ~250ms 才变 `none`，所以 t+150ms 那一帧确实还在画。
+  // ② 自带前提：那一帧若已经是 `display: none`（减弱动效 / 不支持 `allow-discrete`），
+  // 清得早也看不见，不该报。
+  const previewClose = await read(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = document.querySelector('tbody tr.item');
+    if (!row) return JSON.stringify({ skipped: 'no rows' });
+    const openBtn = row.querySelector('[data-action="preview"]');
+    if (!openBtn) return JSON.stringify({ skipped: 'no preview button' });
+    openBtn.click();
+    await wait(1400);
+    const dlg = document.querySelector('dialog.dialog[open]');
+    if (!dlg) return JSON.stringify({ skipped: 'preview did not open' });
+    const body = dlg.querySelector('.dialog__body');
+    const foot = dlg.querySelector('.dialog__foot');
+    const snap = () => ({
+      kids: body.childElementCount,
+      chars: (body.textContent ?? '').length,
+      footKids: foot.childElementCount,
+      display: getComputedStyle(dlg).display,
+    });
+    const before = snap();
+    const closeBtn = dlg.querySelector('.dialog__close');
+    if (!closeBtn) return JSON.stringify({ skipped: 'no close button' });
+    closeBtn.click();
+    await wait(150);
+    const duringFade = snap();
+    await wait(750);
+    const after = snap();
+    return JSON.stringify({
+      before,
+      duringFade,
+      after,
+      stillOpen: dlg.open,
+      hashCleared: location.hash === '',
+    });
+  })()`);
+  console.log('PRVCLOSE', previewClose);
+
   // 空状态（用一个不可能命中的搜索词逼出来，不写库）
   await send('Page.navigate', { url: `${BASE}${URL_PATH}?search=zzz-none-zzz` });
   await new Promise((r) => setTimeout(r, 2500));
@@ -237,8 +399,109 @@ try {
   })`);
   console.log('EMPTY  ', empty);
 
+  // ===== 判据（2026-09-19 补，F-3）=====
+  // 这一层只钉**不变式** —— 不钉会随开发库里记录数漂的绝对条数（审计当时读到 1009，本轮已变）。
+  // 目的是把「探针读到空数组」和「探针读到 1009」在终端里区分开：前者现在会让退出码变成 1。
+  const S = JSON.parse(state);
+  const D = JSON.parse(drawer);
+  const E = JSON.parse(empty);
+
+  // ⚠️ 下面这几条描述的是**默认（未筛选）列表页**的形态：把 --url 指到带 search 的页面上，
+  //    「列表渲染出了行」「看板标题带上了同一个数字」等几条会红 —— 那不是误报，而是
+  //    "没落在探针认识的那个视图上"（§94.9 就是用这个办法证明这些判据真的会红）。
+  // 页面真的起来了
+  check('应用已启动（dataset.appBooted）', S.booted === '1', S.booted);
+  check('只有一个 h1', S.h1Count === 1, S.h1Count);
+  check('列表渲染出了行', S.rows > 0, S.rows);
+  check('分组标题在位', S.daymarks.length > 0, JSON.stringify(S.daymarks));
+  check('首行类型已归一化成枚举名', typeof S.firstRowKind === 'string' && S.firstRowKind !== '', JSON.stringify(S.firstRowKind));
+  check('首行有操作按钮', S.firstRowOps.length > 0, JSON.stringify(S.firstRowOps));
+  check('提示条初始隐藏', S.noticeHidden === true, String(S.noticeHidden));
+  check('推送通道处于实时态', S.syncState === 'live', String(S.syncState));
+
+  // 计数口径互相自洽：四个类型芯片之和 ==「全部」芯片 == 概览总数 == 看板标题里那个数。
+  const kindNums = S.kinds.map(Number);
+  check('四个类型芯片都读到了计数', S.kinds.length === 4 && kindNums.every((n) => Number.isInteger(n) && n >= 0), JSON.stringify(S.kinds));
+  check('「全部」芯片有计数', typeof S.chipAll === 'string' && /^\d+$/.test(S.chipAll), JSON.stringify(S.chipAll));
+  check('四个类型之和 ==「全部」', kindNums.reduce((a, b) => a + b, 0) === Number(S.chipAll), S.kinds.join('+') + ' = ' + S.chipAll);
+  check('概览总数 ==「全部」芯片', S.overviewTotal === S.chipAll, String(S.overviewTotal) + ' vs ' + S.chipAll);
+  check('看板标题带上了同一个数字', typeof S.boardCount === 'string' && S.boardCount.startsWith(String(S.chipAll)), JSON.stringify(S.boardCount));
+
+  // 横向溢出：**逐元素几何证据**才算数 —— 上面那个标量在 overflow-x: clip 下可能被抹平（见注释）
+  check('没有元素越出视口右缘（布局几何证据）', S.overflowers.length === 0, JSON.stringify(S.overflowers));
+
+  // 命中区按**指针精度**、不按视口宽度（审计 F-5）。28 / 44 取自 `tokens-v2.css:175-176` 的两个
+  // 令牌值（`--control-h-sm: 28px` / `--hit-min: 44px`）；窄屏与宽屏必须给同一个答案。
+  // 探针默认细指针（⇒ 28px），`--touch` 才模拟粗指针（⇒ 44px）。
+  check(
+    '小控件命中区只随指针精度变（细指针 28px / 粗指针 44px）',
+    S.controlHSm === (S.pointerCoarse ? '44px' : '28px'),
+    String(S.controlHSm) + ' / coarse=' + String(S.pointerCoarse),
+  );
+
+  // 骨架行高必须等于真实行的**典型**行高（审计 N-16 / §94 第 13 行）。
+  // 修前卡片档（≤720px）是 77 vs 125（细指针）/ 135（粗指针）—— 每行差 48 / 58px，
+  // 而三处注释（board-v2.css、ui/ghost.js、ui/board.js）都只写了"表格档同高、卡模式不适用"。
+  // 表格档（>720px）本来就成立，故这一条在四个组合里都该是绿的。
+  check(
+    '骨架行高 = 真实行的典型行高（表格档与卡片档都成立）',
+    S.ghostH === S.rowModeH,
+    '骨架 ' + String(S.ghostH) + ' vs 真实众数 ' + String(S.rowModeH),
+  );
+
+  // N-16 的第二半：骨架**之间**的间距。卡片档每两张卡片之间是 --sp-2（8px），骨架之间也
+  // 必须有；表格档的行与行之间本来就没有间距（各行的下边框就是分隔）。缺这条时 50 行骨架
+  // 比真实页短 8×49 = 392px，正是 ui/ghost.js 文件头在意的「整页高度突变」。
+  check(
+    '骨架之间的间距 = 卡片之间的间距（卡片档 --sp-2 / 表格档 0）',
+    S.ghostWrap.between === (S.cardMode ? 8 : 0),
+    '两行之间 ' + String(S.ghostWrap.between) + 'px（期望 ' + String(S.cardMode ? 8 : 0) +
+      '）；卡片档=' + String(S.cardMode) + '；gap=' + String(S.ghostWrap.gap),
+  );
+
+  // 抽屉
+  check('概览带能点开抽屉', D.open === true, String(D.open));
+  check('抽屉的七个分区都在', D.sections.length === 7, JSON.stringify(D.sections));
+  check('保留策略两个输入框都带生效值提示', D.retentionHints.length === 2 && D.retentionHints.every((h) => /^当前 \d+$/.test(h)), JSON.stringify(D.retentionHints));
+  check('保留策略的来源说明非空', typeof D.retentionNote === 'string' && D.retentionNote.includes('来源'), JSON.stringify(D.retentionNote));
+  check('抽屉趋势柱数 == 概览趋势柱数', D.bars === S.sparkBars, String(D.bars) + ' vs ' + String(S.sparkBars));
+  check('抽屉里给出了本服务地址', typeof D.copyline === 'string' && D.copyline.startsWith(BASE), JSON.stringify(D.copyline));
+
+  // 预览关闭即释放正文与页脚（`docs/archive/AUDIT-v1-v2-divergence.md` §4.2，2026-09-20）
+  // ⚠️ 这条判据描述的是**默认列表页里的第一行**：`--url` 指到空结果页时读不到行 ⇒ 会红
+  //   （那不是误报，而是"没落在探针认识的那个视图上"，与上面那组 STATE 判据同一个口径）。
+  const P = JSON.parse(previewClose);
+  if (P.skipped) {
+    check('预览关闭前后能读到对话框（判据前提）', false, String(P.skipped));
+  } else {
+    check('预览打开后正文非空（判据前提）', P.before.kids > 0, '正文 ' + String(P.before.kids) + ' 个节点');
+    check(
+      '关闭预览后释放正文与页脚（不留整条记录在常驻 <dialog> 里）',
+      P.after.kids === 0 && P.after.footKids === 0,
+      '正文 ' + String(P.after.kids) + ' 个节点 / ' + String(P.after.chars) + ' 字符，页脚 ' +
+        String(P.after.footKids) + ' 个',
+    );
+    check(
+      '退出过渡期间正文仍在（不做"框还在淡出、字先没了"）',
+      P.duringFade.display === 'none' || P.duringFade.kids === P.before.kids,
+      '框仍是 ' + String(P.duringFade.display) + ' 时正文已变成 ' + String(P.duringFade.kids) +
+        ' 个节点（打开时 ' + String(P.before.kids) + '）',
+    );
+    check('关闭预览后对话框确实关掉了', P.stillOpen === false, String(P.stillOpen));
+  }
+
+  // 空状态
+  check('搜索无结果时落到「筛选」空状态', E.blank === 'filter', String(E.blank));
+  check('空状态有标题', typeof E.title === 'string' && E.title !== '', JSON.stringify(E.title));
+  check('空状态给了下一步按钮', E.actions.length > 0, JSON.stringify(E.actions));
+
   console.log('CONSOLE ERRORS', consoleErrors.length ? consoleErrors : 'none');
   console.log('FAILED REQUESTS', failedRequests.length ? failedRequests : 'none');
+  check('控制台没有错误', consoleErrors.length === 0, JSON.stringify(consoleErrors));
+  check('没有失败请求', failedRequests.length === 0, JSON.stringify(failedRequests));
+
+  console.log('AUDIT   ', problems.length === 0 ? 'problems=0' : JSON.stringify(problems));
+  process.exitCode = problems.length === 0 ? 0 : 1;
 } finally {
   try {
     cdp?.ws.close();

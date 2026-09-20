@@ -253,10 +253,10 @@ try {
     await goto(`${BASE}/ui/nope-not-here`);
     await shoot('06-notfound');
   }
-  if (wants('old')) {
+  if (wants('v1')) {
     await goto(`${BASE}/ui_v1/`);
     await new Promise((r) => setTimeout(r, 1200));
-    await shoot('07-ui-old');
+    await shoot('07-ui-v1');
   }
   if (wants('empty')) {
     // 用一个不可能命中的搜索词逼出空状态（不写库、不改数据）

@@ -11,15 +11,25 @@ import { describe, it, expect } from 'vitest';
 // 若将来 tsconfig 打开 allowJs，这行 directive 会变成「未使用」而报错，正好提示可以删掉。
 // @ts-expect-error TS7016：见上
 import { resolveNext } from '../public/ui_v2/js/next-target.js';
+// V1 的那份同形函数（`public/ui_v1/js/next-target.js`）：按 `AGENTS.md` §1「改一版必须问另一版」，
+// 两版的这条**安全边界**要同时改，所以这里也钉住 V1 —— 否则两边可以静默漂移。
+// 签名不同：V1 无 fallback 参数，拒绝时返回 null（由调用方自取默认落点）。
+// @ts-expect-error TS7016：同 V2（零构建的原生 ES 模块）
+import { resolveNext as resolveNextV1 } from '../public/ui_v1/js/next-target.js';
 
 const ORIGIN = 'https://syncclipboard.example';
 
 // V2：应用本体在 `/ui_v2/app/`，所以调用方传的 fallback 与登录页自身路径都是它。
 // 本套件因此**显式传 fallback**，而不是依赖默认值 —— 默认值属于调用方的选择，
 // 而这里要测的是判定逻辑本身。`LOGIN` 是登录页自己的路径：它必须被判成"回落到默认页"，
-// 否则登录成功后会再次落到登录页（死循环）。
+// 否则登录成功后会再次落到登录页。
 const APP = '/ui_v2/app/';
+// `api.js` 的 `redirectToLogin()` 写的正是这个**带扩展名**的形态。
 const LOGIN = '/ui_v2/app/login.html';
+// 但平台的**规范形态是无扩展名**（2026-09-19 实测：`/ui_v2/app/login.html` → 307 → 它，后者 200；
+// 尾斜杠 `/ui_v2/app/login/` 也 307 归一）。307 会**保留查询串**，所以 `?next=` 收到的是规范形态
+// 而不是文件名 —— 这正是 N-8：只认文件名时，规范形态会被原样返回、登录后多加载一次登录页。
+const LOGIN_CANONICAL = '/ui_v2/app/login';
 
 /** 与 login.js 的调用形态一致：显式传站内默认页。 */
 const resolve = (raw: string | null | undefined) => resolveNext(raw, ORIGIN, APP);
@@ -60,12 +70,43 @@ describe('resolveNext', () => {
     expect(resolve(undefined)).toBe(APP);
   });
 
-  it('指向登录页自身的目标回落（否则登录成功后又回到登录页，死循环）', () => {
+  it('指向登录页自身的目标回落——带扩展名与规范形态都算', () => {
+    // 三种写法在平台上是同一个页面，必须一律回落。只认文件名时规范形态会被原样返回
+    // ⇒ 登录后**多加载一次登录页**（那个后果的判据在 test/manual/states.mjs 的导航计数里）。
     expect(resolve(LOGIN)).toBe(APP);
+    expect(resolve(LOGIN_CANONICAL)).toBe(APP);
+    expect(resolve(`${LOGIN_CANONICAL}/`)).toBe(APP);
   });
 
   it('不传 fallback 时用内置默认值（`/ui_v2/app/`）', () => {
     expect(resolveNext('//evil.example', ORIGIN)).toBe(APP);
     expect(resolveNext(null, ORIGIN)).toBe(APP);
+  });
+});
+
+// V1 的那份（`public/ui_v1/js/next-target.js`）：**同一个缺陷的同一份判据**，
+// 2026-09-19 按 `AGENTS.md` §1 与 V2 同步改成「按平台规范形态归一」。
+// V1 没有 fallback 参数（拒绝时返回 null，由调用方取默认落点），所以断言比的是 null。
+describe('resolveNext（V1：拒绝时返回 null，由调用方取默认落点）', () => {
+  const V1_ROOT = '/ui_v1/';
+  const V1_LOGIN = '/ui_v1/login'; // 平台的规范形态（`/ui_v1/login.html` → 307 → 它）
+
+  it('登录页自身的三种写法都回落（带扩展名 / 规范形态 / 尾斜杠）', () => {
+    expect(resolveNextV1('/ui_v1/login.html', ORIGIN)).toBeNull();
+    expect(resolveNextV1(V1_LOGIN, ORIGIN)).toBeNull();
+    expect(resolveNextV1(`${V1_LOGIN}/`, ORIGIN)).toBeNull();
+  });
+
+  it('站内非登录页照常返回（含查询与片段）', () => {
+    expect(resolveNextV1(V1_ROOT, ORIGIN)).toBe(V1_ROOT);
+    expect(resolveNextV1('/ui_v1/?x=1#top', ORIGIN)).toBe('/ui_v1/?x=1#top');
+  });
+
+  it('跨源与协议相对（含反斜杠变体）仍回落', () => {
+    expect(resolveNextV1('//evil.example', ORIGIN)).toBeNull();
+    expect(resolveNextV1('/\\evil.example', ORIGIN)).toBeNull();
+    expect(resolveNextV1('https://evil.example', ORIGIN)).toBeNull();
+    expect(resolveNextV1('javascript:alert(1)', ORIGIN)).toBeNull();
+    expect(resolveNextV1('', ORIGIN)).toBeNull();
   });
 });

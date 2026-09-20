@@ -82,11 +82,13 @@ function stripComments(source: string): string {
 
 // ===== 模块图 =====
 // 扫描目标 = **当前实际发布的那一份界面**。
-// 2026-09-15 的 V1→V2 交接后，V2 落在 `public/ui_v2/`，本套件守 V2；V1 **已于 2026-09-17
+// V2 落在 `public/ui_v2/`（2026-09-15 的 V1→V2 交接那天它叫 `public/ui/` —— `ui_v2` 这个名字是
+// 2026-09-19 才有的，见 `docs/ui-rename-v1-v2.md`），本套件守 V2；V1 **已于 2026-09-17
 // 重新纳入维护**（见本文件头部第 2 条），它的契约守卫在 `test/ui-guard.test.ts`。
 //
 // V2 的布局与 V1 有两处不同，读下面的常量时要记得：
-//   · 两页在 `public/ui_v2/app/` 下（`/ui_v2/` 这个路径留给目录索引，应用本体在 `/ui_v2/app/`）；
+//   · 两页在 `public/ui_v2/app/` 下（注意 `public/ui_v2/` 里**没有** `index.html`：`/ui_v2/`
+//     不是目录索引，实测请求它只会落到那张设计过的 404 页，应用本体一律在 `/ui_v2/app/`）；
 //   · 资源（`css/`、`js/`）在 `public/ui_v2/` 下，两页共享。
 const JS_FILES = listFiles('public/ui_v2/js', '.js');
 const CSS_FILES = listFiles('public/ui_v2/css', '.css');
@@ -220,11 +222,25 @@ describe('public/ui 的模块图契约', () => {
     }
   });
 
-  it('抽取器确实在工作（空集不算通过）', () => {
+  // 抽取器确实在工作：**空集**与**缩水**都必须算红。
+  //
+  // 早先这里是 toBeGreaterThan(3) / (2) / (2) 三个弱下界 —— 那正是本仓库反复踩过的「把 > N 当成
+  // 内容正确」：只要还剩 4 个模块、3 个预载、3 张样式表就不会红，而「少了 20 个」这种真退化照样绿
+  // （审计 §12.15④ 记为 P3）。改成**与实测一致的精确值**：增删任何一个模块 / 预载 / 样式表都会让它红，
+  // 逼着改动者回来确认「抽取器确实把它算进去了」。值由本文件的 listFiles / importClosure 同一套口径
+  // 复算得出（2026-09-19 量：index 33/32/5、login 5/4/3），不是估算。
+  const EXPECTED_GRAPH: Record<string, { modules: number; preload: number; styles: number }> = {
+    'public/ui_v2/app/index.html': { modules: 33, preload: 32, styles: 5 },
+    'public/ui_v2/app/login.html': { modules: 5, preload: 4, styles: 3 },
+  };
+
+  it('抽取器确实在工作（规模与实测一致：空集、缩水、漏算都算红）', () => {
     for (const page of PAGES) {
-      expect(page.modules.length, `${page.name} 的闭包`).toBeGreaterThan(3);
-      expect(page.preload.length, `${page.name} 的预载清单`).toBeGreaterThan(2);
-      expect(page.styles.length, `${page.name} 的样式表`).toBeGreaterThan(2);
+      const expected = EXPECTED_GRAPH[page.name];
+      expect(expected, `${page.name} 未登记实测规模——新增页面时请同步本条`).toBeDefined();
+      expect(page.modules.length, `${page.name} 的闭包`).toBe(expected!.modules);
+      expect(page.preload.length, `${page.name} 的预载清单`).toBe(expected!.preload);
+      expect(page.styles.length, `${page.name} 的样式表`).toBe(expected!.styles);
     }
   });
 

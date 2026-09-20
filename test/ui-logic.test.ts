@@ -632,11 +632,57 @@ describe('字符口径（两版 format.js 各一份，行为必须一致）', ()
       expect(impl.charCount('😀'.repeat(10))).toBe(10); // 码元口径会报 20
       expect(impl.charCount('')).toBe(0);
       expect(impl.charCount(null)).toBe(0); // 函数体里的 `text ?? ''` 兜底
-      // 家庭 emoji：字素簇 1 个；回退（Firefox < 125）按码点数成 5 段（8 个码元里含两个 ZWJ）。
-      // 两种都不切出半个字符 —— 这正是注释承诺的口径，故这里把两个分支都钉住
+      // 家庭 emoji：字素簇口径是 1 个；回退（Firefox < 125、以及任何没有 `Intl.Segmenter` 的宿主）
+      // 按**码点**数成 5 段（8 个码元里含两个零宽连接符 ZWJ）。
+      // ⚠️ 本环境（Node ≥ 22）里 `Intl.Segmenter` 恒存在 ⇒ 这里**只会走 1 那一支**，`: 5` 那一臂
+      //    在本仓的测试环境里是**死代码**（审计 §3 F-2）—— 所以回退支不靠这一行钉，而由下面那条
+      //    「回退支」注入式用例真的把 Segmenter 摘掉再验；否则这一行只是「读起来像两支都断言了」。
       expect(impl.charCount(FAMILY)).toBe(hasSegmenter ? 1 : 5); // FAMILY 写成转义：ZWJ 不可见，字面量会被工具链吃掉
     });
   }
+
+  // 回退支（format.js 里 SEGMENTER === null 的那一支）在本环境（Node ≥ 22）**不可达**：
+  // Intl.Segmenter 恒存在 ⇒ 上面那条 ternary 的「: 5」永远不会被执行到。
+  // 这一条把宿主降级成「没有 Intl.Segmenter」的样子：vi.stubGlobal + vi.resetModules() 之后
+  // **重新 import** 两版 format.js（模块级 SEGMENTER 是在 import 时算出来的，不复位就换不掉），
+  // 再按码点口径断言 —— 这样「回退支不切出半个字符」才是被验证过的，而不是注释里的承诺。
+  it('回退支（宿主没有 Intl.Segmenter 时）按码点切，仍不切出半个字符', async () => {
+    const RealIntl = globalThis.Intl;
+    // Intl 的成员是**不可枚举**的（Object.keys(Intl) 实测为 []），所以不能 {...Intl}，
+    // 只能按 own property names 逐个搬过来，再把 Segmenter 摘掉。
+    const stub: Record<string, unknown> = {};
+    for (const key of Object.getOwnPropertyNames(RealIntl)) {
+      stub[key] = (RealIntl as unknown as Record<string, unknown>)[key];
+    }
+    stub.Segmenter = undefined;
+
+    vi.resetModules(); // 清模块缓存，让下面的动态 import 重新执行模块体
+    vi.stubGlobal('Intl', stub);
+    try {
+      // @ts-expect-error TS7016：public/ui_v2/** 是零构建的原生 ES 模块（同文件顶部）
+      const v2 = await import('../public/ui_v2/js/format.js');
+      // @ts-expect-error TS7016：public/ui_v1/** 同上
+      const v1 = await import('../public/ui_v1/js/format.js');
+      const variants: Array<
+        [string, { charCount: (text: unknown) => number; truncateText: (text: unknown, max: number) => string }]
+      > = [
+        ['V2', v2],
+        ['V1', v1],
+      ];
+      for (const [name, impl] of variants) {
+        // 码点口径：3 个 emoji（各 1 个码点）+ 2 个零宽连接符 = 5 段
+        expect(impl.charCount(FAMILY), name + ' 的回退口径').toBe(5);
+        expect(impl.charCount('\u{1F600}'.repeat(10)), name + ' 的 emoji 计数').toBe(10);
+        // 回退实现也必须严格优于「按码元切」：不许留下孤立的代理位
+        const clipped = impl.truncateText('a'.repeat(39) + '\u{1F600}', 39);
+        expect(hasLoneSurrogate(clipped), name + ' 的回退实现切出了半个字符').toBe(false);
+        expect(clipped, name + ' 的回退实现截断结果').toBe('a'.repeat(39));
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules(); // 复位，避免影响本文件后面的用例
+    }
+  });
 
   it('两版实现给出一致结果（改其一必须同时改另一版）', () => {
     const samples = ['', 'a', '\u{1F600}', `${'a'.repeat(39)}\u{1F600}`, FAMILY, '中'.repeat(50) + '🎉'.repeat(5)];

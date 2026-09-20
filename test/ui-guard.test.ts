@@ -20,6 +20,23 @@ import { isUiEnabled } from '../src/uiEnabled';
 // @ts-expect-error TS7016：`public/ui_v1/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里
 import { API_BASE, api, itemPath } from '../public/ui_v1/js/api.js';
 
+/**
+ * 递归收集某目录下指定扩展名的文件。几个"只扫某一个界面目录"的守卫共用。
+ *
+ * 2026-09-20（`docs/progress.md` §94 第 19 行）从两个 describe 各自的**局部**副本提上来：
+ * 同形实现此前有两份（下面两个 describe 各一份），而「令牌不空转」这次要扫 V2，再复制一份就是第三份。
+ */
+function walkFiles(dir: string, ext: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walkFiles(full, ext));
+    else if (entry.name.endsWith(ext)) out.push(full);
+  }
+  return out;
+}
+
+
 const USER = 'guard-probe-user';
 const PASS = 'guard-probe-password';
 
@@ -267,14 +284,23 @@ describe('UI 部署开关（UI_ENABLED）', () => {
 
 // ===== V1 界面（`public/ui_v1/`）的接口前缀与两页一致性 =====
 //
-// 这一节守的是一个**真实故障**：2026-09-15 把 V1 存档到 `public/ui_v1/` 时，`/ui_v2/` → `/ui_v1/`
-// 的批量改写把 17 处**接口前缀**也一起改了，界面从此去打 `/ui_v1/api/*` —— 而服务端从不提供
-// 那个命名空间（`src/index.ts` 把 `/ui_v1/*` 整体当静态存档）。症状：HTML/CSS/JS 全部 200，
+// 这一节守的是一个**真实故障**：2026-09-15 把 V1 存档到 `public/ui_old/` 时，`/ui/` → `/ui_old/`
+// 的批量改写把**接口前缀**也一起改了 —— 改名后 `api.js` 里 17 处前缀字面量（15 处调用点 +
+// 2 处注释）全部指向 `/ui_old/api/*`，界面从此去打那个命名空间；而服务端从不提供它
+// （当时 `src/index.ts` 把 `/ui_old/*` 整体当静态存档）。症状：HTML/CSS/JS 全部 200，
 // 页面永远停在骨架屏上，只报一句「初始化失败：Not Found」。
 //
-// 为什么既有测试一条都没红：`test/ui-contract.test.ts` 的扫描目标在交接时改成了 V2，
-// 而 `ui-guard` 只验证 `/ui_v1/` 的静态资源受界面开关约束 —— **没有一条断言碰过 V1 的接口前缀**。
-// 这个故障因此在线上存活了两天，直到逐文件通读才发现。
+// ⚠️ 上面是**历史叙述**：`ui_old` / `/ui/` 是事发当时的真实名字（目录叫 `ui_old`、前缀叫 `/ui/`；
+// `ui_old` → `ui_v1` 的改名是 2026-09-19 才做的，见 `docs/ui-rename-v1-v2.md`）。
+// **改这段时不要顺手把名字替换成 `ui_v1`/`ui_v2`** —— 2026-09-19 那次整词替换正是这么干的，
+// 把叙述改成了「把 V1 存档到 `public/ui_v1/` 时 `/ui_v2/` → `/ui_v1/`」这件从未发生过的事
+// （当时既没有 `ui_v1` 也没有 `ui_v2`）。凡**叙述历史事件**或**引用他处文件位置**的句子，
+// 都要按 `git show <改名前的提交>:<文件>` 复核一次。
+//
+// 为什么既有测试一条都没红：`test/ui-contract.test.ts` 的扫描目标在交接时改成了 V2，而
+// `ui-guard` 当时关于 V1 只有「静态资源受界面开关约束」这一组断言 —— **在这一节加入之前，
+// 没有任何断言碰过 V1 的接口前缀**（下面 describe 的判据 ① 专门补这个缺口）。这个故障因此
+// 在线上存活了两天，直到逐文件通读才发现。
 //
 // 判据取"结构性"的两条，而不是"逐个端点列清单"（后者每次加接口都要同步维护）：
 //   ① 接口前缀只有一处字面量，且它就是 `/ui/api`；
@@ -282,15 +308,6 @@ describe('UI 部署开关（UI_ENABLED）', () => {
 describe('V1 界面（public/ui_v1）的接口前缀与两页一致性', () => {
   const V1_DIR = 'public/ui_v1';
 
-  function walkFiles(dir: string, ext: string): string[] {
-    const out: string[] = [];
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) out.push(...walkFiles(full, ext));
-      else if (entry.name.endsWith(ext)) out.push(full);
-    }
-    return out;
-  }
 
   it('接口前缀只有一处字面量，且指向 /ui/api', () => {
     expect(API_BASE).toBe('/ui/api');
@@ -473,9 +490,11 @@ describe('V1 界面（public/ui_v1）的接口前缀与两页一致性', () => {
       { id: 'js/api.js', test: /export const PAGE_BASE = ['"]\/ui_v1['"]/ },
       {
         id: 'js/next-target.js',
-        test: /u\.pathname === ['"]\/ui_v1\/login\.html['"]/,
+        test: /canonical\(u\.pathname\) === ['"]\/ui_v1\/login['"]/,
         // 该模块刻意不 import `api.js`（要保住"纯函数、可被测试直接覆盖"，见其文件头），
         // 所以这一处字面量无法引用 PAGE_BASE。
+        // 2026-09-19（N-8）：字面量从带扩展名的 `/ui_v1/login.html` 改成**平台的规范形态**
+        // `/ui_v1/login` —— 带扩展名与尾斜杠两种写法由同行的 `canonical()` 归一覆盖，故仍只有一个。
       },
     ];
     const offenders: string[] = [];
@@ -501,26 +520,21 @@ describe('V1 界面（public/ui_v1）的接口前缀与两页一致性', () => {
 //   ② 令牌表里躺着两个只在定义处出现的自定义属性（`--fs-stat`、`--dur-medium`），
 //      它们服务的机制（统计数字 30px、同文档视图过渡）都已经改掉/移除，留着会让人误判当前设计。
 // V2 那边**有意保留**成组的色阶与成对的 kind-*-soft（政策写在 `tokens-v2.css` 里），
-// 所以这两条只扫 V1：V1 没有"成组保留"的例外，一旦出现死令牌就该删或该用。
+// 所以「可点控件都有按下反馈」这条只扫 V1。⚠️ **「令牌不空转」这条 2026-09-20 起 V2 也有**
+// （紧跟在下面那个 describe）：同一份政策在 V2 要落成一份带理由的豁免表，代价就在这里 ——
+// 此前它只扫 V1，而 `--fs-display` 正是钻了这个空子：2026-09-17 起没有消费者，三天后才发现
+// （见 `docs/progress.md` §94 第 19 行）。
+
 describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈）', () => {
   const V1_DIR = 'public/ui_v1';
 
-  function walk(dir: string, ext: string): string[] {
-    const out: string[] = [];
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) out.push(...walk(full, ext));
-      else if (entry.name.endsWith(ext)) out.push(full);
-    }
-    return out;
-  }
 
-  const cssFiles = walk(join(V1_DIR, 'css'), '.css');
+  const cssFiles = walkFiles(join(V1_DIR, 'css'), '.css');
   const cssText = cssFiles.map((file) => readFileSync(file, 'utf8')).join('\n');
   // 引用可能出现在样式表、脚本（`getPropertyValue('--header-h')`）或页面里
   const allText = [
     cssText,
-    ...walk(join(V1_DIR, 'js'), '.js').map((file) => readFileSync(file, 'utf8')),
+    ...walkFiles(join(V1_DIR, 'js'), '.js').map((file) => readFileSync(file, 'utf8')),
     ...['index.html', 'login.html'].map((page) => readFileSync(join(V1_DIR, page), 'utf8')),
   ].join('\n');
 
@@ -571,7 +585,7 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
     // 关联到的 id 必须真的存在，否则那条描述指向空气
     for (const id of ['login-error', 'retention-status']) {
       expect(
-        [...walk(join(V1_DIR, 'js'), '.js'), join(V1_DIR, 'index.html'), join(V1_DIR, 'login.html')].some(
+        [...walkFiles(join(V1_DIR, 'js'), '.js'), join(V1_DIR, 'index.html'), join(V1_DIR, 'login.html')].some(
           (file) => readFileSync(file, 'utf8').includes(`id: '${id}'`) || readFileSync(file, 'utf8').includes(`id="${id}"`),
         ),
         `aria-describedby 指向的 #${id} 没有任何生产者`,
@@ -606,6 +620,56 @@ describe('V1 的样式层契约（令牌不空转、可点控件有按下反馈�
     expect(rootRedirect).toBe('/ui_v1/');
   });
 
+});
+
+// V2 的**样式层**守卫（2026-09-20，`docs/progress.md` §94 第 19 行）。
+//
+// 上面那节把「令牌不空转」**只**架在 V1 上，理由写在那儿（"V2 有成组保留的例外"）—— 但那句话
+// 只对**成组**的令牌成立：孤立的单点令牌在 V2 一样是缺陷。`--fs-display` 就是这么躺了三天
+// （2026-09-17 起没有消费者，2026-09-20 才发现），而它恰是最容易被当成"当前设计"的那种 ——
+// `overview.js` 的注释与设计文档的令牌表都写着"概览带主数字用它"。
+// ⇒ 判据扩到 V2。代价是必须把"哪些组被判为整组保留"写成一份**带理由的名单**：出现新的孤儿
+//   令牌时，要么接上消费者、要么把它的**组**加进来并写清为什么，不允许默默留着。
+describe('V2 的样式层契约（令牌不空转；成组保留要写理由）', () => {
+  const V2_DIR = 'public/ui_v2';
+
+  // 豁免**按组**给（与 `tokens-v2.css` 的书面政策一致：成对的、成阶的按整组保留）。
+  // 这份名单是"为什么不删"的唯一出处 —— 加一行就等于做了一个设计决定，理由要能被复核。
+  const KEPT_GROUPS = [
+    { prefix: '--c-warm-', why: '暖中性色阶：台阶连着才有意义，缺一级就是缺一级（tokens-v2.css 颜色标尺处）' },
+    {
+      prefix: '--kind-',
+      suffix: '-soft',
+      why: '类型色"强/弱"配对的一半，删掉一半会让人以为类型色只有强色（tokens-v2.css 类型色处）',
+    },
+    { prefix: '--shadow-', why: '阴影成组：方向与层次各一条（tokens-v2.css 的 --shadow-inset 处）' },
+  ];
+
+  it('令牌不空转：V2 里没有"定义了却没人引用"的孤立令牌', () => {
+    const cssFiles = walkFiles(join(V2_DIR, 'css'), '.css');
+    const cssText = cssFiles.map((file) => readFileSync(file, 'utf8')).join('\n');
+    // 三种引用形态都算：`var(--x`、JS 里的 `'--x'` / `"--x"`（`getPropertyValue` 那一类）
+    // —— 与上面 V1 那节同一条口径。页面也要算（`data-theme` 之类只出现在 html 里）。
+    const allText = [
+      cssText,
+      ...walkFiles(join(V2_DIR, 'js'), '.js').map((file) => readFileSync(file, 'utf8')),
+      ...walkFiles(V2_DIR, '.html').map((file) => readFileSync(file, 'utf8')),
+    ].join('\n');
+
+    const defined = [...new Set([...cssText.matchAll(/^[ \t]*(--[a-z0-9-]+):/gm)].map((m) => m[1]!))];
+    // 只钉"扫到了东西"：这条下限失效时（正则被改坏、目录被搬走）会红，而不是静默放行
+    expect(defined.length, '没扫到任何自定义属性（守卫可能失效）').toBeGreaterThan(90);
+    const referenced = (name: string) =>
+      allText.includes(`var(${name}`) || allText.includes(`'${name}'`) || allText.includes(`"${name}"`);
+    const orphan = defined.filter((name) => !referenced(name)).sort();
+    const unexcused = orphan.filter(
+      (name) => !KEPT_GROUPS.some((g) => name.startsWith(g.prefix) && (!g.suffix || name.endsWith(g.suffix))),
+    );
+    expect(
+      unexcused,
+      '孤立的单点令牌：要么接上 var() 消费者，要么删掉（要保留就把它的**组**加进 KEPT_GROUPS 并写清理由）',
+    ).toEqual([]);
+  });
 });
 
 // ===== 界面挂载点的事实源：三处副本必须一致（`wrangler.toml` / `src/index.ts` / `public/_headers`）=====

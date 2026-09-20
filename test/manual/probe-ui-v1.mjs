@@ -184,6 +184,42 @@ try {
     }
   });
 
+  // ===== 首帧主题脚本的时序（`docs/AUDIT-redundancies.md` §11 #10；本仓库 §94 第 17 行）=====
+  // `theme-init.js` 是 `<head>` 里 **位于样式表之后**的经典阻塞脚本，它那句
+  // `getComputedStyle(documentElement).getPropertyValue('--bg')` **到底取不取得到值**，
+  // 静态判不了：V2 的注释断言"此刻样式表还没加载、永远停在 HTML 静态值上"，
+  // 而按 HTML 规范前置样式表会阻塞经典脚本 —— 两种说法都说得通。
+  // 这里做**不改源码**的观测，两条证据链：
+  //   ① 包装 `getComputedStyle`，记下它每次被调用时看到的 `--bg`（第一笔就是 theme-init）；
+  //   ② 监听 `meta[name=theme-color]` 的 `content` 首次被写入的时刻（`readyState` + 已加载样式表数）。
+  // 判据：首次写入发生在 `readyState === 'loading'` 且写入值 ≠ HTML 里的静态值 ⇒ theme-init 取值成功。
+  await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      window.__probeTheme = { calls: [], writes: [] };
+      const orig = window.getComputedStyle;
+      window.getComputedStyle = function (...args) {
+        const style = orig.apply(this, args);
+        try {
+          window.__probeTheme.calls.push({
+            bg: style.getPropertyValue('--bg').trim(),
+            sheets: document.styleSheets.length,
+            ready: document.readyState,
+          });
+        } catch {}
+        return style;
+      };
+      new MutationObserver((records) => {
+        for (const record of records) {
+          window.__probeTheme.writes.push({
+            content: record.target.getAttribute('content'),
+            ready: document.readyState,
+            sheets: document.styleSheets.length,
+          });
+        }
+      }).observe(document, { subtree: true, attributes: true, attributeFilter: ['content'] });
+    })();`,
+  });
+
   if (DARK) {
     await send('Emulation.setEmulatedMedia', {
       features: [{ name: 'prefers-color-scheme', value: 'dark' }],
@@ -465,6 +501,50 @@ try {
   })()`);
   console.log('SETTLED ', settled);
 
+  // ===== 首帧主题脚本：把上面那支观测读回来 =====
+  // `theme` = 生效主题；`meta` = 最终写进 `theme-color` 的值（HTML 静态值是 `#faf8f5`）；
+  // `firstBgSeen` = `getComputedStyle` 被**第一次**调用时看到的 `--bg`（即 theme-init 看到的值）。
+  const themeProbe = await read(`(() => {
+    const probe = window.__probeTheme ?? { calls: [], writes: [] };
+    return JSON.stringify({
+      theme: document.documentElement.dataset.theme ?? null,
+      meta: document.querySelector('meta[name="theme-color"]')?.getAttribute('content') ?? null,
+      nowBg: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(),
+      firstBgSeen: probe.calls[0] ? probe.calls[0].bg : null,
+      firstSeenReady: probe.calls[0] ? probe.calls[0].ready : null,
+      firstSeenSheets: probe.calls[0] ? probe.calls[0].sheets : null,
+      writes: probe.writes,
+    });
+  })()`);
+  console.log('THEMECOLOR', themeProbe);
+
+  // ===== 运行期那条断言（V2 `theme.js:9-10`：「切换后 `getComputedStyle` 会立即返回**旧值**」）=====
+  // 两版运行期都是"先写 `dataset.theme`、再读计算值去同步 `theme-color`" ⇒ 这条断言若是假的，
+  // 两边都不用绕开计算值。**非破坏性**：同一个同步块里设属性→读数→立刻还原（还原 `data-theme`
+  // 与 `theme-color` 两样），中间态不渲染，后续读数不受影响。
+  const themeSwitch = await read(`(() => {
+    const root = document.documentElement;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    const keepTheme = root.dataset.theme;
+    const keepMeta = meta ? meta.getAttribute('content') : null;
+    const other = keepTheme === 'dark' ? 'light' : 'dark';
+    const before = getComputedStyle(root).getPropertyValue('--bg').trim();
+    root.dataset.theme = other;
+    const after = getComputedStyle(root).getPropertyValue('--bg').trim();
+    root.dataset.theme = keepTheme;
+    if (meta && keepMeta !== null) meta.setAttribute('content', keepMeta);
+    return JSON.stringify({
+      from: keepTheme,
+      to: other,
+      before,
+      after,
+      stale: before === after,
+      restoredTheme: root.dataset.theme,
+      restoredMeta: meta ? meta.getAttribute('content') : null,
+    });
+  })()`);
+  console.log('THEMESWITCH', themeSwitch);
+
   // ===== 顶栏那枚「部署信息」胶囊：四个字**不许断开**（2026-09-18 用户截图）=====
   // 用户看到的形态是「部署信 / 息」两行、字还溢出了 30px 高的胶囊。根因是**没有 nowrap**：
   // 胶囊是 flex 项，顶栏一挤就按比例被压，而中文没有词边界，于是"能压到只剩一个字的宽度"。
@@ -718,8 +798,92 @@ try {
 
     return JSON.stringify({ findings, count: findings.length });
   })()`;
-  const runAudit = async (label) => console.log('AUDIT   ', `${label} ${await read(AUDIT_EXPR)}`);
+  // 判据一直在，但**只打印、不影响退出码** —— 人工不逐行看输出就发现不了（审计 §12.16③）。
+  // 这里把每次结果累计起来，末尾统一决定退出码；同目录的 states.mjs 早已是这个写法。
+  const auditFindings = [];
+  const runAudit = async (label) => {
+    const raw = await read(AUDIT_EXPR);
+    console.log('AUDIT   ', label + ' ' + raw);
+    try {
+      for (const f of JSON.parse(raw).findings ?? []) auditFindings.push(label + ': ' + f.kind + ' ' + f.el);
+    } catch {
+      auditFindings.push(label + ': 无法解析 AUDIT 结果');
+    }
+  };
   await runAudit('initial');
+
+  // ===== 骨架行高 = 真实行高（2026-09-20，`docs/progress.md` §94 第 16 行）=====
+  //
+  // V1 的骨架行高有**两档**，两档都要求等于真实行高（理由在 `components.css` 的
+  // `.skeleton__row` 注释里）：
+  //   · 表格档（>860px）绑定 `.table td` 的盒模型 —— 8+8+1+30 = 47px；
+  //   · 卡片档（≤860px）绑定 `.table tr.row` 的盒模型 —— 实测 103px（细指针）/ 117px（粗指针）。
+  // 骨架一旦与真实行不同高，内容落地时折线以上的东西就会位移，它就从「CLS 的解法」变成来源。
+  //
+  // ⚠️ 骨架在 fast path 下只存在一帧（数据一到就被 `list.js` 换成表格），走正常流程量不到
+  // ⇒ 就地造一份**真的** `.skeleton`、放进 `.results`（与真实那一份同一个父元素、同一套 CSS），
+  // 量完立刻摘掉 —— 不改页面状态、也不进截图（同上面 `.icon-btn[disabled]` 那条的做法）。
+  //
+  // 判据取真实行的**最小值**：两档的真实行高都可能随内容漂，骨架该对齐的是设计保证的那一档
+  // （表格档是 `height: var(--row-h)`；卡片档是每行都有的固定 48px 内容区 + 固定 30/44px 操作行）。
+  // 最小值同时也是「行高不漂」的判据 —— 真漂了，realMin ≠ realMax 会一并报出来。
+  // 第二条判据是**行距**：卡片档的骨架行必须与真实卡片一样相邻（真实卡片是 0 间距 +
+  // 1px 分隔线）。只改行高不改 `.skeleton` 的 padding/gap，每行仍差 12px（50 行 600px），
+  // 骨架整页照样比真实页短一截。
+  const skeletonGeom = await read(`(() => {
+    const rows = [...document.querySelectorAll('.table tr.row')];
+    if (!rows.length) return JSON.stringify({ skipped: 'no rows' });
+    const hs = rows.map((r) => r.getBoundingClientRect().height);
+    const probe = document.createElement('div');
+    probe.className = 'skeleton';
+    probe.setAttribute('role', 'status');
+    for (let i = 0; i < 2; i += 1) {
+      const inner = document.createElement('div');
+      inner.className = 'skeleton__row';
+      probe.append(inner);
+    }
+    (document.querySelector('.results') ?? document.body).append(probe);
+    const a = probe.children[0].getBoundingClientRect();
+    const b = probe.children[1].getBoundingClientRect();
+    const skRow = Math.round(a.height);
+    const skPitch = Math.round(b.top - a.top);
+    probe.remove();
+    return JSON.stringify({
+      mode: getComputedStyle(rows[0]).display === 'flex' ? 'card' : 'table',
+      viewport: window.innerWidth,
+      coarse: matchMedia('(pointer: coarse)').matches,
+      rows: rows.length,
+      realMin: Math.round(Math.min(...hs)),
+      realMax: Math.round(Math.max(...hs)),
+      realPitch:
+        rows.length > 1
+          ? Math.round(rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top)
+          : null,
+      skeleton: skRow,
+      skPitch,
+      gap: Math.round(Math.min(...hs)) - skRow,
+    });
+  })()`);
+  console.log('SKELETON', skeletonGeom);
+  {
+    // 不达标就进 auditFindings ⇒ 影响退出码（与上面那组几何审计同一个出口）
+    const s = JSON.parse(skeletonGeom);
+    if (s.skipped) auditFindings.push('skeleton: ' + s.skipped);
+    else {
+      if (s.gap !== 0) {
+        auditFindings.push(
+          'skeleton: 骨架行高 ≠ 真实行高（' + s.mode + ' 档 骨架 ' + s.skeleton + ' vs 真实 ' + s.realMin + '，差 ' + s.gap + 'px）',
+        );
+      }
+      // 卡片档还要「相邻」：真实卡片是 0 间距 + 1px 分隔线，骨架的行距必须等于卡片行距。
+      // 表格档的 12px 行距是那一档自己的观感选择（骨架＝一列小条），不在本条判据里。
+      if (s.mode === 'card' && s.realPitch !== null && s.skPitch !== s.realPitch) {
+        auditFindings.push(
+          'skeleton: 卡片档骨架行距 ≠ 卡片行距（骨架 ' + s.skPitch + ' vs 卡片 ' + s.realPitch + 'px）',
+        );
+      }
+    }
+  }
 
   // 选择条的开合：勾选第一行 → 读条 → 取消选择 → 再读条。
   // 这一段存在的理由：`.results__selection` 的 CSS 里写了 `display: flex`，而 JS 用 `hidden`
@@ -862,6 +1026,84 @@ try {
     return JSON.stringify(result);
   })()`);
   console.log('BATCHCOPY', batchCopy);
+
+  // ===== 预览关闭即释放正文（2026-09-20，`docs/archive/AUDIT-v1-v2-divergence.md` §4.2）=====
+  //
+  // 缺陷形态：预览对话框是**启动期创建、常驻 `body`** 的节点，关闭时只 `dialog.close()`，
+  // 正文（`<pre>` 里的整条全文）与页脚按钮的闭包一直留在 DOM 里，直到**下次打开预览**才被
+  // `replaceChildren` 换掉。用户不再预览第二条 ⇒ 这条记录到页面销毁都不释放。
+  //
+  // 判据有**两条，各钉一半**（只钉一条会放过一个错解）：
+  //   ① 关闭、等退出过渡跑完之后，正文必须是空的 —— 钉"到底有没有释放"；
+  //   ② 关闭之后、退出过渡**还在跑**的那一帧里，正文必须还在 —— 钉"释放得是不是时候"。
+  // ② 存在的理由：`.dialog` 有 0.3s 的退出过渡（`motion.css` 的 `@starting-style` +
+  // `transition-behavior: allow-discrete`），在 `close` 里立刻 `replaceChildren` 的写法**能过 ①**
+  // 、但用户会看见"框还在淡出、字先没了"（框的高度也会跟着跳）。量过：点 ✕ 之后
+  // `display: block` 持续到 ~400ms 才变 `none`，所以 t+150ms 那一帧确实还在画。
+  // ② 自己带着前提：那一帧 `display` 若已经是 `none`（减弱动效 / 不支持 `allow-discrete`），
+  // 清得早也看不见，就不该报。
+  const previewClose = await read(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = document.querySelector('tbody tr.row');
+    if (!row) return JSON.stringify({ skipped: 'no rows' });
+    const openBtn = row.querySelector('[data-action="preview"]');
+    if (!openBtn) return JSON.stringify({ skipped: 'no preview button' });
+    openBtn.click();
+    await wait(1200);
+    const dlg = document.querySelector('dialog.dialog[open]');
+    if (!dlg) return JSON.stringify({ skipped: 'preview did not open' });
+    const body = dlg.querySelector('.dialog__body');
+    const foot = dlg.querySelector('.dialog__foot');
+    const snap = () => ({
+      kids: body.childElementCount,
+      chars: (body.textContent ?? '').length,
+      footKids: foot.childElementCount,
+      display: getComputedStyle(dlg).display,
+    });
+    const before = snap();
+    const closeBtn = document.querySelector('button[aria-label="关闭预览"]');
+    if (!closeBtn) return JSON.stringify({ skipped: 'no close button' });
+    closeBtn.click();
+    // 退出过渡跑到一半（实测总长 ~0.3s）
+    await wait(150);
+    const duringFade = snap();
+    // 给足余量等过渡结束 + 清理那一帧
+    await wait(750);
+    const after = snap();
+    return JSON.stringify({
+      before,
+      duringFade,
+      after,
+      stillOpen: dlg.open,
+      hashCleared: location.hash === '',
+      bodyTextAfter: (body.textContent ?? '').slice(0, 40),
+    });
+  })()`);
+  console.log('PRVCLOSE', previewClose);
+  {
+    const p = JSON.parse(previewClose);
+    if (p.skipped) auditFindings.push('preview-close: ' + p.skipped);
+    else {
+      if (p.before.kids === 0) {
+        auditFindings.push('preview-close: 打开后正文是空的 ⇒ 这条判据失去了前提（预览没渲染出东西）');
+      }
+      // ② 「字先没了」：框还在画、正文却已经清空
+      if (p.duringFade.display !== 'none' && p.duringFade.kids !== p.before.kids) {
+        auditFindings.push(
+          'preview-close: 正文在退出过渡期间就被清了（框仍是 ' + p.duringFade.display +
+            '、正文 ' + p.duringFade.kids + ' vs 打开时 ' + p.before.kids + '）⇒ 用户会看到"框还在淡出、字先没了"',
+        );
+      }
+      // ① 「没释放」：过渡跑完之后正文/页脚仍在常驻 <dialog> 里
+      if (p.after.kids !== 0 || p.after.footKids !== 0) {
+        auditFindings.push(
+          'preview-close: 关闭后没释放（正文 ' + p.after.kids + ' 个节点 / ' + p.after.chars +
+            ' 字符，页脚 ' + p.after.footKids + ' 个）⇒ 整条记录留在常驻 <dialog> 里',
+        );
+      }
+      if (p.stillOpen) auditFindings.push('preview-close: 点 ✕ 之后对话框仍然是打开态');
+    }
+  }
 
   // ===== 文本下载（2026-09-18，"文本也可以下载，格式保存成 txt"）=====
   // 判据不是"点了有反应"，而是**磁盘上真的出现了一个 .txt，且内容与这条记录的正文对得上**。
@@ -1370,6 +1612,8 @@ try {
 
   console.log('CONSOLE ERRORS', consoleErrors.length ? consoleErrors : 'none');
   console.log('FAILED REQUESTS', failedRequests.length ? failedRequests : 'none');
+  console.log('AUDIT SUMMARY', auditFindings.length === 0 ? 'findings=0' : JSON.stringify(auditFindings));
+  process.exitCode = auditFindings.length === 0 ? 0 : 1;
 } finally {
   try {
     cdp?.ws.close();

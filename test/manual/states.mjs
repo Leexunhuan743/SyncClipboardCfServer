@@ -254,6 +254,37 @@ try {
   // 行高是**观感**问题，但有一个下限：两行内容 + 缩略图必须放得下（不然会截断）
   expect('行高容得下两行', geometry.rowHeight >= 64, `行高只有 ${geometry.rowHeight}px`);
 
+  // 骨架行高必须**等于**真实行高（2026-09-19 修，审计报告 §10.1）：
+  // 修前 `.ghost` 写死 `height: var(--row-h)`，每行比真实行低 13px（50 行满页差 650px），
+  // 而三处注释都声称两者同高 —— 这条不变式此前**只有注释钉着**，故在此补一条几何断言。
+  // 注入一行骨架来量：fast path 下骨架只存在一帧，走正常流程是量不到的。
+  const ghostGeom = JSON.parse(await evaluate(`(() => {
+    const root = document.documentElement;
+    const probe = document.createElement('div');
+    probe.className = 'ghost';
+    probe.innerHTML = '<span class="ghost__bar ghost__bar--kind"></span>'
+      + '<span class="ghost__bar ghost__bar--wide"></span>'
+      + '<span class="ghost__bar ghost__bar--short"></span>';
+    document.body.append(probe);
+    const measure = () => ({
+      ghostH: Math.round(probe.getBoundingClientRect().height),
+      realH: Math.round(document.querySelector('tr.item')?.getBoundingClientRect().height ?? 0),
+      rowH: getComputedStyle(root).getPropertyValue('--row-h').trim(),
+    });
+    const had = root.dataset.density;
+    const wide = measure();
+    root.dataset.density = 'compact';
+    const compact = measure();
+    if (had === undefined) delete root.dataset.density; else root.dataset.density = had;
+    probe.remove();
+    return JSON.stringify({ wide, compact });
+  })()`));
+  record('骨架行高=真实行高', ghostGeom);
+  expect('骨架行与真实行同高（宽松）', ghostGeom.wide.ghostH === ghostGeom.wide.realH,
+    `骨架 ${ghostGeom.wide.ghostH}px vs 真实 ${ghostGeom.wide.realH}px（--row-h=${ghostGeom.wide.rowH}）`);
+  expect('骨架行与真实行同高（紧凑）', ghostGeom.compact.ghostH === ghostGeom.compact.realH,
+    `骨架 ${ghostGeom.compact.ghostH}px vs 真实 ${ghostGeom.compact.realH}px（--row-h=${ghostGeom.compact.rowH}）`);
+
   await shoot('10-state-rows');
 
   // ── 2. 行内操作：rest 态可见性 + hover 全亮 ────────────────────
@@ -1073,7 +1104,10 @@ try {
     const rowsBtn = document.querySelector('.item .rowops .icon-btn[data-icon="dots"]');
     rowsBtn.click();
     await new Promise((r) => setTimeout(r, 800));
-    const menuOpen = !!document.querySelector('.menu[data-open]') || !document.querySelector('.menu')?.hidden;
+    // 开态只由原生 hidden 表达（.menu[data-open] 已于 2026-09-19 删除，见审计 N-13）。
+    // ⚠️ 本段位于 evaluate 的模板字符串内部，注释里**不能写裸反引号**，否则会提前终止模板
+    // 并把后面的文本当 Node 侧代码执行（2026-09-19 的 N-14 正是这么让整份文件不可运行的）。
+    const menuOpen = !document.querySelector('.menu')?.hidden;
     const anchorExpanded = rowsBtn.getAttribute('aria-expanded');
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1266,11 +1300,13 @@ try {
       await new Promise((r) => setTimeout(r, 100));
     }
     const query = new URLSearchParams(location.search);
-    const statistics = await (await fetch('/ui/api/statistics?deleted=1')).json();
+    // ⚠️ API 的 deleted 只认 true/false（服务端 parseBoolParam），页面 URL 才用 deleted=1（filtersToSearch）。
+    // 这里原来写 deleted=1 ⇒ 恒 400、响应里没有 byType ⇒ Object.values(undefined) 抛错（2026-09-19 修，见 N-15）。
+    const statistics = await (await fetch('/ui/api/statistics?deleted=true')).json();
     const chipTotal = Number(document.querySelector('.chips .chip__num')?.textContent);
-    // 按类型的四个 chip 才是**真正**受 overview 的 `deleted` 参数影响的东西
-    // （它们读 `stats.byType`，而「全部」那个 chip 读的是 total）。只比「全部」的话，
-    // 即使 overview 完全忽略 `deleted`、把活跃口径的计数发下来，断言照样通过 —— 见下一条 expect。
+    // 按类型的四个 chip 才是**真正**受 overview 的 \`deleted\` 参数影响的东西
+    // （它们读 \`stats.byType\`，而「全部」那个 chip 读的是 total）。只比「全部」的话，
+    // 即使 overview 完全忽略 \`deleted\`、把活跃口径的计数发下来，断言照样通过 —— 见下一条 expect。
     const chipByKind = {};
     for (const chip of document.querySelectorAll('.chips .chip[data-kind]')) {
       chipByKind[chip.dataset.kind] = Number(chip.querySelector('.chip__num')?.textContent);
@@ -1384,6 +1420,30 @@ try {
     await wait(2200);
     const actual = JSON.parse(await evaluate(`JSON.stringify({ path: location.pathname + location.search })`)).path;
     expect(`?next= ${testCase.why}`, actual === testCase.want, `期望 ${testCase.want}，实际 ${actual}`);
+  }
+
+  // N-8：`?next=` 指向**登录页自身**时，必须一次都不多跳。
+  // 只比「最终落在哪」区分不出来 —— 两条路最终都会落到 `/ui_v2/app/`（登录页在已登录态会再跳一次），
+  // 所以判据是**中间加载了几次登录页**：修前是 2 次（登录页 → 登录页 → 列表页），修后是 1 次。
+  // 这条同时钉住「平台的规范形态是无扩展名」：只认 `.html` 的判据对第二个 `selfTarget` 会是 2 次。
+  const loginLoads = [];
+  cdp.listeners.push((msg) => {
+    // 只看主文档导航（`parentId` 缺省 = 主 frame）；子 frame 不算
+    if (msg.method === 'Page.frameNavigated' && !msg.params?.frame?.parentId) {
+      loginLoads.push(msg.params.frame.url);
+    }
+  });
+  for (const selfTarget of ['/ui_v2/app/login.html', '/ui_v2/app/login']) {
+    loginLoads.length = 0;
+    await send('Page.navigate', { url: `${BASE}/ui_v2/app/login.html?next=${encodeURIComponent(selfTarget)}` });
+    await wait(2200);
+    const loads = loginLoads.filter((url) => url.includes('/ui_v2/app/login')).length;
+    record(`?next=${selfTarget} 的导航链`, loginLoads.map((u) => u.replace(BASE, '')).join(' → '));
+    expect(
+      `?next=${selfTarget} 只加载登录页一次（不因自指多跳）`,
+      loads === 1,
+      `登录页被加载 ${loads} 次：${loginLoads.map((u) => u.replace(BASE, '')).join(' → ')}`,
+    );
   }
 
   console.log('');
