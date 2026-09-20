@@ -1,24 +1,42 @@
-# 本地开发凭据（wrangler dev 读取；此文件已被 .gitignore 排除）
-# 复制为 .dev.vars 后填入你自己的值
-USERNAME=your-username
-PASSWORD=your-strong-password
+# ==============================================================================
+# 本地开发环境变量（wrangler dev 专用，已被 .gitignore 排除）
+# 复制为 .dev.vars 后生效：cp .dev.vars.example .dev.vars
+# ==============================================================================
 
-# ---- 可选开关（默认值见 wrangler.toml；本地取消注释即可试）----
-# 关掉 Web 界面：/ui 与 /ui/api/* 一律 404，根路径不再跳转（协议面不受影响）
+# ------------------------------------------------------------------------------
+# 1. 访问凭据（生产环境对应：wrangler secret put USERNAME / PASSWORD）
+# ------------------------------------------------------------------------------
+# ⚠️ 说明：
+# - 本地集成测试（npm test）默认使用 admin / admin 作为测试凭据。
+# - 若在此处修改了用户名或密码，运行测试时需通过环境变量覆盖：
+#   SYNC_USER=your-username SYNC_PASS=your-password npm test
+# - 生产环境部署请务必使用高熵强密码，切勿使用 admin 等弱口令。
+USERNAME=admin
+PASSWORD=admin
+
+# ------------------------------------------------------------------------------
+# 2. 功能开关（生产环境对应：wrangler.toml [vars] 或 GitHub Repository Variables）
+# 默认配置已在 wrangler.toml 中声明，本地如需覆盖请取消对应行的注释：
+# ------------------------------------------------------------------------------
+
+# Web 界面开关：默认开启。若取消注释并设为 false，则关闭 Web 界面：
+# /ui、/ui_v1、/ui_v2 与 /ui/api/* 一律返回 404，根路径不再跳转，仅保留客户端同步协议。
 # UI_ENABLED=false
-#
-# 弱口令 fail-closed：命中文档化默认口令/过短口令时所有通道返回 500（默认只警告）
+
+# 弱口令拦截：默认仅记录警告日志。设为 true 时，命中文档化默认口令或过短口令所有通道直接返回 500。
 # ENFORCE_STRONG_CREDENTIALS=true
-#
-# 历史保留策略（覆盖 wrangler.toml 的默认 1000 / 10080 分钟）
-# MAX_SAVED_HISTORY_COUNT=200
-# HISTORY_RETENTION_MINUTES=1440
-#
-# 请求体上限（默认 50331648 = 48MiB；允许 262144..67108864 = 256KiB..64MiB）
-# MAX_REQUEST_BODY_BYTES=67108864
-#
-# 认证失败限速四参数（默认 900000 / 10 / 900000 / 50）—— **不建议改**，见 README「部署开关」
-# AUTH_RATE_LIMIT_WINDOW_MS=900000
-# AUTH_RATE_LIMIT_MAX_FAILURES=10
-# AUTH_RATE_LIMIT_BLOCK_MS=900000
-# AUTH_RATE_LIMIT_BURST_WARN=50
+
+# 历史记录保留策略（覆盖 wrangler.toml 中的默认配置）：
+# MAX_SAVED_HISTORY_COUNT=1000          # 保留条数上限（默认 1000 条）
+# HISTORY_RETENTION_MINUTES=10080       # 保留时长，单位分钟（默认 10080 分钟 = 7 天）
+
+# 单请求体大小上限（默认 50331648 = 48 MiB；允许范围 262144..67108864 = 256 KiB..64 MiB）
+# MAX_REQUEST_BODY_BYTES=50331648
+
+# ------------------------------------------------------------------------------
+# 3. 认证失败限速参数（防御性默认值，通常保持默认即可，不建议随意修改）
+# ------------------------------------------------------------------------------
+# AUTH_RATE_LIMIT_WINDOW_MS=900000       # 失败统计时间窗口（默认 15 分钟）
+# AUTH_RATE_LIMIT_MAX_FAILURES=10       # 窗口内最大允许失败次数（默认 10 次）
+# AUTH_RATE_LIMIT_BLOCK_MS=900000       # 封锁时长（默认 15 分钟）
+# AUTH_RATE_LIMIT_BURST_WARN=50         # 全局失败告警阈值（默认 50 次）
