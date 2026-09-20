@@ -10,7 +10,7 @@ import { resolveNext } from './next-target.js';
 // 的点击监听、`form` 的 `input` 监听各再绑一次，会话探测也再发一次请求。
 // 本页**不会**因此重复提交（`submit` 上有 `data-loading` 早退），但重复的监听器与多余的一次
 // 往返没有理由留着 —— 列表页守在 `boot.js` 的 `dataset.appBooted`，登录页补上同一条。
-// 见 `docs/AUDIT-v1-v2-divergence.md` §4.1（V1 的登录页缺的是更强的两条，已一并补）。
+// 见 `docs/archive/AUDIT-v1-v2-divergence.md` §4.1（V1 的登录页缺的是更强的两条，已一并补）。
 // 重复的那一份仍会求值（ES 模块顶层不能 `return`），但**不再产生任何副作用**。
 const APP_ROOT = document.documentElement;
 const DUPLICATE_EVAL = APP_ROOT.dataset.appBooted === '1';

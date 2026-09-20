@@ -6,8 +6,11 @@
 const THEME_KEY = 'sb-ui-theme';
 const DENSITY_KEY = 'sb-ui-density';
 
-// 与 `tokens-v2.css` 的 `--bg` 一致。这里同样不能读计算值：切换后 `getComputedStyle`
-// 会立即返回**旧值**（样式重算是异步的），于是 theme-color 总是慢一步。
+// 与 `tokens-v2.css` 的 `--bg` 一致。原注释给的理由是「切换后 `getComputedStyle` 会立即返回
+// **旧值**（样式重算是异步的），于是 theme-color 总是慢一步」—— **2026-09-20 实测证伪**：
+// 同一个同步块里改完 `data-theme` 再读，计算值立刻就是新主题的 `--bg`
+// （dark `#191817` → light `#faf8f5`；见 `docs/progress.md` §94 第 17 行）。
+// 仍用显式映射是为了**不依赖时序**，不是因为计算值会慢。
 const BG = { light: '#f5f2ee', dark: '#15191a' };
 
 export function currentTheme() {

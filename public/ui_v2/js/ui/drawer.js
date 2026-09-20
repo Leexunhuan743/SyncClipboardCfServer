@@ -302,7 +302,7 @@ export function createDrawer(handlers) {
    * 抽屉开着、用户正在填「保留天数 / 最大条数 / 自定义起止日期」时，无条件赋值会把半成品
    * 覆盖回服务端的旧值 ⇒ 用户敲的东西**静默消失**，看起来像"填不进去"。
    * V1 对同一件事有这条守卫（`ui_v1/js/main.js` 的 `editing` 判据，注释写着"正在输入时不覆盖"），
-   * V2 此前漏了（见 `docs/AUDIT-v1-v2-divergence.md` §1.1）。
+   * V2 此前漏了（见 `docs/archive/AUDIT-v1-v2-divergence.md` §1.1）。
    */
   function setInputValue(node, value) {
     if (document.activeElement === node) return;

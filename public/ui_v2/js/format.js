@@ -22,7 +22,7 @@ export function formatSize(bytes) {
   const n = Number(bytes);
   if (!Number.isFinite(n) || n <= 0) return '—';
   // 取整：调用方传进来的常常是浮点积（`MB × 1024 × 1024`），不取整会写出
-  // 「104.85760000000001 B」这种字节数（`docs/AUDIT-v1-v2-divergence.md` §5.2）。
+  // 「104.85760000000001 B」这种字节数（`docs/archive/AUDIT-v1-v2-divergence.md` §5.2）。
   if (n < 1024) return `${Math.round(n)} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let value = n / 1024;
@@ -64,7 +64,7 @@ export function formatRelative(iso, now = Date.now()) {
   // **2026-09-18 修**：此前这里退回 `formatClock`（只给时刻），于是一条 2035 年的记录显示成
   // 「09:03」—— 读起来像"今天早上刚发生的"，还把"这台设备的时钟可能不对"这条线索藏掉了。
   // V1 早已按档处理（`ui_v1/js/format.js` 的注释逐字记着同一张截图）。
-  // 见 `docs/AUDIT-v1-v2-divergence.md` §1.8。
+  // 见 `docs/archive/AUDIT-v1-v2-divergence.md` §1.8。
   if (diff < 0) {
     const ahead = -diff;
     if (ahead < MINUTE) return '刚刚';
@@ -133,7 +133,7 @@ export function dayGroup(iso, now = Date.now()) {
  *
  * 注意与服务端 `src/ui/query.ts` 的同名函数**不是一回事**：那个只修代理对边界、按码元计数，
  * 因为它的 500 是**协议上限**（`UI_LIST_TEXT_LIMIT`）；这里量的是"用户看到的字符"。
- * 见 `docs/AUDIT-v1-v2-divergence.md` §5.3。
+ * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3。
  */
 const SEGMENTER =
   typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
@@ -194,7 +194,7 @@ export function formatAgo(ms, now = Date.now()) {
  * **去改服务端时钟**的诊断（而"同步不动"最常见的根因就是时钟差）。
  * 改成直接点名"本机"，读者不必再倒推一次约定；V1 的文案也是这个口径
  * （`ui_v1/js/components/info.js` 的 `本机时钟快/慢`，它的 offset 约定恰好相反）。
- * 见 `docs/AUDIT-v1-v2-divergence.md` §5.1。 */
+ * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.1。 */
 export function describeClockSkew(offsetMs) {
   if (!Number.isFinite(offsetMs)) return null;
   const minutes = Math.round(offsetMs / MINUTE);

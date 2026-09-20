@@ -21,7 +21,7 @@ let dialogSeq = 0;
  *           closeLabel?: string, onClose?: () => void, canClose?: () => boolean }} spec
  *   `canClose`（可选）：返回 false 时**所有"溜走"的路径都失效** —— ✕、取消、以及平台给的
  *   Esc。用于"已经发出去了的请求"在途期间：那三条路都只 disable 一个确认键，挡不住它们
- *   （见 `createConfirm` 的说明与 `docs/AUDIT-v1-v2-divergence.md` §3.1）。
+ *   （见 `createConfirm` 的说明与 `docs/archive/AUDIT-v1-v2-divergence.md` §3.1）。
  */
 export function createDialog(spec) {
   const canClose = () => spec.canClose?.() ?? true;
@@ -109,7 +109,46 @@ export function createDialog(spec) {
   dialog.addEventListener('close', () => {
     settle(null);
     spec.onClose?.();
+    discardContent();
   });
+
+  // 关闭之后丢弃正文 / 页脚 / 错误行。
+  //
+  // 为什么必须做：对话框是**启动期创建、常驻 `body`** 的节点 —— `createSheet` 那个尤其致命，
+  // 它的 `content` 是整条记录的全文（单条上限见 `api.js` 的响应上限），`buttons` 里那些闭包
+  // 又抓着 `item` / `full`。不清就只有"下次 `open()`"这一个释放点：用户不再预览第二条时，
+  // 这段内容要到页面销毁才释放（`docs/archive/AUDIT-v1-v2-divergence.md` §4.2，V1 同一次改动）。
+  // `errorBox` 一并清：`open()` 只把它 `hidden`、正文留着，而那是**一条服务端错误信息**。
+  //
+  // ⚠️ **不能**在 `close` 里立刻清：`.dialog` 有退出过渡（`overlay-v2.css` 的 `@starting-style`
+  // + `transition-behavior: allow-discrete`，`--dur-base` = 0.2s）。这一刻清掉，用户看到的是
+  // 「框还在淡出、字先没了」，而且内容一撤、框的高度也会跟着跳。
+  // ⇒ 判据交给浏览器自己：轮询到 `display` 变回 `none`（= 退出过渡真的跑完）再清。
+  //   减弱动效、或浏览器不支持 `allow-discrete` 时根本没有过渡，第一帧就是 `none`
+  //   ⇒ 立即清，同样不会闪。
+  // 实测（1440×900，`test/manual/probe.mjs` 的 `PRVCLOSE`）：点「关闭」之后 `display: block`
+  // 一直持续到 ~250ms 才变 `none`，正文在这之前始终可见。
+  let discardFrame = null;
+  function discardContent() {
+    if (discardFrame !== null) return; // 已经在等退出过渡了
+    const started = performance.now();
+    const tick = () => {
+      discardFrame = null;
+      // 等待期间又被打开（连续预览两条）：本轮作废，下一次 `close` 会重新排。
+      if (dialog.open) return;
+      // 1s 只是**兜底**（不是设计值）：标签页进后台时 `requestAnimationFrame` 会被饿死，
+      // 那也不能让正文永远留在 DOM 里。
+      if (getComputedStyle(dialog).display === 'none' || performance.now() - started > 1000) {
+        clear(body);
+        clear(foot);
+        errorBox.textContent = '';
+        errorBox.hidden = true;
+        return;
+      }
+      discardFrame = requestAnimationFrame(tick);
+    };
+    discardFrame = requestAnimationFrame(tick);
+  }
 
   return {
     ctx,
@@ -217,7 +256,7 @@ export function createConfirm() {
           // 于是用户按 Esc / 点 ✕ / 点取消时 `ask()` 结算成 `false`，而请求其实成功了 ——
           // 调用方的收行、清选择集、刷新全写在 `if (!ok)` 之后，界面因此把"已经删掉"当作
           // "没删"，要等 ≤10 秒的轮询才无声消失（批量删除时还继续写着"已选 N 条"）。
-          // 见 `docs/AUDIT-v1-v2-divergence.md` §3.1。
+          // 见 `docs/archive/AUDIT-v1-v2-divergence.md` §3.1。
           busy = true;
           try {
             await action();

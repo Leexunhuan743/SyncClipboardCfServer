@@ -810,12 +810,8 @@
   }
 }
 
-/* 极窄（<380px）：数字降一档，避免主数字换成两行。
-   ⚠️ 目前是**死规则**：主数字（`.overview__value`）挂的是 `--fs-title`，没有任何东西消费
-   `--fs-display` ⇒ 这里改了也不生效。要么把主数字改回 `--fs-display`、要么删掉这条，
-   属设计决策，见 `docs/AUDIT-missing-states.md` §5.3。 */
-@media (max-width: 380px) {
-  :root {
-    --fs-display: 1.5rem;
-  }
-}
+/* 文件尾曾有一条 `@media (max-width: 380px) { :root { --fs-display: 1.5rem } }`（"极窄时数字
+   降一档、避免主数字换成两行"）。2026-09-20 随之删掉：它改的 `--fs-display` 自 2026-09-17 起
+   没有任何消费者（主数字挂的是 `--fs-title`），所以它是一条**死规则**。
+   这条注释**不是**在说"极窄时不用管字号" —— 而是说当年那条降档所服务的字号已经不存在了。
+   理由、git 取证与实跑见 `docs/progress.md` §94.17。 */

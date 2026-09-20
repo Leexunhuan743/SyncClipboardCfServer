@@ -76,7 +76,7 @@ function clampInt(raw, fallback, min, max) {
  * 为什么：常数 24 小时在跨夏令时切换的时区里会落偏一小时 —— `startOfDay(now) - 6 * 86400000`
  * 可能指向前一天的 23:00，于是「近 7 天」从半天中间开始、两端各差一小时。`setDate()` 是
  * 日历运算，时区规则交给运行时。V1 在 `ui_v1/js/filters.js` 里早就改成了这条，注释逐字写着
- * "没有理由留一个**只在别人的时区里错**的算法" —— V2 漏了（`docs/AUDIT-v1-v2-divergence.md` §1.9）。
+ * "没有理由留一个**只在别人的时区里错**的算法" —— V2 漏了（`docs/archive/AUDIT-v1-v2-divergence.md` §1.9）。
  */
 function addDays(ms, days) {
   const date = new Date(ms);

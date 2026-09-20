@@ -191,7 +191,7 @@ function renderMeta(item) {
       // 都按 `createTime`（`board.js` 的 `dayGroup`）⇒ 一条刚被同步过的旧记录会同时出现
       // 「3 天前」的小标题与「刚刚」的行内时间，两句都在说"这条是什么时候的"，却是两个口径。
       // V1 的主时间列（`.col-created`）用的也是 `createTime`，修改/访问各有独立列。
-      // 三个值仍然全在 `title` 里。见 `docs/AUDIT-v1-v2-divergence.md` §5.4。
+      // 三个值仍然全在 `title` 里。见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.4。
       text: formatRelative(item.createTime),
       title: `创建 ${formatAbsolute(item.createTime)} · 修改 ${formatAbsolute(
         item.lastModified,

@@ -456,7 +456,8 @@ function boot() {
   // 新结果里，而批量删除/收藏仍按选择集逐条在服务端执行 —— 那等于对"看不见的行"动手。
   // 排序 / 翻页 / 页大小**不在列**：它们不改变集合。
   // ⚠️ **搜索在列**（2026-09-19 复查补入）：它是筛选，不是"高亮"—— 服务端为它生成
-  // `Text LIKE ?`（见 `src/ui/query.ts`），被它滤掉的行看不见、却仍留在选择集里 ⇒ 与 F3 同型。
+  // `Text LIKE ? ESCAPE '\'`（`src/ui/query.ts`：UI 面转义、协议面不转义），被它滤掉的行
+  // 看不见、却仍留在选择集里 ⇒ 与 F3 同型。
   const MEMBERSHIP_KEYS = ['types', 'starred', 'deleted', 'range', 'after', 'before', 'search'];
 
   function setFilters(patch, { push = false, scroll = false } = {}) {
@@ -531,7 +532,7 @@ function boot() {
       if (page.items.length === 0 && (page.total ?? 0) > 0 && current.filters.page > lastPage) {
         // `push: false`：这是界面的**自我修正**，不该进浏览器的后退历史 ——
         // 用 push 的话，打开 `?page=999` 会多压一条记录，用户按后退又回到越界页、再自校正一次，
-        // 形成后退循环。V1 在同一处写着"用 replace 而不是 push"（`docs/AUDIT-v1-v2-divergence.md` §1.2）。
+        // 形成后退循环。V1 在同一处写着"用 replace 而不是 push"（`docs/archive/AUDIT-v1-v2-divergence.md` §1.2）。
         setFilters({ page: lastPage }, { push: false });
         return;
       }
@@ -1031,7 +1032,7 @@ function boot() {
       // `{ updated, failed }`（`src/ui/routes.ts`）。此前这个分支完全不读它，直接报
       // 「已删除 N 条」⇒ 部分失败被报成**全成功**（某条已被别处删除/恢复时就会发生）。
       // 同文件的通用分支（下面 star/pin/restore 那一段）一直读了它，V1 的 `runBatch` 更会在
-      // `failed` 非零时直接抛错 —— 只有这里漏了。见 `docs/AUDIT-v1-v2-divergence.md` §7.1。
+      // `failed` 非零时直接抛错 —— 只有这里漏了。见 `docs/archive/AUDIT-v1-v2-divergence.md` §7.1。
       let outcome = null;
       const ok = await confirm.ask({
         ...batchDeleteConfirmSpec(items.length),
@@ -1144,7 +1145,12 @@ function boot() {
         return true;
       },
       onRefresh: () => void refresh({ announce: true }),
-      isModalOpen: () => Boolean(document.querySelector('dialog[open]')),
+      // 模态 = 对话框 **或** 菜单。菜单**不是** `<dialog>`（`ui/menu.js` 顶部写了为什么弃用它），
+      // 所以原来只查 `dialog[open]` 会漏掉它 —— 菜单开着时按 `/`、`Ctrl/Cmd+K` 会把焦点移到
+      // 遮罩**底下**的搜索框，按 `r` 会刷新列表而菜单不关（2026-09-19 审计 N-13）。
+      // 行菜单（`openRowMenu`）与排序菜单（`openSortMenu`）共用同一个 `createMenu()` 实例，
+      // 故一个选择器就够。开态**只由原生 `hidden` 表达**（见 `ui/menu.js`）。
+      isModalOpen: () => Boolean(document.querySelector('dialog[open], .menu:not([hidden])')),
     });
   }
 
@@ -1256,7 +1262,7 @@ function boot() {
   }
 
   /**
-   * 深链接 `#Type-<hash>`：hash 空闲（筛选状态走 query string），打开即预览那一条。
+   * 深链接 `#Text-<hash>`：hash 空闲（筛选状态走 query string），打开即预览那一条。
    */
   async function openDeepLink() {
     const match = /^#([A-Za-z]+)-(.+)$/.exec(location.hash);

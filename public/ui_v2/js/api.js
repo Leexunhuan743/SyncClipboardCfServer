@@ -167,7 +167,7 @@ export const api = {
    * 那条 Promise **永不 settle** ⇒ 上层按钮的 `setPending` 一直是 true（`disabled`），
    * 按钮永久转圈且永久不可点，会话过期也不会回登录页。
    * V1 的 `api.js` 早有这一档（`fetchData`），注释逐字描述过同一个症状；
-   * 见 `docs/AUDIT-v1-v2-divergence.md` §1.4。
+   * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §1.4。
    */
   blobData: (item, signal) => request(api.dataUrl(item), { signal, blobResponse: true }),
 
@@ -228,7 +228,7 @@ export const api = {
    * **不发 `tz`**（2026-09-18 修）：这个端点在服务端只读 `deleted`
    * （`src/ui/routes.ts` 的 `readDeletedFlagOr400`），`tz` 从头到尾没人读 ——
    * 一直发它只会制造"好像按本地时区算过"的错觉。（`/ui/api/activity` 的 `tz` 是真的被读的。）
-   * 见 `docs/AUDIT-v1-v2-divergence.md` §7.2。
+   * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §7.2。
    */
   overview: (signal, { deleted = false } = {}) =>
     request(`/ui/api/overview?${buildQuery({ deleted })}`, { signal }),

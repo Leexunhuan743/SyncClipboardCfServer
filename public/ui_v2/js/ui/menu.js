@@ -50,7 +50,10 @@ export function createMenu() {
     open = false;
     panel.hidden = true;
     backdrop.hidden = true;
-    panel.removeAttribute('data-open');
+    // 开态**只由原生 `hidden` 表达**（配 CSS 的 `.menu[hidden]` 与 `.menu-backdrop[hidden]`）。
+    // 这里原有一句 `panel.removeAttribute('data-open')`，但全仓**没有任何地方设过它**
+    // （`data-open` 只此一处出现、CSS 里也没有对应规则）⇒ 2026-09-19 删除，免得读代码的人
+    // 以为存在一个 `data-open` 开态。见审计 N-13 与 `docs/ui-v2-design.md` §5 词汇表的订正。
     // 锚点按钮的 `aria-expanded` 必须跟着关：读屏靠它知道"菜单还开着吗"
     if (currentAnchor?.hasAttribute('aria-expanded')) currentAnchor.setAttribute('aria-expanded', 'false');
 
