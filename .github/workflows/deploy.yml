@@ -159,8 +159,8 @@ jobs:
         #      它存在 GitHub 设置里，`Sync fork` 不会把它冲掉）；
         #   ② 否则按 `database_name` 查；
         #   ③ 查不到 → 默认**创建**（fork 后开箱可用）；仓库变量 `D1_BOOTSTRAP=false` 改成 fail-fast。
-        # ⚠️ ③ 的代价：库被删后再跑会得到**一个新的空库**（老数据不会回来）⇒ 所以创建时在日志与 run summary
-        #    里**显著**写出来，不静默。
+        # ⚠️ ③ 的代价：库被删后再跑会得到**一个新的空库**（老数据不会回来）⇒ 创建时用
+        #    `::warning` **显著**标出来、不静默；但 **id 不再打印**（仓库可能公开，见下）。
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -206,7 +206,6 @@ jobs:
             page=$((page + 1))
           done
 
-          created="false"
           if [ -z "$d1_id" ]; then
             if [ "${ALLOW_BOOTSTRAP:-true}" = "false" ]; then
               echo "::error::D1 库 $db_name 不存在，且仓库变量 D1_BOOTSTRAP=false ⇒ 按配置拒绝创建"
@@ -217,28 +216,19 @@ jobs:
               echo "::error::创建 D1 库失败 —— 检查令牌是否含 D1:Edit 权限、CLOUDFLARE_ACCOUNT_ID 是否正确"
               exit 1
             fi
-            created="true"
-            echo "🆕 创建了 D1 库 $db_name → id=$d1_id"
+            echo "🆕 创建了 D1 库 $db_name（历史记录为**空**；库 id 不再打印，防公开仓库泄露）"
             echo "::warning title=创建了新的 D1 库::$db_name（历史记录为**空**）。若你本以为它已存在，请检查账号与库名；已删库的数据不会自动恢复。"
           else
-            echo "✓ D1 库 $db_name 存在：id=$d1_id"
+            echo "✓ D1 库 $db_name 已存在"
           fi
 
           # 注入 **runner 的工作副本**（不提交；仓库里那份是全零占位值）
           sed -i "s|^database_id = .*|database_id = \"$d1_id\"|" wrangler.toml
           grep -q "^database_id = \"$d1_id\"\$" wrangler.toml || { echo "::error::database_id 注入失败"; exit 1; }
           echo "d1_id=$d1_id" >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### 本次部署用的资源"
-            echo ""
-            echo "| 资源 | 值 | 说明 |"
-            echo "|---|---|---|"
-            echo "| D1 | \`$db_name\` → \`$d1_id\` | $([ "$created" = "true" ] && echo '**本次新建（历史为空）**' || echo '已存在，直接复用') |"
-            echo "| R2 | \`$bucket\` | 按名字寻址，不需要 id |"
-            echo ""
-            echo "> 想钉住到某个库（例如保护已有数据）：设仓库变量 \`D1_DATABASE_ID\` —— 它优先于按名解析，且 \`Sync fork\` 不会把它冲掉。"
-          } >> "$GITHUB_STEP_SUMMARY"
+          # 2026-09-21：D1 库的 **id / R2 桶名不再进 run summary 与日志**（仓库可能公开）。
+          # id 不是凭据，但没必要暴露；钉住库的指引仍保留（无泄密内容）。
+          echo "> 想钉住到某个库（例如保护已有数据）：设仓库变量 D1_DATABASE_ID —— 它优先于按名解析，且 Sync fork 不会把它冲掉。"
 
       - uses: actions/setup-node@v7
         with:
@@ -426,7 +416,7 @@ jobs:
             echo "　部署本身已成功；把仓库变量 DEPLOY_URL 设为 Worker 地址即可让本步骤恢复。"
             exit 1
           fi
-          echo "冒烟目标：$base"
+          echo "冒烟目标已就绪（地址不打印，防公开仓库泄露）"
           expected=$(grep -m1 '^VERSION' wrangler.toml | sed -E 's/.*"(.*)".*/\1/')
           echo "wrangler.toml 的 VERSION = $expected"
           fail=0
@@ -534,13 +524,14 @@ jobs:
           if [ "${UI_ENABLED:-true}" = "false" ]; then
             ui_line='**当前 `UI_ENABLED=false`，界面已关闭**（只有协议面）'
           else
-            ui_line='Web 历史界面：`'"$base"'/ui_v1/`（默认界面 V1）'
+            ui_line='Web 历史界面：\`/ui_v1/\`（默认界面 V1；地址 = 上面在 Cloudflare 控制台拿到的服务器地址 + \`/ui_v1/\`）'
           fi
           {
             echo ""
             echo "## 🚀 部署结果"
             echo ""
-            echo "**服务器地址（客户端「服务器地址」就填它）**：\`$base\`"
+            echo "**服务器地址（客户端「服务器地址」就填它）**：[在 Cloudflare 控制台查看](https://dash.cloudflare.com/) —— Workers & Pages → 本 Worker → 顶部「域名与路由 / 预览」里复制 \`*.workers.dev\` 地址。"
+            echo "> 为防公开仓库泄露，这里**不直接打印地址**。"
             echo ""
             echo "| 项 | 值 |"
             echo "|---|---|"
@@ -552,7 +543,7 @@ jobs:
             echo ""
             echo "> 国内网络连不上 \`*.workers.dev\` 时，在 Cloudflare 控制台给这个 Worker 绑一个自定义域名（Settings → Domains & Routes）。"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice title=部署结果::$base"
+          echo "::notice title=部署结果::部署完成。服务器地址请在 Cloudflare 控制台查看（Workers & Pages → 本 Worker）。"
 
           if [ "$fail" != "0" ]; then exit 1; fi
           echo "冒烟通过（全部只读，未修改线上任何数据）"
