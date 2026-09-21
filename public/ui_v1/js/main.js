@@ -22,6 +22,7 @@ import {
   batchPurgeConfirmSpec,
   batchProgressText,
   batchPartialText,
+  batchAbortedText,
   clearHistorySpec,
   describeListError,
   clipboardFailureHint,
@@ -711,7 +712,14 @@ async function runBatch({
       onProgress: context?.setMessage
         ? (done, total) => context.setMessage(batchProgressText(done, total))
         : undefined,
+      signal: context?.signal,
     });
+    // 用户在途按了「中止」：已发出去的那一批跑完了、后面的没发。这不是失败，如实报"停下之前
+    // 生效了多少"，界面对账一次即可（服务端的每一批都是原子的，不会有半条）。
+    if (result.aborted) {
+      await refresh({ silent: true });
+      throw new Error(batchAbortedText(result.updated));
+    }
     // 服务端是**逐条**判定的：落空通常只是少数几条（被别的设备改过、或已经不在服务器上了），
     // 而其余几十条已经生效。故先把界面拉回事实，再如实报出条数 —— 原文案「有 N 条未生效，
     // 请刷新后重试」读起来像整体失败，会让用户白重做一遍（2026-09-21 实测后改）。
@@ -852,7 +860,12 @@ async function batchPurge() {
     action: async (context) => {
       const result = await api.batchPurge(chosen, {
         onProgress: (done, total) => context?.setMessage?.(batchProgressText(done, total)),
+        signal: context?.signal,
       });
+      if (result.aborted) {
+        await refresh({ silent: true });
+        throw new Error(batchAbortedText(result.purged));
+      }
       if (result.failed) {
         await refresh({ silent: true });
         throw new Error(batchPartialText(result.purged, result.failed));

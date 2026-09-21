@@ -244,12 +244,17 @@ export const api = {
   // 调用方只管传整批，结果合并成一个合计（分片之间若某片失败，前几片已生效，由调用方刷新对账）。
   //
   // `onProgress(done, total)`：每片开跑前回调一次，供长操作把进度写进确认框（300 条 ≈ 20 秒）。
+  // `signal`：调用方（确认框的「中止」）可以中断，但**只在片与片之间生效，且不掐断在途的那一片**——
+  // 掐断 fetch 并不会让服务端停下（那 100 条照跑），于是客户端**少报已经生效的条数**（实测：
+  // 报"已生效 100"而回收站实际少了 200）。所以这里只把 signal 当**停止旗子**用：跑完手上的这一片，
+  // 记下它的计数，再决定要不要发下一片 ⇒ 报出来的数字与库里的事实一致。
   async batchUpdate(items, update, { onProgress, signal } = {}) {
     const CHUNK = 100;
     let updated = 0;
     let failed = 0;
     const total = Math.max(1, Math.ceil(items.length / CHUNK));
     for (let i = 0, shard = 1; i < items.length; i += CHUNK, shard += 1) {
+      if (signal?.aborted) return { updated, failed, aborted: true };
       onProgress?.(shard, total);
       const result = await request(`${API_BASE}/history/batch-update`, {
         method: 'POST',
@@ -257,34 +262,36 @@ export const api = {
           items: items.slice(i, i + CHUNK).map((item) => ({ type: item.type, hash: item.hash })),
           update,
         },
-        signal,
       });
       updated += result?.updated ?? 0;
       failed += result?.failed ?? 0;
     }
-    return { updated, failed };
+    // 循环跑完了 ⇒ 没有被打断的批次（即便期间点过中止，那一批也已经发出去了）：
+    // 报“成功”而不是“中止”—— 中止的语义严格是「确实提前停了」。
+    return { updated, failed, aborted: false };
   },
 
   // 彻底删除（回收站）：服务端只删**已删除的行**（`IsDeleted != 0` 写在 SQL 里），
   // 每条 1 次 D1 子请求，故这里同样按 100 分片、合并 `{purged, failed}`。
   // 与 batchUpdate 分开而不合并成一个"action"参数：两者的返回字段与语义都不同
   // （这里没有 update 字段白名单，也不存在冲突判定）。
+  // 与 batchUpdate 同一套停止语义（信号只当**停止旗子**，不掐断在途的那一片，见上面的说明）。
   async batchPurge(items, { onProgress, signal } = {}) {
     const CHUNK = 100;
     let purged = 0;
     let failed = 0;
     const total = Math.max(1, Math.ceil(items.length / CHUNK));
     for (let i = 0, shard = 1; i < items.length; i += CHUNK, shard += 1) {
+      if (signal?.aborted) return { purged, failed, aborted: true };
       onProgress?.(shard, total);
       const result = await request(`${API_BASE}/history/batch-purge`, {
         method: 'POST',
         body: { items: items.slice(i, i + CHUNK).map((item) => ({ type: item.type, hash: item.hash })) },
-        signal,
       });
       purged += result?.purged ?? 0;
       failed += result?.failed ?? 0;
     }
-    return { purged, failed };
+    return { purged, failed, aborted: false };
   },
 
   // 清空历史：scope='trash' 只清回收站、'all' 清全部。

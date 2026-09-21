@@ -20,6 +20,10 @@ export function createConfirm() {
   // 否则"以为取消了、其实删成了"：调用方的收行/刷新/提示全写在 `if (!ok)` 之后。
   // V2 的 `dialog.js` 用同一份 `canClose` 机制（d0c58bd），这里是它的 V1 移植。
   let busy = false;
+  // 在途时可以**中止**（2026-09-21，批量取消）：控制器由本次动作创建，取消键把它 `abort()`。
+  // 注意中止的语义是"**这批做完就停**"—— 服务端一次请求内部不会被打断（见 api.js 的分片循环），
+  // 所以不会留下半条记录；已生效的条数由调用方如实报出。
+  let controller = null;
 
   const title = el('h2', { class: 'dialog__title', id: 'confirm-title' });
   const message = el('p', { id: 'confirm-message' });
@@ -45,14 +49,29 @@ export function createConfirm() {
     },
     [svg(iconPaths('close'))],
   );
+  const cancelLabel = el('span', { class: 'btn__label', text: '取消' });
   const cancelButton = el(
     'button',
     {
       class: 'btn',
       type: 'button',
-      onclick: tryDismiss,
+      // 两条语义同一个键：空闲时是「取消」（关掉对话框、不做事），在途时是「中止」
+      // （请求停下、对话框留着把结果说清楚）。
+      onclick: () => {
+        if (!busy) {
+          tryDismiss();
+          return;
+        }
+        // 只**请求**中止：真正停下来发生在片与片之间（api.js 的分片循环里），
+        // 所以这里立刻禁用自己，避免连点造成二次 abort。
+        if (controller && !controller.signal.aborted) {
+          controller.abort();
+          cancelButton.disabled = true;
+          cancelLabel.textContent = '正在中止…';
+        }
+      },
     },
-    [el('span', { class: 'btn__label', text: '取消' })],
+    [cancelLabel],
   );
 
   const dialog = el(
@@ -95,12 +114,19 @@ export function createConfirm() {
     errorBox.hidden = true;
     setPending(okButton, true);
     busy = true;
-    cancelButton.disabled = true;
+    // 在途期间：✕ 与 Esc 依旧挡住（F2——关掉对话框会让调用方把"已成功"读成"用户取消"），
+    // 但「取消」变成可用的「中止」：长批量（300 条 = 3 批）必须留一条停下来的路。
     closeButton.disabled = true;
+    cancelButton.disabled = false;
+    cancelLabel.textContent = '中止';
+    controller = new AbortController();
     try {
-      // `action` 收到一个上下文：`setMessage(text)` 让长操作把进度写进正文（批量按 100 条一批，
-      // 300 条就是 3 批、约 20 秒起，全程只有一个转圈用户不知道走到哪）。旧调用方忽略它即可。
-      await action({ setMessage: (text) => { message.textContent = text; } });
+      // `action` 收到一个上下文：`setMessage(text)` 把进度写进正文，`signal` 用于中止
+      // （api.js 的分片循环在每片之间检查它）。旧调用方忽略它们即可。
+      await action({
+        setMessage: (text) => { message.textContent = text; },
+        signal: controller.signal,
+      });
       busy = false;
       dialog.close('confirm');
       settle(true);
@@ -111,8 +137,11 @@ export function createConfirm() {
       errorBox.hidden = false;
     } finally {
       setPending(okButton, false);
+      // 复位这一键的两副面孔（空闲时是「取消」；无论成功/失败/中止都要回到它）
       cancelButton.disabled = false;
+      cancelLabel.textContent = '取消';
       closeButton.disabled = false;
+      controller = null;
     }
   });
 

@@ -17,7 +17,7 @@ import { typeName, typeLabel, formatSize, formatRelative, previewText, truncateT
 // @ts-expect-error TS7016：同上
 import { parseFrames, classifyMessage, createPushChannel } from '../public/ui_v2/js/push.js';
 // @ts-expect-error TS7016：同上
-import { deleteConfirmSpec, batchDeleteConfirmSpec, purgeConfirmSpec, batchPurgeConfirmSpec, batchProgressText, batchPartialText, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui_v2/js/messages.js';
+import { deleteConfirmSpec, batchDeleteConfirmSpec, purgeConfirmSpec, batchPurgeConfirmSpec, batchProgressText, batchPartialText, batchAbortedText, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui_v2/js/messages.js';
 // @ts-expect-error TS7016：同上
 import { rowMenuItems, sortMenuItems } from '../public/ui_v2/js/menus.js';
 // 这一条破例取 **V1** 的模块：保留策略的显示口径（未设置 / 已关闭 / 有值 / 分档）只在特定取值下
@@ -392,6 +392,15 @@ describe('messages · 用户文案对齐服务端语义', () => {
     expect(partial).toContain('已生效 87 条');
     expect(partial).toContain('未生效 13 条');
     expect(partial).toContain('列表已刷新');
+  });
+
+  // 2026-09-21 新增：用户在途按「中止」。它是**用户的选择**，既不是失败也不是被服务端拒绝，
+  // 所以句子必须报出"停下之前生效了多少"，并把"不是整体失败"说清楚。
+  it('中止的文案：说明已停止与已生效条数，不得写成"失败"', () => {
+    const aborted = batchAbortedText(100);
+    expect(aborted).toContain('已中止');
+    expect(aborted).toContain('已生效 100 条');
+    expect(aborted).not.toContain('失败');
   });
 
   it('列表错误翻译：400 且搜索词非空 → 说"搜索词过长"，而不是把服务端原文抛给用户', () => {

@@ -102,6 +102,18 @@ export function batchPartialText(updated, failed) {
 }
 
 /**
+ * 用户**中止**长批量时的说明。
+ *
+ * 与 `batchPartialText` 的区别：那不是失败、也不是被服务端拒绝，而是用户在途按了「中止」——
+ * 已经发出去的那一批会跑完（服务端一次请求内部不会被打断），后面的批次不再发。
+ * 所以措辞要让人知道"停下来了、停下之前生效了多少"。
+ * @param {number} done 已生效条数
+ */
+export function batchAbortedText(done) {
+  return `已中止：停下之前已生效 ${done} 条（列表已刷新）。`;
+}
+
+/**
  * 清空历史的确认框文案。
  * @param {'trash'|'all'} scope
  */
