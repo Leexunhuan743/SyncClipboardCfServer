@@ -436,11 +436,41 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     return Response.json(toUiItem(result.entity));
   });
 
+  // 批量写的有界并发（见下方 batch-update 路由注释里的「并发（2026-09-21）」）。
+  // 10 是保守值：生产实测串行 663ms/条，10 路并行把 100 条从 ~66s 压到 ~5s，同时
+  // D1/DO/R2 的并发压力可控；总量子请求不变（不影响 1000 上限的记账）。
+  const BATCH_UPDATE_CONCURRENCY = 10;
+
+  // 有界并发执行：同时最多 `limit` 个 `fn` 在跑，保序（results 按下标填）。
+  // 批量循环里每条相互独立，串行等的是网络往返；并行是纯粹地摊销延迟。
+  async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+    const worker = async () => {
+      for (;;) {
+        const index = cursor++;
+        // index 由 cursor 递增保证 < items.length（取号与越界判定在同一同步段，无竞争）；
+        // `noUncheckedIndexedAccess` 收窄不掉这个不变量，显式断言。
+        if (index >= items.length) return;
+        results[index] = await fn(items[index]!);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+  }
+
   // POST /ui/api/history/batch-update —— 批量写（收藏 / 置顶 / 删除 / 恢复）
   //
   // 逐条走 `applyHistoryUpdate`（与单条 PATCH、官方 PATCH **同一条写路径**）：各自广播、
   // 各自做 shouldUpdate 判定、删除时各自清 R2 数据目录。因此这里不做任何「批量捷径」——
   // 捷径会让「界面改的」与「客户端改的」逐渐分叉。
+  //
+  // **并发（2026-09-21）**：每条记录的处理相互独立（各自 D1 读、写、DO 广播、R2 清理），
+  // 串行是纯浪费 —— 生产实测 100 条删除串行 **66s**（663ms/条，瓶颈是每条约 5 次子请求的
+  // 往返延迟）。有界并发 10 是保守值：三类子请求都独立，10 路并行压力可控，且**不改变总量
+  // 子请求**（仍在下方 1000 上限内），只是不再一条条等。并发是外层包装，**逐条语义不变**
+  // （预读 + version/lastModified 单调性都保留 —— `shouldUpdate` 在时间差 >5 分钟时要求
+  // `newLastModified >= oldLastModified`，去掉预读会让未来时间戳的记录伪冲突、删不掉）。
   //
   // 成本（子请求记账）：一条记录 ≈ 1 读 + 1 写 + 1 广播（删除时再 +2 的 R2 目录清理），
   // 100 条封顶 ≈ 500 次，留一倍余量（200 条正好顶到单次调用 1000 次的内部子请求上限、零余量）。
@@ -487,30 +517,29 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     }
 
     const { db } = stores(c);
-    let updated = 0;
-    const failed: string[] = [];
-    for (const rawItem of items) {
+    // 有界并发跑完每一条（保序），再聚合 —— 语义与串行完全一致（预读 + version/lastModified
+    // 单调性逐条保留），只是不再一条条等网络往返。
+    const outcomes = await mapLimit(items, BATCH_UPDATE_CONCURRENCY, async (rawItem) => {
       const entry = rawItem as { type?: unknown; hash?: unknown };
       const ids =
         typeof entry?.type === 'string' && typeof entry?.hash === 'string'
           ? parsePathIds(entry.type, entry.hash)
           : null;
-      if (!ids) {
-        failed.push('invalid');
-        continue;
-      }
+      if (!ids) return 'invalid';
       const existing = await db.getByTypeAndHash(ids.type!, ids.hash);
-      if (!existing) {
-        failed.push(`${entry.type}-${entry.hash}`);
-        continue;
-      }
+      if (!existing) return `${entry.type}-${entry.hash}`;
       const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, {
         ...fields,
         version: existing.version + 1,
         lastModified: new Date(Math.max(Date.now(), existing.lastModified + 1)).toISOString(),
       });
-      if (result.kind === 'updated') updated++;
-      else failed.push(`${entry.type}-${entry.hash}`);
+      return result.kind === 'updated' ? null : `${entry.type}-${entry.hash}`;
+    });
+    let updated = 0;
+    const failed: string[] = [];
+    for (const outcome of outcomes) {
+      if (outcome === null) updated++;
+      else failed.push(outcome);
     }
     return Response.json({ updated, failed: failed.length });
   });

@@ -9468,3 +9468,22 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 **§119 增补（同日，用户一句）**：批量条「取消选择」从 `onSelectAll(false)`（只清当前页）改为
 `onClearSelection()`（跨页全清）——与点空白的语义对齐。`onSelectAll(false)` 保留给表头全选框的取消
 （"本页都不选"，非全清）。实测：第 1 页选 1 行 + 第 2 页选 1 行 → 点「取消选择」→ 两页都清空。
+## 120. 批量删除治本：batch-update 有界并发 10（2026-09-21）
+
+**触发**：用户在 grilling 里定「实现治本就好」——生产实测 `syncc.141425.xyz` 上批量软删 100 条
+（带真实数据文件的 File 记录）**66.3s**（663ms/条，本地仅 13ms/条、0.7s/100）——瓶颈是服务端
+**逐条串行**处理（每条约 5 次子请求：2 D1 + 1 DO 广播 + 2 R2 清理）的往返延迟。
+
+**做法（src/ui/routes.ts）**：
+- 加 `mapLimit`（有界并发 helper，保序：results 按下标填）+ `BATCH_UPDATE_CONCURRENCY = 10`。
+- batch-update 循环从 `for await` 改为 `mapLimit(items, 10, …)`，逐条语义**完全不变**
+  （预读 + `version/lastModified` 单调性保留）。
+- **为什么保留预读（不删那条冗余 D1 读）**：`shouldUpdate` 在时间差 >5 分钟时要求
+  `newLastModified >= oldLastModified`（db.ts `shouldUpdate`）；去掉预读改用 `Date.now()`，
+  未来时间戳（客户端时钟偏快）的记录会伪冲突、删不掉。并发只摊延迟，不碰这个判定。
+- 并发不改**总量子请求**（100 条 ≈500 次，仍在 1000 上限内），只是不再一条条等。
+- `batch-meta` 走 `readBatchMeta`（单次查询），不在慢路径上，未动。
+- 前端进度条是**治标**，用户明确只要治本，未做。
+
+**验证**：`tsc` 0 错；全量 **22 套件 / 436 用例**全过（含既有 batch-update 用例：
+媒体类型 / too_many / 坏字段 / 删除）。生产复测见当轮（Q2=A，再建一批 100 条实测新耗时）。
