@@ -646,7 +646,11 @@ async function deleteItem(item) {
       store.set({ selection });
       list.updateSelection(selection);
       list.removeItem(item.key); // 立刻收掉这一行，而不是等下一次整页刷新
-      await refreshStats();
+      // **不等**统计：对话框的退场绝不能再拴一次网络往返 —— 那会把「行已经没了」与「框开始
+      // 淡出」隔开一整个往返（真机实测：统计接口慢 500ms 时，行 25ms 开始淡出、对话框 578ms
+      // 才 close ⇒ 读起来就是"明明已经关了，过一会儿才动画关闭"）。计数晚 ~200ms 落地没关系，
+      // 列表由对话框关闭后的 `refresh({silent:true})` 对账。**这条对下面每一处都成立。**
+      void refreshStats();
     },
   });
   if (!ok) return false;
@@ -734,7 +738,7 @@ async function runBatch({
     applyLocally(items);
     store.set({ selection: new Map() });
     list.updateSelection(new Map());
-    await refreshStats();
+    void refreshStats();
     return true;
   };
 
@@ -838,7 +842,7 @@ async function purgeItem(item) {
       store.set({ selection });
       list.updateSelection(selection);
       list.removeItem(item.key); // 立刻收行，不等下一次整页刷新
-      await refreshStats();
+      void refreshStats();
     },
   });
   if (!ok) return false;
@@ -873,7 +877,7 @@ async function batchPurge() {
       for (const item of chosen) list.removeItem(item.key);
       store.set({ selection: new Map() });
       list.updateSelection(new Map());
-      await refreshStats();
+      void refreshStats();
     },
   });
   await refresh({ silent: true });
@@ -962,7 +966,7 @@ async function emptyTrash() {
       await api.clear('trash');
       store.set({ selection: new Map() });
       list.updateSelection(new Map());
-      await refreshStats();
+      void refreshStats();
     },
   });
   if (!ok) return false;
@@ -982,7 +986,7 @@ async function clearAll() {
       const result = await api.clear('all');
       store.set({ selection: new Map() });
       list.updateSelection(new Map());
-      await refreshStats();
+      void refreshStats();
       toasts.info(`已清空 ${result.deleted} 条记录`);
     },
   });
