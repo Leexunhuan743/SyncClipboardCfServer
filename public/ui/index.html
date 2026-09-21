@@ -7,11 +7,11 @@
     <meta name="color-scheme" content="light dark" />
     <!-- 私有实例，不该被搜索引擎收录。这一页只是跳转，没有任何内容。 -->
     <meta name="robots" content="noindex, nofollow" />
-    <link rel="icon" href="/ui_v2/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/ui_shared/brand/favicon.svg" type="image/svg+xml" />
     <!-- 静态资源层会以 307 把 `/ui` 补成 `/ui/`，于是**这个文件**是 `/ui/` 的响应。
          它唯一的职责是把人送到**默认界面**（`/ui_v1/`，即 V1）。
 
-         2026-09-19 结构：三个挂载点各司其职 —— `/ui_v1/`（V1，默认界面）、
+         2026-09-19 结构：四个挂载点各司其职 —— `/ui_v1/`（V1，默认界面）、
          `/ui_v2/`（V2，开发测试版，本体在 `/ui_v2/app/`）、`/ui/`（**就是这一层壳**）。
          站点根（`GET /` 的浏览器分支）直接 302 到 `/ui_v1/`，与本页**必须指向同一个地方**，
          守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。

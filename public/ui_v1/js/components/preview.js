@@ -11,7 +11,7 @@
 // 4. 打开后焦点落在**主操作**上：键盘用户按 Enter 就该完成这屏最想做的事（复制/下载），
 //    而不是先 Tab 过一遍。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatAbsolute, formatSize, typeLabel, typeChipClass } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 // 数据文件地址只在 `api.dataUrl` 里定义（前缀 + `download=1` 的拼法）：

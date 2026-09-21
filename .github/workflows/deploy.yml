@@ -403,10 +403,10 @@ jobs:
         # ② 已认证 /api/version → 200 且 body 等于 wrangler.toml 的 VERSION：凭据可用 **且**这次部署真生效
         # ③ 已认证 /api/history/statistics → 200 JSON：D1 绑定与查询路径可用
         # ④ 已认证 /SyncClipboard.json → 200 JSON：Meta /「当前 profile」读路径可用
-        # ⑤ 界面可达性按 UI_ENABLED 断言：true → 三个挂载点（/ui_v1/ = 默认界面 V1、
+        # ⑤ 界面可达性按 UI_ENABLED 断言：true → 四个挂载点（/ui_v1/ = 默认界面 V1、
         #    /ui_v2/ 与 /ui_v2/app/ = 开发测试版 V2、/ui/ = 跳转壳）的页面与入口 JS
         #    各 200，且 Content-Type 对得上（守住 run_worker_first + ASSETS 转发链路 ——
-        #    它坏了界面就整片 404）；false → 三个挂载点都必须 404
+        #    它坏了界面就整片 404）；false → 四个挂载点都必须 404
         # 未配置 USERNAME/PASSWORD secrets 时 ②③④ 降级为 ::notice:: 跳过（本仓库按 README「方式 A」
         # 把凭据只放在 Cloudflare —— 那是预期状态，不该让部署变红）。
         env:
@@ -500,7 +500,7 @@ jobs:
           }
 
           if [ "${UI_ENABLED:-true}" = "false" ]; then
-            # 关掉界面时**三个挂载点都必须 404** —— 否则"关掉界面"会留下一个仍可访问的旧界面，
+            # 关掉界面时**四个挂载点都必须 404** —— 否则"关掉界面"会留下一个仍可访问的旧界面，
             # 那正是这个开关要消除的东西（与 test/ui-guard.test.ts 的同名断言对应）。
             for p in /ui/ /ui_v1/ /ui_v2/; do
               code=$(curl -s -o /dev/null -w '%{http_code}' "$base$p" || echo 000)
@@ -518,6 +518,7 @@ jobs:
             check_asset '/ui_v1/js/main.js' 'V1 模块（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
             check_asset '/ui_v2/app/' 'V2 开发测试版本体' 'text/html' || fail=1
             check_asset '/ui_v2/js/boot.js' 'V2 模块（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
+            check_asset '/ui_shared/brand/favicon.svg' '共用品牌图标（V1/V2 同一份）' 'image/svg+xml' || fail=1
           fi
 
           # ---- 无论冒烟是否通过，都把「地址 + 怎么用」写进 run summary：

@@ -160,8 +160,8 @@ app.use('/ui/api/*', async (c, next) => {
 
 // 全局 Basic Auth（所有端点，含 /api/version、/api/time —— 上游 [Authorize] 类级）
 app.use('*', async (c, next) => {
-  // 界面三面（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）是本站页面自己的面，鉴权由 src/ui/guard.ts 负责
-  // （会话 Cookie 或 Basic）。三个挂载点下的**静态资源**都已在外层 fetch 处理掉（开关开着时转
+  // 界面四面（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`、`/ui_shared/*`）是本站页面自己的面，鉴权由 src/ui/guard.ts 负责
+  // （会话 Cookie 或 Basic）。四个挂载点下的**静态资源**都已在外层 fetch 处理掉（开关开着时转
   // `ASSETS.fetch()` 直接返回、关着时 404），根本走不到这个中间件 —— 因此这条 `startsWith('/ui/')`
   // 跳过真正覆盖的就是 `/ui/api/*`（它的守卫在 src/ui/routes.ts 里逐条注册）。
   // 若走这里的 Basic-only 中间件，浏览器拿 Cookie 打进来的每个请求都会被 401。
@@ -240,11 +240,13 @@ export default {
       path === '/ui_v1' ||
       path.startsWith('/ui_v1/') ||
       path === '/ui_v2' ||
-      path.startsWith('/ui_v2/');
+      path.startsWith('/ui_v2/') ||
+      path === '/ui_shared' ||
+      path.startsWith('/ui_shared/');
 
     if (isUiAsset && !isUiApi) {
       // ⚠️ 这条分支只在请求**到达 Worker** 时才跑：`wrangler.toml` 的 run_worker_first 必须
-      // 覆盖全部三个前缀（含各自的 `/*`），否则边缘命中静态资源就直接返回、开关静默失效
+      // 覆盖全部四个前缀（含各自的 `/*`），否则边缘命中静态资源就直接返回、开关静默失效
       // （2026-09-18 曾在 V1 那一面踩到；守卫见 test/ui-guard.test.ts）。
       if (!isUiEnabled(env)) return uiDisabledResponse(false);
       // 先把请求转给静态资源；**未命中资源（404）时回落**到那张设计过的 404 页

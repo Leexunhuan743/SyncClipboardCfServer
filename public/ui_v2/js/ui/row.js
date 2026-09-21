@@ -6,7 +6,7 @@
 // V1 把「大小/创建/修改/访问」做成四个独立列，合计比正文还宽；V2 把它们收进第二行，
 // 正文因此拿回宽度。代价是行高从 56 涨到 64 —— 这个交换在截图里是明显的净收益。
 import { el, svg } from '../dom.js';
-import { iconPaths, iconForKind } from '../icons.js';
+import { iconPaths, iconForKind } from '../../../ui_shared/js/icons.js';
 import { typeLabel, formatSize, formatRelative, formatAbsolute, previewText, previewIsEmpty, truncateText } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 // 数据文件地址来自 `../paths.js` 的纯函数（**不是**在这里再拼一遍模板串，也不是去 import `api.js`）：

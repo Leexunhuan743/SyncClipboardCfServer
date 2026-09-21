@@ -60,6 +60,12 @@
 
 | D20 | **测试工具链不引入新依赖**（2026-09-21）：`@cloudflare/vitest-pool-workers` 与 Playwright 各做过一次**有判据的试点**，本轮都**不并入产品树**；同时把 5 份 `node:sqlite` D1 适配器收敛为 `test/support/d1-sqlite.ts` 一份 | 池（vitest 2 能用的最高版是 0.12.x）**自带的引擎是另一个构建**：同一个 LIKE 模式，dev server 报 `LIKE or GLOB pattern too complex: SQLITE_ERROR`，池里连 202 字节都通过 ⇒ 把黑盒套件搬进池，会把「真 D1 才复现」的那一族（§95 修的四处 500 全是这类）**测成绿的**。Playwright 能力上可行（同三个读数逐字节吻合、`Performance.enable` 后能取 §11.2 那四个指标），但替换 4112 行探针属"改门禁工具"级别的独立任务。读数、坑与触发条件见 `progress.md` §105.2–§105.7 | 已定（2026-09-21） |
 
+| D21 | **文档预览引入 `file-viewer`**（2026-09-21，方案层）：V1 增加「文档预览」这一档 —— 重格式（PDF/Office/压缩包/邮件/音视频）交给第三方只读渲染器，**外壳/判据/文案/状态机仍归我们**；产物以**预构建 vendor 入库**（不改 V1 的零构建定位）；判据只有一处（前端 `viewerRoute()`）；入口是**独立预览页**（列表页首屏不加载第三方资产）；**排除 CAD**（运行时 AGPL-3.0-only：网络条款 + 解读不确定 + 体积最大；取舍记录见该文档 §5 D-1） | 现状只有「文本/位图内联预览」与「其余只下载」两档，docx/xlsx/pdf/zip 只能下载后本机打开；而 221 扩展名/32 管线的成熟只读渲染器已存在且自有源码是 Apache-2.0。**代价照实登记**：预览页需放宽 CSP（`style-src 'unsafe-inline'`、`wasm-unsafe-eval`、`worker-src`、`img-src blob:`、`media-src`）⇒ 等于在同源下执行第三方解析器处理不可信文件，这一步**执行前需单独授权**（备选是独立 hostname 隔离）；`web-full` 实测 236 MB / 2961 文件，故必须窄装配。**轮 4 复审修订**（同行日期文档 §10 末段）：① CSP 放宽的**出口**不是 `_headers` 的按页规则
+（同名字段逗号合并 ⇒ 交集 ⇒ 无效），而是**由 Worker 出预览页的响应**；② `web-full` ＝ `preset-all`，其依赖链含 **AGPL-3.0-only** 的 CAD 运行时
+⇒ 连"用它来量体积"都不该做，改为**离线构建标准档**（`@file-viewer/web` 只有壳，renderer 必须由打包器装配） | **已定**（2026-09-21 含 CSP 放宽授权：仅预览页；实现进行中）—— 机制修正见 [`ui-document-preview.md`](ui-document-preview.md) §5 D-8 |
+
+| D22 | **共用层 `public/ui_shared/`**（2026-09-21）：两版之间的共享面**收敛为唯一一层** —— 只放"不随某一版演进"的东西（品牌图标；无版本耦合的纯数据模块如 `icons.js`；将来放双语/翻译资源）。V1 的模块只允许逃到这一层，`/ui_v2/` 依旧禁引；挂 `/ui_shared/`、与其它三个挂载点同受 `UI_ENABLED` 管 | 此前 `favicon.svg`/`favicon-32.png`/`apple-touch-icon.png` 两版各存一份（**逐字节相同**）、`icons.js` 两份（并集关系、仅 `trash` 几何不同）—— 纯重复。**代价照实登记**：红线由"V1 完全自包含"放宽为"V1 只依赖自己 + 共用层"，`ui-guard` 的两条判据与四处文档同步改；**没有**把两版"实现有意不同"的模块（`format`/`dom`/`filters`/`api`/`messages`…）搬进去 —— 那会把"改一版"变成"两版一起变" | 已定（2026-09-21） |
+
 ## 3. 架构总览
 
 ```mermaid
@@ -121,16 +127,17 @@ SyncClipboardCfServer/
 │   ├── design.md               # 本文件
 │   ├── protocol.md             # 协议契约（精确到端点与字段）
 │   ├── ui.md                   # Web 历史界面：来源、边界、模块、API、设计系统
+│   ├── ui-document-preview.md  # 文档预览集成（File Viewer）：决策、方案、CSP 放宽清单与过程日志
 │   └── progress.md             # 开发进度追踪
 ├── public/                     # 静态资源（由 Cloudflare 托管，run_worker_first 优先进 Worker 以支持 UI_ENABLED 开关）
 │   ├── robots.txt              # 必须放站点根（爬虫只读根路径）
-│   ├── _headers                # 响应头（边缘直出）：CSP/安全头 + 三个挂载点各自的 js/css no-cache、图标与 manifest 长缓存
+│   ├── _headers                # 响应头（边缘直出）：CSP/安全头 + 四个挂载点各自的 js/css no-cache、图标与 manifest 长缓存
 │   ├── ui_v1/                  # 默认界面 V1（2026-09-18 起接手默认入口 /ui_v1/；详见其 README.md）
 │   │   ├── index.html / login.html / manifest.webmanifest
-│   │   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
 │   │   ├── css/                # tokens / base / layout / components / motion / auth
-│   │   └── js/                 # api / clipboard / dom / filters / format / icons / latest / login / main / messages / next-target / signalr / store / theme-init
+│   │   └── js/                 # api / clipboard / dom / filters / format / latest / login / main / messages / next-target / signalr / store / theme-init（图标表在共用层）
 │   │       └── components/     # confirm / header / info / list / pagination / preview / row-content / stats / toast / toolbar
+│   ├── ui_shared/              # **V1/V2 唯一的共享面**（挂 /ui_shared/，同受 UI_ENABLED）：brand/（品牌图标）+ js/icons.js（共用图标表）
 │   ├── ui_v2/                  # 开发测试版 V2（挂载 /ui_v2/，应用本体在 /ui_v2/app/；详见 docs/ui-v2-design.md）
 │   │   ├── app/                # 应用本体（index.html / login.html）
 │   │   ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
@@ -143,7 +150,7 @@ SyncClipboardCfServer/
 │   ├── rateLimit.ts            # 认证失败限速：isolate 内存快路径 + DO 权威计数（F7）
 │   ├── requestLimits.ts        # 请求体上限与 loopback 判定（F8/HSTS 与 F9 共用）
 │   ├── pathCase.ts             # 协议路径**字面段**大小写归一（对齐 ASP.NET 路由；2026-09-15 A/B 后补救）
-│   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时三个挂载点（/ui*、/ui_v1*、/ui_v2*）全 404、根路径不跳转
+│   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时四个挂载点（/ui*、/ui_v1*、/ui_v2*、/ui_shared*）全 404、根路径不跳转
 │   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
 │   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间与体积口径转换
 │   ├── hash.ts                 # Text / File / Image / Group 哈希（协议级精确复刻）
@@ -165,7 +172,7 @@ SyncClipboardCfServer/
 │   │   ├── query.ts            # 列表查询层：参数解析、白名单排序、截断、变更信号
 │   │   ├── routes.ts           # /ui/api/* 路由装配
 │   │   ├── maintenance.ts      # 后台维护与自检：完整性自检 GET /ui/api/integrity 与在线保留策略 PUT /ui/api/settings
-│   │   └── notFound.ts         # 三个界面前缀（/ui/*、/ui_v1/*、/ui_v2/*）共用的 404 页
+│   │   └── notFound.ts         # 四个界面前缀（/ui/*、/ui_v1/*、/ui_v2/*、/ui_shared/*）共用的 404 页
 │   └── durable/
 │       ├── SyncClipboardHub.ts # Durable Object：WS/SSE/长轮询三传输 + 广播 + 心跳
 │       └── signalr.ts          # SignalR JSON 协议消息编解码
@@ -476,7 +483,7 @@ npm run deploy
 # 6.（可选）自定义域名：wrangler.toml 增加 routes 或 Cloudflare 控制台绑定
 ```
 
-部署会一并上传 `public/**`（`[assets]`）：三个界面前缀（`/ui`、`/ui_v1`、`/ui_v2` 及各自的 `/*`）的请求**先进 Worker**（由 `UI_ENABLED` 决定"转回静态资源"还是 404）；其余路径由边缘先行处理 ——
+部署会一并上传 `public/**`（`[assets]`）：四个界面前缀（`/ui`、`/ui_v1`、`/ui_v2`、`/ui_shared` 及各自的 `/*`）的请求**先进 Worker**（由 `UI_ENABLED` 决定"转回静态资源"还是 404）；其余路径由边缘先行处理 ——
 命中静态资源的直接返回，未命中的（含全部协议端点）回落给 Worker。因此**部署必须在仓库根执行**，且 `public/` 不能缺失——
 少了它 wrangler 会直接报 `assets.directory does not exist`。
 

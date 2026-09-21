@@ -13,7 +13,7 @@
 // `position: fixed` 的菜单，外加"**一滚就关**"。后者不只是修 bug，它本身就是下拉菜单的通行行为：
 // 菜单是"此刻这一行的操作"，行的位置变了，这个前提就不成立了。
 import { el, svg, clear } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 
 const MARGIN = 8;
 const GAP = 6;

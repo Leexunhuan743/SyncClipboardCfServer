@@ -7,7 +7,7 @@
 // V1 的教训（docs/ui.md §3.3 第 2 条）：原地反馈优先于提示条。一个"已复制"的角标比右下角
 // 飘过的一句话更容易被看见 —— 因为用户的眼睛正停在刚点的那个按钮上。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 
 const MAX_TOASTS = 4;
 /** 原地成功态（对勾）显示多久。 */

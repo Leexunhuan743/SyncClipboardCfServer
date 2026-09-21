@@ -9,7 +9,7 @@
 // 这里收的不只是行数，而是**判据**：图标按钮必须有一个给人读的名字，
 // 带态的要写出态（`aria-pressed`），禁用的要说明原因（`title`）。
 import { el, svg } from '../dom.js';
-import { iconPaths, iconSupportsFill } from '../icons.js';
+import { iconPaths, iconSupportsFill } from '../../../ui_shared/js/icons.js';
 
 /**
  * 图标按钮（`.icon-btn`）。

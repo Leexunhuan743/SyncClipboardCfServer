@@ -5,7 +5,7 @@
 // 「这台服务器现在怎么样」本来是同一个问题；把它们摊到另一个设置页，只会让单用户实例的
 // 运维面多出几处必须用命令行才能到达的地方。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { api } from '../api.js';
 import { formatAbsolute } from '../format.js';
 import { setPending, flashSuccess, isPending } from './toast.js';

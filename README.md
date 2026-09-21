@@ -336,7 +336,7 @@ src/
 ├── routes/             WebDAV 与官方 history 相关业务路由
 ├── ui/                 Web 界面服务端接口与会话管理
 └── durable/            SignalR Hub（WebSocket 连接维持、心跳与广播）
-public/                 静态资源：robots.txt + _headers + ui_v1/（默认界面 V1）+ ui_v2/（开发测试版 V2）+ ui/（/ui/ 的跳转壳）
+public/                 静态资源：robots.txt + _headers + ui_v1/（默认界面 V1）+ ui_v2/（开发测试版 V2）+ ui_shared/（两版共用的品牌图标与图标表）+ ui/（/ui/ 的跳转壳）
 schema.sql              D1 数据库建表与初始元数据语句
 wrangler.toml           Cloudflare Worker 配置文件与绑定声明
 test/                   测试套件（集成测试、协议回归测试、文档口径测试）

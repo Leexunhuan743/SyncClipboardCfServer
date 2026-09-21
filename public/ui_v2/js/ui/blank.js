@@ -6,7 +6,7 @@
 //   · `empty`  —— 一条记录都没有（还没配客户端）→ 出口是「怎么配置客户端」
 // 三者共用一句话会让至少两种语境读起来是错的。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 
 const COPY = {
   filter: {

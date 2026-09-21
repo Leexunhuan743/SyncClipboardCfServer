@@ -7,7 +7,7 @@
 // 依赖事件会让"事件不来即永不结算"——实测 headless Chromium 上 `dialog.close()` 之后
 // `close` 事件就不派发，调用方 `await` 之后的收尾（提示、刷新）整段丢失。
 import { el, svg, clear } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { labelButton } from './button.js';
 import { setPending } from './toast.js';
 

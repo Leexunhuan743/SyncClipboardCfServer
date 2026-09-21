@@ -4,7 +4,7 @@
 // 这里只回答「给定一条记录，它在行内长什么样；按下开关，状态怎么就地更新」。
 // 成员都是呈现层：入参是记录或按钮，不读列表的对账状态。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatSize } from '../format.js';
 import { api } from '../api.js';
 import { itemIsImage } from '../clipboard.js';

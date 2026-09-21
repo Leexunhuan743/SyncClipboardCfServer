@@ -36,6 +36,7 @@
 | V2 增删 JS 模块 | `public/ui_v2/app/index.html` 与 `login.html` 的 `modulepreload` 清单（**少一项留下依赖瀑布、多一项白拉一个文件，两者都不会报错**）；上面的资源数与目录树 |
 | **增删界面挂载点**（`public/` 下新增/改名 `ui*` 目录） | 三份事实**必须一起改**：`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 的路径规则；`test/ui-guard.test.ts` 里那组**挂载点判据**（`run_worker_first` ×2 + `isUiAsset` ×1 + `_headers` ×2）会红 —— 挂载点集合一律从 `public/` **动态发现**（不写死清单），见 §3 |
 | 增删测试套件 `test/*.test.ts` | 套件数出现在 `README.md`、`AGENTS.md`、`docs/design.md`、`docs/ui.md`、`.github/workflows/deploy.yml`；且 `docs/design.md` 的「**套件清单**」段要逐个列出套件名（名单与数字是两条独立断言） |
+| 改 `public/ui_shared/**`（品牌图标、共用模块） | `docs/ui.md` §3.4 的规则表与 §3 的资源数/分表（`test/docs.test.ts` 会红）；`docs/design.md` §4 目录树；`docs/ui-v2-design.md` §7；`README.md` 的 `public/` 行；`test/ui-guard.test.ts` 的挂载点判据（`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 三处必须一起含 `ui_shared`）与 `_headers` 的 no-cache 规则 |
 | 改 `public/ui_v1/js/messages.js` 或 `public/ui_v2/js/messages.js` | **两份从第一条 `import` 起必须逐字一致**（`ui-guard` 的对等守卫会红，见 §3；文件头**有意不同** —— V1 那份解释「为什么自己有一份」，别去"对齐"掉）；改 V1 时同时看 `docs/ui.md` §3.2 |
 | 要**截断**或**统计用户看到的字符数**（提示条「已复制 N 个字符」、删除确认里的正文开头、行内 `aria-label`） | 用各自 `format.js` 的 `truncateText()` / `charCount()`，**不要写 `slice(0, n)` / `.length`** —— 按 UTF-16 码元切会切出半个代理对（渲染成 `�`），`.length` 把 10 个 emoji 报成 20。两版各有一份同名实现（**不共享**），改其一要同时改另一版；口径与例外见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3 |
 | 改 V1 结果区的**形态**（骨架 / 表格 / 空态）或**行高** | `public/ui_v1/js/components/list.js` 的 `setView()` 是这三种形态的**唯一开关**（别处不要再直接写 `table.hidden` / `empty.hidden`）；`.skeleton__row` 的高度必须等于真实行高 —— **两档各一条等式**：表格档 `8+8+1+30 = 47px`（推导在 `components.css` 的 `.table td` 注释里）、卡片档（≤860px）按 `tr.row` 的盒模型推出 `103px`／粗指针 `117px`（推导在 `components.css` 文件末尾那一块）；`public/ui_v1/index.html` 里那份静态骨架是**挂载前**的占位，与它同源；`docs/ui.md` §9.3 的 loading 行。**补/改一个"未知"档时要过一遍该组件的每一处出口**（`update` / `showError` / `removeItem` …）—— 2026-09-18 实测：只给 `update()` 加了骨架档，`showError()` 那条出口就把「正在加载…」和「加载失败」同时留在了屏幕上；同一个哨兵值（`total === 0`）还会在**别的组件**里各写一份（分页、统计条各有自己的判据，见 `docs/AUDIT-missing-states.md`） |
@@ -109,7 +110,11 @@
 > （路由在 `src/ui/routes.ts`）。**别把接口前缀跟着改名** —— 2026-09-15 正是这样翻过一次车。
 
 - **不要删任何一版**，也不要为了"收敛"做连带改动。
-- **不要跨版抽公共模块**：V1 必须自包含（`ui-guard` 禁止它引用 `../../ui_v2/`，产品面不依赖开发版）。
+- **跨版共享只有一个面：`public/ui_shared/`**（2026-09-21 起）。规矩：只放**不随某一版演进**的东西
+  （品牌图标、无版本耦合的纯数据模块如 `icons.js`；将来放双语/翻译资源）。`ui-guard` 的判据是
+  "V1 的模块只允许逃到 `../ui_shared/`，逃进 `/ui_v2/` 一律红，且必须确实有引用（防空转）"。
+  **两版"实现有意不同"的模块不许搬进去**（`format`/`dom`/`filters`/`api`/`messages` …）——
+  搬进去就把"改一版"变成"两版一起变"，那正是这条红线要防的；判据与例子见 `docs/ui.md` §3.4。
 - 两版同名的 `messages.js` 是**故意的两份**，由对等守卫钉住**正文**（从第一条 `import` 起）逐字一致
   —— 改文案两版都要改；文件头**有意不同**（V1 那份解释「为什么自己有一份」）。
 - 产品投入优先给 V1；V2 只做零成本清理（例如"注释与事实相反"这类）。

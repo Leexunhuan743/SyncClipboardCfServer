@@ -310,9 +310,12 @@ public/
 ├── _headers                   静态资源的 CSP/安全头 + 缓存策略（由静态资源层施加：`/ui*` 的请求虽先进 Worker，资源仍由 `ASSETS` 出网，规则本身不由 Worker 执行）
 ├── robots.txt                 站点根（爬虫只读根路径）
 │                              ↑ 根路径**不放** index.html —— 它要留给 PROPFIND，见 wrangler.toml 的注释
+├── ui_shared/                 **V1/V2 唯一的共享面**（2026-09-21 新增；挂 `/ui_shared/`，同受 UI_ENABLED 管）
+│   ├── brand/                 品牌图标：favicon.svg / favicon-32.png / apple-touch-icon.png（两版此前各存一份）
+│   └── js/icons.js            共用图标表（两版并集：V2 的 32 键 + V1 独有的 push / connecting）
+│                              ↑ 允许放什么、判据与守卫见 docs/ui.md §3.4 —— 它不随某一版演进
 ├── ui_v2/                     V2（**开发测试版**；默认界面是 V1 `ui_v1/`，见 docs/ui.md §3）
-│   ├── manifest.webmanifest   PWA manifest（`start_url` = `/ui_v2/app/`）
-│   ├── favicon.svg / favicon-32.png / apple-touch-icon.png
+│   ├── manifest.webmanifest   PWA manifest（`start_url` = `/ui_v2/app/`；图标指向共用层）
 │   ├── app/                   两页（`/ui_v2/app/` 才是应用本体）
 │   │   ├── index.html         列表页
 │   │   └── login.html         登录页
@@ -341,8 +344,8 @@ public/
 │       ├── push.js            原生 SignalR 推送通道（票据换 WebSocket）
 │       ├── clipboard.js       剪贴板写入（文本/图片，含降级与可判别结果）
 │       ├── dom.js             DOM 工具（**不提供插入 HTML 的途径**）
+│       ├── (icons.js)          已移入共用层 `public/ui_shared/js/icons.js`（2026-09-21；两版一份）
 │       ├── focus.js           **焦点保持**：DOM 就地重建时把键盘位置搬回来（见 §17.3）
-│       ├── icons.js           图标路径表（常量，语义命名）
 │       ├── spark.js           趋势图（内联 SVG，纯函数）
 │       ├── theme.js           主题与密度的运行期读写
 │       └── ui/                纯呈现组件（**不 import `api.js`**，网络只在 boot.js）

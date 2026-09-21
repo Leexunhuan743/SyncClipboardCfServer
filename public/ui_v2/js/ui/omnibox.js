@@ -3,7 +3,7 @@
 // V2 相对 V1 的位置改动：V1 把搜索压成 200px 挤在工具栏里，而「找回来」是这个界面
 // 最高频的动作（场景 S1/S2）。把一个高频动作的目标做成最窄的那个，是使用成本最直接的来源。
 import { el, svg, debounce } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 
 /**
  * @param {{ onSearch: (value: string) => void }} handlers

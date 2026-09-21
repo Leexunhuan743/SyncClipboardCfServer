@@ -10,9 +10,9 @@
 # 2026-09-19 的 `ui_old` → `ui_v1` / `ui` → `ui_v2` 改名就漏改过它一次 —— 规则全留在
 # `/ui_old/*`（目录已不存在），于是两版前端**同时**退回平台默认的 `max-age=0`，
 # 而 `docs/frontend-checklist.md` 还把这件事记成"已完成"。这条漂移能成立，是因为当时
-# **没有任何守卫读这个文件**（旧结构的三个挂载点与这个文件的路径列表是两份独立的事实）。
+# **没有任何守卫读这个文件**（旧结构的挂载点与这个文件的路径列表是两份独立的事实）。
 # 现在由 `test/ui-guard.test.ts` 的两条结构判据盯着：规则路径必须真实存在、
-# 三个挂载点的 js/css 必须各有一条禁令。见 `docs/progress.md` §90。
+# 四个挂载点（含 2026-09-21 起的 `ui_shared`）的 js/css 必须各有一条禁令。见 `docs/progress.md` §90。
 
 /*
   Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss: ws:; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
@@ -24,7 +24,7 @@
   Cross-Origin-Resource-Policy: same-origin
 
 # ── 无指纹的 JS/CSS 必须重验证；引入构建指纹后才可改成长缓存 ──
-# `_headers` 不支持一条规则覆盖多个前缀，故三个挂载点各写一份。
+# `_headers` 不支持一条规则覆盖多个前缀，故四个挂载点各写一份。
 # `/ui/` 现在只剩一层跳转壳，但它的 `js/redirect-hash.js` 同样是代码资源 ⇒ 保留 `/ui/js/*`。
 /ui/js/*
   Cache-Control: public, no-cache, must-revalidate
@@ -41,28 +41,19 @@
 /ui_v2/css/*
   Cache-Control: public, no-cache, must-revalidate
 
-# ── 图标与 manifest：改动极少，可以长一些 ──
+# 共用层里的 JS 与我们自己的代码资源同理：无指纹 ⇒ 每次回源验证
+/ui_shared/js/*
+  Cache-Control: public, no-cache, must-revalidate
+
+# ── 品牌图标（**V1/V2 共用一份**，2026-09-21 起放在 `ui_shared/brand/`）与各版 manifest ──
+# 图标改动极少 ⇒ 长缓存；它们**没有**内容指纹，但那三张图的文件名与内容在"换品牌"这件事上是一起变的，
+# 换图时改的是文件本身、不是 URL —— 真要强刷，`?v=` 由页面侧负责（见 `docs/ui.md` §3.4）。
 # 注意 `/ui/` 下**没有**这些文件（跳转壳不含图标），故不给它写图标规则。
-/ui_v1/favicon.svg
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
-
-/ui_v1/favicon-32.png
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
-
-/ui_v1/apple-touch-icon.png
+/ui_shared/brand/*
   Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
 /ui_v1/manifest.webmanifest
   Cache-Control: public, max-age=3600
-
-/ui_v2/favicon.svg
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
-
-/ui_v2/favicon-32.png
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
-
-/ui_v2/apple-touch-icon.png
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
 /ui_v2/manifest.webmanifest
   Cache-Control: public, max-age=3600

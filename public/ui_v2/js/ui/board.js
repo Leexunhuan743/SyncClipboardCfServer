@@ -11,7 +11,7 @@
 //      数据表上的交叉淡入 —— 而列表本来就是一帧落地，没有"换面"需要掩饰。
 //      `test/ui-contract.test.ts` 有一条守卫盯着它不被重新引入。
 import { el, svg, clear, replayAnimation } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { dayGroup } from '../format.js';
 import { captureFocus, restoreFocus, describeFocusable } from '../focus.js';
 import { SORT_FIELDS, PAGE_SIZES, emptyStateKind } from '../filters.js';

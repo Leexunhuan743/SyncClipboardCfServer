@@ -4,7 +4,7 @@
 // "刚在手机上复制了，电脑上有没有过来"是这个界面第二高频的问题，而它此前**在任何地方都看不见** ——
 // 用户只能靠"刷新一下试试"来回答。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatAgo } from '../format.js';
 import { iconButton } from './button.js';
 

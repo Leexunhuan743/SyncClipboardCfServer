@@ -9040,7 +9040,7 @@ run `35556926009`，2m14s，success）：
 **触发（用户原话）**：「现在阅读一下 `docs/project-analysis.md` 对照你的报告，看看有什么需要补充或者则完善的地方」，
 随后「开始」（= 按对照结论订正）。范围只有这一份文件，**无代码/配置改动**。
 
-### 110.1 处置结果（21 处替换；`git diff --stat` = 104 行变动，+60 / −44）
+### 111.1 处置结果（21 处替换；`git diff --stat` = 104 行变动，+60 / −44）
 
 | # | 原文档说法 | 事实（依据） |
 |---|---|---|
@@ -9066,7 +9066,7 @@ run `35556926009`，2m14s，success）：
 | 20 | §12.2「Multipart **原生流式**扫描（避免 Buffer 复制）」 | `POST /api/history` 是 `await c.req.arrayBuffer()` **整包读入** + 手写字节扫描；流式的只有 `PUT /file/{name}`（`src/routes/history.ts` 的 `parseFormBody`、`src/multipart.ts`） |
 | 21 | 文首无核对基线 | 加一行「核对基线（2026-09-21 / HEAD `cecec3d`）+ `文件:行号` 引用以文件内容为准」 |
 
-### 110.2 校验
+### 111.2 校验
 
 - `docs.test.ts`：**7 passed**。该文件**不在**它的 `CURRENT_STATE_FILES`（5 份现状文档）里 ⇒ 本次改动不触碰任何被守卫的数字；
   跑它是为了证明「守卫口径没被我碰坏」。
@@ -9076,7 +9076,7 @@ run `35556926009`，2m14s，success）：
   `eslint 不覆盖后端` / `FileAndGroup=10` / `核对基线` / `35556677091` 各出现恰好 1 次。
 - **未跑**：22 个套件全量（需 dev server 8787）、`tsc`、`eslint` —— 本次未改 `src/**`、`test/**`、`public/**`、配置或 CI。
 
-### 110.3 结构性成因（它为什么能累积 21 处而门禁一直绿）
+### 111.3 结构性成因（它为什么能累积 21 处而门禁一直绿）
 
 `docs/project-analysis.md` 既不在 `docs.test.ts` 的 `CURRENT_STATE_FILES`，也不在 `ui-guard` 的任何扫描面上
 ⇒ 它的事实漂移**没有机械判据**，只能靠人读。
@@ -9085,3 +9085,269 @@ run `35556926009`，2m14s，success）：
 **其余 20 处全是描述性断言**：端点清单、中间件顺序、返回体、Meta 键名、守卫归属、流式与否。
 ⇒ 对「叙述稿」的抽核不能只抽数字：要么逐句对代码核，要么把它降级为**不作事实断言的导读**。
 本次取前者（逐句核 + 文首标核对基线），并保留这条记录作为下次复核的入口。
+## 112. 文档预览集成（File Viewer）：方案确立与过程文档（2026-09-21）
+
+**触发（用户原话，两步）**：① 「我们只考虑 ui v1，可不可以集成 `file-viewer` 作为预览方案，注意最好是深度集成」；
+② 「`docs` 文档化，并且在随着 coding 过程中文档中记录决定、过程以及相关事宜」。
+
+**本轮做的事**：只做勘察 + 文档，**未动任何代码/配置**。
+
+### 112.1 勘察结论（两仓本地核对，逐条有出处）
+
+| 关键事实 | 数值/结论 | 出处 |
+|---|---|---|
+| 许可 | 自有源码 **Apache-2.0**；**CAD 运行时（`@flyfish-dev/cad-viewer`、`dwf-viewer`）是 AGPL-3.0-only** | `file-viewer/README.md` 末段、`LICENSE` |
+| 形态 | pnpm workspace + `patchedDependencies`（`pdfjs-dist@5.4.624`、`illustrator-pgf@0.1.0`）⇒ 源码树**不能零构建引用** | `file-viewer/pnpm-workspace.yaml` |
+| 运行期资产 | 必须随页面提供 **Worker / WASM / 字体 / vendor 资产**（默认 `<base>/file-viewer/`） | `README.md`「Runtime assets」、`docs/guide/distribution.md` |
+| 体积阶梯（`npm view … dist.unpackedSize`，本地实测 2026-09-21） | `core` 1.23 MB｜`web` 0.86 MB/18｜`preset-lite` 15 KB｜`renderer-media` 0.23 MB｜`renderer-archive` 0.11 MB｜`renderer-word` 0.11 MB｜`renderer-pptx` 49 KB｜`renderer-spreadsheet` 1.20 MB｜`renderer-pdf` **6.72 MB/235 文件**｜**`web-full`（preset-all）236 MB / 2961 文件** | 本地 |
+| CSP 依赖（决定性） | ShadowRoot 内用 `createElement('style')` 注入样式 ⇒ 需 `style-src 'unsafe-inline'`；Worker/WASM ⇒ 需 `worker-src` + `wasm-unsafe-eval`；DOCX 等用会话级 `blob:` 图片 ⇒ 需 `img-src blob:`；音视频 ⇒ 需 `media-src`（否则被 `default-src 'none'` 挡死） | `packages/components/vue3/src/package/components/FileViewer/ShadowFileViewer.vue:124,181`、`packages/components/*/README.md:210,236-237`、`docs/guide/usage.md:215,612` |
+| 我们侧现状 | `_headers` 是**一条 `/*` 规则**（`default-src 'none'` + `script-src/style-src 'self'`，无 worker/media/blob）；V1 零构建自包含；资源数 88 被 `docs.test.ts` 盯着；同源存储型 XSS 链修过（附件强制下载 + CSP 沙箱） | `public/_headers`、`src/contentTypes.ts`、`test/docs.test.ts` |
+| 利好 | 数据端点同源且支持 `Range`；新资源都在 `/ui_v1/` 下 ⇒ **挂载点三处事实不用改**；viewer 用 `fetch()` 取字节时 `attachment` 不影响它 ⇒ 不必动 `contentTypes.ts` 的加固 | `src/ui/routes.ts`、`wrangler.toml`、`src/index.ts` |
+
+### 112.2 产出（4 个文件，全是文档）
+
+1. **新增 `docs/ui-document-preview.md`** —— 这次改动的**唯一过程 + 决策记录**：目标/非目标、现状缺口、事实表、
+   术语收紧（内联预览 / 文档预览 / 只下载 / 外壳 / 渲染器矩阵 / vendor 产物 / 「深度集成」＝外壳集成）、
+   决策 **D-1…D-6**、实施阶段 0–6（每阶段带验收）、**§7 需授权的降安全清单**、§8 同步清单、§9 追加式过程日志。
+2. **`docs/design.md`** —— §4 目录树加一行；ADR 表加 **D21**（状态：方案已定，实现待授权）。
+3. **`docs/ui.md`** —— 顶部加指针（重格式目前只能下载；新档能力的方案见新文档；声明本文其余部分描述**当前**实现）。
+4. **本节**（过程登记）。
+
+### 112.3 六个决策（方案层，按"推荐"采纳；用户可改）
+
+| # | 决策 | 要点 |
+|---|---|---|
+| D-1 | 覆盖范围 | 文档类（PDF/Office/文本/压缩包/邮件）+ 媒体；**排除 CAD（AGPL）与 specialist 渲染器** |
+| D-2 | 「深度集成」定义 | **外壳集成**：我们拥有入口/判据/文案/状态机，第三方只拥有内容渲染区；接口面只有 `url`/`filename`/`theme`/`styleIsolation`/高度/事件 |
+| D-3 | 产物交付 | **预构建 vendor 入库** + 三条守卫（文件清单逐条一致、无 `/ui_v2/` 引用、体积上限）；否决 CI 构建 |
+| D-4 | 判据权威源 | **前端唯一判据** `viewerRoute(item) → inline / document / download`；服务端 `contentTypes.ts` 不动；库的矩阵只作能力查询 |
+| D-5 | 入口形态 | **混合**：文本/位图仍走现有对话框；`document` 跳独立页 `/ui_v1/view.html#<Type>-<hash>`（首屏零成本 + 失败隔离 + CSP 可按页放宽） |
+| D-6 | 降级/验证/登记 | 三层降级（缺组件 / 缺资产 / 脚本失败 ⇒ 一律回到"只下载"卡片，**永不空白**）；**新写**探针（CSP 违例 0、首屏字节、真实格式渲染成功）；ADR D21 + `ui.md` 一节 + 本节 |
+
+### 112.4 未做 / 待拍板
+
+1. **§7 的 CSP 放宽需明确授权**（降安全动作）：预览页需放宽 5 项（`style-src 'unsafe-inline'`、`wasm-unsafe-eval`、
+   `worker-src`、`img-src blob:`、`media-src`），等价于"**在同源下执行第三方解析器处理不可信文件**"，而该来源持有会话 Cookie 与
+   `/ui/api/*`；备选是独立 hostname 隔离（成本更高，且库自身不推荐 iframe 路径）。
+2. **阶段 0（体积 / CSP 违例实测）**需要动 `file-viewer` 工作区（`pnpm install` 会写 `node_modules`）—— 等一句许可。
+3. 未做任何 `src/**`、`public/**`、`wrangler.toml`、`_headers`、CI 改动；本次集成**尚未开始编码**。
+
+### 112.5 验证
+
+- `docs.test.ts` 复跑：见本轮收尾（新增文档只影响"代码规模统计"的打印值，那不是断言；被守卫的 5 份现状文档里的数字未动）。
+- 编辑纪律：每处改动先 `count(old) == 1` 断言再替换；发现进度编号冲突（用户并行新增了 §110）后**只改自己那一节**的子标题，
+  自己的新节顺延为 §112。
+
+### 112.6 轮 2（同日）：交付严格度
+
+- 用户指示：「有什么需要我决定的解释后提问」+「我们这个是开发版，不用考虑什么兼容等等问题」。
+- 落实：新文档 §1 加"不承担兼容负担"（旧浏览器降级、双跑/渐进迁移、与 V2 对齐、为"保持旧行为"写兼容层
+  与预留开关 —— 一律不做）；**许可（CAD 的 AGPL）与安全（CSP 放宽）两类不因"开发版"免掉**。
+- 同时**校准了一处我自己的过强措辞**：AGPL 的 CAD 运行时是独立分发的包、与我们的代码属聚合关系，
+  按主流解读不要求把本仓库改成 AGPL，真实约束是网络条款 + 解读不确定 + 体积最大（详见
+  `docs/ui-document-preview.md` §5 D-1 的"反方与精确表述"）。
+- 待用户拍板四项：§7 CSP 授权、覆盖范围、产物交付方式、入口形态。未动代码。
+## 113. 文档预览集成：用户接受全部推荐 + 文档审计补齐 12 处落地细节（2026-09-21）
+
+**触发**：用户「接受你的意见 文档化 然后确定一下文档都考虑到 都合理吗」。
+
+### 113.1 已授权的决策（全部落在 `docs/ui-document-preview.md`，ADR 摘要在 `design.md` D21）
+
+| # | 决策 | 用户确认的选项 |
+|---|---|---|
+| Q1 | CSP 放宽（降安全，须授权） | **(a) 放宽，且只放宽预览页**（`_headers` 新增一条只对 `/ui_v1/view.html` 生效的策略；列表页保持 `default-src 'none'`） |
+| Q2 | 覆盖范围 | **(a)** PDF + Office（含旧二进制）+ 文本/MD/代码 + 压缩包 + 邮件 + 音视频（`preset-standard` 那一档，含 OFD）；**不做 CAD**（AGPL + 体积） |
+| Q3 | 产物交付 | **(a)** 预构建 vendor 入库 + **精简守卫**（先记"版本 + 总体积"；逐条 sha256 留待稳定后升） |
+| Q4 | 入口形态 | **(a)** 独立预览页 `/ui_v1/view.html#<Type>-<hash>`；列表页首屏不加载第三方资产 |
+| Q5 | 阶段 0 实测许可 | **(a)+(b)** `npm pack @file-viewer/web-full` 到**临时目录**实测（不动 `file-viewer` 工作区），并与**阶段 1**（`viewerRoute()` 判据）**并行开工** |
+
+### 113.2 文档审计：覆盖情况与补齐
+
+**覆盖**（逐项核对本文与计划文档）：目标/非目标、术语收紧、事实表（含实测体积阶梯与 CSP 依赖）、决策与依据、
+实施阶段与验收、授权与后果、同步清单（AGENTS §1 表的相关行）、过程日志 —— 齐。
+**补齐 12 处落地细节**（计划文档新增 §9，G1–G12）：鉴权与未登录跳转（G1）、挂载点字面量只能用 `PAGE_BASE`（G2）、
+**新文案放哪（G3，待用户拍板）**、CSP 与缓存分工（G4）、深链接语义变更（G5）、预览页只给复制/下载、不出现写操作（G6）、
+主题与首帧（G7）、四态状态机与 `role="status"`（G8）、`[viewer]` 日志前缀（G9）、守卫强度分级（G10）、
+CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）。
+
+**G3（唯一仍需用户定）**：新增用户文案若进 V1 的 `js/messages.js`，就会被**对等守卫**要求同步进 V2 的同名文件
+（两版从第一条 `import` 起逐字一致）—— 与"只考虑 V1"这条指示有轻微张力。选项：进两版（推荐，守住"文案单点"）、
+单开 V1 文件（不动 V2，但要解释为何不算违反单点）、内联（最省事最违反）。
+
+### 113.3 验证与状态
+
+- `docs.test.ts` 复跑：见收尾（本轮仍未触碰被守卫的 5 份现状文档里的任何数字）。
+- 计划文档 §6 的两行前置已改为"已许可/已授权"；`design.md` D21 状态改为"**已定**（含 CSP 放宽授权：仅预览页；实现进行中）"；
+  `ui.md` 指针同步。
+- **未动任何代码**；下一步 = 阶段 0（体积/CSP 实测，临时目录）与阶段 1（`viewerRoute()` 判据）并行。
+## 114. 新增共用层 `public/ui_shared/`：两版重复资源合并 + 红线与守卫同步（2026-09-21）
+
+**触发（用户原话）**：「有一些 v1 和 v2 公用的资源（例如现在的图标，等）创建一个新的文件夹放在里面，这个你顺便做了」
+→「像图标什么选择一个更好的放里面 剩下的删除 …… 还有双语的文件等等」→「**可以动红线和守卫**」。
+
+### 114.1 先量后动：哪些是真重复、哪些是两套实现
+
+| 对象 | 实测 | 处置 |
+|---|---|---|
+| `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` | 两版**逐字节相同**（450 B / 950 B / 3 040 B） | 合并成 `ui_shared/brand/` 一份，两版各删一份（6 → 3 个文件） |
+| `js/icons.js` | V1 25 键 / V2 32 键，**并集**关系：V1 独有 `push`/`connecting`，V2 独有 9 键；23 个共有键里几何相同 22 个，**只有 `trash` 不同**（V2 多两道内线） | 合并成 `ui_shared/js/icons.js` = V2 表 + V1 的 `push`/`connecting`（`trash` 取 V2，即"更好的那个"）；两版各自的 `js/icons.js` 删除；V1 的 9 个组件模块与 V2 的 11 个 `ui/*` 模块改指共用层 |
+| 另外 10 个同名 JS（`api` `clipboard` `dom` `filters` `format` `latest` `login` `next-target` `theme-init` …） | **两套实现**（相同行占比 17%–69%） | **不动**。它们不是"重复"，是两版各自的实现；"抽走一份"等于重写其中一个界面 |
+| `js/messages.js` | 正文逐字相同（守卫口径 3 222 字符），但**它 import 的是各版自己的 `./format.js`**，而 `truncateText`/`charCount` 的口径差异（UTF-16 码元 vs 字素簇）是**文档化的有意决定**（`AGENTS.md` §1、`docs/archive/AUDIT-v1-v2-divergence.md` §5.3） | **不动**（仍是两份 + 对等守卫）。搬进共用层就会把"改一版"变成"两版一起变" |
+
+### 114.2 落了什么
+
+- 新目录 `public/ui_shared/`（挂 `/ui_shared/`）：`brand/`（3 张品牌图标）+ `js/icons.js`（共用图标表）。
+  它是**第四个界面挂载点**，与其它三个同受 `UI_ENABLED` 管（界面关掉时它一起 404 —— 断掉界面后不该还能从这一层拿到界面的东西）。
+- `public/` 资源数 **88 → 84**（6 份重复图标 + 2 份 `icons.js` → 4 份）。
+- 规矩写进 `docs/ui.md` **§3.4**：只放"**不随某一版界面演进**"的东西（纯静态资产 / 无版本耦合的纯数据模块；将来放双语与翻译资源，**用到才建目录**）；
+  组件、视图逻辑、样式表、以及"两版实现有意不同"的模块一律不放。
+
+### 114.3 红线与守卫（用户已授权「可以动红线和守卫」）
+
+| 位置 | 改动 |
+|---|---|
+| `AGENTS.md` §3 | 旧红线「**不要跨版抽公共模块**：V1 必须自包含」→ 新红线「**跨版共享只有一个面：`public/ui_shared/`**」（含允许/禁止清单与判据出处）；§1 同步表新增一行（改 `public/ui_shared/**` 要同步哪些文档与三处事实） |
+| `test/ui-guard.test.ts` | ①「V1 前端是完全自包含的」→ 改名并放宽为「**V1 不依赖 V2**：只允许逃到 `../ui_shared/`，逃进 `/ui_v2/` 一律红」，**并新增反空转断言**（V1 必须确实有引用，否则等于放宽了红线却什么都没换到）；② 预载判据改为接受两类 href（`/ui_v1/…` 与 `/ui_shared/…`，后者映射成 `../ui_shared/…` 以与 import 闭包同构）；③ 挂载点动态发现自动把 `ui_shared` 纳入（三处事实 + `_headers` 两条判据随之生效） |
+| `wrangler.toml` / `src/index.ts` / `public/_headers` | 三处事实一起加 `ui_shared`（`run_worker_first`、`isUiAsset`、规则与注释）；`_headers` 新增 `/ui_shared/js/*`（no-cache）与 `/ui_shared/brand/*`（长缓存），删掉 6 条按版的图标规则 |
+| `eslint.config.js` + `package.json` | **两处同改**：lint 覆盖面扩到 `public/ui_shared/js`（漏掉它等于新开一块无人检查的代码；这是仓库自己在配置头部写明的纪律） |
+| `design.md` | ADR **D22**（共用层；含"代价照实登记"）+ §4 目录树 + 三处措辞 |
+| 其它 | `docs/ui.md`（§3.2 引用段、§3 资源分表 84/33/43/4、§3.4 新节）、`docs/ui-v2-design.md` §7 目录树、`README.md` 的 `public/` 行、`public/ui_v1/README.md`、`public/ui/index.html` 注释、`deploy.yml` 冒烟（加两条共用层断言）与注释 |
+
+### 114.4 验证
+
+| 项 | 结果 |
+|---|---|
+| 守卫套件 | `ui-guard` 26 ✓｜`ui-contract` 10 ✓｜`docs` 7 ✓｜`ui-logic` 49 ✓（合 **92 passed**） |
+| `tsc --noEmit` | 0 错 |
+| `eslint`（含新加的 `ui_shared`） | 0 告警 |
+| **V1 真实浏览器**（`probe-ui-v1.mjs --port 9343`，1440×900） | `booted=1`、`rows=24`、行高 47、骨架 47；**CONSOLE ERRORS none｜FAILED REQUESTS none｜AUDIT findings=0**（exit 0）。共用模块图在真浏览器里解析成功（否则页面会停在骨架屏）；`STATUSICON` 读到的 push 图标路径仍是 V1 那一支，说明合并后 V1 独有键完好 |
+| **V2 真实浏览器**（`probe.mjs --port 9341`，1440×900） | `booted=1`、`rows=24`、卡片/表格模式正常；**CONSOLE ERRORS none｜FAILED REQUESTS none｜AUDIT problems=0**（exit 0） |
+| 已知可见变化 | V1 的垃圾桶图标多了两道内线（取 V2 的几何）；由上面的探针走查确认无副作用 |
+
+> 本地副产物：为跑 dev server 与探针，按 README 的做法把 `.dev.vars.example` 复制成了 `.dev.vars`（**gitignored，不要提交**）。
+## 115. 文档预览方案（`file-viewer`）**复审**：3 处硬伤 + 实测数字补齐（2026-09-21）
+
+**触发**：用户「充分详实再一次评估一下这个计划」（对象＝`docs/ui-document-preview.md`，当天早些时候定稿的 7 项决策）。
+**做法**：全程只读 + 一次**临时**改 `public/_headers` 的本地实验（跑完已逐字节还原，哈希核对一致）；未动代码、未动 vendor。
+
+### 115.1 三处硬伤（都已改进计划文档）
+
+| # | 原计划 | 实测/官方事实 | 修订 |
+|---|---|---|---|
+| 1 | §7：在 `_headers` 里为 `/ui_v1/view.html` **另写一条更宽的 CSP** ⇒ 只放宽这一页 | 官方文档原文：同名字段「values are joined with a comma separator」；**实测**（`wrangler dev` 8787）命中两条规则时得到**一个头、两段策略**（`…img-src…, default-src 'none'; script-src 'self' TESTMARKER-A`）⇒ 浏览器按**交集**执行 ⇒ 放宽无效。同一规则内用 `! Content-Security-Policy` 先取消再重设**也没生效**（同样两段） | 新 **D-8**：**由 Worker 出预览页的响应**（官方文档：Worker 生成的响应不套 `_headers`）；代价＝其余安全头必须逐条自己补（新 **G13**），且 `/*` 规则要加"零放宽"守卫 |
+| 2 | §6 阶段 0：`npm pack @file-viewer/web-full` 到临时目录量体积 | `web-full@3.1.2`＝**225.07 MB / 2 961 文件**，依赖含 `@file-viewer/renderer-cad` → `@flyfish-dev/cad-viewer@0.8.2`，库 README 明示 DWG/DWF/DWFX 运行时 **AGPL-3.0-only**；且装了它之后插件的 preset 自动发现会**静默升到 all** | 阶段 0 改为**离线构建标准档**（Vite + `@file-viewer/web` + `preset-standard` + 插件 `copyAssets`）；**禁止**安装任何 `*-full`/`preset-all`（新 **G14**） |
+| 3 | 未回答"产物怎么来"（D-3 只说"预构建 vendor 入库"） | `@file-viewer/web` **只有壳**（0.82 MB/18 文件，0.34 MB 是 iife），不含任何 renderer；`new Worker(new URL('./x.worker.js', import.meta.url))` 只有 Vite 会重写成可部署资产 ⇒ 必须有一次**离线构建** | 补 D-3 交付形态 + **G14**（配方入库：scratch `package.json`/`vite.config.mjs`/命令）+ **G19**（目录与基址） |
+
+### 115.2 补齐的实测数字（原计划缺"到底多大"）
+
+- **资源载荷**：`@file-viewer/assets-standard@3.1.2` ＝ **11.98 MB / 314 文件**；`viewer/vendor/pdf/` 独占 9.19 MB/299
+  （`pdf.worker.mjs` 2.04 MB、168 `.bcmap`、101 `.woff2` CJK 分片、4 `.ttf`、jbig2/openjpeg `.wasm`）、
+  `libarchive.wasm` 0.96 MB、`xlsx/sheet.worker.js` 0.85 MB、`pptx/pptx.worker.js` 0.55 MB、`docx/docx.worker.js` 0.36 MB；**最大单文件 2.04 MB**。
+- **资产只有 5 组**：`copyGroups = [archive, office-presentation, office-word-openxml, pdf, spreadsheet-openxml]`
+  ⇒ text/image/media/email/ofd **零运行时资产**。
+- **清单可当守卫源**：`flyfish-viewer-assets.json` 带 `packageVersion`/`profile`/`copyGroups`/`profileManifestSha256` 与每个资产的
+  `defaultPath`+`required` ⇒ G10 从"先版本+体积，sha256 以后再说"升级为"版本==目录名、copyGroups 一致、profileManifestSha256 不变、
+  required 的 defaultPath 都在、文件数/总字节==常量、且不含 CAD/3D/Typst 与 `@flyfish-dev/*`"。
+- **许可随载荷**：`vendor/pdf/{cmaps/LICENSE, fonts/OFL-1.1.txt, standard_fonts/LICENSE_*, wasm/LICENSE_*}` ⇒ 不得裁剪（G22）。
+- **平台上限（官方 limits 页）**：静态资源 **20 000 文件/版本（Free）**、**单文件 25 MiB**、Worker 脚本 64 MiB ⇒ 我们 ~450 文件/~15 MB 余量极大，但写成断言（G16）。
+- **本仓库**：`core.autocrlf=true` 且**没有 `.gitattributes`** ⇒ 入库的第三方文本检出会变 CRLF，任何逐条 sha256 守卫在 Windows 上会假红 ⇒ 新 **G15**（`public/ui_v1/vendor/** -text`）。
+- **`_headers` 在 Worker-first 下仍生效**（实测）：`/ui_v1/js/api.js` → `no-cache, must-revalidate`、`/ui_shared/js/icons.js` 同、`/ui_v1/manifest.webmanifest` → `max-age=3600` ⇒ 现有缓存规则与 §90 的教训都仍然作数。
+
+### 115.3 CSP 放宽项：原清单漏了/写窄了（源码实测）
+
+| 项 | 事实 | 出处 |
+|---|---|---|
+| `frame-src 'self'` **原计划漏了** | 邮件正文、HTML/XML 预览都用 `sandbox=''` + `srcdoc` 的 iframe ⇒ 需要 `frame-src`（`about:srcdoc` 在 `default-src 'none'` 下的放行条件依实现而变 —— **这一条要阶段 3 探针实测**，别当既成事实） | `email/email.ts:498-502`、`text/html.ts:103`、`text/xml.ts:149` |
+| `worker-src 'self' blob:`（原写仅 `'self'`） | archive 把 libarchive worker 源码打成 blob 再 `new Worker(blobUrl)`；XML 引擎同 | `archive/archive.ts:362-366,863`、`text/xmlEngines.ts:132` |
+| `media-src 'self' blob:`（原写仅 `'self'`） | `<audio>/<video>` 的 `src` 是 `URL.createObjectURL(blob)` | `media/audio.ts:123`、`media/video.ts:100` |
+| `style-src 'unsafe-inline'` 确实必需 | `document.createElement('style')` + `textContent` 注入（core 的 rendering handler 也在做）；**库不支持 nonce**（core 里搜不到 nonce/strictCsp） | `core/src/rendering/handler.ts:432` 等 |
+| 脚本侧不含 `unsafe-inline` | 放宽只到 `script-src 'self' 'wasm-unsafe-eval'` ⇒ 攻击面比原计划描述的窄（但"第三方解析器 + 同源会话"这条后果不变） | 同上 |
+
+### 115.4 另三处"计划里没写、但实现必须定"的（新 D-9/D-10 + G17–G23）
+
+- **D-9 取字节**：库文档给了鉴权场景的正式路径（宿主 `fetch` → `File` → `file`）⇒ 推荐统一走它（失败可分类：404 `data_missing`/401/网络 ⇒ 喂状态机）；代价＝放弃 PDF 的 Range 流式（`pdf.streaming` 只在 `url` 模式生效）。
+- **D-10 外壳收敛**：实测 `toolbar: { download, print, exportHtml, zoom, search, theme, position, items, permissions }` 可逐项关、`i18n: { locale, messages }` 可覆盖库文案 ⇒ 推荐关 download/print/exportHtml（+ `permissions` 同步），**保留 zoom/search**（全关会让 PDF 只能看第一屏）；并**必须**覆盖库的"缺渲染器→请安装 preset"文案。
+- **G23 预检清单**：预览页先取 `flyfish-viewer-assets.json`，缺/不完整就显示"渲染资源未部署"+下载、**根本不挂载库**（比等库报错更早、探针可直接断言）。
+
+**结论**：方案骨架（覆盖范围、前端唯一判据、独立预览页、只读、不做 CAD）经此次复审**不变**；变的是①CSP 放宽的出口、②阶段 0 的对象、③产物构建这一环，另加 11 条落地项（G13–G23）与 5 处数字。
+待用户拍板：D-8（机制修正，授权本身不变）、D-9、D-10 —— 以及 §9 G3（文案落点，推荐仍为 (a) 两版 `messages.js`）。
+
+### 115.5 轮 5：五项待决项的用户裁定（同日）
+
+| # | 事项 | 裁定 |
+|---|---|---|
+| 1 | CSP 放宽的出口 | **放宽写进 `_headers` 的 `/*`，全站生效**（取代轮 4 前的「只放宽预览页」）⇒ D-8 整节改写；G13 的「Worker 出响应 + 逐条补安全头」分支作废；阶段 3 的验收去掉「列表页 CSP 不变」，改成「预览页与列表页违例计数均为 0 + `/*` 放宽项恰好 6 条」 |
+| 2 | 取字节（D-9） | **统一 `fetch` → `File`**（放弃 PDF 的 Range 流式；错误分类：404 `data_missing`/401/网络 ⇒ 喂状态机） |
+| 3 | 库工具栏（D-10） | **关 `download`/`print`/`exportHtml`，留 `zoom`/`search`**，`permissions` 同步关（下载只留我们动作条一个出口） |
+| 4 | 装配档位 | **`preset-standard` 全档**（资源载荷 11.98 MB / 314 文件）；组装时只装 `web` + `preset-standard`，**禁止**任何 `*-full`/`preset-all` |
+| 5 | 文案落点（G3） | 用户反问「`messages.js` 为什么不放进 `ui_shared`」——答复见下；选项重开（进两版 / 共用层新开纯文案模块 / V1 内联） |
+
+**第 5 项的答复（代码依据）**：两版 `messages.js` 从首条 `import` 起**逐字一致**（3 222 字符，本轮复测），
+它只 `import { typeLabel, truncateText } from './format.js'`（`public/ui_v1/js/messages.js:23` / `public/ui_v2/js/messages.js:12`）。
+
+⚠️ **订正（本轮后半段实测，此前我在问答里把话说重了）**：逐函数比对两版 `format.js` 后，`truncateText`、`charCount`、`typeName`
+**逐字相同**（都用 `Intl.Segmenter` 字素簇、`Array.from` 兜底），`TYPE_LABELS` 表也相同；两版真正不同的只有
+`typeLabel`（V2 多一个 `?? '未知'` 兜底）以及 `formatSize`/`formatRelative`/`formatAbsolute`/`previewText`/`previewIsEmpty` 等**与 messages.js 无关**的函数。
+§5.3 登记的"码元 vs 字素簇"差异在**别处**：服务端 `src/ui/query.ts` 的 500 上限按码元、V1 预览的尺寸行取服务端 `size`、V2 用 `charCount()`。
+
+⇒ 因此用户「把 `messages.js` 搬进 `ui_shared`」这条**代价很小且可保行为**：把 `typeLabel` + `truncateText`（含 `splitChars`/`TYPE_LABELS`）
+提到共用层、两版 `format.js` 改为**再导出**（20 余处调用点一行都不用改），`messages.js` 本体只此一份；
+唯一要拍板的是 `typeLabel` 那个兜底取哪一版（V2 的 `?? '未知'` 是超集，只在 `type` 为 null 时可走到）。
+连带要改的守卫：`test/ui-guard.test.ts` 里那条「两版 messages.js 逐字一致」的对等守卫换成
+「两版都不再有自己的 `messages.js`、且都 import 共用层那一份」＋「共用层 `text.js` 是 `TYPE_LABELS` 的唯一源」。
+
+**轮 5 最终裁定（解释后二次确认）**：
+- **CSP 回到 A 档**：只放宽预览页 ⇒ 预览页的响应**由 Worker 出**（丢掉 `_headers` 给的头、自己写全套），`public/_headers` 的 `/*` 保持零放宽。
+  中途选过的 B（写进 `/*`、全站生效）作废但**在案记录**（取舍：一处生效 vs 策略全站变宽）。A 是轮 4 前已授权的那一档，**不构成新的降安全动作**；
+  它的成本是"该页其余安全头要逐条补"——由 G13 的守卫与探针钉住。
+- **`messages.js` 走工厂注入**：`ui_shared/js/messages.js` 导出 `createMessages({ typeLabel, truncateText })`，两版各留瘦 shim，
+  `format.js` 两版**一字不动**、5 个导出名与 20 余处调用点零改动。用户指示"现在是**开发版**" ⇒ 不为兼容留双路：
+  V1 那份"为什么自己有一份"的旧文件头注释直接删掉，不做再导出兼容层。
+
+**熔断状态**：最终选的是**更窄**的方案（A），所以不再有待确认的降安全动作；B 若将来重新考虑，按仓库规矩需先复述后果。
+本轮只改文档（计划文档 §5/§6/§7/§9/§10 + 本节），**未动任何代码、未改 `public/_headers`、未搬 `messages.js`**。
+
+### 115.6 跳出来看：这个决定本身值不值（同日，用户提问后）
+
+用户问「跳出来评估一下现在的预览实现合理吗、合适吗」。这次不限在计划内部挑错，而是把**决定本身**放到四把尺子（覆盖 / 成本 / 风险 / 可逆性）上量，
+结论与依据落进计划文档 **§11**：
+
+- **发现一个更便宜的第一方案**：PDF 用浏览器自带阅读器、音视频用 `<video>/<audio>`，都在**预览页/新标签**里做，**零第三方字节**；
+  服务端加固**一行都不用动**（`application/pdf` 本就在内联白名单里 ⇒ 数据端点回 `inline` + 正确类型 + `nosniff` + `accept-ranges`，
+  见 `src/ui/routes.ts:379-393`；`attachment` 不影响子资源加载 ⇒ `<video>` 照常播）。
+- **一个关键数字**：`assets-standard` 11.98 MB / 314 文件里 **`vendor/pdf/` 独占 9.19 MB / 299 文件**（约占 **77%**）
+  ⇒ 去掉 `renderer-pdf` 后载荷只剩 **2.78 MB / 15 文件**。⇒ 即使最终要上 `file-viewer`，也**不该装 pdf 渲染器**（浏览器自带的更好：Range 流式、搜索、打印、且在浏览器自己的沙箱里）。
+- **风险那条我按可验证的话写**：第三方解析器跑在**我们的源**上，手里有会话 Cookie、能打 `/ui/api/*`（读全部历史、还能 `clear`）
+  ⇒ 最坏后果是"一份构造的文档读走或清空整份剪贴板历史"；今天不存在这条（附件一律 `attachment` + 默认-deny，从不在我们的源里执行）。
+  单用户自部署把"不可信输入"的比例压低了，但这类文件常常正是别人发来的。
+- **顺序建议**：先做便宜档 → 观察 → 确需 Office/压缩包再上 `file-viewer`（去掉 pdf 渲染器、按 D-8(A) 只放宽那一页）。
+  理由：便宜档产出的**每一件东西**（独立预览页、`viewerRoute()` 判据、深链接、A 档 CSP 机制、文案）在 D 里全部复用 ⇒ **顺序反过来不浪费**。
+- 未动代码；本轮只增加文档（计划文档 §11 + 本节）。
+
+### 115.7 收口：PDF 归浏览器自带阅读器，`file-viewer` 只留"浏览器做不到"的几类（同日）
+
+用户在看完 §11 的评估后裁定：**PDF 不交给库**（浏览器自带阅读器更好：Range 流式、搜索、打印、缩放，且跑在浏览器自己的沙箱里），
+**常见音视频也归原生**；库里只留下"浏览器确实做不到"的 Office / 压缩包 / 邮件 / OFD。已按此改计划文档（D-1/D-4/D-5/§6/§7/§9，新增 G24）：
+
+- **载荷**：`preset-standard` 减去 `renderer-pdf` ⇒ **11.98 MB / 314 文件 → ≈2.78 MB / 15 文件**（`vendor/pdf/` 那 9.19 MB/299 文件是 77%，全在 pdfjs 的 cmaps/字体/wasm/worker）；
+  构建改用**显式 `formats`（不含 pdf）**，并加守卫断言"产物里不得出现 `vendor/pdf/**`/pdfjs"（防将来换档位时把 pdf 悄悄装回来）。
+- **判据**：`viewerRoute()` 从三档扩到**五档**（`inline`/`native-pdf`/`native-media`/`document`/`download`）。
+- **服务端零改动**：不去动内联白名单 —— `attachment` 只影响"直接导航"，`<iframe>`/`<video>` 是两个子资源请求，照常工作（`accept-ranges` 已有）。
+- **CSP 表**：`frame-src 'self'` 的主要用途变成"我们自己的 PDF iframe"；`media-src` 的主要用途变成"原生播放"（库的 `blob:` 只在装 media 渲染器时才需要）；`object-src 'none'` 与 A 档"只放宽预览页"不变。
+- **风险陈述不变（必须记住）**：省掉的是载荷，不是风险面 —— 留下的解析器仍在我们的源上跑，仍能读/清空 `/ui/api/*` 的剪贴板历史。
+- 未动代码。
+
+### 115.8 再收口：预览统一走现有弹窗，不新增页面（同日）
+
+用户指示：「**不要打开新的页面预览**，详细的就像现在弹窗预览 Office 等新的」。据此把计划从"独立预览页"改回"**统一走列表页现有 `<dialog>`**"：
+
+- **入口**：文本/位图/PDF/音视频/Office·压缩包·邮件·OFD 全在 `public/ui_v1/js/components/preview.js` 那个弹窗里；
+  `DEEP_LINK = /^#([A-Za-z]+)-([0-9A-Fa-f]{8,128})$/` 的语义**不需要扩展**（它本来就只是"打开弹窗"）；**不新增页面** ⇒ 资源数只增第三方文件、**G11（CI 加 `/ui_v1/view.html`）作废**。
+- **CSP 落点**：从"独立预览页"改成**列表页那一张 HTML**（`/ui_v1/` 与 `/ui_v1/index.html`），做法不变（**Worker 出响应**、其余安全头自己补，因 `_headers` 同名字段逗号合并 ⇒ 按页放宽做不成）；
+  V2 / `login.html` / 跳转壳 / 站点根**仍零放宽**。**如实记下**：放宽后的策略因此落在"持会话 Cookie、能打 `/ui/api/*`"的那一页上。
+- **新增落地项**：**G25 弹窗内的挂载/销毁契约**（动态 `import()` 保持首屏零字节；容器稳定高度；**`showModal()` 且布局就绪后再挂载**，否则零尺寸初始化 = 白屏；
+  `close` 时**随现有 `discardBody()` 一并 `controller.destroy()`** —— 不能在 `close` 里立刻销毁，因为 `.dialog` 有退出过渡、实测 ~400ms 才 `display:none`；
+  失败落回"只下载"卡片）；**G26 守卫**：放宽项只允许出现在列表页那条路径上。
+- **代价如实记**：失败隔离弱于独立页；常驻页面必须管好挂载/销毁（worker、canvas、`blob:` URL）。
+- **顺手排除一个假障碍**（核对过源码）：`ui-guard` 的 import 闭包正则 `import\s+(?:[\s\S]*?\sfrom\s+)?['"]…` **匹配不到 `import(`** ⇒ 动态导入的 vendor 不会被要求进 `modulepreload`，也不进 V1 的模块闭包。
+- 未动代码。

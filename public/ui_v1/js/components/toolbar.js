@@ -6,7 +6,7 @@
 //   · Esc 清空（空时移开焦点），与系统搜索框一致；
 //   · 暴露 focusSearch()，让 `/` 这类快捷键不必知道输入框在哪。
 import { el, svg, debounce } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { PAGE_SIZES, toDateInput, fromDateInput } from '../filters.js';
 import { setPending, isPending } from './toast.js';
 

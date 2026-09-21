@@ -24,7 +24,7 @@
 //      入口还退化成一枚 12px 的 ⓘ —— 正是 `docs/ui.md` §9.5 记过的老毛病。
 // 现在这条路的判据是"**文字说明动作、图标承载状态、hover 补状态名**"。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 
 // 三种状态各有一个字形、一个色调、一个状态词、一句解释。
 //   · 字形是形状层的区分（信号 / 缺口圆环 / 刷新箭头）——不依赖颜色也能分开；

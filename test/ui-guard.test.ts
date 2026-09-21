@@ -244,7 +244,7 @@ describe('UI 部署开关（UI_ENABLED）', () => {
     expect(hit.status).toBe(200);
     expect(await hit.text()).toBe('asset-body');
 
-    // 未命中资源 → 回落那张 404 页（三个界面前缀形状相同：都没有自己的服务端路由）
+    // 未命中资源 → 回落那张 404 页（四个界面前缀形状相同：都没有自己的服务端路由）
     const { env, seen } = makeEnv('true', 404);
     const missing = await worker.fetch(new Request('https://sync.example.com/ui_v2/__missing__'), env, CTX);
     expect(seen, '未命中也先问过静态资源').toEqual(['/ui_v2/__missing__']);
@@ -443,8 +443,11 @@ describe('V1 界面（public/ui_v1）的接口前缀与两页一致性', () => {
       { name: 'login.html', entry: 'js/login.js' },
     ]) {
       const html = readFileSync(join(V1_DIR, page.name), 'utf8');
-      const preload = [...html.matchAll(/<link rel="modulepreload" href="\/ui_v1\/([^"]+)"/g)]
-        .map((m) => m[1]!)
+      // 预载清单可以指两处：V1 自己的模块（`/ui_v1/…`）与**共用层**（`/ui_shared/…`，2026-09-21 起）。
+      // 两者都映射成与 `importClosure` 同一形态的模块 id：`/ui_v1/x` → `x`；`/ui_shared/y` → `../ui_shared/y`
+      // （后者正是 `resolveFrom` 对"从 V1 目录里往上逃出的那一层"给出的结果，两边必须同构才比得上）。
+      const preload = [...html.matchAll(/<link rel="modulepreload" href="([^"]+)"/g)]
+        .map((m) => (m[1]!.startsWith('/ui_v1/') ? m[1]!.slice('/ui_v1/'.length) : `..${m[1]!}`))
         .sort();
       const closure = importClosure(moduleId(page.entry));
       // 空集合会让这条断言永远为真：先把「抽取器确实在工作」本身钉住
@@ -455,14 +458,23 @@ describe('V1 界面（public/ui_v1）的接口前缀与两页一致性', () => {
     }
   });
 
-  it('V1 前端是完全自包含的：没有任何模块逃出 public/ui_v1，页面也不引用 /ui/ 下的资源', () => {
+  it('V1 不依赖 V2：模块只允许逃到共用层 public/ui_shared，页面不引用 /ui_v2/ 与 /ui/ 下的资源', () => {
     const ids = walkFiles(join(V1_DIR, 'js'), '.js').map(moduleId);
     expect(ids.length, '没扫到 V1 的 JS 文件（守卫可能失效）').toBeGreaterThan(20);
     const offenders: string[] = [];
+    let sharedRefs = 0;
     for (const id of ids) {
       for (const spec of rawSpecifiers(id)) {
         if (!spec.startsWith('.')) continue;
-        if (resolveFrom(id, spec).startsWith('..')) offenders.push(`${id} → ${spec}`);
+        const resolved = resolveFrom(id, spec);
+        // 唯一允许的"逃出"是**共用层** `public/ui_shared/`（2026-09-21 起：品牌图标、共用图标表；
+        // 允许放什么、为什么允许，判据写在 `docs/ui.md` §3.4）。逃进 V2 或更远一律算违规 ——
+        // 那正是这条守卫存在的理由：产品面（V1）不得因为开发测试版（V2）的演进/删除而受影响。
+        if (resolved.startsWith('../ui_shared/')) {
+          sharedRefs += 1;
+          continue;
+        }
+        if (resolved.startsWith('..')) offenders.push(`${id} → ${spec}`);
       }
     }
     // 两张页面也不得把 `/ui_v2/` 下的东西当**子资源**引用（它是开发测试版，随时可能被破坏性重构或删除）。
@@ -475,7 +487,10 @@ describe('V1 界面（public/ui_v1）的接口前缀与两页一致性', () => {
         offenders.push(`${page} → ${m[1]!}`);
       }
     }
-    expect(offenders, '以下引用跨到了 public/ui_v2 —— 产品面（V1）必须自包含：').toEqual([]);
+    // 这条断言防的是"共用层变成空招牌"：V1 与 V2 都还各自留着一份时，上面的 offenders 照样为空，
+    // 而共用层其实没人用（那等于把红线放宽了，却什么都没换到）。
+    expect(sharedRefs, 'V1 没有任何模块引用共用层（public/ui_shared）——共用层是在空转吗？').toBeGreaterThan(0);
+    expect(offenders, '以下引用逃出了 V1 与共用层（跨到 /ui_v2/ 等）——产品面不得依赖开发测试版：').toEqual([]);
   });
 
   it('V1 的 messages.js 与 V2 的 messages.js 逐字一致（自包含的对等守卫）', () => {

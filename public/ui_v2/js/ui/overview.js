@@ -8,7 +8,7 @@
 // 按钮里套按钮在 HTML 里是无效结构，读屏也会读成两个重叠的可交互区域。
 // 故类型分布在这里是**展示**；筛选由筛选条的 chips 承担（那里才是正确的语义）。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { renderSpark, totalOf } from '../spark.js';
 import { formatAgo } from '../format.js';
 

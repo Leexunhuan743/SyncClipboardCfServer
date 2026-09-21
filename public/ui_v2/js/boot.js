@@ -22,7 +22,7 @@ import {
   viewOf,
 } from './filters.js';
 import { debounce, el, svg } from './dom.js';
-import { iconPaths } from './icons.js';
+import { iconPaths } from '../../ui_shared/js/icons.js';
 import { bindShortcuts } from './keys.js';
 import { createLatestGate } from './latest.js';
 import { createPushChannel } from './push.js';

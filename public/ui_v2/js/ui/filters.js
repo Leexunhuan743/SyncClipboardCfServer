@@ -7,7 +7,7 @@
 //   ③ 顶栏：搜索、刷新（两者都**只在窄屏**，宽屏有各自的常驻控件）、主题、登出
 // 判据是"用户每次进页面都要动的"留在外面，其余收起来。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { KINDS, typeLabel } from '../format.js';
 import { RANGE_PRESETS } from '../filters.js';
 import { iconButton } from './button.js';

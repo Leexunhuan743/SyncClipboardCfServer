@@ -6,6 +6,11 @@
 架构重写了一遍——数据面完全复用官方历史 API 的同一套表与语义，另开一层只为界面服务的
 `/ui/api/*`，不动任何客户端依赖的协议行为。
 
+> **待落地的一档能力**：重格式（PDF/Office/压缩包/邮件/音视频）目前只能下载 —— 把它们接成
+> 「文档预览」的决策、方案、CSP 放宽清单与过程日志见
+> [`ui-document-preview.md`](ui-document-preview.md)（方案已定并**已获授权**，实现进行中；本文 §3.2 之后
+> 的内容仍描述**当前**实现）。
+
 ---
 
 ## 1. 来源与取舍（融合清单）
@@ -91,11 +96,11 @@ Worker
 2. **写路径唯一**：界面上的收藏/置顶/删除都经 `src/historyOps.ts` 的 `applyHistoryUpdate`——
    与官方 `PATCH /api/history/{type}/{hash}` 是同一个实现（同一套版本判定、同一条广播、同一次 R2 清理）。
    这样「界面改了但客户端不知道」在结构上不可能发生。
-3. **静态资源不占协议路径**：`public/` 下不放 `index.html`，所有资源都在三个挂载点（`/ui/`、`/ui_v1/`、`/ui_v2/`）下；
+3. **静态资源不占协议路径**：`public/` 下不放 `index.html`，所有资源都在四个挂载点（`/ui/`、`/ui_v1/`、`/ui_v2/`、`/ui_shared/`）下；
    根路径留给 `PROPFIND`（客户端的探活与目录列举）。
 
 `wrangler.toml` 的 `[assets]` 声明 `directory`、`binding = "ASSETS"`、`run_worker_first` 与 `not_found_handling = "none"`：
-三个界面前缀（`/ui`、`/ui_v1`、`/ui_v2` 及各自的 `/*`）的请求**先进 Worker**，其余命中的静态资源由边缘直接返回，未命中的（含全部协议请求）回落给 Worker。
+四个界面前缀（`/ui`、`/ui_v1`、`/ui_v2`、`/ui_shared` 及各自的 `/*`）的请求**先进 Worker**，其余命中的静态资源由边缘直接返回，未命中的（含全部协议请求）回落给 Worker。
 
 ---
 
@@ -110,7 +115,7 @@ Worker
 | `query.ts` | 只读查询层：参数解析、白名单排序、LIKE 转义、分页、按类型计数、变更信号。拥有 `UiHistoryItem` / `UiListQuery` 等类型 |
 | `routes.ts` | 路由装配：把 HTTP 映射到上面三者 + 复用协议层的 `HistoryDb`/`R2Storage`/`applyHistoryUpdate` |
 | `maintenance.ts` | 维护面：数据完整性自检（R2 列举 × D1 期望目录差集）与保留策略的在线读写（写 Meta 覆盖，0 = 关闭该阶段，空 = 回落部署环境变量） |
-| `notFound.ts` | 三个界面前缀（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）未匹配路径共用的 404 页（只覆盖 UI 命名空间，不碰协议 404 语义） |
+| `notFound.ts` | 四个界面前缀（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`、`/ui_shared/*`）未匹配路径共用的 404 页（只覆盖 UI 命名空间，不碰协议 404 语义） |
 
 共享层的小幅开放：`db.ts` 导出 `rowToEntity`/`DbRow`（界面按自己的排序读同一张表，若另写一份映射，
 两处对 NULL/布尔列的解释迟早分叉）；`contentTypes.ts` 从 `routes/webdav.ts` 抽出（`fileHeaders`
@@ -133,20 +138,25 @@ Worker
 >
 > 挂载点分工：**页面与静态资源在 `/ui_v1/...`，服务端接口在 `/ui/api/...`**（与 V2 共用同一套），
 > 接口前缀只写在 `public/ui_v1/js/api.js` 的 `API_BASE` 一处。
-> **V1 保持完全自包含**：消除对 `public/ui_v2/` 的任何跨目录依赖（此前曾尝试跨目录共用 `messages.js` 的兼容层已彻底清除），V1 拥有完整独立的本地实现，避免因开发测试版（V2）的演进或移除造成任何破坏；守卫见 `test/ui-guard.test.ts` 的「V1 前端是完全自包含的」。
+> **V1 保持完全自包含**：消除对 `public/ui_v2/` 的任何跨目录依赖（此前曾尝试跨目录共用 `messages.js` 的兼容层已彻底清除），V1 拥有完整独立的本地实现，避免因开发测试版（V2）的演进或移除造成任何破坏；守卫见 `test/ui-guard.test.ts` 的「V1 不依赖 V2」（2026-09-21 改名并放宽其判据）。
+>
+> **与 V2 唯一的共享面是 `public/ui_shared/`**（2026-09-21 新增）：品牌图标与无版本耦合的纯数据模块
+> （`js/icons.js`）放在那里，两版各自 import；**只允许逃到这一层**，逃进 `/ui_v2/` 依旧一律红，
+> 且守卫要求 V1 确实有引用（防"共用层空转"）。允许放什么、为什么，判据见 §3.4。
 > 自包含的代价是"两份必然漂移"，因此 V1 自己的 `js/messages.js` 与 V2 的同名文件由一条**对等守卫**钉住逐字一致（同上文件；V2 真被删掉时连守卫一起删）——这两份是**各自独立的副本**，不是共享模块。
 > 保留 V2 的三个理由：① 它是零构建前端的**对照基线**（新的模块划分、状态矩阵与探针都先在
 > 那边试）；② 开发期的实验场（改坏了不影响默认入口）；③ 它与协议端点
 > （`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）零关系，两版可以各自演进。
 
-`public/` 下共 88 个资源，分四部分（2026-09-19 改名后）：
+`public/` 下共 84 个资源，分五部分（2026-09-21 新增共用层后）：
 
 | 部分 | 文件数 | 说明 |
 |---|---|---|
-| **V1**（`public/ui_v1/`，**默认界面**） | 37 | 默认入口，挂载 `/ui_v1/`；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`）。2026-09-19 删掉顶部提示条后随之删掉 `css/archive.css`（它只为那条提示存在），38 → 37 |
-| **V2**（`public/ui_v2/`，**开发测试版**） | 47 | 3 处入口（`app/index.html`、`app/login.html`、以及 `js/*` 的模块图）+ 5 张样式表 + 35 个 JS 模块 + `theme-init.js` + `favicon.svg` / `favicon-32.png` / `apple-touch-icon.png` / `manifest.webmanifest`；应用本体挂 `/ui_v2/app/` |
+| **V1**（`public/ui_v1/`，**默认界面**） | 33 | 默认入口，挂载 `/ui_v1/`；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`）。2026-09-19 删掉顶部提示条后随之删掉 `css/archive.css`（它只为那条提示存在），38 → 37 |
+| **V2**（`public/ui_v2/`，**开发测试版**） | 43 | 3 处入口（`app/index.html`、`app/login.html`、以及 `js/*` 的模块图）+ 5 张样式表 + 34 个 JS 模块 + `theme-init.js` + `manifest.webmanifest`；应用本体挂 `/ui_v2/app/` |
+| **共用层**（`public/ui_shared/`，2026-09-21 新增） | 4 | 两版**唯一**的共享面：`brand/favicon.svg`、`brand/favicon-32.png`、`brand/apple-touch-icon.png`（两版此前逐字节各存一份）与 `js/icons.js`（两版图标表并集：V2 的 32 键 + V1 独有的 `push`/`connecting`）。挂 `/ui_shared/`，与其它三个挂载点受**同一个** `UI_ENABLED` 管；允许放什么见 §3.4 |
 | **跳转壳**（`public/ui/`） | 2 | 只剩 `index.html`（meta refresh + canonical + 外链脚本）与 `js/redirect-hash.js`（把 fragment 中继到目标）。它把 `/ui/`（老书签）送到 `/ui_v1/`；**保留这个前缀的真正原因是 `/ui/api/*`** —— 两版共用的服务端接口命名空间，路由在 `src/ui/routes.ts` |
-| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放三个挂载点下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate`（每次回源验证）、图标/manifest 的长缓存——这些响应头由静态资源层施加（三个前缀的请求虽先进 Worker，资源仍由 `ASSETS` 出网），只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
+| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放四个挂载点下）与 `_headers`（Cloudflare 静态资源的响应头：CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate`（每次回源验证）、图标/manifest 的长缓存——这些响应头由静态资源层施加（四个前缀的请求虽先进 Worker，资源仍由 `ASSETS` 出网），只能在那里声明。`connect-src` 显式写成 `'self' wss: ws:`：`'self'` 对 websocket scheme 的解析在各浏览器不一致（MDN 引 w3c/webappsec-csp#7），不写死会让实时推送在部分浏览器上静默降级成轮询） |
 
 下表是 **V1** 的文件清单（供对照）：
 
@@ -165,7 +175,6 @@ Worker
 | `js/signalr.js` | 原生 SignalR 推送通道（`createPushChannel`）：票据换 WebSocket、`\x1e` 分帧、30 秒心跳（DO 静默 60 秒即断）、退避重连。**轮询不被关掉**——在线时它降级为 60 秒看门狗（见 §3.3 第 8 条） |
 | `js/latest.js` | 竞态守卫（`createLatestGate`）：一次往返的「**最新请求胜出**」——`begin()` abort 掉上一个请求并给出序号，`isCurrent(ticket)` 决定这次结果是否落地。列表 / 统计 / 变更信号各持一个实例（见 §3.3 第 6 条） |
 | `js/dom.js` | DOM 工具。**不提供任何插入 HTML 的途径**（见 §7） |
-| `js/icons.js` | 图标路径常量表（不用 emoji；含原地成功态用的 `check`） |
 | `js/clipboard.js` | 剪贴板写入（文本 / 图片）：安全上下文探测、非 PNG 转码、失败降级与**带原因的判别结果**（`{status, reason}`：`unsupported` 与 `failed` 分别对应「换环境」和「权限/激活问题」，并把底层原因带进提示，不混成一句「不支持」） |
 | `js/format.js` | 类型/体积/时间/摘要的展示格式化 |
 | `js/messages.js` | 面向用户的**文案**单点：删除/批量删除/清空历史的确认句、列表错误的"人话翻译"、剪贴板失败的原因句。不碰 DOM/网络/状态。**V1 自己的副本**（产品面自包含），与 V2 的同名文件由 `test/ui-guard.test.ts` 的对等守卫钉住逐字一致 |
@@ -184,7 +193,9 @@ Worker
 | `js/next-target.js` | 登录后「下一跳」的判定（纯函数 `resolveNext`）：只接受**同源**目标，否则回落站内默认页。独立成文件是为了能被测试直接覆盖（见 §7） |
 | `js/theme-init.js` | 首帧前把主题写进 `<html data-theme>` 的**经典脚本**（不是模块：模块默认 defer，会晚于首帧）。外链而非内联，CSP 才能保持 `script-src 'self'` |
 
-> 上表**只列 V1 自己的文件**。`_headers` 曾误列在这里 —— 它住在**站点根**（`public/_headers`，与两个界面都无关，见上一张表的「站点根」行）。
+> 上表**只列 V1 自己的文件**。**图标路径表已移入共用层**（`public/ui_shared/js/icons.js`，2026-09-21）：
+> 它是两版唯一的共享模块之一，V1 的 9 个组件模块都从 `../../../ui_shared/js/icons.js` 取 `iconPaths`；
+> 原来的 `js/icons.js` 已删除（判据与理由见 §3.4）。`_headers` 曾误列在这里 —— 它住在**站点根**（`public/_headers`，与两个界面都无关，见上一张表的「站点根」行）。
 
 ### 3.3 前端交互约定（改动这些地方前先读）
 
@@ -324,6 +335,37 @@ Worker
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
 ---
+
+### 3.4 共用层（`public/ui_shared/`）—— 两版唯一的共享面
+
+2026-09-21 起，V1 与 V2 之间**只有这一层**可以共享。它挂 `/ui_shared/`，与其它三个挂载点受**同一个**
+`UI_ENABLED` 管（界面关掉时它一起消失 —— 断掉界面后不该还有人能从这一层拿到界面的东西）。
+
+**允许放什么**，判据只有一条：**它不随某一版的界面演进变化**。
+
+| 允许 | 现状 |
+|---|---|
+| 纯静态资产 | `brand/favicon.svg`、`brand/favicon-32.png`、`brand/apple-touch-icon.png`（两版此前逐字节相同，各存一份） |
+| 无版本耦合的**纯数据/纯函数**模块 | `js/icons.js`：24×24 常量路径表 + `iconPaths()`；两版合并为一份（并集；唯一几何分歧 `trash` 取 V2 的版本） |
+| 将来的双语/翻译资源 | ——（目录**用到才建**，不留空目录） |
+
+**不允许放什么**：
+
+- **组件、视图逻辑、样式表** —— 那是两版各自的表达（V1 与 V2 的界面本来就不同）；
+- **两版"实现有意不同"的模块**（`format.js` / `dom.js` / `filters.js` / `api.js` / `messages.js` …）——
+  例：`truncateText`/`charCount` 的口径差异（UTF-16 码元 vs 字素簇）是**文档化的决定**
+  （见 `AGENTS.md` §1 与 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3）。搬进共用层 = 把"改一版"
+  变成"两版一起变"，那正是这条红线要防的；
+- **各版自己的 `manifest.webmanifest`**（身份/scope 不同）。
+
+**守卫**（`test/ui-guard.test.ts`）：
+
+1. 挂载点集合从 `public/` **动态发现** ⇒ `wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的
+   `isUiAsset`、`public/_headers` 的规则三处必须一起含 `ui_shared`；
+2. `_headers`：`/ui_shared/js/*` 必须 `no-cache, must-revalidate`；`/ui_shared/brand/*` 走图标的长缓存；
+3. V1 的模块**只允许**逃到共用层（`../ui_shared/…`），逃进 `/ui_v2/` 一律红；并且**必须至少有一处引用**
+   （防"共用层空转"——否则等于放宽了红线却什么都没换到）；
+4. V1 两页的 `modulepreload` 清单 == import 闭包（共用层的条目按 `/ui_shared/…` 计入）。
 
 ## 4. 鉴权模型（ADR D13）
 

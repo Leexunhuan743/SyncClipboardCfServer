@@ -8,7 +8,7 @@
 //   data-loading="true" → 标签/图标让位给转圈（`.btn` 与 `.icon-btn` 同一套规则）
 //   data-state="ok"     → 换成对勾 + 结果文案，ms 后自动还原
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 
 const MAX_TOASTS = 4;
 const LEAVE_MS = 200;

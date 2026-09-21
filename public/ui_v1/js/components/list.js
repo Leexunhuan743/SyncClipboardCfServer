@@ -11,7 +11,7 @@
 // 5. 行内操作就地给出「进行中 → 结果」：用户按的是哪个按钮，反馈就落在哪个按钮上
 //    （列表刷新不会把它冲掉，因为按钮属于行的状态，不属于一次渲染）。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty, typeLabel, typeChipClass } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 import { buildThumb, buildFlags, TOGGLES, applyToggleState, playPop } from './row-content.js';

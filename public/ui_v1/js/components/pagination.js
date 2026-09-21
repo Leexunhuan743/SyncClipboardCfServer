@@ -1,7 +1,7 @@
 // 分页：范围文本 + 上一页/下一页 + 跳页。
 // 范围文本用 tabular-nums 对齐；只有一页时不给跳页控件（它此刻没有任何可做的事）。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 
 export function createPagination({ onPage }) {
   const range = el('span', { class: 'pagination__range' });

@@ -9,7 +9,7 @@
 //   2. 传了 `action` 时点击确认**不立刻关闭**：按钮转成进行中，失败留在原地显示原因并可重试，
 //      只有成功才关闭。否则一个两秒的删除请求读起来就是「点了没反应」。
 import { el, svg } from '../dom.js';
-import { iconPaths } from '../icons.js';
+import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { setPending, isPending } from './toast.js';
 
 export function createConfirm() {
