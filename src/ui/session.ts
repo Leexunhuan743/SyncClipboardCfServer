@@ -3,6 +3,22 @@
 // 为什么不用服务端会话表：Workers 没有可依赖的进程内状态（实例随时回收、请求可能落到任意实例），
 // 而 D1 存会话表会让每次页面请求多一次写库。签名 Cookie 的语义等价于 clipserver 的登录会话，
 // 但零存储、天然可水平扩展；密钥由 PASSWORD 派生，因此**改密码即让全部已签发会话失效**。
+//
+// **复用了什么、刻意不复用什么**（2026-09-21 的取舍，读数与依据见 docs/progress.md §106）：
+//   ✅ `hono/utils/cookie` 的 `parse` / `serialize`：Cookie 的**属性拼装与解析**（此前手写 20 行）。
+//      选它而不是 `hono/cookie` 的 `getCookie`/`setCookie`，是因为那两个要 `Context`，
+//      而本模块的入口是 `Request`（`readSession(env, request)`）—— 没必要为此把 Context 穿到调用方。
+//   ✅ `hono/utils/encode` 的 `encodeBase64Url` / `decodeBase64Url`：base64url 编解码（此前手写 25 行）。
+//   ❌ **不用 `hono/jwt`**：它引入 `alg` 这个**可协商字段**（本模块没有该字段），且它的 `verify` 是
+//      "先 decode 载荷、再验签"，与本模块刻意的"验签通过才解析载荷"顺序相反。`exp` 与 HKDF 这两件
+//      要紧事在两条路线里都得自己做 ⇒ 换它只省约 40 行，换来两个额外的面（判断理由见 §106）。
+//   ❌ **不用 `hono/cookie` 的签名 Cookie**：它把 **secret 原样**当 HMAC 密钥（`utils/cookie.js` 的
+//      `getCryptoKey` 直接 utf8 编码），按文档传 `PASSWORD` 就等于用人口令当 HMAC 密钥 —— 违反
+//      RFC 7518 §3.2 对 HS256 的密钥长度要求，也失去与 Basic 口令的密钥分离；且它没有载荷，
+//      过期只能靠 `maxAge` 这个**浏览器属性**，而这里的 `exp` 在签名内、由服务端强制。
+import { parse as parseCookieHeader, serialize as serializeCookie } from 'hono/utils/cookie';
+import type { CookieOptions } from 'hono/utils/cookie';
+import { decodeBase64Url, encodeBase64Url } from 'hono/utils/encode';
 import { Bindings } from '../env';
 import { isAuthConfigured } from '../auth';
 
@@ -83,40 +99,40 @@ export async function signSessionToken(
   return signPayload(await deriveSessionKey(password), payload);
 }
 
-async function signPayload(key: CryptoKey, payload: SessionPayload): Promise<string> {
-  const encoded = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
-  const signature = new Uint8Array(
-    await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(encoded)),
-  );
-  return `${encoded}.${toBase64Url(signature)}`;
+// 令牌两段都**不带 padding**（本模块的 wire 形态是 `<payload>.<sig>`，签名固定 43 字符），
+// 而 hono 的 `encodeBase64Url` 是**保留** `=` 的 ⇒ 两处必须同款处理，故收在一个函数里。
+function encodeTokenPart(bytes: ArrayBufferLike): string {
+  return encodeBase64Url(bytes).replace(/=+$/, '');
 }
 
-function toBase64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function fromBase64Url(text: string): Uint8Array | null {
-  const b64 = text.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+// 畸形输入 ⇒ null（不是 500）。hono 的 `decodeBase64Url` 直接走 `atob`：非法字符会抛，
+// 缺失的 padding 由 atob 的 forgiving-base64 补齐 —— 与旧实现「先补 padding 再解码」等价。
+function decodeTokenPart(text: string): Uint8Array | null {
   try {
-    const binary = atob(padded);
-    return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+    return decodeBase64Url(text);
   } catch {
     return null;
   }
 }
 
-function isSecureRequest(request: Request): boolean {
-  return new URL(request.url).protocol === 'https:';
+async function signPayload(key: CryptoKey, payload: SessionPayload): Promise<string> {
+  const encoded = encodeTokenPart(new TextEncoder().encode(JSON.stringify(payload)).buffer);
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(encoded));
+  return `${encoded}.${encodeTokenPart(signature)}`;
 }
 
-function cookieAttributes(request: Request, maxAgeSeconds: number): string {
-  // HttpOnly：JS 读不到；SameSite=Strict：UI 与 API 同源，跨站请求不必带会话；
-  // Secure：仅 https 下加（本地 http 调试时加了会导致浏览器直接丢弃 Cookie）。
-  const secure = isSecureRequest(request) ? '; Secure' : '';
-  return `Path=/; HttpOnly; SameSite=Strict${secure}; Max-Age=${maxAgeSeconds}`;
+// Cookie 属性：HttpOnly（JS 读不到）；SameSite=Strict（UI 与 API 同源，跨站请求不必带会话）；
+// Secure 仅 https 下加（本地 http 调试时加了会让浏览器直接丢弃 Cookie）。
+// 拼装交给 `hono/utils/cookie` 的 `serialize`：它按 RFC 排列属性、对值做 `encodeURIComponent`
+// （本模块的令牌是 base64url，编码是恒等变换），并会拒绝 `Max-Age > 400 天` 这类非法组合。
+function cookieOptions(request: Request, maxAgeSeconds: number): CookieOptions {
+  return {
+    path: '/',
+    httpOnly: true,
+    sameSite: 'Strict',
+    secure: new URL(request.url).protocol === 'https:',
+    maxAge: maxAgeSeconds,
+  };
 }
 
 // 签发：返回可直接放进 Set-Cookie 的值
@@ -127,22 +143,24 @@ export async function issueSession(
 ): Promise<string> {
   const payload: SessionPayload = { u: username, exp: Date.now() + SESSION_TTL_MS };
   const token = await signPayload(await sessionKey(env), payload);
-  return `${SESSION_COOKIE}=${token}; ${cookieAttributes(request, Math.floor(SESSION_TTL_MS / 1000))}`;
+  return serializeCookie(
+    SESSION_COOKIE,
+    token,
+    cookieOptions(request, Math.floor(SESSION_TTL_MS / 1000)),
+  );
 }
 
 export function clearSession(request: Request): string {
-  return `${SESSION_COOKIE}=; ${cookieAttributes(request, 0)}`;
+  // `maxAge: 0` ⇒ 浏览器立即删除（旧实现写的是 `Max-Age=0`，语义相同）。
+  return serializeCookie(SESSION_COOKIE, '', cookieOptions(request, 0));
 }
 
+// 解析交给 `hono/utils/cookie` 的 `parse`（返回 null-proto 记录）：它处理引号包裹、首尾空白、
+// 同名只取首个 —— 取值语义与旧实现相同，只是不再自己 `split(';')`。
 function readCookie(request: Request, name: string): string | null {
   const header = request.headers.get('Cookie');
   if (!header) return null;
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
-  }
-  return null;
+  return parseCookieHeader(header, name)[name] ?? null;
 }
 
 // 校验：先验签（crypto.subtle.verify 为常量时间），再解析载荷。
@@ -158,7 +176,7 @@ export async function readSession(env: Bindings, request: Request): Promise<UiSe
   if (dot <= 0) return null;
 
   const encoded = token.slice(0, dot);
-  const signature = fromBase64Url(token.slice(dot + 1));
+  const signature = decodeTokenPart(token.slice(dot + 1));
   if (!signature) return null;
 
   const valid = await crypto.subtle.verify(
@@ -169,7 +187,7 @@ export async function readSession(env: Bindings, request: Request): Promise<UiSe
   );
   if (!valid) return null;
 
-  const raw = fromBase64Url(encoded);
+  const raw = decodeTokenPart(encoded);
   if (!raw) return null;
   let payload: SessionPayload;
   try {

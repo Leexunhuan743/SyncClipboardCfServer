@@ -202,6 +202,11 @@
 - **建议方案与预期收益**：删除 `'text/xml'`。让"哪些类型被强制下载 + 加 CSP"的清单与实际可达集合一致。
 - **改动风险与注意事项**：无。`test/fixes.test.ts:918` 只测 `doc.xml → application/xml`（仍被加固），删它不影响该用例。
 
+> ⚠️ **2026-09-21 订正：本条已失效，别再照它去删 `text/xml`。** 类型映射换成 `mrmime`（438 项）后，
+> `.xml` 由 `application/xml` 变成标准的 `text/xml` ⇒ `text/xml` **是可达的**；加固判据也据此从
+> "枚举 4 项"改成"按后缀判定 HTML/XML 家族"（`src/contentTypes.ts` 的 `isRenderable`），
+> 于是"可达集合 == 清单"这件事由**构造**保证，不再需要人来数。取舍、差集与读数见 `docs/progress.md` §106。
+
 ### D-04 `MultipartPart.filename` 被解析但无人消费
 - **位置**：`src/multipart.ts:8`（字段声明）、`:90`（赋值）、`:142-143`（`extractParam` 取 filename）`[已复核]`
 - **类别**：死代码（未消费字段 + 连带的无用解析）

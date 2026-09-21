@@ -439,11 +439,13 @@ Worker
 
 ## 7. 安全
 
-- **同源 XSS 面**：附件与 API 同源，浏览器会为同源请求自动带上凭据（`routes/webdav.ts` 的
-  `RENDERABLE_TYPES` 注释记录了这条链）。界面因此：
+- **同源 XSS 面**：附件与 API 同源，浏览器会为同源请求自动带上凭据（`src/contentTypes.ts` 的
+  「默认-deny 内联白名单」注释记录了这条链）。界面因此：
   - 一切记录文本经 `textContent` 渲染；`js/dom.js` **不提供** `innerHTML` 入口；
   - 图标用 `createElementNS` + 常量路径构造；
-  - 可渲染类型（html/svg/xml）继续由 `fileHeaders` 强制降级为附件，**不为预览放宽**；
+  - **内联策略是默认-deny 白名单**（2026-09-21 起）：只有图片（除 svg）、`text/plain`、`text/csv`、
+    `text/markdown`、`application/json`、`application/pdf` 允许内联；其余一律由 `fileHeaders` 强制
+    `attachment`。HTML/XML 家族（按**后缀**判定，含 `+xml`）另加 CSP 沙箱，**不为预览放宽**；
   - 图片预览依赖 `content-type: image/*` + 同源 `<img>`，不引入 iframe/`<object>` 内联。
 - **`?next=` 只接受同源目标**：由 `js/next-target.js` 的纯函数 `resolveNext(raw, location.origin)` 判定——
   `new URL(raw, origin)` 解析出的 `origin` 必须与当前页相等，且返回的只有 `pathname + search + hash`

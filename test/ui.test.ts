@@ -909,7 +909,9 @@ describe('UI API 数据端点 Range（206 / 416 / 回退 200）', () => {
     expect(await res.text()).toBe(text.slice(0, 5));
     // 206 仍带着数据端点原有的头：Range 不改变缓存/内联语义
     expect(res.headers.get('cache-control')).toBe('private, max-age=60');
-    expect(res.headers.get('content-disposition')?.startsWith('inline')).toBe(true);
+    // ⚠️ 2026-09-21：夹具是 `ui-range-<RUN>.bin`，`.bin` **不在**内联白名单里 ⇒ 现在强制 `attachment`
+    // （策略由"可渲染黑名单"改成"默认-deny 内联白名单"，见 docs/progress.md §106）。
+    expect(res.headers.get('content-disposition')?.startsWith('attachment')).toBe(true);
   });
 
   it('bytes=5-（省略末尾）→ 206 直到对象结尾', async () => {

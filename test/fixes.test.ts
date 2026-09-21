@@ -847,27 +847,39 @@ describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式
 
 
 describe('F21 · 附件响应加固（同源存储型 XSS 面）', () => {
-  it('可渲染类型：强制下载 + CSP 沙箱；普通类型不加 disposition（保留内联预览）', async () => {
+  it('默认-deny 内联白名单：白名单可内联、其余强制下载；可渲染类型另加 CSP 沙箱', async () => {
     const { fileHeaders, contentTypeOf } = await import('../src/contentTypes');
 
-    for (const name of ['evil.html', 'page.xhtml', 'vec.svg', 'doc.xml']) {
+    // ① 可渲染（HTML/XML 家族，按**后缀**判定）→ 强制下载 + CSP 沙箱
+    for (const name of ['evil.html', 'page.xhtml', 'vec.svg', 'doc.xml', 'feed.rss', 'x.atom', 's.shtml']) {
       const h = fileHeaders(name);
       expect(h.get('x-content-type-options'), name).toBe('nosniff');
       expect(h.get('content-disposition'), name).toContain('attachment');
       expect(h.get('content-security-policy'), name).toContain("default-src 'none'");
     }
 
-    for (const name of ['a.png', 'b.jpg', 'c.zip', 'd.txt']) {
+    // ② 内联白名单（图片除 svg / 纯文本 / json / pdf）→ 不加 disposition，由调用方决定 inline
+    for (const name of ['a.png', 'b.jpg', 'd.txt', 'e.md', 'f.csv', 'g.json', 'h.pdf']) {
       const h = fileHeaders(name);
       expect(h.get('x-content-type-options'), name).toBe('nosniff');
-      expect(h.get('content-disposition'), name).toBeNull(); // 图片等仍可内联查看
+      expect(h.get('content-disposition'), name).toBeNull(); // 可内联查看
       expect(h.get('content-security-policy'), name).toBeNull();
     }
 
-    // 未知类型回退 octet-stream（不可渲染 → 无需 disposition），仍带 nosniff
-    const unknown = fileHeaders('noext');
+    // ③ 非白名单（压缩包 / Office / 未知）→ 强制下载，但**不**加 CSP（不是可渲染类型）。
+    //    ⚠️ 2026-09-21：`.zip` 从「无 disposition」改成「attachment」—— 策略由"可渲染黑名单"改成
+    //    "默认-deny 内联白名单"；决定、差集与读数见 docs/progress.md §106。
+    for (const name of ['c.zip', 'i.docx', 'j.7z', 'k.bin', 'noext']) {
+      const h = fileHeaders(name);
+      expect(h.get('x-content-type-options'), name).toBe('nosniff');
+      expect(h.get('content-disposition'), name).toContain('attachment');
+      expect(h.get('content-security-policy'), name).toBeNull();
+    }
+
+    // ④ 未知类型回退 octet-stream；**补遗表**覆盖 mrmime 未收录的类型（`.docx` 正是其中之一，
+    //    只引 mrmime 会让它退步成 octet-stream）
     expect(contentTypeOf('noext')).toBe('application/octet-stream');
-    expect(unknown.get('x-content-type-options')).toBe('nosniff');
+    expect(contentTypeOf('i.docx')).not.toBe('application/octet-stream');
   });
 
   it('已知大小时带 content-length；未知时省略', async () => {

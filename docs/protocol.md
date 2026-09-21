@@ -465,7 +465,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | `/api/history/statistics.totalFileSizeMB` | 遍历本地目录 | 按 R2 对象 size 求和 | 等价（R2 list 最终一致，存在短暂窗口） |
 | 缓存 | `IMemoryCache` + 显式失效，但**失效语句用的 key 与读写的 key 不是同一个**：`SyncClipboardController.cs:118` 是 `_cache.Remove("SyncClipboard.json")`（字面量），而 `:126/136/148/152/226` 读写的是 `cacheKey = profilePath`（绝对路径）⇒ 失效**从未生效**；且 `_cache.Set` 无任何过期策略 ⇒ 进程外改动（共享卷、手工修复 `server/SyncClipboard.json`、备份恢复）后长期返回内存旧值 | 无缓存（D1/R2 直读，`src/routes/webdav.ts:69-102`） | **更强一致**（不只是"策略不同"）：上游那两条各自都会造成"看到过期的当前剪贴板"，本实现结构性不存在该故障；代价是每次 GET 一次 D1 读（单用户场景可忽略）。逐条对照见 `docs/upstream-defects.md` Q16 与 `upstream-issues.md` Issue 8 |
 | 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h），软删单批 500、无批次上限 | Cron Trigger **每 20 分钟**批量执行同类语义；软删单批 **500**（对齐上游）、受单次调用子请求预算截断并以游标续跑 | 等价（周期 20min vs 10min；批一致；软删/硬删/孤儿判定与广播一致。差异只在"积压收敛速度"与平台预算机制，见 design.md §9） |
-| Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | 46 项常见扩展 + `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type |
+| Content-Type 映射 | `FileExtensionContentTypeProvider`（~370 项） | `mrmime`（438 项）+ **12 项本地补遗**（mrmime 未收录：`.docx`/`.xlsx`/`.pptx`/`.xls`/`.ppt`/`.7z`/`.rar`/`.tar`/`.ico`/`.avi`/`.mkv`/`.flac`）+ `application/octet-stream` 回退 | 官方客户端按文件名落盘、不检查 Content-Type。取值改动两处：`.xml` 由 `application/xml` 改为标准的 `text/xml`（mrmime 口径，与 .NET 同侧）；`.apk`/`.psd` 两边都没有。详见 `progress.md` §106 |
 | 错误响应体 | `BadRequest()` 空体 / ProblemDetails | 统一文本（状态码一致） | 官方客户端只判状态码 |
 | 方法不匹配（如 `POST /`） | ASP.NET 405 Method Not Allowed，**实测 `Allow: GET, PROPFIND`** | Hono 兜底 404 | 官方客户端不会发错方法；未知路径两边都是 404 |
 | 非 `/file/{name}` 路径上的 `HEAD` | **405**（ASP.NET 路由**不**把 HEAD 映射到 GET —— 见下方依据）；**2026-09-15 A/B 实测**：`HEAD /api/version` → `Allow: GET`，`HEAD /` → `Allow: GET, PROPFIND` | **200**（Hono 为 GET 路由自动处理 HEAD） | 本实现更宽容（超集）：客户端不发这类 HEAD（`WebDavBase.Exist()` 定义了但未被调用），`HEAD /file/{name}` 两边都是 200 |
@@ -489,7 +489,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Basic 凭据缺冒号 | `credentials[1]` 越界 → **IndexOutOfRangeException（500）** | 401 | 更健壮（上游为未处理异常） |
 | Basic 密码含冒号 | `Split(':')` 截断 → 校验失败（401） | 取首个冒号后全部 → 可用 | 更宽容；从官方服务器迁移的用户不受影响 |
 | `WWW-Authenticate` | `Basic realm="SyncClipboard"` | 逐字一致 | — |
-| MIME 表 | ~370 项 | 46 项常见类型 + octet-stream 回退 | 可渲染类型必须显式在表内（否则回退后仍不可渲染，安全） |
+| MIME 表与附件加固 | 仅 `Content-Type`；可渲染类型不额外处置 | **默认-deny 内联白名单**：只有图片（除 svg）、`text/plain`、`text/csv`、`text/markdown`、`application/json`、`application/pdf` 允许内联，其余一律 `attachment`；HTML/XML 家族**按后缀判定**（含 `+xml`）另加 CSP 沙箱 | **有意加固偏离**（不止"表更大"）：判据从"枚举 4 项可渲染类型"改成后缀判定，因为换表当天 `.xml` 会变成 `text/xml` 而旧枚举恰好删过它（`AUDIT-redundancies` D-03）—— 只换表会把已修的存储型 XSS 链重新打开。读数见 `progress.md` §106 |
 | `POST /api/history` 的媒体类型 | 显式 `[Consumes("multipart/form-data")]`（`HistoryController.cs:121`）⇒ 非 multipart 在模型绑定**之前**被拒 → **415** | 同（`src/routes/history.ts` 的 `parseFormBody(c, false)`；提前返回前先排空请求体） | **本轮对齐**（此前本实现一律回 400）。客户端按状态码分支，故必须一致 |
 | `POST /api/history/query` 的媒体类型 | 只有 `[FromForm]`（`HistoryController.cs:81`）、无 `[Consumes]` ⇒ multipart 与 `application/x-www-form-urlencoded` **都接受** | 同（`parseFormBody(c, true)`：urlencoded 走 `URLSearchParams`，字段名同样大小写不敏感） | **本轮补齐**。官方客户端发 multipart，两条路径都不受影响 |
 | `POST /api/history/query` 收到非表单媒体类型（如 JSON body） | 无 `[Consumes]` 约束 ⇒ 等价于「字段全缺失的表单」（`HistoryController.cs:83` 的 `query ??= new HistoryQueryDto()` 实际不可达）→ 按默认参数返回第 1 页（**2026-09-15 A/B 实测确认该推断**：上游返回 **200 + 默认第 1 页列表**，即非表单体等价于"字段全缺失的表单"） | **400**（`Invalid or missing multipart/form-data boundary`） | 有意偏离：不把畸形请求当成一次有效查询（本仓库一贯偏好 fail-loud）。客户端恒发 multipart，不可达 |

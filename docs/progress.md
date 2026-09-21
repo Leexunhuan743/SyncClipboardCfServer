@@ -8746,5 +8746,88 @@ executor，各 3 处），改完 `eslint … test/manual` → **0 告警**；`no
 | `shoot.mjs --out .audits/_pool-probe/shots` | exit 0 |
 | `tools/check-d1-like-limit.mjs` | exit 0（与 `MAX_LIKE_PATTERN_BYTES` 一致） |
 
+## 106. MIME 表换 mrmime + 内联策略改默认-deny；会话 Cookie 改用 hono 的两处工具（2026-09-21）
+
+> 触发：用户对两条"该用现成实现"的建议给了决定 —— 先否掉 `hono/jwt`（判断见 §105.9 后的对话，
+> 结论记在下文 106.4），再接受 MIME 那条，并**选定 (b) 默认-deny 内联白名单**。
+
+### 106.1 MIME：换 `mrmime` 打底 + 12 项本地补遗
+
+`mrmime@2.0.1`（MIT，零依赖，`dependencies` 里新增）。**只引它是退步** —— 与旧表求差集（`git show HEAD:src/contentTypes.ts`
+的 46 项 vs mrmime 的键集合）得到：
+
+| 类别 | 项数 | 明细 |
+|---|---|---|
+| 两边都有、取值相同 | 33 | — |
+| **mrmime 未收录**（须留本地补遗） | **12** | `.docx .xlsx .pptx .xls .ppt .7z .rar .tar .ico .avi .mkv .flac` |
+| 两边都有、**取值不同** | **1** | `.xml`：旧表 `application/xml` → mrmime `text/xml`（RFC 3023，也是 .NET 那一侧的取值）⇒ 采 mrmime |
+
+mrmime 表共 **438** 项（实测 `Object.keys(mimes).length`）。另记两条实测：
+`.apk` / `.psd` **两边的表里都没有**（用户举例里的这两个不会因此被修正）；
+`mrmime` 的 `lookup()` 直接对普通对象字面量取下标 —— `lookup('x.constructor')` 返回 **`Object.prototype.constructor`（函数）**，
+正是 F20 修过的原型链形态 ⇒ 本模块**不用它的 `lookup`**，自己走 `Object.hasOwn`。
+
+### 106.2 两条改动**不能分开做**（换表当天就会开的洞）
+
+`.xml` 换表后是 `text/xml`，而旧加固判据恰好**删过** `text/xml`（当时判定"表里没有扩展名映射到它、
+不可达"，见 `AUDIT-redundancies` D-03）⇒ 只换表会让 `.xml` 变成「浏览器可渲染、却不加任何加固」，
+把 `docs/ui.md` §7 登记为**已修**的存储型 XSS 链重新打开（附件与 API 同源，浏览器会为同源请求自动带上
+已缓存的 Basic 凭据）。故同一次改动里：
+
+- **加固判据从"枚举 4 项"改成按后缀判定**（`isRenderable`：`text/html` / `text/xml` / `application/xml` / **任意 `+xml`**）
+  —— mrmime 里 `+xml` 家族有几十项（`xhtml`/`rss`/`atom`/`mathml`/`svg`…），枚举必然漏；
+- **内联策略改成默认-deny 白名单**（用户选定）：只有图片（除 svg）、`text/plain`、`text/csv`、
+  `text/markdown`、`application/json`、`application/pdf` 允许内联，其余一律 `attachment`；
+  可渲染类型仍额外加 CSP 沙箱（对下载是惰性的，留着是纵深）。
+  好处是"哪种附件能内联"由**构造**决定，不再取决于"表里有没有登记"。
+
+### 106.3 重钉的断言（3 处，都是**行为被有意改掉**）
+
+| 位置 | 改动 | 依据 |
+|---|---|---|
+| `test/fixes.test.ts` F21 | 用例重写成三段：可渲染→`attachment`+CSP（新增 `feed.rss`/`x.atom`/`s.shtml`）；白名单→无 disposition（新增 `e.md`/`f.csv`/`g.json`/`h.pdf`）；**非白名单→`attachment`**（`c.zip` 从"内联"改成"下载"）。另加一条钉补遗：`contentTypeOf('i.docx') !== 'application/octet-stream'` | 策略变更（106.2）+ 只引 mrmime 会退步（106.1） |
+| `test/ui.test.ts` 的 206 用例 | 夹具是 `ui-range-<RUN>.bin` ⇒ 断言由 `inline` 改成 `attachment` | 同上（`.bin` 不在白名单） |
+| `test/fixes.test.ts` F20 | **未改**：`x.constructor`/`a.tostring` 等仍须回退 `octet-stream` | 换表后原型链风险由 `Object.hasOwn` 挡住，判据不变 |
+
+### 106.4 会话 Cookie：只复用"属性拼装/解析"与 base64url 两处
+
+`src/ui/session.ts` 的手写部分（HKDF 派生、HMAC 签发/验签、payload 与 `exp`、按口令值缓存密钥）
+**全部保留**，只把三处样板换成 hono 的工具（模块头写明了取舍）：
+
+- `hono/utils/cookie` 的 `parse` / `serialize`：替掉 `cookieAttributes`（属性拼串）与 `readCookie`（`split(';')`）。
+  选 `utils/cookie` 而不是 `hono/cookie` 的 `getCookie`/`setCookie`，是因为后者要 `Context`，
+  而本模块入口是 `Request`（`readSession(env, request)`）—— 没必要为此把 Context 穿到调用方。
+- `hono/utils/encode` 的 `encodeBase64Url` / `decodeBase64Url`：替掉手写 base64url（25 行）。
+  注意它**保留** `=`，而本模块的令牌形态是 `<payload>.<sig>`（签名 43 字符、无 padding）⇒
+  两段都经 `encodeTokenPart()` 去掉 padding（保持既有 wire 形态，**不让已登录用户被登出**）；
+  解码侧用 `decodeTokenPart()` 把 `atob` 的抛错转成 `null`（保持"畸形 ⇒ 未登录，不是 500"）。
+- **不用 `hono/jwt`**：它引入 `alg` 这个可协商字段（本模块没有该字段），且 `verify` 是"先 decode 载荷、
+  再验签"，与本模块刻意的"验签通过才解析载荷"相反；`exp`/HKDF 两条路线都得自己做 ⇒ 换它只省约 40 行、
+  换来两个额外的面。
+- **不用 `hono/cookie` 的签名 Cookie**：它把 **secret 原样**当 HMAC 密钥（`getCryptoKey` 直接 utf8 编码），
+  按文档传 `PASSWORD` 就等于用人口令当 HMAC 密钥 —— 违反 RFC 7518 §3.2 对 HS256 的密钥长度要求，
+  也失去与 Basic 口令的密钥分离；且它没有载荷，过期只能靠 `maxAge` 这个**浏览器属性**，
+  而这里的 `exp` 在签名内、由服务端强制。
+
+语义等价由既有用例证明：`hardening.test.ts`（9 例，含 G1 改口令旧会话立刻失效、G2 未配置凭据时
+fail-closed 的伪造令牌）与 `ui.test.ts`（登录/登出/Cookie jar/篡改签名）**一字未改即全过**。
+
+### 106.5 门禁
+
+| 门 | 结果 |
+|---|---|
+| `tsc --noEmit` | 0 错 |
+| `eslint public/ui_v2/js public/ui_v1/js test/manual` | 0 告警 |
+| 受影响 5 套件（`fixes`/`hardening`/`dto-validation`/`ui`/`fix-regressions`） | **170 用例全过** |
+| `vitest run --no-file-parallelism` | **22 文件 / 433 用例全过** |
+| 两版真浏览器探针 | V1 `findings=0`／V2 `problems=0`，各 exit 0（内联策略改了，附件行为必须实测一遍） |
+
+### 106.6 同步的文档
+
+`docs/protocol.md` §10 两行（Content-Type 映射 / MIME 表与附件加固）、`docs/design.md` §4 目录树、
+`docs/ui.md` §7（安全面：改写那条"可渲染类型…"为默认-deny 白名单，并修掉一处把 `RENDERABLE_TYPES`
+写成 `routes/webdav.ts` 的陈旧模块引用）、`docs/AUDIT-redundancies.md` D-03（**带日期订正**：该条已失效，
+别照它删 `text/xml`）、本节。`.audits/mime-probe/` 的 tgz 已清掉（只是取证用，未进版本库）。
+
 
 

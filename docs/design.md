@@ -152,7 +152,7 @@ SyncClipboardCfServer/
 │   ├── historyOps.ts           # 历史记录的写路径（官方 PATCH 与 UI 共用：判定+广播+R2 清理）
 │   ├── db.ts                   # D1 访问层：CRUD、查询过滤、ShouldUpdate 判定、清理
 │   ├── storage.ts              # R2 访问层：暂存、持久化、历史查找下载
-│   ├── contentTypes.ts         # 附件 Content-Type 与响应头加固（WebDAV 与 UI 共用）
+│   ├── contentTypes.ts         # 附件 Content-Type（mrmime 438 项 + 12 项补遗）与响应头加固：默认-deny 内联白名单 + XML/HTML 家族强制下载（WebDAV 与 UI 共用）
 │   ├── webdavXml.ts            # PROPFIND 多状态响应（RFC 4918）
 │   ├── hub.ts                  # 广播触发封装 + negotiate 载荷
 │   ├── cleanup.ts              # 保留/清理任务（Cron 触发）

@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "fflate": "^0.8.2",
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "mrmime": "^2.0.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260915.1",
