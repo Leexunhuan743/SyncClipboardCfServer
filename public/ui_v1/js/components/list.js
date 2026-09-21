@@ -15,6 +15,7 @@ import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty, typeLabel, typeChipClass } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 import { buildThumb, buildFlags, TOGGLES, applyToggleState, playPop } from './row-content.js';
+import { createTooltip } from './tooltip.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
 import { DEFAULT_FILTERS } from '../filters.js';
 
@@ -384,6 +385,9 @@ export function createList(actions) {
   }
 
   const rowByKey = new Map();
+  // hover 预览浮层（2026-09-21）：行内正文悬停看 500 字截断预览（见 buildRow 里的 attach）。
+  // 单例：全页一个浮层节点，多个行共享（同一时刻只显示一个）。
+  const tooltip = createTooltip();
   // 首屏是否已经画过：入场错峰只属于首屏（见 update 里的说明）
   let hasRendered = false;
   let currentItems = [];
@@ -516,19 +520,34 @@ export function createList(actions) {
     const checkboxWrap = buildCheckbox(ref, index);
 
     const preview = previewText(item);
+    // 行内正文：hover 看截断的全文（2026-09-21，硬约束 #26）。单行省略时 hover 弹 500 字
+    // 截断预览；服务端截断（textTruncated）的补一行「长文本 · 点击预览查看完整」。
+    const textEl = el('div', {
+      class: `cell-content__text${previewIsEmpty(item) ? ' cell-content__text--empty' : ''}`,
+      text: preview,
+    });
+    tooltip.attach(
+      textEl,
+      () => {
+        // 内容用原始正文（item.text，服务端 500 字截断、保留换行），不是单行化的 preview
+        const tooltipBody = el('span', { text: item.text });
+        if (item.textTruncated) {
+          tooltipBody.append(el('span', { class: 'tooltip__hint', text: '长文本 · 点击预览查看完整' }));
+        }
+        return tooltipBody;
+      },
+      // 只在真的被截断时出现：正文是 `line-clamp:1` 的**纵向**裁切（pre-wrap 会换行铺满宽度，
+      // `scrollWidth==clientWidth` 恒成立、检测不到）⇒ 用 scrollHeight > clientHeight；
+      // 服务端截断（textTruncated）的强制出现（长文本）。
+      { check: (t) => t.scrollHeight > t.clientHeight || item.textTruncated },
+    );
 
     const body = el('div', { class: 'cell-content__body' }, [
       // 正文与徽标**同一行**（`.cell-content__line`），而不是上下两行。
       // 原因见 components.css 的 .cell-content__line：堆叠时「文本 19 + 2 + 徽标 22 = 43」
       // 会超过行高基线（53 = 32 + 20 内边距 + 1 边框），把那一行撑到 64px；
       // 折成两行时是 83px —— 于是同一张表出现 4 种行高。
-      el('div', { class: 'cell-content__line' }, [
-        el('div', {
-          class: `cell-content__text${previewIsEmpty(item) ? ' cell-content__text--empty' : ''}`,
-          text: preview,
-        }),
-        buildFlags(item),
-      ]),
+      el('div', { class: 'cell-content__line' }, [textEl, buildFlags(item)]),
       // 窄屏专用的元信息行（类型 · 大小 · 时间）：桌面由独立列承担，故这里 display:none。
       // 放在内容单元内部（而不是单独一列）是为了让窄屏换行**确定**：
       // 单独成列时它和行内操作是否同行取决于 flex-basis 恰好放不放得下，

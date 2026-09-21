@@ -1478,6 +1478,44 @@ th[aria-sort="descending"] .th-sort__arrow {
   flex: 1 1 auto;
 }
 
+/* ============ hover 预览浮层（tooltip，2026-09-21 起 V1 唯一实现）============
+ * 语义见 `js/components/tooltip.js` 头部：150ms 延迟、只在截断时出、
+ * 到达并停住（可移入滚动/复制）、`aria-describedby` 关联。
+ * `position: fixed`：视口定位（挂到 body 或 dialog 里都不受影响）。
+ * `pointer-events: auto` 是"可移入"的前提；`white-space: pre-wrap` 让长文本换行而非截断。
+ * z-index 50：高于吸顶表头(10)/顶栏(30)，低于提示条(70)与对话框。 */
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  max-width: min(46ch, calc(100vw - 2 * var(--sp-5)));
+  max-height: min(40vh, 13rem);
+  overflow: auto;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+}
+
+.tooltip[hidden] {
+  display: none;
+}
+
+/* 「长文本 · 点击预览查看完整」那行提示：与正文用一条细线分开 */
+.tooltip__hint {
+  display: block;
+  margin-top: var(--sp-1);
+  padding-top: var(--sp-1);
+  border-top: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
 /* ============ 提示条（toast）============ */
 .toasts {
   position: fixed;

@@ -68,6 +68,8 @@
 
 | D23 | **统计条的两个计数卡随当前视图走**（2026-09-21）：V1 统计条「记录」与「已收藏」两格不再恒用全库口径——活跃视图显示 `activeCount` / `starredCountActive`，回收站视图显示 `deletedCount` / `starredCountDeleted`。「存储占用」仍**恒为活跃口径**（已删记录的 R2 文件在软删时就删了，跟着视图走会与标题对不上；`docs/ui.md` §5 的 `byType`/`byTypeActive` 就是这么分的）。服务端在 `/ui/api/statistics` 与 `/ui/api/overview` 各加 `starredCountActive` / `starredCountDeleted`（一条 `GROUP BY Type, IsDeleted, Stared` 顺带算出，**协议 DTO 的 `starredCount` 语义不动**） | 卡片与同屏的「收藏」筛选（活跃 9 条 vs 全库 12 条）与「回收站 · 共 N 条」头栏（69 vs 67）对不上——正是 `byType` 那条"控件必须与列表同源"纪律（"列表说 1019、控件说 1009"）的同一类问题，而统计条自己 2026-09-17 就因"两个口径并排会被读成自相矛盾"删过类型明细。不取"改卡片文案注明口径"：那只把矛盾换成一行解释，数字照旧对不上。**代价照实登记**：`/ui/api/statistics` 的载荷多了两个键（`starredCountActive`/`starredCountDeleted` 都是全表聚合、与请求视图无关），overview 的顶层字段因此与 statistics 的扁平形状不一致——前端落地时必须逐键搬（漏搬的静默表现是那一格回落成 0，2026-09-21 实测踩过） | 已定（2026-09-21） |
 
+| D24 | **V1 引入第二个 hover 机制：自定义 tooltip 浮层**（2026-09-21，用户要"悬停看截断全文"）：长内容（行内正文等）用自建 `js/components/tooltip.js`，短元数据（时间列、图标按钮）继续用原生 `title`。触发 `@media(hover:hover) and (pointer:fine)`、悬停 150ms、只在内容被截断时出现、`role="tooltip"` + `aria-describedby`、触屏不触发 | 原生 `title` 对长文本排版差（不可换行/滚动/选中）、延迟 ~1s、不可达；而"悬停看全文"要的是可读的多行浮层。**信息绝不靠 hover 单独传达**：全文/完整内容仍由点击预览与键盘可达（a11y 底线）。它同时是 docs §8.2 记的"跟随"族（handfeel §7）在 V1 的**第一个消费者**，按"必须到达并停住"实现。不建 CONTEXT.md 词汇表：V1 的交互语言约定本来就住在 `docs/ui.md` §3.3（硬约束 #26），单开一个词汇表文件是这个仓库没有的形态（最简） | 已定（2026-09-21） |
+
 ## 3. 架构总览
 
 ```mermaid
@@ -138,7 +140,7 @@ SyncClipboardCfServer/
 │   │   ├── index.html / login.html / manifest.webmanifest
 │   │   ├── css/                # tokens / base / layout / components / motion / auth
 │   │   └── js/                 # api / clipboard / dom / filters / format / latest / login / main / messages / next-target / signalr / store / theme-init（图标表在共用层）
-│   │       └── components/     # confirm / header / info / list / pagination / preview / row-content / stats / toast / toolbar
+│   │       └── components/     # confirm / header / info / list / pagination / preview / row-content / stats / toast / toolbar / tooltip
 │   ├── ui_shared/              # **V1/V2 唯一的共享面**（挂 /ui_shared/，同受 UI_ENABLED）：brand/（品牌图标）+ js/icons.js（共用图标表）
 │   ├── ui_v2/                  # 开发测试版 V2（挂载 /ui_v2/，应用本体在 /ui_v2/app/；详见 docs/ui-v2-design.md）
 │   │   ├── app/                # 应用本体（index.html / login.html）

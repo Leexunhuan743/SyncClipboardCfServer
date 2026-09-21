@@ -9487,3 +9487,17 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 
 **验证**：`tsc` 0 错；全量 **22 套件 / 436 用例**全过（含既有 batch-update 用例：
 媒体类型 / too_many / 坏字段 / 删除）。生产复测见当轮（Q2=A，再建一批 100 条实测新耗时）。
+## 121. V1 悬停预览（hover tooltip）：150ms、只在截断时出、到达并停住（2026-09-21）
+
+**触发**：用户用 grill-with-docs 技能提要求——"hover 运用得不多，悬停某条复制文字想看到全文，看看 V1 全文还有哪些地方能积极用 hover"。按 grilling 走完整棵树后定案。
+
+**定案（用户逐轮拍板）**：
+- 范围：只做**行内正文** `.cell-content__text`（部署信息抽屉那条查实是"完整性检查缺失清单"、低频，砍掉）。
+- 内容：列表已有的 500 字截断预览（零请求）+ `textTruncated` 时补「长文本 · 点击预览查看完整」；不异步取全文（每个悬停烧一次 API 不值）。
+- 机制：**自建轻量 tooltip 组件**（V1 第二个 hover 机制，短元数据继续用原生 `title`）；悬停延迟用户两次改口：300 → 200 → **150ms**。
+- 交互：只在真正被截断时出现（`scrollHeight > clientHeight`（line-clamp 纵向裁切）或 `textTruncated`）；「到达并停住」（§8.2 的跟随族规则，tooltip 是它在 V1 的第一个消费者）；`role="tooltip"` + `aria-describedby`；触屏不触发（渐进增强，全文仍由点击预览/键盘可达）。
+- **domain-modeling 决定**：不建 CONTEXT.md 词汇表——V1 的交互语言约定住在 `docs/ui.md` §3.3（新增硬约束 #26），单开词汇表文件是这仓库没有的形态。ADR D24 记录"为什么第二个 hover 机制"。
+
+**实现**：`js/components/tooltip.js`（单例浮层，dialog 内挂载防模态盖住、视口自适应、滚动/缩放收起、`mapLimit` 无——那是批量删除的）、`list.js` 给行内正文 attach、`index.html` modulepreload +1、`components.css` `.tooltip`/`.tooltip__hint`（z-index 50：>吸顶表头/顶栏、<提示条）。
+
+**验证**：见当轮门禁（tsc / eslint / ui-contract 的 modulepreload==import 闭包 / docs.test 的资源数 85 与 V1=34 / 全量套件 / V1 探针）。

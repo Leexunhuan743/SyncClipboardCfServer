@@ -148,11 +148,11 @@ Worker
 > 那边试）；② 开发期的实验场（改坏了不影响默认入口）；③ 它与协议端点
 > （`/api/*`、`/SyncClipboard.json`、`/file/*`、Hub）零关系，两版可以各自演进。
 
-`public/` 下共 84 个资源，分五部分（2026-09-21 新增共用层后）：
+`public/` 下共 85 个资源，分五部分（2026-09-21 新增共用层后）：
 
 | 部分 | 文件数 | 说明 |
 |---|---|---|
-| **V1**（`public/ui_v1/`，**默认界面**） | 33 | 默认入口，挂载 `/ui_v1/`；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`）。2026-09-19 删掉顶部提示条后随之删掉 `css/archive.css`（它只为那条提示存在），38 → 37 |
+| **V1**（`public/ui_v1/`，**默认界面**） | 34 | 默认入口，挂载 `/ui_v1/`；2026-09-17 修复接口前缀、重做密度与移动端，2026-09-18 接手默认跳转、并把用户文案收回本地 `js/messages.js`（见该目录 `README.md`）；2026-09-21 新增 `js/components/tooltip.js`（hover 预览浮层，见 §3.3 硬约束 #26） |
 | **V2**（`public/ui_v2/`，**开发测试版**） | 43 | 3 处入口（`app/index.html`、`app/login.html`、以及 `js/*` 的模块图）+ 5 张样式表 + 34 个 JS 模块 + `theme-init.js` + `manifest.webmanifest`；应用本体挂 `/ui_v2/app/` |
 | **共用层**（`public/ui_shared/`，2026-09-21 新增） | 4 | 两版**唯一**的共享面：`brand/favicon.svg`、`brand/favicon-32.png`、`brand/apple-touch-icon.png`（两版此前逐字节各存一份）与 `js/icons.js`（两版图标表并集：V2 的 32 键 + V1 独有的 `push`/`connecting`）。挂 `/ui_shared/`，与其它三个挂载点受**同一个** `UI_ENABLED` 管；允许放什么见 §3.4 |
 | **跳转壳**（`public/ui/`） | 2 | 只剩 `index.html`（meta refresh + canonical + 外链脚本）与 `js/redirect-hash.js`（把 fragment 中继到目标）。它把 `/ui/`（老书签）送到 `/ui_v1/`；**保留这个前缀的真正原因是 `/ui/api/*`** —— 两版共用的服务端接口命名空间，路由在 `src/ui/routes.ts` |
@@ -185,6 +185,7 @@ Worker
 | `js/components/row-content.js` | 结果行的行内内容：缩略图（含降级与 512 KiB 阈值）、状态徽标、收藏/置顶开关的字段与文案；从 `list.js` 拆出——对账、选择与焦点仍在那份文件里 |
 | `js/components/pagination.js` | 范围文本、上一页/下一页、跳页（聚焦全选、回车后清空并交还焦点；只有一页时隐藏跳页） |
 | `js/components/preview.js` | 预览对话框（文本全文 / 图片原图 / 不可用态）；点背景关闭、打开时焦点落在主操作、长文本先给加载态；主操作文案与行内统一（「复制文本」「下载文本」「复制图片」「下载」） |
+| `js/components/tooltip.js` | **hover 预览浮层**（2026-09-21 起 V1 唯一实现）：悬停 150ms 出现、只在内容被截断时出、到达并停住（可移入滚动/复制）、`aria-describedby` 关联、触屏不触发（见 §3.3 硬约束 #26） |
 | `js/components/confirm.js` | 确认对话框（销毁性操作前问一句）：请求进行中留在对话框内、失败就地显示原因可重试；**结算不依赖 `close` 事件**（见 §3.3） |
 | `js/components/toast.js` | 反馈层：瞬时提示（离场动画、最多 4 条）+ **原地状态** `setPending` / `flashSuccess`（行内按钮与对话框按钮共用，见 §3.3）；错误提示可带一个**动作**（目前是「重试」，带动作时停留 10 秒，见 §58.4） |
 | `js/components/info.js` | 部署信息 / 维护面板对话框：① 客户端该填什么地址（尾斜杠、`/dav` 这类第一个卡点）；② 时钟差（> 5 分钟会让官方客户端中止历史同步，故本地先提醒）；③ 清理状态与数据完整性自检；④ 保留策略在线调整（上界 1 年 / 100 万条，与 `src/ui/maintenance.ts` 逐字同值）；⑤ 危险操作。合成一个面板是因为「这台服务器现在怎么样」本来就是同一个问题 |
@@ -352,6 +353,19 @@ Worker
     批量条「取消选择」与点空白同用它；`onSelectAll(false)` 只清**当前页**（`store.items` 是本页），
     保留给表头全选框的取消（它的语义就是"本页都不选"，不是全清）。
     判据：行点击处理器 + `document` 级空白点击处理器 + `progress.md` §119。
+26. **悬停预览（hover tooltip）是渐进增强，信息绝不靠 hover 单独传达**（2026-09-21 用户定案，
+    grilling 走完全部分支；`js/components/tooltip.js` 是 V1 唯一的实现）：
+    · 触发：`@media (hover: hover) and (pointer: fine)` 内悬停 **150ms** 出现（用户定"悬停一律
+      150ms"）；键盘聚焦即时；触屏不触发（走既有点击预览）。
+    · **只在内容真正被截断时出现**：调用方传 `check(trigger)`（如 `scrollHeight > clientHeight`（line-clamp 纵向裁切）或
+      `textTruncated`），短文本不白占 hover。
+    · **到达并停住**（§8.2 的"跟随"族规则）：tooltip 贴着触发元素出现、可移入滚动/复制，
+      移开两者才消失（离开触发元素留 ~120ms 宽限）。
+    · **无障碍**：`role="tooltip"` + 触发元素 `aria-describedby`；全文/完整内容仍靠点击预览与键盘
+      可达（信息不依赖 hover —— a11y 底线"无仅靠 hover 的控件"不被破坏）。
+    · 短元数据（时间列相对→绝对、图标按钮动作名）继续用原生 `title`；**只有长内容**才用本构件。
+    范围（2026-09-21 首轮）：行内正文 `.cell-content__text`（500 字截断预览 + `textTruncated`
+    时提示「长文本 · 点击预览查看完整」）。判据：`tooltip.js` + `list.js` 的 attach + `progress.md` §121。
 
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
@@ -583,8 +597,10 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 
 ### 8.2 「到达并停住」：静止页面必须真的静止（2026-09-18）
 
-`handfeel.md` §7 的"跟随"那一族（相机/光标/导轨）在 V1 里**没有消费者**：`public/ui_v1/js` 里
+`handfeel.md` §7 的"跟随"那一族（相机/光标/导轨/tooltip）在 V1 里一度**没有消费者**：`public/ui_v1/js` 里
 没有 rAF、没有插值循环、没有弹簧解算（唯一的时间循环是 `signalr.js` 每 30 秒的保活心跳）。
+**2026-09-21 起 tooltip 成为第一个消费者**（`js/components/tooltip.js`，悬停预览，见 §3.3 硬约束 #26）
+——它遵守 §7 的「必须到达并停住」，但仍是纯 CSS 定位 + 定时器，不引入 rAF/插值循环。
 所有"动"都是 CSS 状态过渡 + 一次性 keyframes，停不停由终态负责 —— 这是零构建 ADR D12 的产物。
 
 判据（探针 `SETTLED`）：`document.getAnimations()` 里**没有**还在跑的动画，唯一允许的例外是
