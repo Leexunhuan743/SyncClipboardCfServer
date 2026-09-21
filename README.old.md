@@ -301,7 +301,7 @@ Settings → Secrets and variables → Actions → Variables → New repository 
 **Basic Auth 凭据的两种管理方式**（任选）：
 
 - **A. 手动设置一次**（默认）：`npx wrangler secret put USERNAME` / `PASSWORD`。
-  不配 `SYNC_AUTH_CREDENTIALS`，CI 完全不接触凭据——凭据只存在于 Cloudflare。
+  不配 `SYNC_AUTH_CREDENTIALS`（**该开关已废除**，见顶部横幅），CI 完全不接触凭据——凭据只存在于 Cloudflare。
 - **B. 交给 CI 统一管理（推荐）**：配好 `USERNAME`/`PASSWORD` secrets，
   每次部署自动同步至 Cloudflare Worker（旧版曾需 `SYNC_AUTH_CREDENTIALS`，现已废除改为自动同步），
   **轮换密码只需改 GitHub Secrets 一处**。

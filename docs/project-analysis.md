@@ -117,6 +117,7 @@ flowchart TD
 - **语言**：TypeScript 5.6.0（严格类型模式，编译为标准 ES 模块）。*(出处：`tsconfig.json`)*
 - **Web 框架**：`hono` (v4.6.0) —— 边缘极轻量 Web 路由框架，提供零开销中间件模型与类型安全上下文绑定。*(出处：`package.json:17`)*
 - **解压引擎**：`fflate` (v0.8.2) —— 纯 JavaScript 实现的高性能 zip 流式解压库，无 Node 平台 C++ 扩展依赖，完全运行在 Cloudflare V8 isolate 内部。*(出处：`package.json:16`、`src/hash.ts:2`)*
+- **MIME 映射**：`mrmime` (v2.0.1) —— 438 项扩展名→类型表（MIT、零依赖）。2026-09-21 起取代原先手写的 46 项表，另留 12 项本地补遗（`.docx`/`.xlsx`/`.pptx`/`.xls`/`.ppt`/`.7z`/`.rar`/`.tar`/`.ico`/`.avi`/`.mkv`/`.flac`）。*(出处：`package.json` 的 `dependencies`、`src/contentTypes.ts`、`progress.md` §106)*
 
 ### 4.2 开发与测试工具链
 - **Wrangler**：`^4.131.2` —— Cloudflare Workers 部署与本地 Miniflare 边缘模拟环境。
@@ -299,7 +300,7 @@ flowchart TD
 
 ### 9.1 测试体系与框架
 - **测试框架**：Vitest 2.1.0（由于涉及本地 D1 数据改写，全局强制 `--no-file-parallelism` 串行执行）。
-- **套件规模**：共 **22 个测试套件**，涵盖 **440+ 个用例**。
+- **套件规模**：共 **22 个测试套件**（`npm test` 全绿）。**用例数不写死** —— 每加一条断言就变、且无法从文件系统数出来（见 `AGENTS.md` §2 的「写文档的数字口径」），要引用就写"见 `npm test` 输出"。
 - **出处**：`package.json:11`、`test/docs.test.ts:30-40`。
 
 ### 9.2 套件覆盖清单（全部 22 个套件）
@@ -316,7 +317,7 @@ flowchart TD
 | **防漂移守卫** | `docs.test.ts` | 机械校验全仓文档中声明的套件数（必须为 22）和写库套件名单 |
 
 ### 9.3 安全防护网（`test/support/target-guard.ts`）
-7 个写库套件（`protocol`, `fix-regressions`, `transports`, `signalr`, `cleanup`, `query-filters`, `ui`）内置严格断言：当请求目标非 `127.0.0.1` 或 `localhost` 时，测试直接硬性终止运行，杜绝误向线上实例执行测试导致数据损坏。*(出处：`test/support/target-guard.ts`)*
+7 个写库套件（`protocol`, `fix-regressions`, `transports`, `signalr`, `cleanup`, `query-filters`, `ui`）在文件顶层调用 `assertWritableTarget(BASE)`：目标主机不属于 `127.0.0.1` / `localhost` / `::1` / `[::1]` / `0.0.0.0` **且**未设 `ALLOW_REMOTE_TARGET=1` 时**直接抛错终止**（连 `beforeAll` 都不会执行），杜绝误向线上实例执行测试导致数据损坏。*(出处：`test/support/target-guard.ts`)*
 
 ---
 
@@ -324,7 +325,7 @@ flowchart TD
 
 ### 10.1 文档体系分工
 - `README.md`：面向使用者与运维的白描指南（部署、客户端配置、网络、排障）；
-- `docs/design.md`：架构总览与 19 条核心架构决策记录（ADR D1–D19）；
+- `docs/design.md`：架构总览与核心架构决策记录（**ADR D1–D20，共 21 行** —— D17 按主题并立两行：界面定位 / 请求体上限）；
 - `docs/protocol.md`：协议唯一权威契约，附带与上游源码行级比对的差异登记表（§10）；
 - `docs/ui.md`：Web 界面设计、安全头策略、接口契约与来源融合清单；
 - `docs/progress.md`：按轮次记录的开发、审计与性能调优历史曲线；

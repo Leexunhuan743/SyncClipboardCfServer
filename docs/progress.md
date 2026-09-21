@@ -8521,6 +8521,11 @@ V1 另有次生位移：挂载瞬间 `.stats` 2px→92px、`.toolbar` 0px→36px
 2. **`README.md`**：移除 Variables 表格中的废弃开关项，并在 Secrets 处明确说明自动写入机制；
 3. **`README.old.md`**：增加顶部归档警告横幅，并在对应开关处标注已废除。
 
+> ⚠️ **2026-09-21 订正（§104.2 第 1 条）**：这一步的**落地方式有错** —— 它把 `secrets` 写进了步骤级
+> `if:`（`if: ${{ secrets.USERNAME != '' && secrets.PASSWORD != '' }}`），而该上下文**不允许**出现在
+> `if`（只能用于 `env`）⇒ 整份 workflow 在解析期被 GitHub 拒掉，`master` 从 `4551c16` 起连续 **4 次**
+> 推送全部 **0 秒**失败、**一次都没部署**。修法与规则说明见 §107。
+
 ## 105. 测试基础设施：池试点（**结论：不用**）、D1 适配器收敛、一个探针真缺陷（2026-09-21）
 
 > 触发：用户问「有哪些地方该引用开源实现而不是重复造轮子」。逐条读码后的判断见本节 ——
@@ -8825,10 +8830,84 @@ fail-closed 的伪造令牌）与 `ui.test.ts`（登录/登出/Cookie jar/篡改
 
 ### 106.6 同步的文档
 
-`docs/protocol.md` §10 两行（Content-Type 映射 / MIME 表与附件加固）、`docs/design.md` §4 目录树、
+`docs/protocol.md` §10 **三行**（Content-Type 映射 / **附件响应头** / MIME 表与附件加固 —— 2026-09-21 复核时发现第一轮只改了两行、漏了「附件响应头」那一行，它当时仍写着"只对可渲染类型强制下载"）、`docs/design.md` §4 目录树、
 `docs/ui.md` §7（安全面：改写那条"可渲染类型…"为默认-deny 白名单，并修掉一处把 `RENDERABLE_TYPES`
 写成 `routes/webdav.ts` 的陈旧模块引用）、`docs/AUDIT-redundancies.md` D-03（**带日期订正**：该条已失效，
 别照它删 `text/xml`）、本节。`.audits/mime-probe/` 的 tgz 已清掉（只是取证用，未进版本库）。
+
+## 107. CI 的 workflow 文件自 `4551c16` 起就是坏的：master 连续 4 次推送一次都没部署（2026-09-21）
+
+**怎么发现的**：本轮的推送完成后做了**一次**非阻塞快照（ADR D18 允许的上限），看到 `1e6f0c4` 的
+run 是 `completed failure 0s`。0 秒不是"某一步失败"，是**解析期**就没了；再拉 `gh run list --limit 6`，
+**最近 4 次推送全是 0s 失败**（`1e6f0c4` / `2012de4` / `fd19a17` / `4551c16`），上一次成功是
+`9e29cd0`（2m26s）。`gh run view <id>` 的原文：`This run likely failed because of a workflow file issue.`
+
+**根因（git 真值）**：`git show 4551c16 -- .github/workflows/deploy.yml` —— 那次（§104 废除
+`SYNC_AUTH_CREDENTIALS`）把
+
+```
+-        # （secrets 上下文不能直接用于 if，故用 vars 开关 + 步骤级 env。）
+-        if: ${{ vars.SYNC_AUTH_CREDENTIALS == 'true' }}
++        if: ${{ secrets.USERNAME != '' && secrets.PASSWORD != '' }}
+```
+
+而 `secrets` **不允许**出现在 `jobs.<job_id>.steps[*].if`（它**可以**用于 `env`、`with`、`run`）。
+⇒ 整份 workflow 在解析期被拒 ⇒ 每次 push 的 run 都 0 秒失败。
+**被那次改动删掉的那行注释恰好写着这条规则** —— 这是"删掉一条注释等于删掉一条约束"的实例。
+
+**后果与教训**：`master` 自 `4551c16` 起**没有任何一次成功部署**（包含本轮两笔改了协议面/界面行为的
+提交）。这正是 ADR D18（"推送后不等 CI"）的代价显形：本仓库的质量门在本地（D10/D11），CI 只是兜底，
+而**"兜底坏了"没有任何本地信号** —— 唯一的信号是 GitHub 的通知，而按 D18 没人看它。
+⇒ 结论不是推翻 D18（本地门禁仍然成立），而是给它补一条：**"不等 CI"的前提是"CI 至少在跑"**，
+而"至少跑起来"只有一个零成本的判据 —— 推送后那一次非阻塞快照里，**0 秒的失败必须当回事**
+（它不是"没跑完"，是"根本没解析成功"）。
+
+**修法（不动 `if:`，把判断放进 shell）**：`Sync Basic Auth credentials` 步骤去掉 `if:`，改为在脚本
+开头判断并跳过：`[ -z "$AUTH_USERNAME" ] || [ -z "$AUTH_PASSWORD" ] ⇒ echo 未配置、exit 0`。
+选择理由是**只用本文件里已被成功运行证明过的构造**（同文件其它步骤都在 `env:` 里用 secrets；
+`Check required secrets` 步骤也用 shell 的 `-z` 判断），不引入任何需要靠文档确认的上下文规则。
+步骤注释里写明了这条规则与这次事故的四笔提交号，避免下次又改回去。
+
+**本地验证**：YAML 解析通过（PyYAML）；另用脚本遍历 **17 个步骤**断言「`if:` 里出现 `secrets` 的条数
+= **0**」，且每处 `secrets.` 只出现在 `env`/`with`/`run`/`name` —— 结果 0 条非法。
+⚠️ 但 YAML 解析器**证明不了** GitHub 的上下文规则，真正的验证是这次推送的 run 本身；
+按 D18 本轮不守着看，结果以 GitHub 通知为准（若再现 0 秒失败，说明修法不成立，需回到 `vars` 开关那条老路）。
+
+## 108. 严格复核 `10004cd` 之后的全部提交：逐笔结论与 6 处订正（2026-09-21）
+
+用户要求：`10004cd` 之后的每一笔都严格审一遍。范围 = `git log 10004cd..HEAD`（**8 笔**：`7c77988` /
+`4551c16` / `fd19a17` / `2012de4` + 本轮 `4b9ade4` / `9e63eab` / `09fb758` / `1e6f0c4`）加上当时**未提交的
+工作区**。判据沿用本仓库的口径：每条结论都要落到 git 真值、代码读数或命令输出上。
+
+### 108.1 逐笔结论
+
+| 提交 | 规模 | 结论 | 依据（可复算） |
+|---|---|---|---|
+| `7c77988` docs: 重构 README + 新增 `project-analysis.md` | 6 文件 +1189/−431 | ⚠️ **四处数字/描述不准**（已订正，见 108.2） | `:302`「440+ 个用例」（实测 **433**，且 AGENTS §2 明写"用例数不要写进现状文档"）；`:327`「19 条 ADR」（实为 **21 行**：D1–D20，D17 并立两行）；`:119` 依赖清单缺 `mrmime`（本轮新增）；`:319` 把 target-guard 的判据写成"非 `127.0.0.1` 或 `localhost` 就终止"，**漏了 `::1`/`[::1]`/`0.0.0.0` 与 `ALLOW_REMOTE_TARGET=1` 逃生口** |
+| `4551c16` fix(ci+readme): 废除 `SYNC_AUTH_CREDENTIALS` | 2 文件 +12/−22 | ❌ **严重**：`secrets` 被写进步骤级 `if:` ⇒ 整份 workflow **解析期**失败，master 自它起 4 次推送全 0 秒失败、**一次都没部署** | `gh run list --limit 6`（4×0s，上次成功 `9e29cd0`）、`gh run view` 的 `workflow file issue`、`git show 4551c16 -- .github/workflows/deploy.yml`。详见 §107 |
+| `fd19a17` docs: 旧版 README 标废弃 | 2 文件 +20/−4 | ⚠️ **4 处提及里只标了 3 处**（已补第 4 处） | `grep -n SYNC_AUTH_CREDENTIALS README.old.md` ⇒ `:4` 横幅 ✓ / `:231` 表行 ✓ / `:306` 方式 B ✓ / **`:304` 方式 A 未标 ✗** |
+| `2012de4` docs: 扩充致谢 | 1 文件 +3/−1 | ✅ 三行都成立 | `@microsoft/signalr` 确是 devDependency（测试用真实客户端）、`public/ui_v*/js/icons.js` 是常量路径表（Lucide）、fflate 描述改后更准（流式 + 内存安全） |
+| `4b9ade4` / `9e63eab` / `09fb758` / `1e6f0c4`（本轮） | — | ✅ 未发现新的**行为**缺陷；但查出 **1 处我自己的漏改**：`protocol.md` §10 还有**第三行**（「附件响应头」）也描述了附件策略，第一轮只改了两行 | `grep -n "附件响应头" docs/protocol.md`；该行当时仍写"可渲染类型额外 CSP + attachment"，未反映默认-deny 白名单 |
+
+### 108.2 本轮订正（6 处，全是"口径/描述与事实不符"，无行为改动）
+
+1. `docs/protocol.md` §10「附件响应头」行：指向新的「MIME 表与附件加固」行，并写明**代价**（非白名单类型自
+   2026-09-21 起一律改下载）；
+2. `docs/project-analysis.md:302`：删掉「440+ 个用例」，改为"22 个套件 + 用例数不写死（见 `npm test` 输出）"；
+3. `docs/project-analysis.md:327`：19 条 → **ADR D1–D20（21 行，D17 两行）**；
+4. `docs/project-analysis.md:119`：依赖清单补 `mrmime`（438 项 + 12 项补遗）；
+5. `docs/project-analysis.md:319`：target-guard 判据写全（5 个本地主机 + `ALLOW_REMOTE_TARGET=1`）；
+6. `README.old.md:304`：方式 A 那句散文补「该开关已废除」标注；
+   另：本文件 §106.6 的"两行"改成**三行**（自证漏改）。
+
+### 108.3 抽核通过、未改动的部分（登记免得下次重复审）
+
+- `docs/project-analysis.md` 其余数字抽核后与代码一致：请求体 48/64 MiB、解压预算 `96 MiB − zip`（另有
+  1 MiB 下限，文档未提，可接受）、心跳 15s / 静默 60s、页大小 50、`>10240 字符` 阈值、`157 文件`台账、
+  **22 个套件名单逐个对上**（`protocol`…`docs`，无重无漏）、**7 个写库套件名单逐个对上**；
+- `README.old.md` 是**归档快照**：正文其余内容按旧版口径叙述属预期（顶部横幅已声明"历史备份"、编号与数字
+  冻结）⇒ 只补标注、不改内容；
+- `docs/protocol.md` §10 仍是 **47 数据行**（本轮只改行内容、未增删行），与其它文档引用的"47 行"一致。
 
 
 
