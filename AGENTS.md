@@ -74,12 +74,16 @@
 
 1. **类型**：`node node_modules/typescript/bin/tsc --noEmit` → 0 错。
    （`npm run <script>` 在本机 Git Bash 里会被安全策略拦，直接调 `node node_modules/...` 的 CLI 入口。）
-2. **静态检查**：`node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js` → 0 告警。
+2. **静态检查**：`node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js test/manual` → 0 告警。
    外加**四个 `test/manual/*.mjs` 的语法门**：`node --check test/manual/probe.mjs`、
    `.../probe-ui-v1.mjs`、`.../states.mjs`、`.../shoot.mjs` → 全 0。它们既不在 `tsc` 的 include 里、
    也不进任何套件，而**模板字面量里的一个反引号就能让整份探针不可运行**（N-14 形态：
    2026-09-18 在 `states.mjs` 上发生过一次，2026-09-20 在 `probe-ui-v1.mjs` 上**又发生了一次** ——
    这次是"给注释补出处"时写进去的，`node --check` 一条命令即可拦下）。
+   **2026-09-21 起这条 lint 也覆盖 `test/manual/`**：探针里「调了从未定义的标识符」语法完全合法、
+   `node --check` 永远绿 —— `probe-ui-v1.mjs` 的 `check()` 就是这样让整份探针自 `fee8078` 起没跑完过，
+   只有 `no-undef` 能拦下（见 `progress.md` §105.6）。⚠️ 改这一处要**同时**改 `eslint.config.js`
+   的 `files` 与 `package.json` 的 `lint` 脚本，理由见 `eslint.config.js` 头部。
 3. **全量套件**：先起 dev server（**端口必须 8787，测试里写死 `http://127.0.0.1:8787`**）
    `node node_modules/wrangler/bin/wrangler.js dev --test-scheduled --port 8787 --ip 127.0.0.1`，
    再 `node node_modules/vitest/vitest.mjs run --no-file-parallelism`。

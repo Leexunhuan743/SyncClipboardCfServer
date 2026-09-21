@@ -54,10 +54,10 @@ class Cdp {
     ws.addEventListener('message', (event) => {
       const msg = JSON.parse(event.data);
       if (msg.id !== undefined && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
+        const { settle, reject } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
         if (msg.error) reject(new Error(`${msg.error.message} ${JSON.stringify(msg.error.data ?? '')}`));
-        else resolve(msg.result);
+        else settle(msg.result);
         return;
       }
       for (const fn of this.listeners) fn(msg);
@@ -66,8 +66,8 @@ class Cdp {
 
   send(method, params = {}, sessionId = undefined) {
     const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+    return new Promise((settle, reject) => {
+      this.pending.set(id, { settle, reject });
       this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
       setTimeout(() => {
         if (this.pending.delete(id)) reject(new Error(`CDP 超时：${method}`));
@@ -127,8 +127,8 @@ let browserWs;
 try {
   const version = await waitForDevTools(PORT);
   browserWs = new WebSocket(version.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    browserWs.addEventListener('open', resolve, { once: true });
+  await new Promise((settle, reject) => {
+    browserWs.addEventListener('open', settle, { once: true });
     browserWs.addEventListener('error', () => reject(new Error('CDP WebSocket 连接失败')), { once: true });
   });
   cdp = new Cdp(browserWs);
@@ -1292,14 +1292,12 @@ try {
 
   await send('Page.navigate', { url: `${BASE}/ui_v2/app/?deleted=1&search=release-no-match-92748` });
   await wait(1500);
-  const trashSearch = JSON.parse(await evaluate(`(async () => {
+  // ⚠️ 顺序有讲究（2026-09-21 修）：chip 的**回收站口径**必须在**点「清除筛选」之前**量 ——
+  // D19 定案后那一下会回到活跃列表，点击之后再读 chip 拿到的是活跃口径。
+  // 此前这两条断言读的是点击**之后**的数字、却拿 `statistics?deleted=true` 当期望值，于是恒失败
+  // （`states.mjs` 不在 AGENTS.md §2 第 5 条点名的两个探针里，所以这处失败一直没人看见）。
+  const trashChips = JSON.parse(await evaluate(`(async () => {
     const kind = document.querySelector('.blank')?.dataset.kind;
-    document.querySelector('.blank button')?.click();
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline && !document.querySelector('tr.item')) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    const query = new URLSearchParams(location.search);
     // ⚠️ API 的 deleted 只认 true/false（服务端 parseBoolParam），页面 URL 才用 deleted=1（filtersToSearch）。
     // 这里原来写 deleted=1 ⇒ 恒 400、响应里没有 byType ⇒ Object.values(undefined) 抛错（2026-09-19 修，见 N-15）。
     const statistics = await (await fetch('/ui/api/statistics?deleted=true')).json();
@@ -1311,27 +1309,39 @@ try {
     for (const chip of document.querySelectorAll('.chips .chip[data-kind]')) {
       chipByKind[chip.dataset.kind] = Number(chip.querySelector('.chip__num')?.textContent);
     }
-    return JSON.stringify({kind, keptTrash:query.get('deleted') === '1', cleared:!query.has('search'),
-      rows:document.querySelectorAll('tr.item').length, chipTotal, chipByKind,
+    return JSON.stringify({kind, chipTotal, chipByKind,
       typeCounts:statistics.byType,
       expected:Object.values(statistics.byType).reduce((a,b) => a+b, 0)});
   })()`));
-  record('回收站筛选清空与计数', JSON.stringify(trashSearch));
-  expect('回收站的空搜索不能谎报回收站为空', trashSearch.kind === 'filter', JSON.stringify(trashSearch));
-  // 2026-09-20 定案（ADR D19）：两处「清除筛选」统一为**回到活跃列表** ⇒ 清完之后 URL 里不该再有 `deleted`。
-  // 此前这条断言钉的是相反的行为（"保留回收站"），是 2026-09-18 只改了空状态那一处的遗留。
-  expect('清除筛选回到活跃列表且恢复记录', !trashSearch.keptTrash && trashSearch.cleared && trashSearch.rows > 0, JSON.stringify(trashSearch));
-  expect('回收站类型计数使用删除记录口径', trashSearch.chipTotal === trashSearch.expected, JSON.stringify(trashSearch));
+  record('回收站视图的类型计数', JSON.stringify(trashChips));
+  expect('回收站的空搜索不能谎报回收站为空', trashChips.kind === 'filter', JSON.stringify(trashChips));
+  expect('回收站类型计数使用删除记录口径', trashChips.chipTotal === trashChips.expected, JSON.stringify(trashChips));
   // 上面那条只覆盖「全部」chip（它读 total，与视图无关的那条聚合）。这条覆盖**按类型的四个 chip**：
   // 它们的数字来自 overview 的 `byType`，只有 overview 真的透传了 `deleted` 才会等于
   // `statistics?deleted=1` 的口径 —— 这正是本次修复的核心。
   expect(
     '回收站按类型 chip 用的是删除记录口径（overview 必须透传 deleted）',
     ['Text', 'Image', 'File', 'Group'].every(
-      (k) => trashSearch.chipByKind[k] === (trashSearch.typeCounts[k] ?? 0),
+      (k) => trashChips.chipByKind[k] === (trashChips.typeCounts[k] ?? 0),
     ),
-    JSON.stringify(trashSearch),
+    JSON.stringify(trashChips),
   );
+
+  // 再点那枚「清除筛选」。2026-09-20 定案（ADR D19）：两处「清除筛选」统一为**回到活跃列表**
+  // ⇒ 清完之后 URL 里不该再有 `deleted`。此前这条断言钉的是相反的行为（"保留回收站"），
+  // 是 2026-09-18 只改了空状态那一处的遗留。
+  const afterClear = JSON.parse(await evaluate(`(async () => {
+    document.querySelector('.blank button')?.click();
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !document.querySelector('tr.item')) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const query = new URLSearchParams(location.search);
+    return JSON.stringify({keptTrash:query.get('deleted') === '1', cleared:!query.has('search'),
+      rows:document.querySelectorAll('tr.item').length});
+  })()`));
+  record('清除筛选之后', JSON.stringify(afterClear));
+  expect('清除筛选回到活跃列表且恢复记录', !afterClear.keptTrash && afterClear.cleared && afterClear.rows > 0, JSON.stringify(afterClear));
 
   // ── 12. 登录页（核心页面之一，此前只有一张截图、零断言）──────────
   //

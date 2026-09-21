@@ -169,6 +169,9 @@ SyncClipboardCfServer/
 │   └── durable/
 │       ├── SyncClipboardHub.ts # Durable Object：WS/SSE/长轮询三传输 + 广播 + 心跳
 │       └── signalr.ts          # SignalR JSON 协议消息编解码
+├── tools/                      # 按需运行的核实工具（不进任何套件、不参与部署产物）
+│   ├── ab-upstream-probe.ps1   # 真上游 A/B：官方发布件逐条对照，退出码 = 未登记差异数（D10）
+│   └── check-d1-like-limit.mjs # D1 引擎的 LIKE 模式上限是否仍与 MAX_LIKE_PATTERN_BYTES 一致（progress §105.3）
 └── test/
     ├── hash.test.ts            # 哈希算法对照 C# 参考值
     ├── protocol.test.ts        # HTTP 协议黑盒测试

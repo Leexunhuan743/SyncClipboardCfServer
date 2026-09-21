@@ -8482,6 +8482,15 @@ V1 另有次生位移：挂载瞬间 `.stats` 2px→92px、`.toolbar` 0px→36px
 `controlHSm` = 28px / 28px / **44px**；V1 `THEMESWITCH: #faf8f5 → #191817`、`meta=#faf8f5`、
 `noticeBarRemoved:true`。**仍未量**：`6642 / 6683.05 / CLS 0.90 / 384 / 3930 / 804 / 4454`（无对应探针判据）。
 
+> ⚠️ **2026-09-21 订正（本节表格里 V1 探针那三行）**：`fee8078` 给该探针的 PERF 块加了 `check(...)`
+> 调用却**没定义 `check`**（git 真值：`git log --oneline -S "check(" -- test/manual/probe-ui-v1.mjs`
+> 只命中它；`git show HEAD:test/manual/probe-ui-v1.mjs` 里零定义），于是探针打到 PERF 那行就
+> `ReferenceError` 退出 —— 其后骨架几何、主题脚本、选择流与 `runAudit`(×6) **一行都没执行**，
+> 退出码也不由判据决定。⇒ 上表「V1 探针 ×3 → `findings=0`、零 console 错误、零失败请求（exit 0）」
+> **在当前树上不可复现**。按本仓库纪律**不回填**原数字，订正记在此处与 `§105.6`；
+> 修好后重跑 1440 档为 `findings=0`／exit 0（读数本身没问题，是判据那两行从未生效）。
+> 同表的 **V2 探针那行不受影响**（`probe.mjs` 有 `check` 定义）。
+
 ### 103.7 跑门禁抓出的**真缺陷**（W#5）：`probe-ui-v1.mjs` 整份不可运行
 
 工作区那处编辑（给 `noticeBarRemoved` 补三行注释）把 **6 个反引号**写进了**模板字面量内部** ⇒
@@ -8567,6 +8576,10 @@ node node_modules/vitest/vitest.mjs run --no-file-parallelism   ⇒ 22 文件 / 
 `node:sqlite` 一律通过，与 `test/fix-regressions.test.ts:895`「node:sqlite 不管模式长度，故只能在这一层钉」
 的注释一致。
 
+**这件事已版本化**：`node tools/check-d1-like-limit.mjs` —— 对**当前**工具链跑三个模式长度
+（50 通过 / 51 报错 / 202 报错），打印**引擎原文**，退出码 = 是否仍与 `MAX_LIKE_PATTERN_BYTES` 一致。
+它纯 `SELECT`（不建表、不写库、与 schema 无关），换运行时或换 wrangler 之后先跑它再决定要不要改常量。
+
 ### 105.4 结论与触发条件
 
 **不采用 pool 0.12.x。** 理由不是"跑不起来"（它跑得很好），而是：**它会放行平台怪癖**。
@@ -8575,8 +8588,9 @@ node node_modules/vitest/vitest.mjs run --no-file-parallelism   ⇒ 22 文件 / 
 wrangler/miniflare/workerd（与仓库自身的 4.131.2 / 5.20260911.1-alpha 并存），
 会让"我到底在测哪个 D1"变成一个新问题，而不是消掉旧问题。
 
-**触发条件（将来若要池）**：升到 vitest 4 + pool 0.22（它跟当前 wrangler），**并且先验**入池引擎是否复现
-上面这三条口径；试验性的配置与套件留在 `.audits/pool-pilot-2026-09-21/`（gitignored：`vitest.config.ts` /
+**触发条件（将来若要池）**：升到 vitest 4 + pool 0.22（它跟当前 wrangler），**并且先跑
+`tools/check-d1-like-limit.mjs`** 量入池引擎是否复现上面这三条口径（那正是本工具存在的理由）；
+试验性的配置与套件留在 `.audits/pool-pilot-2026-09-21/`（gitignored：`vitest.config.ts` /
 `cloudflare-test.d.ts` / `real-d1.test.ts`）。**产品树里不留依赖**：`@cloudflare/vitest-pool-workers` 已卸载，
 `package.json` / `package-lock.json` 与改动前逐字节一致（`git diff --stat` 为空）。
 
@@ -8676,6 +8690,61 @@ node test/manual/probe.mjs --port 9335 --width 1440 --height 900 --url /ui_v2/ap
 | `node --check` × 四个 manual 脚本 | 全绿（`probe-ui-v1.mjs` 改过，另三个照跑） |
 | `vitest run --no-file-parallelism`（dev server 8787） | **22 文件 / 433 用例全过** |
 | 两版真浏览器探针 | V1 `findings=0`／V2 `problems=0`，各 exit 0，零 console 错误、零失败请求 |
+
+### 105.9 完善：补一条门禁缝、一条钉着旧行为的断言、一个可复跑的核实工具（2026-09-21 同日）
+
+**(1) 门禁补缝：lint 覆盖 `test/manual/`（本轮最该做的一件事）**
+
+§105.6 那个缺陷（`check()` 未定义）**本来能被门禁拦下**：`no-undef` 一行配置即可。四个 manual 探针
+此前既不在 `tsc` 的 include 里、也不在任何 lint 覆盖内，唯一一道门 `node --check` **只管语法**。
+现在 `eslint.config.js` 新增一个 `test/manual/**/*.mjs` 块（`globals: node`，规则与前端那块同一套），
+`package.json` 的 `lint` 脚本同步加上 `test/manual`（两处必须一起改，理由写在 `eslint.config.js` 头部），
+`AGENTS.md §2` 第 2 条的命令行与说明一并同步。
+
+**由红转绿（判别力）**：第一次跑就报 **9 条 `no-shadow`** —— 三份探针里 Promise 回调参数 `resolve`
+遮蔽了 `node:path` 的 `resolve`（正是该规则存在的理由：此前 `stats` 遮蔽出过真缺陷）。按仓库做法
+**改代码而不是关规则**：9 处 `resolve` → `settle`（pending 解构、`send()` 的 executor、WS open 的
+executor，各 3 处），改完 `eslint … test/manual` → **0 告警**；`no-undef` 在四个文件上**零命中**。
+
+**(2) `states.mjs` 两条钉着旧行为的断言（D19 落地时漏改）**
+
+跑状态下探针冒出 **2 条失败**。先证"不是本轮引入的"：取出改动前的版本跑同一场景
+（`git show HEAD:test/manual/states.mjs`）⇒ **同样 2 条、读数逐字节相同**（`chipTotal 65` /
+`expected 68` / `typeCounts 35·0·33·0`）。根因：该场景在点「清除筛选」**之后**读 chip，却拿
+`statistics?deleted=true` 当期望值 —— D19 定案后那一下已回到活跃列表，于是 chip 是活跃口径（65）、
+期望是删除口径（68），**恒失败**。§103.10 当时只改了同块的 `清除筛选回到活跃列表且恢复记录` 一条。
+修法：**按新行为重排场景** —— chip 在点击**前**量（断言名保持不变，注释写明顺序的理由），
+点击后再单独断言 D19 的行为。修后实跑 **0 条失败**（读数见下表）。
+（能长期没人发现，是因为 DoD 第 5 条只点名 `probe.mjs` 与 `probe-ui-v1.mjs`，`states.mjs` 不在其中。）
+
+**(3) LIKE 上限的复核：从 gitignored 脚本 → 版本化工具**
+
+§105.3 那张表是**一次性**量出来的、脚本留在 `.audits/`（不进版本库）⇒ 新克隆无法复现。新增
+`tools/check-d1-like-limit.mjs`：对当前工具链跑 50 / 51 / 202 三个长度，打印**引擎原文**
+（`X [ERROR] LIKE or GLOB pattern too complex: SQLITE_ERROR`），退出码 = 是否仍与
+`MAX_LIKE_PATTERN_BYTES` 一致；纯 `SELECT`（不建表、不写库、与 schema 无关）。实测 exit 0。
+`docs/design.md` §4 目录树相应补上 `tools/` 两条。
+
+**(4) 两处文档订正（都是"文档宣称与实际不符"）**
+
+- `docs/ui.md §11.2`：那套性能预算流程是**人工步骤** —— 四个探针脚本里**没有任何一个实现过它**
+  （`grep -E "Performance\.(enable|getMetrics)|CPUThrottling"` 零命中），已就地标注并给出 Playwright
+  的可行路径（§105.7）；
+- 本文件 `§103.6`：那行「V1 探针 ×3 → `findings=0`、exit 0」按纪律**不回填**，已在原处加**带日期的
+  订正**（指向 §105.6），并写明同表 V2 那行不受影响。
+
+**本节的门禁**（同一轮，逐条退出码）：
+
+| 门 | 结果 |
+|---|---|
+| `tsc --noEmit` | 0 错 |
+| `eslint public/ui_v2/js public/ui_v1/js test/manual` | **0 告警**（新增的那块由 9 条 → 0） |
+| `node --check` × 四个 manual 脚本 | 全绿 |
+| `vitest run --no-file-parallelism` | **22 文件 / 433 用例全过** |
+| V1 探针（1440×900） | `findings=0`、exit 0、零 console 错误、零失败请求 |
+| 状态探针 `states.mjs --no-shots` | **0 条失败**（修前 2 条；改动前的版本同样 2 条 ⇒ 非本轮引入）、exit 0 |
+| `shoot.mjs --out .audits/_pool-probe/shots` | exit 0 |
+| `tools/check-d1-like-limit.mjs` | exit 0（与 `MAX_LIKE_PATTERN_BYTES` 一致） |
 
 
 

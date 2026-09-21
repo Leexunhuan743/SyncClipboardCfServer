@@ -42,6 +42,34 @@ export default [
     },
   },
   {
+    // 手动探针（`test/manual/*.mjs`）：它们**既不在 `tsc` 的 include 里、也不进任何套件**，
+    // 此前唯一一道门是 `node --check`（只管语法）。2026-09-21 的教训正是这条缝：
+    // `probe-ui-v1.mjs` 调了一个**从未定义**的 `check()` —— 语法完全合法，`node --check` 永远绿，
+    // 而探针一跑到那里就 `ReferenceError` 退出（整份探针自 `fee8078` 起就没跑完过，见
+    // `docs/progress.md` §105.6）。`no-undef` 一行就能拦下它，成本是零。
+    //
+    // ⚠️ 与上面那条同理：这里的 `files` 与 `package.json` 的 `lint` 脚本必须**一起**改
+    // （只改一处时，脚本那半会以「No files matching the pattern」失败，配置这半失配不一定有人报到）。
+    files: ['test/manual/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      // 这些脚本是 **Node** 侧驱动器（spawn 浏览器、连 CDP、写截图）；
+      // 页面里跑的那段是模板字符串，不参与这里的静态检查。
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': ['error', { args: 'after-used', caughtErrors: 'none' }],
+      'no-shadow': ['error', { builtinGlobals: false, hoist: 'functions' }],
+      'no-throw-literal': 'error',
+      eqeqeq: ['error', 'smart'],
+      'no-constant-condition': ['error', { checkLoops: false }],
+      'no-var': 'error',
+      'prefer-const': 'error',
+    },
+  },
+  {
     // 首帧主题脚本是**经典脚本**（不是模块，见文件头）：它要在 <head> 里阻塞执行，
     // 故保留 var 写法（不经过任何转换，最小依赖的语言特性）。
     files: ['public/ui_v2/js/theme-init.js', 'public/ui_v1/js/theme-init.js'],

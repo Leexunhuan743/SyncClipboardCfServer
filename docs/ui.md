@@ -760,6 +760,12 @@ harness 只能「关掉它」或「用 `app.cdp_url` 连一个显式拉起的实
 
 ### 11.2 探针步骤（可复跑，无需改代码）
 
+> ⚠️ **2026-09-21 查实**：下面这套是**人工步骤**，`test/manual/` 四个脚本里**没有任何一个实现过它**
+> ——`grep -E "Performance\.(enable|getMetrics)|CPUThrottling"` 在四个文件里零命中；探针量的是页面内
+> `PerformanceObserver` 的 CLS，不是这里的 `TaskDuration` 差值。要把它变成可跑脚本，Playwright 已验证
+> 可行（`context.newCDPSession` + **`Performance.enable`** 之后 `LayoutDuration` / `RecalcStyleDuration` /
+> `ScriptDuration` / `TaskDuration` 都在；不 enable 时 `metrics` 是空数组），见 `progress.md` §105.7。
+
 用 CDP，在同一会话里逐项取 `Performance.getMetrics` 的前后差值（`ScriptDuration` /
 `LayoutDuration` / `RecalcStyleDuration` / `TaskDuration`）：
 

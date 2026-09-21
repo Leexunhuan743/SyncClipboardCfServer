@@ -58,10 +58,10 @@ class Cdp {
     ws.addEventListener('message', (event) => {
       const msg = JSON.parse(event.data);
       if (msg.id !== undefined && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
+        const { settle, reject } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
         if (msg.error) reject(new Error(`${msg.error.message} (${JSON.stringify(msg.error.data ?? '')})`));
-        else resolve(msg.result);
+        else settle(msg.result);
         return;
       }
       // 会话级事件：分发给等待中的 helper
@@ -72,8 +72,8 @@ class Cdp {
 
   send(method, params = {}, sessionId = undefined) {
     const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+    return new Promise((settle, reject) => {
+      this.pending.set(id, { settle, reject });
       this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
       setTimeout(() => {
         if (this.pending.delete(id)) reject(new Error(`CDP 超时：${method}`));
@@ -134,8 +134,8 @@ try {
   const version = await waitForDevTools(PORT);
   console.log(`[shoot] ${version.Browser}`);
   browserWs = new WebSocket(version.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    browserWs.addEventListener('open', resolve, { once: true });
+  await new Promise((settle, reject) => {
+    browserWs.addEventListener('open', settle, { once: true });
     browserWs.addEventListener('error', () => reject(new Error('CDP WebSocket 连接失败')), { once: true });
   });
   cdp = new Cdp(browserWs);
