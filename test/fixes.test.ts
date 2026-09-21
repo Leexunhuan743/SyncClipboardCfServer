@@ -17,6 +17,7 @@ import type { HistoryRecordEntity, ProfileDto } from '../src/types';
 import type { R2Storage } from '../src/storage';
 import { R2Storage as RealR2Storage } from '../src/storage';
 import { runCleanup } from '../src/cleanup';
+import { createWebdavRoutes } from '../src/routes/webdav';
 import type { Bindings } from '../src/env';
 
 const sha256 = (data: Uint8Array | string) =>
@@ -754,15 +755,17 @@ describe('F18 · 历史保留与清理（对齐上游 HistoryCleaner）', () => 
     expect(hard.map((r) => r.hash)).toEqual(['DELOLD']);
   });
 
-  it('listActiveWorkingDirs 仅返回未删除记录的工作目录，且**带尾斜杠**（与 R2 列出的目录名同形）', async () => {
+  it('listReferencedWorkingDirs 返回**全部**记录（含已删除）的目录，且**带尾斜杠**（与 R2 列出的目录名同形）', async () => {
     const { db } = makeDb();
     await db.insert(make('KEEP'));
     await db.insert(make('GONE', { isDeleted: true }));
-    const dirs = await db.listActiveWorkingDirs();
+    const dirs = await db.listReferencedWorkingDirs();
     // 尾斜杠不是风格问题：cleanup 用它和 R2Storage.listHistoryObjectsByDir()（由 R2 key 截取，
-    // 形如 `Text_KEEP/`）做集合比较。形式不一致 → active.has() 恒 false → 全部历史数据被当孤儿删除。
+    // 形如 `Text_KEEP/`）做集合比较。形式不一致 → has() 恒 false → 全部历史数据被当孤儿删除。
     expect(dirs.has('Text_KEEP/')).toBe(true);
-    expect(dirs.has('Text_GONE/')).toBe(false);
+    // 2026-09-22（ADR D29）：已删除的记录**必须**算"有人引用" —— 真回收站保留它的数据目录，
+    // 漏掉它等于孤儿阶段每 20 分钟把回收站里的数据删一次（行还在、数据没了，最难看的那种坏法）。
+    expect(dirs.has('Text_GONE/')).toBe(true);
   });
 
 // F19 独立顶层套件（不嵌在 F18 内）
@@ -771,15 +774,23 @@ describe('F18 · 历史保留与清理（对齐上游 HistoryCleaner）', () => 
 // 内存 R2Bucket：只需 R2Storage 用到的那部分（put/get/delete/list），用于驱动**真实** R2Storage，
 // 从而覆盖 key 构造与前缀截取（本次缺陷正在这一层，替换 R2Storage 的 stub 无法发现）。
 class FakeBucket {
-  objects = new Map<string, number>();
+  // 存**字节**（不是只存 size）：`GET /file/{name}` 这类用例要断言回退后拿到的内容，
+  // 而 `get()` 必须能交出可读的 body（`new Response(obj.body)` 需要真正的流）。
+  objects = new Map<string, Uint8Array>();
 
   async put(key: string, body: unknown): Promise<void> {
-    const size =
-      body instanceof Uint8Array ? body.length : body instanceof ArrayBuffer ? body.byteLength : 0;
-    this.objects.set(key, size);
+    const bytes =
+      body instanceof Uint8Array
+        ? body
+        : body instanceof ArrayBuffer
+          ? new Uint8Array(body)
+          : new Uint8Array(0);
+    this.objects.set(key, bytes);
   }
   async get(key: string) {
-    return this.objects.has(key) ? { size: this.objects.get(key) ?? 0 } : null;
+    const bytes = this.objects.get(key);
+    if (!bytes) return null;
+    return { size: bytes.length, body: new Blob([bytes]).stream() };
   }
   async delete(keyOrKeys: string | string[]): Promise<void> {
     for (const k of Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]) this.objects.delete(k);
@@ -790,7 +801,7 @@ class FakeBucket {
     const slice = keys.slice(start, start + 1000);
     const next = start + slice.length;
     return {
-      objects: slice.map((k) => ({ key: k, size: this.objects.get(k) ?? 0 })),
+      objects: slice.map((k) => ({ key: k, size: this.objects.get(k)?.length ?? 0 })),
       truncated: next < keys.length,
       cursor: String(next),
     };
@@ -804,7 +815,7 @@ const hubStub = () => ({
 });
 
 describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式必须同构）', () => {
-  it('runCleanup：活跃记录的数据保留；真孤儿与已软删记录的目录被清', async () => {
+  it('runCleanup：活跃记录与**已软删记录**的数据保留；真孤儿被清', async () => {
     const d1 = createSqliteD1(schemaSql);
     const db = new HistoryDb(d1 as unknown as D1Database);
     const bucket = new FakeBucket();
@@ -822,7 +833,9 @@ describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式
     await storage.putHistory(ProfileType.File, 'KEEP1', 'KEEP1.bin', new Uint8Array([1, 2, 3]));
     // ② 真孤儿目录（无任何记录引用）
     await storage.putHistory(ProfileType.File, 'ORPHAN9', 'gone.bin', new Uint8Array([9]));
-    // ③ 已软删记录的目录（上游 CleanOrphanedFolders 语义：同样按孤儿清理）
+    // ③ 已软删记录的目录 —— **必须保留**（2026-09-22，ADR D29）：真回收站里那行还在，
+    //    它就引用着这份数据；孤儿阶段若按"只算活跃记录"求差集，会每 20 分钟把回收站的数据删一次
+    //    （行还在、数据没了 —— 正是 /ui/api/integrity 能查出来、但用户先撞上的那种坏法）。
     await db.insert(rec('DEL1', { isDeleted: true }));
     await storage.putHistory(ProfileType.File, 'DEL1', 'DEL1.bin', new Uint8Array([8]));
 
@@ -837,10 +850,42 @@ describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式
     expect(bucket.objects.has('history/File_KEEP1/KEEP1.bin'), '活跃记录的数据被误删').toBe(true);
     expect(await storage.getHistory(ProfileType.File, 'KEEP1', 'KEEP1.bin')).toBeTruthy();
 
-    // 真孤儿与已删记录的目录应被清掉
+    // 已软删（回收站里）记录的数据**同样必须还在**，只有真孤儿被清
+    expect(bucket.objects.has('history/File_DEL1/DEL1.bin'), '回收站记录的数据被当孤儿删了').toBe(true);
     expect(bucket.objects.has('history/File_ORPHAN9/gone.bin')).toBe(false);
-    expect(bucket.objects.has('history/File_DEL1/DEL1.bin')).toBe(false);
-    expect(result.orphans).toBe(2);
+    expect(result.orphans).toBe(1);
+  });
+});
+
+describe('F22 · GET /file 在最新同名记录的数据缺失时回退到更旧的同名记录（上游 File.Exists 过滤语义）', () => {
+  // 为什么这条在单元层（而不是 HTTP 层）：构造"最新那条同名记录的对象**真的缺失**"必须绕过写路径 ——
+  // 2026-09-22（ADR D29）起软删不再清数据目录，公开 API 已经造不出这种记录（这正是它的价值：
+  // "行在、数据不在"只可能来自历史事故或被别处动过的存储）。所以这里用假桶把新记录的对象删掉，
+  // 再走**真实路由**（`createWebdavRoutes`）验证回退仍然发生。
+  it('新记录的对象缺失 → 回退并返回旧记录的内容', async () => {
+    const d1 = createSqliteD1(schemaSql);
+    const db = new HistoryDb(d1 as unknown as D1Database);
+    const bucket = new FakeBucket();
+    const storage = new RealR2Storage(bucket as unknown as R2Bucket);
+    const name = 'same-name.bin';
+    const now = Date.now();
+    const rec = (hash: string, lastAccessed: number, content: string): HistoryRecordEntity => ({
+      userId: 'default_user', type: ProfileType.File, text: name, size: content.length,
+      transferDataFile: name, filePaths: [name], hash,
+      createTime: now, lastAccessed, lastModified: now,
+      stared: false, pinned: false, version: 0, isDeleted: false,
+    });
+
+    // 旧的（LastAccessed 更早）+ 新的（更晚）同名记录；只有**旧的**那份数据在桶里
+    await db.insert(rec('OLD1', now - 60_000, 'old-content'));
+    await db.insert(rec('NEW1', now, 'new-content'));
+    await storage.putHistory(ProfileType.File, 'OLD1', name, new Uint8Array(Buffer.from('old-content')));
+
+    const env = { DB: d1, R2: bucket, HUB: hubStub() } as unknown as Bindings;
+    const res = await createWebdavRoutes().request(`/file/${name}`, {}, env);
+
+    expect(res.status, '回退到旧记录（修复前：命中新记录后对象缺失 → 直接 404）').toBe(200);
+    expect(Buffer.from(await res.arrayBuffer()).toString()).toBe('old-content');
   });
 });
 

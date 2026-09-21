@@ -334,31 +334,26 @@ describe('api · 边界归一化', () => {
 // 它们不是装饰 —— 句子逐字对齐了服务端语义（能不能恢复、数据文件会不会没），
 // 项的禁用与语气决定了用户能不能做出正确选择。提到纯模块之后就可以直接断言了。
 describe('messages · 用户文案对齐服务端语义', () => {
-  it('删除**带数据文件**的记录：必须说"立即清除、不可恢复"，不能说"30 天后才清"', () => {
-    const spec = deleteConfirmSpec({
-      type: 'Image',
-      dataName: 'photo.png',
-      hasData: true,
-    });
-    expect(spec.message).toContain('立即清除数据文件（不可恢复）');
-    expect(spec.message).not.toContain('还能从回收站恢复');
-    expect(spec.message).toContain('photo.png');
-    expect(spec.confirmLabel).toBe('删除');
+  // 2026-09-22（ADR D29）：删除的语义从"立即清数据"改成"回收站留 30 天"，
+  // 于是**这句话不再按 hasData 分叉** —— 两类记录都能拿回来。断言的正是"能不能拿回来"。
+  it('删除确认：两类记录同一句话 —— 30 天内可从回收站恢复（数据文件同样保留）', () => {
+    const withData = deleteConfirmSpec({ type: 'Image', dataName: 'photo.png', hasData: true });
+    expect(withData.message).toContain('30 天内可以从回收站恢复');
+    expect(withData.message).toContain('数据文件同样保留');
+    expect(withData.message, '不得再说"不可恢复"').not.toContain('不可恢复');
+    expect(withData.message).toContain('photo.png');
+    expect(withData.confirmLabel).toBe('删除');
+
+    const inline = deleteConfirmSpec({ type: 'Text', text: 'a'.repeat(80), hasData: false });
+    expect(inline.message).toContain('30 天内可以从回收站恢复');
+    // 长正文只取开头（按**字符**截，不切坏代理对），避免把一行对话框撑成正文
+    expect(inline.message).toContain(`「${'a'.repeat(40)}…」`);
   });
 
-  it('删除**内联文本**：必须说"30 天内还能恢复"（否则用户会白白放弃一次可用的恢复）', () => {
-    const spec = deleteConfirmSpec({ type: 'Text', text: 'a'.repeat(80), hasData: false });
-    expect(spec.message).toContain('30 天内还能从回收站恢复');
-    expect(spec.message).not.toContain('不可恢复');
-    // 长正文只取开头，避免把一行对话框撑成正文
-    expect(spec.message).toContain(`「${'a'.repeat(40)}…」`);
-  });
-
-  it('批量删除：两种后果都要说，且标题带上条数', () => {
+  it('批量删除：标题带条数，正文说明 30 天内可恢复', () => {
     const spec = batchDeleteConfirmSpec(7);
     expect(spec.title).toBe('删除选中的 7 条记录？');
-    expect(spec.message).toContain('不可恢复');
-    expect(spec.message).toContain('内联文本 30 天内可从回收站恢复');
+    expect(spec.message).toContain('30 天内可以从回收站恢复');
     expect(spec.confirmLabel).toBe('删除 7 条');
   });
 
@@ -483,23 +478,23 @@ describe('menus · 菜单项构造（判据是产品决定，不是实现细节�
     expect(labelOf(items)).toContain('取消置顶');
   });
 
-  it('回收站：主操作是"恢复"，且带数据文件的记录**禁用并说明原因**', () => {
+  it('回收站：主操作是"恢复"，且**所有记录都能恢复**（不再按 hasData 禁用）', () => {
     const restorable = rowMenuItems(
       { type: 'Text', text: 'x', isDeleted: true, hasData: false },
       handlers,
     ) as MenuItem[];
     expect(labelOf(restorable)).toEqual(['预览', '复制内容', '恢复到历史记录', '彻底删除']);
-    expect(restorable.find((i: MenuItem) => i.label === '恢复到历史记录')).toMatchObject({ disabled: false });
+    expect(restorable.find((i: MenuItem) => i.label === '恢复到历史记录')?.disabled, '恢复不禁用').toBeFalsy();
 
-    const lost = rowMenuItems(
+    // 2026-09-22（ADR D29）：带数据文件的记录同样可恢复（真回收站保留了数据），
+    // 于是"不可恢复（数据已清除）"那一项整个消失 —— 它描述的是上游"软删即毁数据"的语义。
+    const withData = rowMenuItems(
       { type: 'Image', dataName: 'a.png', isDeleted: true, hasData: true },
       handlers,
     ) as MenuItem[];
-    expect(lost.find((i: MenuItem) => i.icon === 'undo')).toMatchObject({
-      label: '不可恢复（数据已清除）',
-      disabled: true,
-    });
-    expect(labelOf(lost)).not.toContain('置顶'); // 回收站里不提供置顶
+    expect(withData.find((i: MenuItem) => i.icon === 'undo')).toMatchObject({ label: '恢复到历史记录' });
+    expect(withData.find((i: MenuItem) => i.icon === 'undo')?.disabled, '不再禁用').toBeFalsy();
+    expect(labelOf(withData)).not.toContain('置顶'); // 回收站里不提供置顶
   });
 
   it('排序菜单：当前字段打勾；点同一字段翻转方向，换字段保留方向', () => {

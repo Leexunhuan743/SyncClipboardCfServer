@@ -27,6 +27,20 @@ export async function clearAllHistory(env: Bindings): Promise<number> {
   return entities.length;
 }
 
+// 清空**回收站**：删行 + 清扫它们的数据目录（2026-09-22，ADR D29）。
+//
+// 与上面的 `clearAllHistory` 同一个形状（先删行、再按集合清扫，避免"先清前缀再删行"那种
+// DELETE 失败就整库悬空的顺序）；差别只在取行的范围（已删除 vs 全部）。
+// 为什么必须有这一趟清扫：真回收站里躺的是**真数据** —— 只删行等于把字节留在 R2 里等孤儿阶段
+// （最长 20 分钟），而用户点「清空回收站」的期待就是立刻腾空间。
+export async function purgeTrash(env: Bindings): Promise<number> {
+  const { deleted, entries } = await new HistoryDb(env.DB).purgeDeletedRecords();
+  await new R2Storage(env.R2).deleteHistoryDirs(
+    entries.map((entry) => workingDirPrefix(entry.type, entry.hash)),
+  );
+  return deleted;
+}
+
 export type HistoryUpdateResult =
   | { kind: 'notFound' }
   | { kind: 'conflict'; entity: HistoryRecordEntity } // 版本判定未通过（上游语义为 409）
@@ -46,8 +60,9 @@ export async function applyHistoryUpdate(
   // 与 PUT /SyncClipboard.json、POST /api/history 一致：广播在响应返回前 await 完成。
   // 裸调用是 floating promise，Workers 不保证响应后继续执行，推送会非确定性丢失（F6）。
   await broadcast(env, 'RemoteHistoryChanged', entityToDtoWire(result.entity));
-  if (result.entity.isDeleted) {
-    await new R2Storage(env.R2).deleteHistoryWorkingDir(result.entity.type, result.entity.hash);
-  }
+  // **软删不再清数据目录**（2026-09-22，ADR D29）：回收站要能真的把记录（连同它的图片/文件）
+  // 拿回来，所以数据留到"真的没了"那一刻 —— 30 天硬删（`cleanup.ts` 的 hardDelete 阶段，
+  // 它本来就带批次清扫）或用户点「彻底删除」（`/ui/api/history/batch-purge`）时清。
+  // 与上游的差异（上游 `DeleteProfileDataIfNeed` 是 IsDeleted 为真就删）登记在 `docs/protocol.md` §10。
   return { kind: 'updated', entity: result.entity };
 }

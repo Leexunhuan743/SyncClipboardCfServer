@@ -166,11 +166,14 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
     expect(stats.totalFileSizeMB, 'history/ 被清空').toBeGreaterThan(0);
   });
 
-  it('Cron 清理真孤儿目录（无任何记录引用的 history/ 目录）', { timeout: 60_000 }, async (ctx) => {
+  it('Cron 不得误删**回收站记录**的数据（真回收站：软删保留数据）', { timeout: 60_000 }, async (ctx) => {
     if (!cronAvailable) return ctx.skip();
 
-    // 通过公开 API 无法直接写入「无记录引用的 history/ 对象」，故用软删记录间接构造：
-    // PATCH isDelete:true 会立即清掉其工作目录，随后 Cron 的孤儿扫描不应再误伤活跃记录。
+    // 2026-09-22（ADR D29）之前这条用例是用"软删记录"当**真孤儿**来构造的（那时软删会立刻清目录）。
+    // 改成真回收站之后软删**保留**数据，而"无记录引用的目录"已经无法通过公开 API 构造
+    // （彻底删除会连目录一起扫、30 天硬删也会）—— 于是这条改成守新契约：
+    // 软删（进回收站）之后，数据的**唯一**风险就是被孤儿阶段当成无人引用而删掉，
+    // 所以这里跑一轮真实的 Cron，断言数据仍在、且能原样取回。
     const name = `cron-del-${RUN}.bin`;
     const content = Buffer.from(`delete-me-${RUN}`);
     const hash = fileHash(name, content);
@@ -191,12 +194,24 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isDelete: true, version: 10_000, lastModified: new Date().toISOString() }),
     });
-    expect(del.status).toBe(200);
+    expect(del.status, '软删（进回收站）').toBe(200);
 
     expect(await triggerCron()).toBeLessThan(400);
 
-    // 已软删记录的数据不可再取回，且不应影响其它活跃数据
-    expect((await req(`/api/history/File-${hash}/data`)).status).toBe(404);
+    // 回收站里这条记录的数据必须还在（被孤儿阶段删掉就是"行还在、数据没了"）
+    const after = await req(`/api/history/File-${hash}/data`);
+    expect(after.status, '回收站记录的数据被 Cron 当孤儿删了').toBe(200);
+    expect(Buffer.from(await after.arrayBuffer()).toString(), '取回的字节必须原样').toBe(content.toString());
+
+    // 且它仍然可恢复（真回收站：连数据一起回来）
+    const restore = await req(`/api/history/File/${hash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isDelete: false, version: 20_000, lastModified: new Date().toISOString() }),
+    });
+    expect(restore.status, '带数据文件的回收站记录必须能恢复（上游那条守卫已去掉）').toBe(200);
+    const restored = (await (await req(`/api/history/File-${hash}`)).json()) as { isDeleted: boolean };
+    expect(restored.isDeleted, '恢复后回到活跃列表').toBe(false);
   });
 
   it('Cron 软删记录时广播 RemoteHistoryChanged（客户端历史 UI 依赖的副作用）', { timeout: 60_000 }, async (ctx) => {

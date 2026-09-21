@@ -23,11 +23,11 @@ export function rowMenuItems(item, handlers) {
   ];
 
   if (item.isDeleted) {
-    // 回收站：只有"无数据文件"的记录能恢复（判据与服务端守卫一致，见 `restoreItem`）
+    // 回收站：所有记录都能恢复（2026-09-22，ADR D29）。此前按 `hasData` 禁用是上游语义
+    // （软删即清数据 ⇒ 带数据的记录恢复必 404）的直接后果，真回收站之后不再成立。
     items.push({
-      label: item.hasData ? '不可恢复（数据已清除）' : '恢复到历史记录',
+      label: '恢复到历史记录',
       icon: 'undo',
-      disabled: item.hasData,
       run: () => handlers.onRestore(item),
     });
   } else {

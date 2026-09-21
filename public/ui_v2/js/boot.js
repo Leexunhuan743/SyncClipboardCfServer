@@ -785,13 +785,8 @@ function boot() {
   }
 
   async function restoreItem(item) {
-    // 已删除且**有数据文件**的记录不能恢复：软删时数据文件已清除，
-    // 服务端会返回 404（`db.ts` 的守卫）。列表侧已禁用按钮并给出原因，
-    // 这里再判一次是防御（批量路径也会走到）。
-    if (item.hasData) {
-      toasts.error('这条记录的数据文件在删除时已清除，无法恢复');
-      return false;
-    }
+    // 2026-09-22（ADR D29）：所有记录都能恢复（真回收站保留了数据文件），此前那道
+    // "有数据文件就不许恢复"的服务端守卫已去掉，这里也不再预判。
     try {
       await api.patch(item, { isDelete: false });
       store.patch({ items: state().items.filter((i) => i.key !== item.key) });
@@ -1073,12 +1068,8 @@ function boot() {
     const field = name === 'star' ? 'starred' : name === 'pin' ? 'pinned' : 'isDelete';
     const value = name === 'restore' ? false : true;
 
-    // 恢复只对"无数据文件"的记录有效：带数据文件的软删记录恢复不了（服务端 404）
-    const usable = name === 'restore' ? items.filter((item) => !item.hasData) : items;
-    if (usable.length === 0) {
-      toasts.error('选中的记录都带数据文件，删除时数据已清除，无法恢复');
-      return false;
-    }
+    // 恢复对**所有**记录有效（2026-09-22，ADR D29：真回收站保留数据，服务端的守卫已去掉）
+    const usable = items;
 
     try {
       const result = await api.batchUpdate(usable, { [field]: value });

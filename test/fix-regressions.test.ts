@@ -372,7 +372,7 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(unauth.headers.get('www-authenticate')).toContain('Basic');
   });
 
-  it('F22 · GET /file 在最新同名记录的数据缺失时回退到更旧的同名记录（上游 File.Exists 过滤语义）', { timeout: 60_000 }, async () => {
+  it('F22 · GET /file 取同名记录里最新的那条（LastAccessed 倒序）', { timeout: 60_000 }, async () => {
     const name = `fallback-${RUN}.bin`;
     const c1 = Buffer.from('first-version-content');
     const c2 = Buffer.from('second-version-content');
@@ -401,7 +401,10 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(res.status).toBe(200);
     expect(Buffer.from(await res.arrayBuffer()).toString()).toBe(c2.toString());
 
-    // 删除最新记录的数据（软删会清理其工作目录）
+    // 软删最新记录（进回收站）。2026-09-22（ADR D29）起**软删不再清数据目录**，所以这条记录的
+    // 数据仍在 R2 里 —— `/file/{name}` 于是照旧命中它（C2）。这是**有意的**：
+    // 「数据缺失 → 回退到更旧的同名记录」是另一件事，它的守卫搬到了单元层
+    // （`test/fixes.test.ts` 的「同名记录回退」用例：用假桶删掉新记录的对象，再走真实路由）。
     const del = await req(`/api/history/File/${fileHash(c2)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -409,10 +412,9 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     });
     expect(del.status).toBe(200);
 
-    // 关键断言：回退到更旧的同名记录（修复前：命中最新记录后对象缺失 → 直接 404）
     res = await req(`/file/${name}`);
     expect(res.status).toBe(200);
-    expect(Buffer.from(await res.arrayBuffer()).toString()).toBe(c1.toString());
+    expect(Buffer.from(await res.arrayBuffer()).toString(), '回收站保留数据 ⇒ 仍返回最新那条').toBe(c2.toString());
   });
 
   it('F23 · profileId / PATCH type 接受数字枚举（上游 Enum.TryParse 语义）', async () => {

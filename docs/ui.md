@@ -389,9 +389,13 @@ Worker
       `batchPurgeConfirmSpec`，与 `deleteConfirmSpec` 的差别（软删=进回收站 vs 彻底删除=行也没了）
       必须写在句子里的。
     · 服务端**只删 `IsDeleted != 0` 的行**（判据在 SQL 里）：活跃记录走不到这条路径 ——
-      "绕过回收站直接真删"不是本界面的能力。
+      "绕过回收站直接真删"不是本界面的能力；删成功后**顺带清掉它的数据目录**（ADR D29 起回收站里
+      是真数据，这条出口的语义就是立刻连字节一起没）。
+    · **「恢复」不再按 `hasData` 禁用**（2026-09-22，ADR D29）：真回收站保留了数据文件，两类记录
+      都能恢复（服务端那条"有数据就不许恢复"的上游守卫已经去掉）。于是界面里**没有**"不可恢复"
+      这个状态，也没有按 `hasData` 预筛批量恢复的分支。
     判据：`list.js` 的 `buildActions`（回收站分支）+ 选择条 + `main.js` 的 purgeItem/batchPurge +
-    `docs/ui.md` §5 的 `/ui/api/history/batch-purge` 行。
+    `docs/ui.md` §5 的 `/ui/api/history/batch-purge` 行 + `docs/protocol.md` §10 的两行偏离登记。
 28. **长批量在途可中止，中止点是"批"的边界**（2026-09-21，`progress.md` §127）：确认框**在途**时
     「取消」变成「**中止**」（✕ 与 Esc 仍在途挡住 —— F2 的理由不变：在途关框会让调用方把"已成功"
     读成"用户取消"）。点中止**不关框**：停掉后续批次，把「已生效 N 条」写在框里（`batchAbortedText`）。
@@ -474,12 +478,12 @@ Worker
 | PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`） | 400/404/409 |
 | POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（**单次 ≤100 条**，逐条走同一条写路径；**有界并发 10**（2026-09-21：串行是瓶颈——生产实测 100 条删除 66s，并发后 ~5s；总量子请求不变、仍在 1000 上限内）；更多由界面按 100 分片串行发）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
 | POST | `/ui/api/history/batch-meta` | 批量取记录（**含完整正文**）：`{items:[{type,hash}]}`（**单次 ≤100 条**，超出由界面分片串行发）→ `{items:[完整 HistoryRecordDto]}`。用于「选中多条 → 一起复制/下载」——列表里的正文被服务端截断到 500 字符，而逐条走单条端点是 O(N) 次请求；**只接受 `application/json`**（与 batch-update / clear 同一条纵深防御） | 400 / 415 |
-| POST | `/ui/api/history/batch-purge` | 回收站的**彻底删除**：`{items:[{type,hash}]}`（**单次 ≤100 条**）→ `{purged, failed}`。**本地纯硬删**：只删 `IsDeleted != 0` 的行（判据写在 SQL 里 ⇒ 活跃记录删不掉、不许绕过回收站）；**不广播**（理由同 clear 的三条）、**不碰 R2**（软删时数据目录已清，残留由清理任务的孤儿阶段兜底）⇒ 每条 **1 次 D1 子请求**（对照：软删每条 6 次）。上游没有这个能力（它的硬删是 30 天定时任务），属本站自己的面，`docs/protocol.md` §10 无需登记 | 400 / 415 |
+| POST | `/ui/api/history/batch-purge` | 回收站的**彻底删除**：`{items:[{type,hash}]}`（**单次 ≤100 条**）→ `{purged, failed}`。**本地纯硬删**：只删 `IsDeleted != 0` 的行（判据写在 SQL 里 ⇒ 活跃记录删不掉、不许绕过回收站）；**不广播**（理由同 clear 的三条）、**每条顺带清掉它的数据目录**（+1 次 R2 列举）—— 2026-09-22（ADR D29）起回收站里是真数据，彻底删除的语义就是立刻连字节一起没。上游没有这个能力（它的硬删是 30 天定时任务），属本站自己的面，`docs/protocol.md` §10 无需登记 | 400 / 415 |
 | POST | `/ui/api/history/clear` | 清空历史：`{scope:'trash'\|'all'}`。trash = 只删已删除行并返回计数（不物化整批行）；all = 与协议 `DELETE /api/history/clear` **共用** `historyOps.clearAllHistory`（先删行，再按 `clearAll` 返回的**实体集合**删工作目录——最坏漏删孤儿目录，不会误删并发写入的新记录）。**不逐条广播**（上游的广播触发点清单里没有 clear，见 §6 的说明；跨标签页收敛靠 `/ui/api/poll` 的计数变化） | 400 / 415 |
 | POST | `/ui/api/hub-ticket` | 签发一张 Hub 连接票据（`{token, path}`），供前端建立 WebSocket；DO 打不通时 503（前端据此继续轮询） | 503 |
 | GET | `/ui/api/integrity` | 数据完整性自检：`{checkedAt, recordsWithData, historyObjects, missingCount, missing[], missingTruncated}`。成本 = 1 次 D1 + `ceil(对象数/1000)` 次 R2 列举（**不逐条 HEAD**）。⚠️ hash 含路径分隔符的**坏行**（只能带外写入 —— 三条写路径都拒）按「取不到」计入 `missingCount` 并列进清单：不是 500、也不是静默跳过（2026-09-20；此前 `historyKey()` 的断言会让整个自检 500 —— 而它恰恰是数据坏掉时唯一该工作的诊断面） | — |
 | PUT | `/ui/api/settings` | 保留策略的在线调整：`{retention:{retentionMinutes, maxSavedHistoryCount, retentionSource, maxCountSource}}`；`null` = 清除覆盖、`0` = 关闭该阶段。**没有对应的 GET**：读取走 `/ui/api/info` 的 `retention`（同一份 `readRetentionSettings`，连通来源字段一起给） | 400 / 415 |
-| GET | `/ui/api/statistics` | 官方统计 + 按类型分布。**三个计数键口径不同**：`byType` 随 `?deleted=true` 走（工具栏的类型计数要与当前视图同源），`byTypeActive` **恒为活跃口径**（统计条「存储占用」的明细用它——已删记录的 R2 文件在软删时就删了）；`starredCountActive` / `starredCountDeleted` 是**按视图各一个的收藏计数**（都是全表聚合、与请求的 `deleted` 无关，两个一起给）——统计条「已收藏」那一格与工具栏「收藏」筛选同屏，卡片用**全库**口径（协议 DTO 的 `starredCount`，含回收站里的行）会出现"卡片说 12、点开筛选只有 9"（2026-09-21 dogfood 实测） | 400 参数非法 |
+| GET | `/ui/api/statistics` | 官方统计 + 按类型分布。**三个计数键口径不同**：`byType` 随 `?deleted=true` 走（工具栏的类型计数要与当前视图同源），`byTypeActive` **恒为活跃口径**（统计条「存储占用」的明细用它；注意 2026-09-22（ADR D29）起删除**不再**立刻释放空间——数据要在回收站留 30 天，那条明细与「存储占用」反映的都是 R2 的真实占用）；`starredCountActive` / `starredCountDeleted` 是**按视图各一个的收藏计数**（都是全表聚合、与请求的 `deleted` 无关，两个一起给）——统计条「已收藏」那一格与工具栏「收藏」筛选同屏，卡片用**全库**口径（协议 DTO 的 `starredCount`，含回收站里的行）会出现"卡片说 12、点开筛选只有 9"（2026-09-21 dogfood 实测） | 400 参数非法 |
 | GET | `/ui/api/overview` | **首屏合成快照**：一次往返拿到 `{stats, byType, byTypeActive, starredCountActive, starredCountDeleted, marker, info, serverTime}` —— 统计、类型计数、变更标记、部署信息、服务端时间**同源**（数字与列表来自同一瞬间，不会「控件说 1009、列表说 1008」）。`?deleted=true` 时 `byType` 随视图走（`byTypeActive` 恒活跃）；两个 `starredCount*` 与 `byTypeActive` 一样**恒为全表聚合**、与请求视图无关，前端按当前视图取用。⚠️ 这四个计数是**顶层**字段（快照把 stats 与"随视图的计数"并排放，`/ui/api/statistics` 则是铺平的一个对象）——前端落地时漏搬任何一个都会让那一格静默回落成 0（2026-09-21 实测踩过）。**只读、无副作用**，且统计层只算一次（此前单次请求要列举两遍 R2 全桶，见 O-01）。**不含 `activity`**：那是独立的一天粒度查询，前端在列表落地后单独拉 | 400 参数非法（`deleted` 非法值 → 400 而不是 500） |
 | GET | `/ui/api/activity` | 活动趋势（概览带的趋势图 + 抽屉明细）：`?days`（默认 14，上限 **90**）`&tz`（`getTimezoneOffset()` 的分钟数，UTC+8 ⇒ −480）→ `{days:[{day,total,Text,Image,File,Group}], max}`。「一天」按**调用方时区**切分——服务端只知道 UTC，按 UTC 切会让 UTC+8 的用户在早上 8 点前看到的"今天"其实是昨天 | 400 `invalid_range`（days / tz 越界） |
 | GET | `/ui/api/info` | 部署信息（客户端该填的地址、版本、传输、保留策略、存储；`cleanup` 为清理状态：`lastRunAt` / `lastError` / 各阶段游标） | — |
@@ -494,16 +498,18 @@ Worker
    事故误删）。界面据此渲染「数据不可用」，而不是裂图或静默失败。
 3. **`sort` 用 `Object.hasOwn` 做白名单**：`'constructor' in SORT_COLUMNS` 为真（走原型链），
    随后把原生函数源码插进 `ORDER BY` → SQL 语法错误 500，白名单形同虚设（审查代理发现，已修）。
-4. **删除是软删，但数据文件立即清除**：`PATCH {"isDelete":true}`（单条与批量同一条写路径）置 `IsDeleted=1`
-   并**立即删除 R2 数据目录**；D1 行在 **30 天**（`cleanup.ts` 的 `DELETED_RETENTION_DAYS`）内仍存在，
-   **正文经协议 API 仍可读**，到期才由清理任务硬删（D1 行 + R2 目录）。这是与上游 `HistoryCleaner`
-   一致的语义（协议面对齐，不单边偏离）。界面的确认文案按**有无数据文件**分开表述：
-   带数据文件的记录 →「会立即清除数据文件（不可恢复），仅元数据保留 30 天后彻底清除」；
-   无数据文件的内联文本 →「30 天内还能从回收站恢复」——统一写成前者会让人以为内容还在、可以反悔，
-   统一写成后者又会让可恢复的记录被白白放弃。
-   **回收站视图**（`deleted=true`）据此设计：所列记录里只有「数据文件为空」的那些能被恢复
-   （`db.ts` 的守卫：`isDelete=false` 且 `existing.transferDataFile !== ''` → 404），
-   界面按 `hasData` 判定并禁用不可恢复的按钮、给出原因，而不是让用户白点一次 404。
+4. **删除是软删，数据文件保留到"真的没了"那一刻**（2026-09-22 改，ADR D29）：`PATCH {"isDelete":true}`
+   （单条与批量同一条写路径）置 `IsDeleted=1`，**数据文件不动** —— 到「30 天硬删」（`cleanup.ts` 的
+   `DELETED_RETENTION_DAYS`，批次清扫）或用户点「彻底删除」/「清空回收站」时才连目录一起清。
+   期间 D1 行仍在、**正文经协议 API 仍可读**、数据的 `GET …/data` 也照常可取（回收站里的图片因此
+   能直接预览）。
+   ⚠️ **这是有意偏离上游**：上游 `DeleteProfileDataIfNeed` 是 `IsDeleted` 为真就删目录
+   （`HistoryService.cs:80`），于是"恢复"对带数据文件的记录必然失败（同文件 `:64` 那条守卫）。
+   两条本实现都放开了 —— 回收站因此对**图片/文件**也成立；改之前它只是"元数据墓碑"，
+   这正是用户报的"回收站定位不对、图片放进去就回不来"。偏离逐条登记在 `docs/protocol.md` §10。
+   界面的确认文案**不再按有无数据文件分叉**（两种情况都能拿回来），统一说
+   「30 天内可以从回收站恢复（数据文件同样保留），之后自动彻底清除」。
+   **回收站视图**（`deleted=true`）：所有记录都可恢复；「彻底删除」是"立刻清掉"的出口（行 + 数据目录）。
    注意两个期限不是同一个数字：活跃记录的保留期是 `HISTORY_RETENTION_MINUTES`（默认 7 天，
    过期的未收藏/未置顶记录被软删），30 天是**已删除记录**的硬删期限。
 

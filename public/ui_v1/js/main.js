@@ -629,10 +629,9 @@ async function toggleFlag(item, field, value) {
 
 async function deleteItem(item) {
   // 文案口径与实现逐条对齐，且由 `messages.js` 单点承载（V1 自己那份，可与 V2 的对等守卫比对）：
-  //   带数据文件 → 软删**立即清掉 R2 数据文件**（不可恢复），只有 D1 元数据保留 30 天；
-  //   无数据文件（内联文本）→ 内容就在这一行里，30 天内可从回收站恢复。
-  // 两者写成同一句话会骗人：说「30 天后才彻底清除」让人以为内容还在（对前者是错的），
-  // 而说「不可恢复」又会让后者的用户白白放弃一次可用的恢复。
+  // 2026-09-22（ADR D29）起**删除不再销毁数据** —— 记录（连同数据文件）在回收站留 30 天、期间可恢复；
+  // 想立刻清掉字节要用回收站里的「彻底删除」。此前那句"带数据文件 → 立即清除、不可恢复"
+  // 描述的是上游语义，已经不成立，别再写回去。
   const spec = deleteConfirmSpec(item);
   const ok = await confirm.ask({
     title: spec.title,
@@ -677,7 +676,7 @@ async function restoreItem(item) {
   } catch (error) {
     if (handleAuthError(error)) return false;
     if (error.status === 404) {
-      toasts.error('这条记录的数据文件已被清除，服务端不再允许恢复');
+      toasts.error('这条记录已经不在服务器上了（可能已被「彻底删除」或由清理任务删除）');
       return false;
     }
     if (error.status === 409) {
@@ -794,30 +793,20 @@ async function batchFlag(action) {
 async function batchRestore() {
   const chosen = [...store.get().selection.values()];
   if (chosen.length === 0) return false;
-  // 预筛：带数据文件的记录服务端**一定**拒绝恢复（软删时数据文件已清，见 db.ts 的守卫），
-  // 把它们塞进请求只会让那批的"未生效"多出几条噪音。判据与行内「恢复」按钮同源（`hasData`）。
-  const restorable = chosen.filter((item) => !item.hasData);
-  const blocked = chosen.length - restorable.length;
-  if (restorable.length === 0) {
-    toasts.error(`选中的 ${blocked} 条都带数据文件：数据在删除时已被清除，服务端不允许恢复。`);
-    return false;
-  }
   const ok = await runBatch({
-    items: restorable,
     update: { isDelete: false },
-    title: `恢复选中的 ${restorable.length} 条？`,
-    // 这一句必须说在前面——否则用户会以为失败是 bug，而不是服务端的既定语义。
-    message: blocked
-      ? `另有 ${blocked} 条带数据文件（数据在删除时已被清除），服务端不允许恢复，本次不会提交它们。`
-      : '没有数据文件的记录会回到历史列表。',
-    confirmLabel: `恢复 ${restorable.length} 条`,
+    title: `恢复选中的 ${chosen.length} 条？`,
+    // 2026-09-22（ADR D29）：**不再预筛 `hasData`** —— 真回收站保留了数据，带数据文件的记录
+    // 恢复时会连数据一起回来（服务端那条"有数据就不许恢复"的守卫已经去掉）。
+    message: '这些记录会回到历史列表，数据文件一并恢复。',
+    confirmLabel: `恢复 ${chosen.length} 条`,
     // 恢复同样可逆（再删一次即可），且失败条数会在提示条里如实报出
     destructive: false,
     applyLocally: (items) => {
       for (const item of items) list.removeItem(item.key);
     },
   });
-  if (ok) toasts.info(`已恢复 ${restorable.length} 条`);
+  if (ok) toasts.info(`已恢复 ${chosen.length} 条`);
   return ok;
 }
 

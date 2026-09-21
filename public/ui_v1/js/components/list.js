@@ -106,9 +106,8 @@ function buildActions(item, actions) {
   if (item.isDeleted) {
     // 回收站同样用四个槽位：**恢复**固定在槽 1（与活跃视图的"预览"同位），
     // **彻底删除**固定在槽 4（与活跃视图的"删除"同位）—— 两个动作都保住肌肉记忆。
-    // 能否恢复由**服务端的守卫**决定：已删除且数据文件名空（transferDataFile === ''）才允许把
-    // IsDeleted 置回 0；带数据文件的记录在软删时已清掉数据，服务端会返回 404，故这里直接禁用
-    // 并说明原因，不让用户白点一次。
+    // 恢复**不再按 `hasData` 禁用**（2026-09-22，ADR D29）：改成真回收站之后，软删不再清数据，
+    // 带数据文件的记录恢复时会连数据一起回来（这条此前是上游语义：软删即毁数据 ⇒ 恢复必失败）。
     return el('div', { class: 'row-actions' }, [
       actionButton({
         action: 'restore',
@@ -116,8 +115,7 @@ function buildActions(item, actions) {
         icon: 'undo',
         run: () => actions.onRestore(item),
         successLabel: '已恢复',
-        disabled: item.hasData,
-        title: item.hasData ? '数据文件已随删除清除，不可恢复' : '恢复到历史记录',
+        title: '恢复到历史记录（含数据文件）',
       }),
       actionSlot(null),
       actionSlot(null),
@@ -423,7 +421,7 @@ export function createList(actions) {
         ? `没有匹配「${search}」的记录。可以换个关键词，或清除筛选条件。`
         : '当前筛选条件下没有记录。可以清除筛选条件查看全部。'
       : recycle
-        ? '删除的记录会在这里保留 30 天：元数据仍在（可恢复的会给出「恢复」按钮），数据文件在删除时已被清除。'
+        ? '删除的记录（连同数据文件）会在这里保留 30 天，期间可以恢复；30 天后自动彻底清除，也可以现在就用「彻底删除」立刻清掉。'
         : '在任意设备上复制内容后，SyncClipboard 客户端会把它同步到这台服务器，记录会出现在这里。';
     const buttons = [];
     if (filtered || recycle) {

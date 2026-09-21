@@ -363,16 +363,31 @@ export class HistoryDb {
     }));
   }
 
-  // 硬删全部已删除记录（回收站清空；UI 面专用，协议无此语义），只返回条数。
-  // 刻意**不用** `DELETE ... RETURNING *`：回收站整批行（本机 1318 条，带 FilePaths/Text）会被
-  // 物化进 isolate 内存，而调用方只要一个计数（`meta.changes` 就是 D1 给的行数）。
-  // 数据文件不必处理——软删时已随记录删除（见 historyOps 的删除路径），残留由孤儿阶段兜底。
-  async purgeDeletedRecords(): Promise<number> {
+  // 清空回收站（删行）。**同时返回被删记录的 (Type, Hash)** —— 调用方（historyOps.purgeTrash）
+  // 要用它去清扫 R2 目录。
+  //
+  // 2026-09-22（ADR D29）之前这里只删行就够：软删时数据目录已经清掉了。改成真回收站之后，
+  // 回收站里躺的是**真的数据**，不扫就是"把行抹掉、字节留在 R2 里等孤儿阶段"（最长 20 分钟，
+  // 而且用户点「清空回收站」的期待就是立刻腾空间）。
+  //
+  // 只取两列而不是整行：原注释里"不 RETURNING 整批行"的顾虑是 FilePaths/Text 会进 isolate 内存，
+  // 而 (Type, Hash) 两列加起来的体积可以忽略。
+  async purgeDeletedRecords(): Promise<{
+    deleted: number;
+    entries: { type: ProfileType; hash: string }[];
+  }> {
+    const rows = await this.db
+      .prepare(`SELECT Type, Hash FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted != 0`)
+      .bind(HARD_CODED_USER_ID)
+      .all<{ Type: number; Hash: string }>();
     const res = await this.db
       .prepare(`DELETE FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted != 0`)
       .bind(HARD_CODED_USER_ID)
       .run();
-    return res.meta.changes ?? 0;
+    return {
+      deleted: res.meta.changes ?? 0,
+      entries: (rows.results ?? []).map((r) => ({ type: r.Type as ProfileType, hash: r.Hash })),
+    };
   }
 
   // 彻底删除**一条已删除的记录**（回收站每行的「彻底删除」）。2026-09-21 新增。
@@ -380,9 +395,10 @@ export class HistoryDb {
   // 判据全在 SQL 里，且是这个接口的**安全前提**：只删 `IsDeleted != 0` 的行 ⇒
   //   · 活跃记录删不掉（想真删必须先软删 —— 不允许绕过回收站）；
   //   · 不存在 / 已被清掉的返回 false，由调用方计进"未生效"。
-  // 成本 = **1 次 D1 子请求**：无预读、不广播、不碰 R2（软删时数据目录已清，残留由清理任务的
-  // 孤儿阶段兜底 —— 与 `purgeDeletedRecords`/`clear scope=trash` 同一条判据）。
-  // 对照：软删每条要 1 读 + 1 写 + 1 广播（+2 次 R2 目录清理），所以"彻底删除"反而更便宜。
+  // 成本 = **1 次 D1 子请求**（无预读、不广播、不碰 R2）。**R2 目录由调用方清扫**：
+  // 2026-09-22（ADR D29）起回收站里是真数据，删行不清目录就是把字节留给孤儿阶段（最长 20 分钟）——
+  // 路由那侧在删成功后调 `deleteHistoryWorkingDir`（与 `purgeTrash` 同一条判据）。
+  // 对照：软删每条要 1 读 + 1 写 + 1 广播（现在**不再**清目录），所以"彻底删除"仍略贵一点（多一次列举）。
   async purgeDeletedRecord(type: ProfileType, hash: string): Promise<boolean> {
     const res = await this.db
       .prepare(
@@ -455,10 +471,10 @@ export class HistoryDb {
       return { updated: false, entity: existing };
     }
 
-    // 已删除记录不允许被"取消删除"回退（上游 Update：IsDelete==false 且 IsDeleted 且有数据 → 404）
-    if (dto.isDelete === false && existing.isDeleted && existing.transferDataFile !== '') {
-      return { updated: null, entity: null };
-    }
+    // 上游这里有一条守卫：「已删除 + 有数据文件 + IsDelete=false」→ 拒绝（上游 `HistoryService.Update`
+    // 返回 (null,null)，本实现原样移植为 notFound）。**2026-09-22 去掉**（ADR D29）：既然软删不再
+    // 毁掉数据（见 historyOps.ts），恢复就该连数据一起回来 —— 否则"回收站"对图片/文件仍然是个
+    // 单向门。协议面的这条偏离登记在 `docs/protocol.md` §10。
 
     const versionBeforeUpdate = existing.version;
 
@@ -549,9 +565,15 @@ export class HistoryDb {
   // `history/Text_AB` 会误匹配 `history/Text_ABC/…`）。
   // 此前这里返回的是不带斜杠的 `Text_ABC`，导致 cleanup 的 `active.has(dir)` **恒为 false**：
   // 每小时 Cron 把 history/ 下**所有**工作目录（含活跃记录的数据文件）全部删除。
-  async listActiveWorkingDirs(): Promise<Set<string>> {
+  // 列举**所有**记录（含已删除）的工作目录名 —— 孤儿阶段的"被引用"参照集。
+  //
+  // ⚠️ 名字与查询在 2026-09-22 一起改（ADR D29）：此前是 `listActiveWorkingDirs` + `IsDeleted = 0`，
+  // 那是因为软删时数据目录已被清掉、已删记录不可能有目录。改成真回收站（软删保留数据）之后，
+  // **已删记录的目录必须算"有人引用"** —— 否则孤儿阶段会把整个回收站的数据每 20 分钟删一次，
+  // 而且看不出来（回收站里那行还在，只是点恢复/预览时数据不见了）。
+  async listReferencedWorkingDirs(): Promise<Set<string>> {
     const res = await this.db
-      .prepare(`SELECT Type, Hash FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted = 0`)
+      .prepare(`SELECT Type, Hash FROM HistoryRecords WHERE UserId = ?1`)
       .bind(HARD_CODED_USER_ID)
       .all<{ Type: number; Hash: string }>();
     return new Set((res.results ?? []).map((r) => `${ProfileType[r.Type as ProfileType]}_${r.Hash}/`));

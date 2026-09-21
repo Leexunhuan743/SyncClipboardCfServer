@@ -9817,3 +9817,50 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 过一会儿才动"。
 
 
+## 129. 回收站改成"真回收站"：软删保留数据，30 天硬删才清（2026-09-22）
+
+**触发**：用户报「回收站的定位不对 —— 图片放入之后就没法放回去」，让我评估设计是否合理。
+评估（`../SyncClipboard` 上游源码逐条核对 + 三条路的代价算账）摆在用户面前后，用户**点选 B**：
+把回收站做成真的。
+
+**上游事实**（读的是本机上游源码，不是猜的）：
+
+| 行为 | 上游 |
+|---|---|
+| 软删时的数据处置 | `HistoryService.Update` → `DeleteProfileDataIfNeed` → `DeleteProfileData`：**`IsDeleted` 为真就删工作目录**（`:80`） |
+| 恢复带数据文件的已删记录 | **拒绝**（`:64`：`IsDelete is false && IsDeleted && TransferDataFile 非空` → `(null,null)`，客户端拿 404） |
+| 30 天硬删 | `RemoveOutOfDateDeletedRecords`：删行 + 幂等再删数据 |
+
+⇒ 对**文本**（无数据文件）回收站是真的；对**图片/文件**它是单向门 —— 实现忠实于上游，
+但"回收站"这个名字**过度承诺**了。
+
+**改法（B）—— 四处服务端 + 三处前端**：
+
+1. `historyOps.applyHistoryUpdate`：软删**不再**清 R2 目录；
+2. `db.updateHistory`：去掉上游那条"有数据就不许恢复"的守卫（模型里写清了它原来为什么在）；
+3. **`db.listActiveWorkingDirs` → `listReferencedWorkingDirs`，查询去掉 `IsDeleted = 0`** ——
+   这条最容易漏：孤儿阶段若继续按"只算活跃记录"求差集，回收站里的数据会被**每 20 分钟删一次**，
+   而症状是"行还在、点开数据没了"；
+4. 真删的两条路各自补清扫：`purgeTrash`（清空回收站：先取 `(Type,Hash)` 再删行再按集合清扫）、
+   `batch-purge`（每条删成功后 `deleteHistoryWorkingDir`）；30 天硬删无需改动 ——
+   `drainBatches` 本来就为每批预留了一次清扫（`applyRecordCleanup` → `sweepWorkingDirs`），
+   只是此前目录早被清掉、它是空转；
+5. 界面：删除确认文案**不再按 `hasData` 分叉**（统一"30 天内可以从回收站恢复（数据文件同样保留）"）、
+   回收站行的「恢复」不再禁用、批量恢复去掉 `hasData` 预筛、空态提示改写；V2 的 `rowops.js` /
+   `menus.js` / `boot.js` 三处同步（否则开发版会留着"不可恢复"的旧话术）。
+
+**被改掉的断言（都是钉旧契约的，同一次改掉）**：
+
+- `test/fixes.test.ts` F33：从"已软删记录的目录应被清"翻成"**必须保留**"（附理由：漏了就是上面第 3 条的坏法）；
+- `test/fixes.test.ts` 的 `listActiveWorkingDirs` 用例 → 改名 + 断言已删记录**在**集合里；
+- `test/cleanup.test.ts` 的"构造真孤儿"用例 → 改成守新契约：软删后跑一轮真实 Cron，**数据仍在且能原样取回**，
+  并断言**恢复成功**（带数据文件的记录此前必然 404）；
+- `test/ui-logic.test.ts`：删除文案两条 + V2 菜单一条，都改成新口径。
+
+**合同面的登记**：`docs/protocol.md` §10 新增两行（软删保数据 / 恢复放行，皆标为**有意偏离**并写了代价），
+`docs/ui.md` §5 第 4 条与 §3.3 硬约束 #27 重写。
+
+**验证**（见本轮实测记录）：本地三档（文本/图片/文件 × 小中大）走「删除 → 回收站里数据还在 →
+恢复连数据一起回来 → 彻底删除才清」；`/ui/api/integrity` 在删除状态下不报缺失；探针与全量套件见收尾。
+
+

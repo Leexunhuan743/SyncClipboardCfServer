@@ -49,16 +49,14 @@ export function renderRowOps({ item, onCopy, onDownload, onStar, onRestore, onMe
   // 而原来主操作是"复制"——"恢复"只能去 `⋯` 菜单里找，等于把该视图的首要任务藏起来了。
   // 判据用 `item.isDeleted`（它就在行的内容签名里，所以切进/切出回收站时行会正确重建）。
   //
-  // 不可恢复的记录（带数据文件的：软删时数据已清除，服务端会回 404）在这里**禁用并说明原因**，
-  // 与 `⋯` 菜单里的处置一致 —— 不让用户白点一次。
+  // 2026-09-22（ADR D29，与 V1 同一次改）：**不再按 `hasData` 禁用**。真回收站保留了数据，
+  // 带数据文件的记录恢复时会连数据一起回来 —— 此前禁用它是上游语义（软删即毁数据）的直接后果。
   if (item.isDeleted) {
-    const restorable = !item.hasData;
     wrap.append(
       iconButton({
         icon: 'undo',
-        label: restorable ? '恢复到历史记录' : '不可恢复',
-        title: restorable ? '恢复到历史记录' : '数据文件已随删除清除，不可恢复',
-        disabled: !restorable,
+        label: '恢复到历史记录',
+        title: '恢复到历史记录（含数据文件）',
         onClick: (button) => guarded(button, async () => {
           const ok = await onRestore(item);
           if (ok) flashOk(button);

@@ -28,26 +28,25 @@ function describeTarget(item) {
  * @returns {{ title: string, message: string, confirmLabel: string }}
  */
 export function deleteConfirmSpec(item) {
-  const after = item.hasData
-    ? '服务端会立即清除数据文件（不可恢复），仅元数据保留 30 天后彻底清除。'
-    : '这条记录没有数据文件，30 天内还能从回收站恢复。';
+  // 2026-09-22（ADR D29）：删除**不再**立即清数据文件 —— 回收站保留 30 天、期间可恢复（数据文件
+  // 一并保留），想立刻清字节要用回收站里的「彻底删除」。于是这一句**不再按 hasData 分叉**：
+  // 两种情况现在都能拿回来，而"能不能拿回来"正是用户按这个按钮前唯一要知道的事。
   return {
     title: '删除这条记录？',
-    message: `将删除 ${describeTarget(item)}。所有同步设备上的这条记录也会被删除；${after}`,
+    message: `将删除 ${describeTarget(item)}。所有同步设备上的这条记录也会被删除；30 天内可以从回收站恢复（数据文件同样保留），之后自动彻底清除。`,
     confirmLabel: '删除',
   };
 }
 
 /**
- * 批量删除的确认框文案。逐条差异（哪些带数据文件）在批量场景下无法一一列举，
- * 故这里把两种后果**都说出来**，而不是只挑一种。
+ * 批量删除的确认框文案。
  * @param {number} count
  */
 export function batchDeleteConfirmSpec(count) {
   return {
     title: `删除选中的 ${count} 条记录？`,
     message:
-      '所有同步设备上的这些记录也会被删除。带数据文件的记录会立即清除数据文件（不可恢复），仅元数据保留 30 天；内联文本 30 天内可从回收站恢复。',
+      '所有同步设备上的这些记录也会被删除；30 天内可以从回收站恢复（数据文件同样保留），之后自动彻底清除。',
     confirmLabel: `删除 ${count} 条`,
   };
 }

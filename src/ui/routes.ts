@@ -14,7 +14,7 @@ import { isAuthConfigured, verifyCredentials, drainRequestBody } from '../auth';
 import { issueSession, clearSession } from './session';
 import { uiAuthMiddleware, authenticateUi } from './guard';
 import { parseProfileType, parseHistoryRecordUpdateDto, historySizeMB } from '../serialization';
-import { applyHistoryUpdate, clearAllHistory } from '../historyOps';
+import { applyHistoryUpdate, clearAllHistory, purgeTrash } from '../historyOps';
 import {
   UiQueryError,
   listUiHistory,
@@ -544,7 +544,8 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   //   · **不做应答/版本判定** —— 硬删的语义就是"从库里拿掉"，没有可合并的并发语义；
   //   · **不广播** —— 与 `clear scope=trash` 同一判据（见下方 clear 的三条理由：上游广播触发点
   //     清单里没有删除；逐条广播会顶子请求上限；本站其它标签页靠 `/ui/api/poll` 收敛）；
-  //   · **不碰 R2** —— 软删时数据目录已经清掉，残留由清理任务的孤儿阶段兜底（同 clear）；
+  //   · **顺带清扫 R2 目录**（每条 +1 次列举）—— 2026-09-22（ADR D29）起回收站里是真数据，
+  //     彻底删除的语义就是立刻连字节一起没了；
   //   · 安全判据写在 SQL 里：只删 `IsDeleted != 0` 的行 ⇒ **活跃记录删不掉**（不许绕过回收站）。
   // ⇒ 每条 **1 次 D1 子请求**（对照：软删每条 6 次），100 条封顶 = 100 次，留的余量足够。
   guarded.post('/ui/api/history/batch-purge', async (c) => {
@@ -568,7 +569,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       return Response.json({ error: 'too_many_items' }, { status: 400 });
     }
 
-    const { db } = stores(c);
+    const { db, storage } = stores(c);
     const outcomes = await mapLimit(items, BATCH_UPDATE_CONCURRENCY, async (rawItem) => {
       const entry = rawItem as { type?: unknown; hash?: unknown };
       const ids =
@@ -576,7 +577,14 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
           ? parsePathIds(entry.type, entry.hash)
           : null;
       if (!ids) return 'invalid';
-      return (await db.purgeDeletedRecord(ids.type!, ids.hash)) ? null : `${entry.type}-${entry.hash}`;
+      if (!(await db.purgeDeletedRecord(ids.type!, ids.hash))) {
+        return `${entry.type}-${entry.hash}`;
+      }
+      // 行删掉了 ⇒ 顺手把它的数据目录清掉。**2026-09-22（ADR D29）起必需**：真回收站保留数据，
+      // 不扫就等于把字节留给孤儿阶段（最长 20 分钟），而"彻底删除"的语义就是立刻没了。
+      // 成本：每条 +1 次 R2 列举（目录不存在/为空时只有这一次），仍是本端点最便宜的那一段。
+      await storage.deleteHistoryWorkingDir(ids.type!, ids.hash);
+      return null;
     });
     let purged = 0;
     const failed: string[] = [];
@@ -609,10 +617,9 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     }
     const { db } = stores(c);
     if (scope === 'trash') {
-      // 回收站记录的 R2 目录在软删时就已删除，故只需删行；真残留由清理任务的孤儿阶段兜底。
-      // 只取计数、不 RETURNING 整批行：1318 条回收站记录里带 FilePaths 的全会进 isolate 内存，
-      // 而这些行唯一的用途是个数字（接口的调用方也不读它）。
-      return Response.json({ scope, deleted: await db.purgeDeletedRecords() });
+      // 先删行、再按集合清扫数据目录（`purgeTrash` 里写清了顺序与理由）。
+      // 2026-09-22（ADR D29）：回收站里躺的是**真数据**，不扫就是把它留给孤儿阶段（最长 20 分钟）。
+      return Response.json({ scope, deleted: await purgeTrash(c.env) });
     }
     // 清全部：与协议端点共用同一份实现（含成本与窄竞态的说明）
     return Response.json({ scope, deleted: await clearAllHistory(c.env) });

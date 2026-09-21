@@ -356,7 +356,7 @@ async function sweepWorkingDirs(
 
   for (const dir of dirs) {
     const owned = groups.get(dir);
-    if (owned === undefined) continue; // 目录下已无对象（软删时已清，或被本轮的更早批次删过）
+    if (owned === undefined) continue; // 目录下已无对象（被本轮的更早批次删过，或它本来就没有对象）
     keys.push(...owned);
     pendingDirs.push(dir);
     groups.delete(dir);
@@ -453,7 +453,7 @@ function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutco
 
 // 4) 孤儿对象清理：history/ 下存在对象、但 DB 无活记录引用的目录。
 // 比较双方**必须同为带尾斜杠的目录名**（映射的键从 R2 key 截取得 `Text_ABC/`，
-// `db.listActiveWorkingDirs` 也返回带斜杠形式）。形式不一致会让 `active.has(dir)` 恒为 false，
+// `db.listReferencedWorkingDirs` 也返回带斜杠形式）。形式不一致会让 `active.has(dir)` 恒为 false，
 // 从而把**所有**历史数据目录当成孤儿删除 —— 曾因此每小时清空一次 history/（见 F33）。
 //
 // 与旧实现的差别只在成本（语义不变）：复用 `historyGroups` 的一次列举（按实际页数记账），
@@ -467,7 +467,7 @@ async function cleanOrphans(run: CleanupRun): Promise<PhaseOutcome> {
   if (groups.size === 0) return { processed: 0, batches: 0, truncated: false };
 
   run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);
-  const active = await run.db.listActiveWorkingDirs();
+  const active = await run.db.listReferencedWorkingDirs();
 
   const orphanDirs = [...groups.keys()].filter((dir) => !active.has(dir));
   if (orphanDirs.length === 0) return { processed: 0, batches: 0, truncated: false };
