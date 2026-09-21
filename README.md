@@ -82,7 +82,7 @@ flowchart LR
 
 部署提供两种方式：本地命令行部署与 GitHub Actions 自动部署。
 
-两种方式部署出的 Worker 实例行为相同。在执行部署前，**必须先在 Cloudflare 账号中创建好 D1 数据库和 R2 存储桶，并将生成的真实 database_id 填入配置文件**。
+两种方式部署出的 Worker 实例行为相同。区别在于**资源由谁创建**：**方式一（命令行）**需要你先在 Cloudflare 建好 D1 数据库与 R2 存储桶，并把真实的 `database_id` 填进配置文件；**方式二（GitHub Actions）不需要** —— 工作流会在部署前按库名自动创建或复用它们（见方式二第 2 步）。
 
 ### 方式一：命令行部署（Wrangler CLI）
 
@@ -138,9 +138,12 @@ flowchart LR
 ### 方式二：GitHub Actions 自动部署
 
 1. **Fork 本仓库**到你自己的 GitHub 账号。
-2. **创建资源并回填 ID**：
-   在本地使用 wrangler 命令行，或直接在 Cloudflare 控制台网页中创建好 D1 数据库 `syncclipboard` 与 R2 存储桶 `syncclipboard`。
-   将获取到的真实 `database_id` 修改到你自己仓库的 `wrangler.toml` 中，并提交推送到 master 分支。
+2. **不用手工建资源**：CI 会在部署前**按库名**创建/复用 D1 数据库 `syncclipboard` 与 R2 存储桶 `syncclipboard`
+   —— 你**不需要**事先在 Cloudflare 上创建它们，也**不需要**把任何 `database_id` 填进 `wrangler.toml`
+   （仓库里那份 `database_id` 是**全零占位值**，部署时由 CI 在 runner 内注入真实 id、不回写仓库）。
+   因此 fork 之后**同步上游（`Sync fork`）也不会破坏部署**：每次都会按库名重新解析到同一个库。
+   > 想钉住到某个特定库（例如保护已有数据不被误重建）就设仓库变量 `D1_DATABASE_ID`；
+   > 想禁止 CI 自动建库（缺库时报错而不是建一个新空库）就设 `D1_BOOTSTRAP=false`。
 3. **配置 GitHub Secrets**：
    在 GitHub 仓库进入 `Settings` → `Secrets and variables` → `Actions` → `Secrets`，添加以下机密项：
    - `CLOUDFLARE_API_TOKEN`：Cloudflare API 令牌。在 Cloudflare 控制台「My Profile」→「API Tokens」中生成，需要拥有以下权限：
@@ -160,11 +163,15 @@ flowchart LR
    | `HISTORY_RETENTION_MINUTES` | `10080` | 历史记录保留时长（单位分钟，默认 10080 分钟即 7 天）。 |
    | `MAX_REQUEST_BODY_BYTES` | `50331648` | 单次上传请求体大小限制，默认 48 MiB（允许范围 256 KiB–64 MiB）。 |
    | `ENFORCE_STRONG_CREDENTIALS` | `false` | 设为 `true` 时，检测到弱密码会直接中断服务（返回 500）。默认仅打出安全警告。 |
+   | `D1_DATABASE_ID` | （未设置） | 钉住要绑定的 D1 库 id；不设置时按库名 `syncclipboard` 自动解析（不存在则创建）。它写在 GitHub 设置里，`Sync fork` 不会把它冲掉。 |
+   | `D1_BOOTSTRAP` | `true` | 是否允许 CI 在库不存在时**自动创建**。设为 `false` 则缺库直接报错 —— 适合「已有数据、怕误重建」的场景。 |
 
    > `MAX_SAVED_HISTORY_COUNT` 与 `HISTORY_RETENTION_MINUTES` 除了在此处通过变量设置，也可以在 Web 界面的「维护面板」中直接在线修改。设置会写入 D1 数据库的 Meta 表并立即生效，不需要重新部署。在界面中清空设置即可恢复使用这里的变量值。
 
 5. **触发部署**：
    推送代码变更到 master 分支，或者在 GitHub 仓库的 `Actions` 页面找到「Deploy」工作流点击「Run workflow」手动执行。CI 会自动跑完代码检查、测试套件并完成部署。
+   **部署完成后点开这次 run，Summary 里就有服务器地址**（含客户端该选什么类型、界面入口）。
+   完整链路：`quality`（typecheck + lint + 22 个套件）→ 解析/创建资源 → `Deploy Worker` → 同步凭据 → 只读冒烟检查。
 
 ---
 

@@ -8909,5 +8909,68 @@ run 是 `completed failure 0s`。0 秒不是"某一步失败"，是**解析期**
   冻结）⇒ 只补标注、不改内容；
 - `docs/protocol.md` §10 仍是 **47 数据行**（本轮只改行内容、未增删行），与其它文档引用的"47 行"一致。
 
+## 109. fork → 配 secret → 跑 Action → 拿到地址：资源自举（2026-09-21）
+
+**目标（用户原话）**：「一个人 fork 本项目到自己的仓库之后，触发配置好 secret 后触发 action 就可以丝滑的创建，
+得到一个地址；然后 sync commit 之后依旧可以正确的触发 action。」
+
+### 109.1 为什么"自动创建"卡在 D1 上（原理 + 本地证据）
+
+| 资源 | 寻址方式 | 缺了会怎样 | 证据（本地 wrangler 4.131.2 的 bundle 字符串 / CLI help） |
+|---|---|---|---|
+| R2 桶 | **按名字**（`bucket_name`） | `wrangler deploy` **会自己建** | bundle 里有 `Creating bucket ` 与 `bucket does not exist.` |
+| D1 库 | **按 UUID**（`database_id` 绑定） | **只报错**，不创建 | bundle 里有 `Couldn't find a D1 DB with the name or binding …`；而「自动 provision」那套（`experimental-provision` / `provision-bindings` / `provisioned-name`）在 `wrangler deploy --help` 与 `dev --help` 里**没有任何开关**（顶层 help 只列了 `triggers`/`websearch`/`tunnel` 三个 experimental **命令**）⇒ **不依赖它** |
+
+⇒ 结论：**要"零人工"就必须把 id 当运行时值**：部署前按**库名**解析出来注入 runner 的配置副本。
+`wrangler d1 execute <database>` 的参数说明正是 "The name or binding of the DB" —— 按名解析是 wrangler 的既有能力，
+只有**绑定的静态声明**必须写 id。
+
+### 109.2 落地（3 个文件）
+
+1. **`wrangler.toml`**：`database_id` 从写死的真实值改成**全零占位值** `00000000-…`，并就地写明
+   「占位 / 本地开发不读它 / CI 每次按库名注入」。⚠️ 实测确认：占位值下 `wrangler dev` 与全部套件照常
+   （本地 D1 由 miniflare 按 `binding` 建，与 id 无关）。
+2. **`.github/workflows/deploy.yml`**：把原来的「Check Cloudflare resources exist（**只做判定、不自动创建**）」
+   换成 **「Resolve Cloudflare resources（按库名解析；缺失则创建）」**，优先级：
+   ① 仓库变量 `D1_DATABASE_ID`（钉住，`Sync fork` 冲不掉）→ ② 按 `database_name` 查（分页遍历）→
+   ③ 查不到就创建（`D1_BOOTSTRAP=false` 可改为 fail-fast）。取到 id 后 `sed` 注入 **runner 的工作副本**、
+   断言注入成功、写 `$GITHUB_STEP_SUMMARY`，并留一行 `D1 id=…` 日志。
+   R2 按名字存在性判断 + 缺了建（幂等；即便不建，`wrangler deploy` 也会建）。
+   另外把冒烟步骤的末尾补成**「✅ 部署完成 + 服务器地址 + 客户端该选什么类型 + 界面入口」写进 run summary**
+   —— "得到一个地址"这件事要在 run 页面上一眼看到。
+3. **`README.md`**：方式二第 2 步从「创建资源并回填 ID」改成「不用手工建资源」并写明 `Sync fork` 之后照旧有效；
+   Variables 表补 `D1_DATABASE_ID` / `D1_BOOTSTRAP`；第 5 步说明地址在 run summary 里；
+   顺带订正开头那句「两种方式都必须先建资源再填 database_id」——它只对方式一成立（不然与方式二自相矛盾）。
+
+### 109.3 本地验证（四种场景，全过）
+
+CI 那段逻辑没法在本地对真 Cloudflare 跑（本地没有令牌），但它是最容易写错的一段 ⇒ 用
+**从 workflow 里抽出的真实脚本**（不是抄一份）+ 假 `curl` + 一个只覆盖该步骤三条过滤器的 `jq` 替身，
+跑四种场景（`.audits/_pool-probe/test-resolve-step.sh`，gitignored 的审计工件）：
+
+| 场景 | 期望 | 结果 |
+|---|---|---|
+| A R2/D1 全缺 | 建库 → 注入新 id → summary 标「本次新建」 | ✅ 12/12 断言 |
+| B 库已存在（`Sync fork` 之后的常态） | 复用既有 id → summary 标「直接复用」 | ✅ |
+| C 设了 `D1_DATABASE_ID` | 跳过按名解析，直接用钉子值 | ✅ |
+| D 缺库 + `D1_BOOTSTRAP=false` | 拒绝创建、exit 1、**不改** `database_id` | ✅ |
+
+顺带记两个本机环境坑（**CI 的 ubuntu 上都不存在**，写下来免得下次重踩）：
+① 本机 PATH 里 `bash` 被 **WSL 的 shim** 抢先 ⇒ 嵌套 bash 里既看不到 Windows 工具、也不继承 Windows 环境变量
+（所以"抽脚本"这一步单独在外层 shell 用 python 做）；② 本机（WSL 与 git-bash）都**没有 `jq`**（ubuntu runner 预装）。
+
+### 109.4 残留风险与边界（照实登记）
+
+1. **库被删 ⇒ 会建一个新的空库**（老数据不回来）：这是"零人工"的代价。缓解：创建时打 `::warning::` +
+   run summary 里显著标注；想彻底禁止就设 `D1_BOOTSTRAP=false`（缺库即报错）。
+2. **同名库冲突**：账号里若已有另一个叫 `syncclipboard` 的库，会被复用（可能不是你想绑的那个）⇒
+   用 `D1_DATABASE_ID` 钉住。
+3. **本地只验了脚本逻辑，没验真 API**：假 `curl` 的响应体是照官方 API 形态写的；若真实响应形状不同，
+   表现为 `jq` 取空 ⇒ 步骤会以 `::error::创建 D1 库失败` 或 `database_id 注入失败` **fail-loud 退出**（不会静默错绑）。
+   **端到端的真正证明只能来自一次真实 CI run** —— 下一节记结果。
+4. `wrangler.toml` 里的占位 id 意味着**手工 CLI 部署必须先自己 `d1 create` 再粘贴 id**（README 方式一已写明）。
+5. 与 §107 的关系：§107 修的是"`secrets` 写进 `if` 导致 workflow 解析失败"；本节把预检那一步从
+   "只判定"改成"解析/创建"，因此**§107 里引用的旧预检行为已不再适用**（本节的 109.2 是新的权威描述）。
+
 
 

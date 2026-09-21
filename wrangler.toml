@@ -7,10 +7,18 @@ compatibility_flags = ["nodejs_compat"]
 
 # D1：历史记录表 HistoryRecords + 元信息表 Meta（含当前剪贴板 Profile）
 # 创建：wrangler d1 create syncclipboard
+#
+# ⚠️ `database_id` 是**占位值**（全零 UUID），有两层原因：
+#   ① 它是"创建那一刻才产生的 UUID"，写死进仓库对 fork 的人一定是错的（那是上一个账号的 id）；
+#   ② 本地开发**不读**它 —— `wrangler dev` / `d1 execute --local` 用的是 miniflare 的本地库，
+#      绑定只按 `binding` 名建立，所以占位值不影响 `npm run dev` 与全部测试。
+# CI 的做法：部署前按**库名**（`database_name`）解析出真实 id，注入 runner 里的这份配置副本
+# （见 `.github/workflows/deploy.yml` 的 "Resolve Cloudflare resources"），**不回写仓库**。
+# 想固定到某个库（例如保护已有数据不被误重建）就设仓库变量 `D1_DATABASE_ID`，它会优先于按名解析。
 [[d1_databases]]
 binding = "DB"
 database_name = "syncclipboard"
-database_id = "7c1bd510-9a9d-479d-8888-9f7a415f8be9"
+database_id = "00000000-0000-0000-0000-000000000000"
 
 # R2：file/ 暂存区 + history/{Type}_{Hash}/ 持久数据文件
 # 创建：wrangler r2 bucket create syncclipboard
