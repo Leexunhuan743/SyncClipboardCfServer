@@ -18,6 +18,10 @@ import { createPushChannel } from './signalr.js';
 import {
   deleteConfirmSpec,
   batchDeleteConfirmSpec,
+  purgeConfirmSpec,
+  batchPurgeConfirmSpec,
+  batchProgressText,
+  batchPartialText,
   clearHistorySpec,
   describeListError,
   clipboardFailureHint,
@@ -267,6 +271,8 @@ const actions = {
   onBatchFlag: batchFlag,
   onBatchRestore: batchRestore,
   onBatchCopy: batchCopy,
+  onPurge: purgeItem,
+  onBatchPurge: batchPurge,
   onEmptyTrash: emptyTrash,
 };
 
@@ -687,36 +693,57 @@ async function restoreItem(item) {
 // 2026-09-18：**只有销毁性的两个（删除、清空回收站）过确认框**。收藏/置顶/恢复是可逆的
 // 低风险动作，让用户为"收藏这 12 条"再确认一次是纯多出来的一步（评审结论）；
 // 而删除要付出的代价（数据文件立即清除）必须当面说清，那条摩擦保留。
-async function runBatch({ update, title, message, confirmLabel, applyLocally, destructive = true }) {
-  const items = [...store.get().selection.values()];
+async function runBatch({
+  update,
+  title,
+  message,
+  confirmLabel,
+  applyLocally,
+  destructive = true,
+  items: explicitItems = null,
+}) {
+  // `items` 可由调用方预筛（批量恢复会剔掉带数据文件的那几条）；默认就是整个选区。
+  const items = explicitItems ?? [...store.get().selection.values()];
   if (items.length === 0) return false;
 
-  const apply = async () => {
-    const result = await api.batchUpdate(items, update);
-    // 失败项必须报出来：静默跳过会让用户以为全部做成了
+  const apply = async (context) => {
+    const result = await api.batchUpdate(items, update, {
+      onProgress: context?.setMessage
+        ? (done, total) => context.setMessage(batchProgressText(done, total))
+        : undefined,
+    });
+    // 服务端是**逐条**判定的：落空通常只是少数几条（被别的设备改过、或已经不在服务器上了），
+    // 而其余几十条已经生效。故先把界面拉回事实，再如实报出条数 —— 原文案「有 N 条未生效，
+    // 请刷新后重试」读起来像整体失败，会让用户白重做一遍（2026-09-21 实测后改）。
+    // 报在哪里由**有没有对话框**决定：销毁性动作在框里说（用户按下的地方），其余走提示条。
     if (result.failed) {
-      throw new Error(`有 ${result.failed} 条未生效（可能已被其他设备修改），请刷新后重试`);
+      await refresh({ silent: true });
+      const text = batchPartialText(result.updated, result.failed);
+      if (destructive) throw new Error(text);
+      toasts.error(text);
+      return false; // 没有全部生效：调用方据此不要再报"已收藏 N 条"
     }
     applyLocally(items);
     store.set({ selection: new Map() });
     list.updateSelection(new Map());
     await refreshStats();
+    return true;
   };
 
   if (!destructive) {
+    let allApplied = false;
     try {
-      await apply();
+      allApplied = (await apply()) !== false;
     } catch (error) {
       if (handleAuthError(error)) return false;
-      // 没有对话框可承载错误，故走提示条；并照样对账一次（批量是服务端逐条判定的，
-      // 失败时也可能有一部分已经生效，停在旧状态比慢一点更糟）。
+      // 这里只剩**请求本身**失败（部分未生效那条路已在 apply 内用提示条报过）
       toasts.error(`批量操作失败：${error.message}`);
       await refresh({ silent: true });
       return false;
     }
     await refresh({ silent: true });
     list.restoreFocus();
-    return true;
+    return allApplied;
   }
 
   const ok = await confirm.ask({ title, message, confirmLabel, action: apply });
@@ -755,21 +782,92 @@ async function batchFlag(action) {
 async function batchRestore() {
   const chosen = [...store.get().selection.values()];
   if (chosen.length === 0) return false;
+  // 预筛：带数据文件的记录服务端**一定**拒绝恢复（软删时数据文件已清，见 db.ts 的守卫），
+  // 把它们塞进请求只会让那批的"未生效"多出几条噪音。判据与行内「恢复」按钮同源（`hasData`）。
+  const restorable = chosen.filter((item) => !item.hasData);
+  const blocked = chosen.length - restorable.length;
+  if (restorable.length === 0) {
+    toasts.error(`选中的 ${blocked} 条都带数据文件：数据在删除时已被清除，服务端不允许恢复。`);
+    return false;
+  }
   const ok = await runBatch({
+    items: restorable,
     update: { isDelete: false },
-    title: `恢复选中的 ${chosen.length} 条？`,
-    // 服务端只对「数据文件已清空」的记录放开恢复：带数据的记录在软删时数据已删，回不来。
-    // 这句话必须说在前面——否则用户会以为失败是 bug，而不是服务端的既定语义。
-    message: '没有数据文件的记录会回到历史列表；数据文件已随删除清除的会被服务端拒绝（未生效条数会如实显示）。',
-    confirmLabel: `恢复 ${chosen.length} 条`,
+    title: `恢复选中的 ${restorable.length} 条？`,
+    // 这一句必须说在前面——否则用户会以为失败是 bug，而不是服务端的既定语义。
+    message: blocked
+      ? `另有 ${blocked} 条带数据文件（数据在删除时已被清除），服务端不允许恢复，本次不会提交它们。`
+      : '没有数据文件的记录会回到历史列表。',
+    confirmLabel: `恢复 ${restorable.length} 条`,
     // 恢复同样可逆（再删一次即可），且失败条数会在提示条里如实报出
     destructive: false,
     applyLocally: (items) => {
       for (const item of items) list.removeItem(item.key);
     },
   });
-  if (ok) toasts.info(`已恢复 ${chosen.length} 条`);
+  if (ok) toasts.info(`已恢复 ${restorable.length} 条`);
   return ok;
+}
+
+// 彻底删除（回收站）：**不可恢复**，故过确认框；服务端只删已删除的行（判据写在 SQL 里，
+// 活跃记录走不到这条路径）。与软删相比它更便宜（每条 1 次 D1 子请求，不广播、不碰 R2），
+// 所以批量时进度通常一闪而过 —— 但 300 条仍是 3 批，进度照样写进框里。
+async function purgeItem(item) {
+  const spec = purgeConfirmSpec(item);
+  const ok = await confirm.ask({
+    title: spec.title,
+    message: spec.message,
+    confirmLabel: spec.confirmLabel,
+    action: async () => {
+      const result = await api.batchPurge([item]);
+      if (result.failed) {
+        // 唯一可能的落空：它已经不在回收站里了（别的标签页清空过、或清理任务硬删了）
+        await refresh({ silent: true });
+        throw new Error('这条记录已经不在回收站里了（可能已被清空或由清理任务删除），列表已刷新。');
+      }
+      const selection = new Map(store.get().selection);
+      selection.delete(item.key);
+      store.set({ selection });
+      list.updateSelection(selection);
+      list.removeItem(item.key); // 立刻收行，不等下一次整页刷新
+      await refreshStats();
+    },
+  });
+  if (!ok) return false;
+  list.restoreFocus();
+  toasts.info('已彻底删除');
+  await refresh({ silent: true }); // 补齐本页缺的那一条并对账其余行
+  return true;
+}
+
+// 批量彻底删除：就是"移除少量/中量/大量"的那个出口 —— 没有它只能整罐倒（清空回收站）。
+async function batchPurge() {
+  const chosen = [...store.get().selection.values()];
+  if (chosen.length === 0) return false;
+  const spec = batchPurgeConfirmSpec(chosen.length);
+  const ok = await confirm.ask({
+    title: spec.title,
+    message: spec.message,
+    confirmLabel: spec.confirmLabel,
+    action: async (context) => {
+      const result = await api.batchPurge(chosen, {
+        onProgress: (done, total) => context?.setMessage?.(batchProgressText(done, total)),
+      });
+      if (result.failed) {
+        await refresh({ silent: true });
+        throw new Error(batchPartialText(result.purged, result.failed));
+      }
+      for (const item of chosen) list.removeItem(item.key);
+      store.set({ selection: new Map() });
+      list.updateSelection(new Map());
+      await refreshStats();
+    },
+  });
+  await refresh({ silent: true });
+  if (!ok) return false;
+  list.restoreFocus();
+  toasts.info(`已彻底删除 ${chosen.length} 条`);
+  return true;
 }
 
 // 批量复制（2026-09-18）：一次 batch-meta 拿到**完整正文**（列表里的正文被服务端截断到

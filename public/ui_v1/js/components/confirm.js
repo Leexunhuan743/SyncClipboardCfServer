@@ -98,7 +98,9 @@ export function createConfirm() {
     cancelButton.disabled = true;
     closeButton.disabled = true;
     try {
-      await action();
+      // `action` 收到一个上下文：`setMessage(text)` 让长操作把进度写进正文（批量按 100 条一批，
+      // 300 条就是 3 批、约 20 秒起，全程只有一个转圈用户不知道走到哪）。旧调用方忽略它即可。
+      await action({ setMessage: (text) => { message.textContent = text; } });
       busy = false;
       dialog.close('confirm');
       settle(true);

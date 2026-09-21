@@ -17,7 +17,7 @@ import { typeName, typeLabel, formatSize, formatRelative, previewText, truncateT
 // @ts-expect-error TS7016：同上
 import { parseFrames, classifyMessage, createPushChannel } from '../public/ui_v2/js/push.js';
 // @ts-expect-error TS7016：同上
-import { deleteConfirmSpec, batchDeleteConfirmSpec, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui_v2/js/messages.js';
+import { deleteConfirmSpec, batchDeleteConfirmSpec, purgeConfirmSpec, batchPurgeConfirmSpec, batchProgressText, batchPartialText, clearHistorySpec, describeListError, clipboardFailureHint } from '../public/ui_v2/js/messages.js';
 // @ts-expect-error TS7016：同上
 import { rowMenuItems, sortMenuItems } from '../public/ui_v2/js/menus.js';
 // 这一条破例取 **V1** 的模块：保留策略的显示口径（未设置 / 已关闭 / 有值 / 分档）只在特定取值下
@@ -369,6 +369,29 @@ describe('messages · 用户文案对齐服务端语义', () => {
     const all = clearHistorySpec('all');
     expect(all.label).toBe('清空全部历史');
     expect(all.message).toContain('当前剪贴板内容不受影响');
+  });
+
+  // 2026-09-21 新增：回收站的「彻底删除」。它与软删是**两件不同的事**，句子必须分得开 ——
+  // 软删说"30 天内还能恢复"，彻底删除必须说"不可撤销、回收站里也不会再出现"。
+  it('彻底删除（单条 / 批量）：必须说"不可撤销"，且不能复用"30 天内可恢复"那套话', () => {
+    const one = purgeConfirmSpec({ type: 'Text', text: 'x'.repeat(50), hasData: false });
+    expect(one.title).toBe('彻底删除这条记录？');
+    expect(one.confirmLabel).toBe('彻底删除');
+    expect(one.message).toContain('不可撤销');
+    expect(one.message).toContain(`「${'x'.repeat(40)}…」`);
+    expect(one.message).not.toContain('30 天内');
+    const many = batchPurgeConfirmSpec(12);
+    expect(many.title).toBe('彻底删除选中的 12 条记录？');
+    expect(many.confirmLabel).toBe('彻底删除 12 条');
+    expect(many.message).toContain('不可撤销');
+  });
+
+  it('批量进度与部分失败的文案：进度带 i/n，失败口径要说明"已生效多少"而不是"整体失败"', () => {
+    expect(batchProgressText(2, 3)).toBe('正在处理第 2 / 3 批…');
+    const partial = batchPartialText(87, 13);
+    expect(partial).toContain('已生效 87 条');
+    expect(partial).toContain('未生效 13 条');
+    expect(partial).toContain('列表已刷新');
   });
 
   it('列表错误翻译：400 且搜索词非空 → 说"搜索词过长"，而不是把服务端原文抛给用户', () => {

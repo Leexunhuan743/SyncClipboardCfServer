@@ -422,15 +422,10 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       return Response.json({ error: 'no_supported_field' }, { status: 400 });
     }
 
-    // 先把版本/时间戳推进到必然通过 shouldUpdate 的值（见函数注释），再走官方同一条写路径
-    const { db } = stores(c);
-    const existing = await db.getByTypeAndHash(ids.type!, ids.hash);
-    if (!existing) return Response.json({ error: 'not_found' }, { status: 404 });
-    const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, {
-      ...fields,
-      version: existing.version + 1,
-      lastModified: new Date(Math.max(Date.now(), existing.lastModified + 1)).toISOString(),
-    });
+    // 直接把字段交给同一条写路径（`applyHistoryUpdate` → `db.updateHistory`）：版本与时间戳的
+    // 单调推进由 `updateHistory` 内部那**一次**读负责，这里不再预读一遍（2026-09-21 删；
+    // 预读是每条记录白多出来的 1 次 D1 子请求，在批量里就是 100 次）。
+    const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, fields);
     if (result.kind === 'notFound') return Response.json({ error: 'not_found' }, { status: 404 });
     if (result.kind === 'conflict') return Response.json({ error: 'conflict' }, { status: 409 });
     return Response.json(toUiItem(result.entity));
@@ -516,9 +511,10 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       return Response.json({ error: 'no_supported_field' }, { status: 400 });
     }
 
-    const { db } = stores(c);
-    // 有界并发跑完每一条（保序），再聚合 —— 语义与串行完全一致（预读 + version/lastModified
-    // 单调性逐条保留），只是不再一条条等网络往返。
+    // 有界并发跑完每一条（保序），再聚合 —— 语义与串行完全一致，只是不再一条条等网络往返。
+    // 2026-09-21：**预读去掉了** —— 版本与单调时间戳现在由 `updateHistory` 内部那一次读算
+    // （见 db.ts 的注释）。原理由「去掉预读会让未来时间戳的记录伪冲突」已经由缺省值
+    // `max(now, 已有+1)` 承担，故删除是纯收益：每条记录少 1 次 D1 子请求（100 条 = 100 次）。
     const outcomes = await mapLimit(items, BATCH_UPDATE_CONCURRENCY, async (rawItem) => {
       const entry = rawItem as { type?: unknown; hash?: unknown };
       const ids =
@@ -526,13 +522,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
           ? parsePathIds(entry.type, entry.hash)
           : null;
       if (!ids) return 'invalid';
-      const existing = await db.getByTypeAndHash(ids.type!, ids.hash);
-      if (!existing) return `${entry.type}-${entry.hash}`;
-      const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, {
-        ...fields,
-        version: existing.version + 1,
-        lastModified: new Date(Math.max(Date.now(), existing.lastModified + 1)).toISOString(),
-      });
+      const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, fields);
       return result.kind === 'updated' ? null : `${entry.type}-${entry.hash}`;
     });
     let updated = 0;
@@ -542,6 +532,59 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       else failed.push(outcome);
     }
     return Response.json({ updated, failed: failed.length });
+  });
+
+  // POST /ui/api/history/batch-purge —— 回收站的「彻底删除」：**本地硬删行**，不是协议面。
+  //
+  // 为什么需要它（2026-09-21，用户实测后定）：回收站此前只有「恢复」与「清空回收站」两个出口，
+  // 想永久删掉**几条**做不到 —— 只能整罐倒。上游也没有这个能力（它的硬删是 30 天定时任务），
+  // 所以这是本站自己的面：路由在 `/ui/api/*` 下，官方客户端不感知（`docs/protocol.md` §10 无需登记）。
+  //
+  // 与 batch-update 的差别，逐条都为了把成本压到最小：
+  //   · **不做应答/版本判定** —— 硬删的语义就是"从库里拿掉"，没有可合并的并发语义；
+  //   · **不广播** —— 与 `clear scope=trash` 同一判据（见下方 clear 的三条理由：上游广播触发点
+  //     清单里没有删除；逐条广播会顶子请求上限；本站其它标签页靠 `/ui/api/poll` 收敛）；
+  //   · **不碰 R2** —— 软删时数据目录已经清掉，残留由清理任务的孤儿阶段兜底（同 clear）；
+  //   · 安全判据写在 SQL 里：只删 `IsDeleted != 0` 的行 ⇒ **活跃记录删不掉**（不许绕过回收站）。
+  // ⇒ 每条 **1 次 D1 子请求**（对照：软删每条 6 次），100 条封顶 = 100 次，留的余量足够。
+  guarded.post('/ui/api/history/batch-purge', async (c) => {
+    if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/json')) {
+      await drainRequestBody(c.req.raw);
+      return Response.json({ error: 'unsupported_media_type' }, { status: 415 });
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return Response.json({ error: 'invalid_request' }, { status: 400 });
+    }
+    const { items } = (body ?? {}) as { items?: unknown };
+    if (!Array.isArray(items) || items.length === 0) {
+      return Response.json({ error: 'items_required' }, { status: 400 });
+    }
+    // 上限与 batch-update 对齐（100）：这里每条只要 1 次子请求，本可以放更宽，但**接口口径统一**
+    // 比"每个端点各自算自己的上限"更好记；调用方（js/api.js 的 batchPurge）同样按 100 分片。
+    if (items.length > 100) {
+      return Response.json({ error: 'too_many_items' }, { status: 400 });
+    }
+
+    const { db } = stores(c);
+    const outcomes = await mapLimit(items, BATCH_UPDATE_CONCURRENCY, async (rawItem) => {
+      const entry = rawItem as { type?: unknown; hash?: unknown };
+      const ids =
+        typeof entry?.type === 'string' && typeof entry?.hash === 'string'
+          ? parsePathIds(entry.type, entry.hash)
+          : null;
+      if (!ids) return 'invalid';
+      return (await db.purgeDeletedRecord(ids.type!, ids.hash)) ? null : `${entry.type}-${entry.hash}`;
+    });
+    let purged = 0;
+    const failed: string[] = [];
+    for (const outcome of outcomes) {
+      if (outcome === null) purged++;
+      else failed.push(outcome);
+    }
+    return Response.json({ purged, failed: failed.length });
   });
 
   // POST /ui/api/history/clear —— 清空历史：`scope=trash` 只清回收站，`scope=all` 清全部。

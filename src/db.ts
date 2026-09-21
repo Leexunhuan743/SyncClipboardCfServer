@@ -375,6 +375,24 @@ export class HistoryDb {
     return res.meta.changes ?? 0;
   }
 
+  // 彻底删除**一条已删除的记录**（回收站每行的「彻底删除」）。2026-09-21 新增。
+  //
+  // 判据全在 SQL 里，且是这个接口的**安全前提**：只删 `IsDeleted != 0` 的行 ⇒
+  //   · 活跃记录删不掉（想真删必须先软删 —— 不允许绕过回收站）；
+  //   · 不存在 / 已被清掉的返回 false，由调用方计进"未生效"。
+  // 成本 = **1 次 D1 子请求**：无预读、不广播、不碰 R2（软删时数据目录已清，残留由清理任务的
+  // 孤儿阶段兜底 —— 与 `purgeDeletedRecords`/`clear scope=trash` 同一条判据）。
+  // 对照：软删每条要 1 读 + 1 写 + 1 广播（+2 次 R2 目录清理），所以"彻底删除"反而更便宜。
+  async purgeDeletedRecord(type: ProfileType, hash: string): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        `DELETE FROM HistoryRecords WHERE UserId = ?1 AND Type = ?2 AND Hash = ?3 AND IsDeleted != 0`,
+      )
+      .bind(HARD_CODED_USER_ID, type, hash)
+      .run();
+    return (res.meta.changes ?? 0) > 0;
+  }
+
   // 统计（上游 GetStatisticsAsync；totalFileSizeMB 由调用方传入 R2 合计值）。
   // 四个计数**一条聚合查询**出齐：旧实现先把全部行的 Stared/IsDeleted 拉回 JS 再循环，
   // 而统计在每次页面加载、星标、删除、切视图时都会跑（后端能力评估 §3.1）。
@@ -425,7 +443,13 @@ export class HistoryDb {
     }
 
     const newVersion = dto.version ?? existing.version + 1;
-    const newLastModified = dto.lastModified ? fromIso(dto.lastModified) : Date.now();
+    // 缺省时间戳**单调**（`max(now, 已有+1)`），不是裸 `Date.now()`：`shouldUpdate` 在时间差
+    // 超过 5 分钟时要求 `newLastModified >= oldLastModified`，而客户端时钟偏快会让记录的
+    // lastModified 落在未来 ⇒ 用裸 now 的调用方（本站 UI 的 PATCH / batch-update）会拿到
+    // 伪冲突、删不掉。**放在这里而不是各调用点**：调用方因此不必先自己读一遍来算这两个值
+    // （2026-09-21 之前路由层正是这么干的：每条记录多一次 D1 读 ⇒ 批量里白花 100 次子请求）。
+    // 协议写路径（`PATCH /api/history`）恒自带 lastModified，故不受这条缺省影响。
+    const newLastModified = dto.lastModified ? fromIso(dto.lastModified) : Math.max(Date.now(), existing.lastModified + 1);
 
     if (!shouldUpdate(existing.version, newVersion, existing.lastModified, newLastModified)) {
       return { updated: false, entity: existing };

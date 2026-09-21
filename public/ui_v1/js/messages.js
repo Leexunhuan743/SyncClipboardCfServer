@@ -64,6 +64,55 @@ export function batchDeleteConfirmSpec(count) {
 }
 
 /**
+ * 「彻底删除」的确认框文案（回收站里那条不可恢复的出口）。
+ *
+ * 与 `deleteConfirmSpec` 的差别必须说清：软删是「进回收站、30 天内还能捞回来」，
+ * 彻底删除是「服务器上不再有这一行」。带数据文件的记录在软删那一刻数据就已经清了，
+ * 所以这里更彻底掉的只是元数据行 —— 但仍要标「不可撤销」，因为连那一行也没了。
+ * @param {{ type: string, text?: string, dataName?: string, hasData?: boolean }} item
+ */
+export function purgeConfirmSpec(item) {
+  return {
+    title: '彻底删除这条记录？',
+    message: `将从服务器永久删除 ${describeTarget(item)}（元数据行）—— 回收站里也不会再出现，此操作不可撤销。`,
+    confirmLabel: '彻底删除',
+  };
+}
+
+/**
+ * 批量「彻底删除」的确认框文案。
+ * @param {number} count
+ */
+export function batchPurgeConfirmSpec(count) {
+  return {
+    title: `彻底删除选中的 ${count} 条记录？`,
+    message: '这些记录会从服务器永久删除（元数据行），回收站里也不会再出现。此操作不可撤销。',
+    confirmLabel: `彻底删除 ${count} 条`,
+  };
+}
+
+/**
+ * 批量操作的**进度**文案：写进确认框的正文，替下原来那段静态说明。
+ * @param {number} done 已完成批数（客户端按 100 条一批）
+ * @param {number} total 批数合计
+ */
+export function batchProgressText(done, total) {
+  return `正在处理第 ${done} / ${total} 批…`;
+}
+
+/**
+ * 批量操作**部分未生效**时的说明。
+ *
+ * 为什么不叫"失败"：批量是服务端**逐条**判定的，落空通常只是那几条被别的设备改过、或已经删了，
+ * 而其余几十条已经生效。原文案「有 N 条未生效」读起来像整体失败，用户会白重做一遍。
+ * @param {number} updated
+ * @param {number} failed
+ */
+export function batchPartialText(updated, failed) {
+  return `已生效 ${updated} 条，未生效 ${failed} 条（通常是那几条已被其它设备或本页其它标签页删掉/改过，列表已刷新）。`;
+}
+
+/**
  * 清空历史的确认框文案。
  * @param {'trash'|'all'} scope
  */

@@ -377,6 +377,21 @@ Worker
     · 短元数据（时间列相对→绝对、图标按钮动作名）继续用原生 `title`；**只有长内容**才用本构件。
     范围（2026-09-21）：行内正文 `.cell-content__text`。
     判据：`tooltip.js` + `list.js` 的 attach/prune + 探针的 `HOVER` 行 + `progress.md` §122。
+27. **回收站的两个出口各占一个固定槽位，且都过确认框**（2026-09-21 定案，`progress.md` §125）：
+    · 行内动作只有两个 —— **恢复固定槽 1**（与活跃视图的"预览"同位）、**彻底删除固定槽 4**
+      （与活跃视图的"删除"同位），中间两槽是等宽占位。理由与活跃视图那四个固定槽同一条：
+      动作按类型追加会让"哪个按钮在哪一列"逐行不同，而切换视图后误按的代价是
+      "把记录恢复出去"或"把它永久删掉"。
+    · 两处入口：行内「彻底删除」+ 选择条「彻底删除选中」（回收站视图专有，与「恢复选中」
+      「清空回收站」并列）。**没有"彻底删除少量/中量"的入口时，用户只能整罐倒** ——
+      这正是它存在的理由（2026-09-21 实测定案）。
+    · **都过确认框**（不可撤销），文案住在 `messages.js` 的 `purgeConfirmSpec` /
+      `batchPurgeConfirmSpec`，与 `deleteConfirmSpec` 的差别（软删=进回收站 vs 彻底删除=行也没了）
+      必须写在句子里的。
+    · 服务端**只删 `IsDeleted != 0` 的行**（判据在 SQL 里）：活跃记录走不到这条路径 ——
+      "绕过回收站直接真删"不是本界面的能力。
+    判据：`list.js` 的 `buildActions`（回收站分支）+ 选择条 + `main.js` 的 purgeItem/batchPurge +
+    `docs/ui.md` §5 的 `/ui/api/history/batch-purge` 行。
 
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
@@ -448,6 +463,7 @@ Worker
 | PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`） | 400/404/409 |
 | POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（**单次 ≤100 条**，逐条走同一条写路径；**有界并发 10**（2026-09-21：串行是瓶颈——生产实测 100 条删除 66s，并发后 ~5s；总量子请求不变、仍在 1000 上限内）；更多由界面按 100 分片串行发）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
 | POST | `/ui/api/history/batch-meta` | 批量取记录（**含完整正文**）：`{items:[{type,hash}]}`（**单次 ≤100 条**，超出由界面分片串行发）→ `{items:[完整 HistoryRecordDto]}`。用于「选中多条 → 一起复制/下载」——列表里的正文被服务端截断到 500 字符，而逐条走单条端点是 O(N) 次请求；**只接受 `application/json`**（与 batch-update / clear 同一条纵深防御） | 400 / 415 |
+| POST | `/ui/api/history/batch-purge` | 回收站的**彻底删除**：`{items:[{type,hash}]}`（**单次 ≤100 条**）→ `{purged, failed}`。**本地纯硬删**：只删 `IsDeleted != 0` 的行（判据写在 SQL 里 ⇒ 活跃记录删不掉、不许绕过回收站）；**不广播**（理由同 clear 的三条）、**不碰 R2**（软删时数据目录已清，残留由清理任务的孤儿阶段兜底）⇒ 每条 **1 次 D1 子请求**（对照：软删每条 6 次）。上游没有这个能力（它的硬删是 30 天定时任务），属本站自己的面，`docs/protocol.md` §10 无需登记 | 400 / 415 |
 | POST | `/ui/api/history/clear` | 清空历史：`{scope:'trash'\|'all'}`。trash = 只删已删除行并返回计数（不物化整批行）；all = 与协议 `DELETE /api/history/clear` **共用** `historyOps.clearAllHistory`（先删行，再按 `clearAll` 返回的**实体集合**删工作目录——最坏漏删孤儿目录，不会误删并发写入的新记录）。**不逐条广播**（上游的广播触发点清单里没有 clear，见 §6 的说明；跨标签页收敛靠 `/ui/api/poll` 的计数变化） | 400 / 415 |
 | POST | `/ui/api/hub-ticket` | 签发一张 Hub 连接票据（`{token, path}`），供前端建立 WebSocket；DO 打不通时 503（前端据此继续轮询） | 503 |
 | GET | `/ui/api/integrity` | 数据完整性自检：`{checkedAt, recordsWithData, historyObjects, missingCount, missing[], missingTruncated}`。成本 = 1 次 D1 + `ceil(对象数/1000)` 次 R2 列举（**不逐条 HEAD**）。⚠️ hash 含路径分隔符的**坏行**（只能带外写入 —— 三条写路径都拒）按「取不到」计入 `missingCount` 并列进清单：不是 500、也不是静默跳过（2026-09-20；此前 `historyKey()` 的断言会让整个自检 500 —— 而它恰恰是数据坏掉时唯一该工作的诊断面） | — |

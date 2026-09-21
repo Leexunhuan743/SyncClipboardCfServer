@@ -242,22 +242,49 @@ export const api = {
   // 服务端逐条走与单条 PATCH 相同的实现（各自广播、各自清数据目录），单次 100 条封顶 ——
   // 每条 ≈5 次子请求，200 条正好顶到单次调用的 1000 次内部子请求上限，故这里按 100 **分片串行**发，
   // 调用方只管传整批，结果合并成一个合计（分片之间若某片失败，前几片已生效，由调用方刷新对账）。
-  async batchUpdate(items, update) {
+  //
+  // `onProgress(done, total)`：每片开跑前回调一次，供长操作把进度写进确认框（300 条 ≈ 20 秒）。
+  async batchUpdate(items, update, { onProgress, signal } = {}) {
     const CHUNK = 100;
     let updated = 0;
     let failed = 0;
-    for (let i = 0; i < items.length; i += CHUNK) {
+    const total = Math.max(1, Math.ceil(items.length / CHUNK));
+    for (let i = 0, shard = 1; i < items.length; i += CHUNK, shard += 1) {
+      onProgress?.(shard, total);
       const result = await request(`${API_BASE}/history/batch-update`, {
         method: 'POST',
         body: {
           items: items.slice(i, i + CHUNK).map((item) => ({ type: item.type, hash: item.hash })),
           update,
         },
+        signal,
       });
       updated += result?.updated ?? 0;
       failed += result?.failed ?? 0;
     }
     return { updated, failed };
+  },
+
+  // 彻底删除（回收站）：服务端只删**已删除的行**（`IsDeleted != 0` 写在 SQL 里），
+  // 每条 1 次 D1 子请求，故这里同样按 100 分片、合并 `{purged, failed}`。
+  // 与 batchUpdate 分开而不合并成一个"action"参数：两者的返回字段与语义都不同
+  // （这里没有 update 字段白名单，也不存在冲突判定）。
+  async batchPurge(items, { onProgress, signal } = {}) {
+    const CHUNK = 100;
+    let purged = 0;
+    let failed = 0;
+    const total = Math.max(1, Math.ceil(items.length / CHUNK));
+    for (let i = 0, shard = 1; i < items.length; i += CHUNK, shard += 1) {
+      onProgress?.(shard, total);
+      const result = await request(`${API_BASE}/history/batch-purge`, {
+        method: 'POST',
+        body: { items: items.slice(i, i + CHUNK).map((item) => ({ type: item.type, hash: item.hash })) },
+        signal,
+      });
+      purged += result?.purged ?? 0;
+      failed += result?.failed ?? 0;
+    }
+    return { purged, failed };
   },
 
   // 清空历史：scope='trash' 只清回收站、'all' 清全部。

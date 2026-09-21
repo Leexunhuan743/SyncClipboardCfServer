@@ -31,7 +31,7 @@
 
 | 你动了什么 | 同一次改动要同步的位置 |
 |---|---|
-| `src/ui/routes.ts` / `src/ui/maintenance.ts` 增删 `/ui/api/*` 端点 | `docs/ui.md` §5 端点表；`test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`（**18 条是权威口径**） |
+| `src/ui/routes.ts` / `src/ui/maintenance.ts` 增删 `/ui/api/*` 端点 | `docs/ui.md` §5 端点表；`test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`（**19 条是权威口径**） |
 | `public/` 下增删任何文件 | `docs/ui.md` §3 的「共 N 个资源」总数与 V1 / V2 / 跳转壳 / 站点根分表；`docs/design.md` §4 目录树；`docs/ui-v2-design.md` §7 目录树 |
 | V2 增删 JS 模块 | `public/ui_v2/app/index.html` 与 `login.html` 的 `modulepreload` 清单（**少一项留下依赖瀑布、多一项白拉一个文件，两者都不会报错**）；上面的资源数与目录树 |
 | **增删界面挂载点**（`public/` 下新增/改名 `ui*` 目录） | 三份事实**必须一起改**：`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 的路径规则；`test/ui-guard.test.ts` 里那组**挂载点判据**（`run_worker_first` ×2 + `isUiAsset` ×1 + `_headers` ×2）会红 —— 挂载点集合一律从 `public/` **动态发现**（不写死清单），见 §3 |

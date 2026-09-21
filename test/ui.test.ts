@@ -464,6 +464,49 @@ describe('UI API 列表（分页/过滤/搜索/排序白名单）', () => {
     const after = await findMine();
     expect(after, '批量删除后列表里不得再出现该记录').toBeNull();
   });
+
+  // 2026-09-21 新增：回收站的「彻底删除」（`POST /ui/api/history/batch-purge`）。
+  // 这条钉的是**安全判据**：端点只删已删除的行 —— 一旦有人（或某次重构）把 SQL 里的
+  // `IsDeleted != 0` 去掉，就能绕过回收站直接真删活跃记录，而那种回归在别处看不见。
+  it('彻底删除：活跃记录删不掉（不许绕过回收站），软删之后才生效且回收站里也不再出现', async () => {
+    // 文本刻意**不含** `MARK` 子串：`findMine` 按 MARK 搜索，不能被这条干扰。
+    const text = `ui-purge-${RUN} 彻底删除用例`;
+    const hash = await putText(text);
+
+    const active = await req('/ui/api/history/batch-purge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ type: 'Text', hash }] }),
+    });
+    expect(active.status, '彻底删除端点').toBe(200);
+    const activeBody = (await active.json()) as { purged: number; failed: number };
+    expect(activeBody.purged, '活跃记录不得被彻底删除').toBe(0);
+    expect(activeBody.failed).toBe(1);
+    const stillThere = await req(`/ui/api/history/Text/${hash}`);
+    expect(stillThere.status, '被拒之后记录必须还在').toBe(200);
+
+    const soft = await req('/ui/api/history/batch-update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ type: 'Text', hash }], update: { isDelete: true } }),
+    });
+    expect(soft.status, '前置：先软删').toBe(200);
+
+    const purged = await req('/ui/api/history/batch-purge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ type: 'Text', hash }] }),
+    });
+    const purgedBody = (await purged.json()) as { purged: number; failed: number };
+    expect(purgedBody.purged, '已删除记录应被彻底删除').toBe(1);
+    expect(purgedBody.failed).toBe(0);
+
+    const gone = await req(`/ui/api/history/Text/${hash}`);
+    expect(gone.status, '彻底删除后连元数据行都不存在').toBe(404);
+    const trash = await req(`/ui/api/history?deleted=true&search=${encodeURIComponent(text)}`);
+    const trashBody = (await trash.json()) as { total: number };
+    expect(trashBody.total, '回收站里也不得再有它').toBe(0);
+  });
 });
 
 describe('UI API 回归：早退路径必须排空请求体（review 修复）', () => {

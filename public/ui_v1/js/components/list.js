@@ -104,9 +104,11 @@ function buildActions(item, actions) {
   // （transferDataFile === ''）才允许把 IsDeleted 置回 0；带数据文件的记录在软删时已清掉数据，
   // 服务端会返回 404，故这里直接禁用并说明原因，不让用户白点一次。
   if (item.isDeleted) {
-    // 回收站同样用四个槽位，但"恢复"固定在**槽 1**（与活跃视图的"预览"同位）：
-    // `.row-actions` 是 `justify-content: flex-end`，只放一个按钮的话它会贴到最右 ——
-    // 那正是活跃视图里"删除"所在的位置，肌肉记忆会在切换视图后一次误按就把记录恢复出去。
+    // 回收站同样用四个槽位：**恢复**固定在槽 1（与活跃视图的"预览"同位），
+    // **彻底删除**固定在槽 4（与活跃视图的"删除"同位）—— 两个动作都保住肌肉记忆。
+    // 能否恢复由**服务端的守卫**决定：已删除且数据文件名空（transferDataFile === ''）才允许把
+    // IsDeleted 置回 0；带数据文件的记录在软删时已清掉数据，服务端会返回 404，故这里直接禁用
+    // 并说明原因，不让用户白点一次。
     return el('div', { class: 'row-actions' }, [
       actionButton({
         action: 'restore',
@@ -119,7 +121,15 @@ function buildActions(item, actions) {
       }),
       actionSlot(null),
       actionSlot(null),
-      actionSlot(null),
+      // 彻底删除：不可恢复，故同样过确认框（main.js 的 purgeItem）。服务端把"只删已删除的行"
+      // 写在 SQL 里，活跃记录走不到这条路径。
+      actionButton({
+        action: 'purge',
+        label: '彻底删除',
+        icon: 'trash',
+        run: () => actions.onPurge(item),
+        title: '从服务器永久删除这条记录（不可撤销）',
+      }),
     ]);
   }
 
@@ -724,6 +734,8 @@ export function createList(actions) {
     const buttons = recycleMode
       ? [
           batchButton('restore', '恢复选中', 'undo', () => actions.onBatchRestore()),
+          // 中间这一枚就是"移除少量/中量"的出口：没有它，想永久删掉几条只能整罐倒（清空回收站）。
+          batchButton('purge', '彻底删除选中', 'trash', () => actions.onBatchPurge()),
           batchButton('delete', '清空回收站', 'trash', () => actions.onEmptyTrash()),
         ]
       : [

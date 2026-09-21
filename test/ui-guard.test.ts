@@ -77,6 +77,7 @@ const EXPECTED_API_ROUTES: readonly string[] = [
   'PATCH /ui/api/history/:type/:hash',
   'POST /ui/api/history/batch-update',
   'POST /ui/api/history/batch-meta',
+  'POST /ui/api/history/batch-purge',
   'POST /ui/api/history/clear',
   'POST /ui/api/hub-ticket',
   'GET /ui/api/statistics',
