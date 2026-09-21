@@ -8649,7 +8649,8 @@ node test/manual/probe.mjs --port 9335 --width 1440 --height 900 --url /ui_v2/ap
 ### 105.7 Playwright 试点：**可行**，但"替换 4112 行探针"是独立任务
 
 `test/manual/` 四个文件合计 **4112 行**（`probe-ui-v1.mjs` 1732 / `states.mjs` 1477 / `probe.mjs` 607 /
-`shoot.mjs` 296），各自实现：起浏览器、调 `/ui/api/login` 拿真实 Cookie、`Network.setCookie` 手工搬运、
+`shoot.mjs` 296；§105.9 的三处探针改动之后是 **4134 行**：`probe-ui-v1` 1744 / `states` 1487 /
+`probe` 607 / `shoot` 296），各自实现：起浏览器、调 `/ui/api/login` 拿真实 Cookie、`Network.setCookie` 手工搬运、
 截图、`Emulation.setEmulatedMedia`、粗指针模拟。试点用 `playwright@1.63.0`（**`channel: 'msedge'`**，
 本机没有 Chrome，故不下载 Chromium）复现同三个读数：
 

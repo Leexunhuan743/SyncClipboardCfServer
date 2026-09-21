@@ -892,7 +892,11 @@ describe('F21 · 附件响应加固（同源存储型 XSS 面）', () => {
 describe('F20 · 借鉴同类项目审计的加固（原型链 / 配置诊断 / 常量时间比较）', () => {
   it('contentTypeOf 不受原型链影响：x.constructor 回退 octet-stream，正常扩展仍生效', async () => {
     const { contentTypeOf } = await import('../src/contentTypes');
-    // 修复前：CONTENT_TYPES['constructor'] 命中 Object.prototype.constructor（函数）→ 非法头
+    // 修复前（2026-09-15 之前）：`CONTENT_TYPES['constructor']` 命中 `Object.prototype.constructor`
+    // （函数）→ 非法头。
+    // 2026-09-21 换 mrmime 后，这个风险**换了载体但没消失**：`mimes` 同样是普通对象字面量，
+    // 实测 `lookup('x.constructor')` 就返回那个函数 ⇒ 本模块**不用它的 `lookup()`**，自己走
+    // `Object.hasOwn`。本条判据因此仍然承重，别因为"表换成库了"就删掉。
     for (const evil of ['x.constructor', 'a.tostring', 'b.valueof', 'c.__proto__', 'd.hasownproperty']) {
       expect(contentTypeOf(evil), evil).toBe('application/octet-stream');
     }
