@@ -25,9 +25,9 @@ SyncClipboard 官方客户端支持三类服务端，能力不同：
 
 部署完成后，在电脑或手机浏览器中打开 Worker 地址，根路径会自动跳转至 Web 界面。使用与客户端相同的用户名和密码登录。
 
-| Web 历史记录管理主界面 | 登录验证与状态提示 |
-| :---: | :---: |
-| ![Web 历史管理主界面](docs/images/07-ui-v1.png) | ![登录验证与状态提示](docs/images/18-state-login-error.png) |
+| Web 历史记录管理主界面（桌面） | 同一界面（手机竖版 480×1040） | 登录验证与状态提示 |
+| :---: | :---: | :---: |
+| ![Web 历史管理主界面](docs/images/07-ui-v1.png) | ![手机竖版的 Web 历史管理界面](docs/images/07-ui-v1-mobile.png) | ![登录验证与状态提示](docs/images/18-state-login-error.png) |
 
 ## 架构
 

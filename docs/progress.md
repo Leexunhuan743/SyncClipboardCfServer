@@ -9007,5 +9007,81 @@ run `35556926009`，2m14s，success）：
 ⇒ **"删除资源后能自举"与"已有资源时复用（不重建）"两条分支都在真实环境跑通了**；
 `Sync fork` 只是"配置与上游对齐"的一种情形，等价于上面这一次（仓库里始终是占位 id ⇒ 每次都按库名重解析）。
 
+## 110. README 增加手机竖版界面截图（2026-09-21）
 
+用户要求："截图一张手机竖版的截图，放在 Web 历史记录管理主界面旁边"。
 
+**出图用仓库自己的工具**（零新增依赖）：`node test/manual/probe-ui-v1.mjs --shots <dir> --width W --height H --port <空闲端口>`
+—— V1 的 `--shots` 产出 `01-list`（主界面）等 8 张。⚠️ **别拿 `shoot.mjs` 拍 V1**：它自己的文件头写着它是
+**V2** 的出图脚本（`mobile` 场景拍的是 `/ui_v2/app/`），V1 的出图口在探针的 `--shots`。
+
+最终选 **480×1040** → `docs/images/07-ui-v1-mobile.png`（50 KB）；README 的截图表格由两列改成三列
+（桌面主界面 / 手机竖版 480×1040 / 登录状态）。
+
+**逐档用探针的几何读数确认"仍是卡片档"**（卡片重排在 **≤720px** 才生效，超过就变回桌面表格）：
+
+| 视口 | `rowHeight` | `contentColWidth` | `pageOverflow` | 探针 `findings` |
+|---|---|---|---|---|
+| 430×932 | 103 | 251 | 0 | 0 |
+| 480×1040（**采用**） | 103 | 301 | 0 | 0 |
+| 540×1170 | 103 | 361 | 0 | 0 |
+
+（`rowHeight=103` 正是 `docs/ui.md` §9.9 记的卡片档行高 ⇒ 三档都在卡片模式；`pageOverflow=0` ⇒ 无横向溢出。）
+
+⚠️ **教训（免得下次误判）**：我最初用**图像理解模型**读 390 档截图，它报"像是被压扁的表格、最右列被切" ——
+与几何读数（卡片档、零溢出）**矛盾**，是**误读**（把小屏下的"紧凑排序条"当成了表格表头）。
+⇒ **判断布局模式要用探针的计算值，不要用图像理解模型的描述**；模型只适合"有没有明显空白/残缺"这类粗判。
+
+**未做**：`deviceScaleFactor` 仍是 1（探针里写死），所以高分屏上这张图会略软；要 2× 清晰版需给探针加
+`--scale` 参数（约两行改动）—— 按"本轮不擅动门禁工具（探针）"的既有决定，未动。
+
+## 111. `docs/project-analysis.md` 事实订正（21 处，对照两份解析报告）（2026-09-21）
+
+**触发（用户原话）**：「现在阅读一下 `docs/project-analysis.md` 对照你的报告，看看有什么需要补充或者则完善的地方」，
+随后「开始」（= 按对照结论订正）。范围只有这一份文件，**无代码/配置改动**。
+
+### 110.1 处置结果（21 处替换；`git diff --stat` = 104 行变动，+60 / −44）
+
+| # | 原文档说法 | 事实（依据） |
+|---|---|---|
+| 1 | §2.3「支持单条与**批量**历史上传」 | 协议端点表**没有批量项**，只有 `POST /api/history`（单条）；批量语义只在界面面 `/ui/api/history/batch-update`（`src/routes/history.ts` 全文） |
+| 2 | §2.6「浏览器访问站点根目录 302 跳转」 | 需同时满足 `GET /` + `Accept` 含 `text/html` + `UI_ENABLED` 开着（`src/routes/webdav.ts` 的 `app.get('/')`） |
+| 3 | §3.2 中间件链各框的顺序 | 实际注册顺序：路径字面段归一 → 301/HSTS → 体上限预检 → `/ui/api/*` 来源校验+登录限速 → 全局 Basic Auth → 入口分支（`src/index.ts` 的 `app.use` 注册序） |
+| 4 | §3.2 拓扑 `HistoryAPI --> HistoryOps` | `history.ts` **同时**依赖 `profile.ts`（POST / POST query）与 `historyOps.ts`（PATCH / clear） |
+| 5 | §4.1「编译为标准 ES 模块」 | `noEmit: true`，仓库不产出编译文件（`tsconfig.json`、`package.json`） |
+| 6 | §4.2「ESLint …（前端零构建 JS **与后端代码**）」 | eslint 只覆盖 `public/ui_v{1,2}/js` 与 `test/manual`；`src/**`/`test/**` 由 `tsc` 把关（`eslint.config.js` 头、`package.json` 的 `lint`） |
+| 7 | §5.1 `ProfileTypeFilter` 漏 `FileAndGroup=10` | `src/types.ts` 定义里有该项 |
+| 8 | §5.2「清理游标（`cleanup:cursors`）」 | **该键不存在**；实际是四个键 `cleanup:cursor:{retention,trim,hardDelete,orphans}`，另有 `cleanup:lastRunAt`（`src/cleanup.ts` 的 `CLEANUP_META_KEYS`） |
+| 9 | §5.3 解压预算 `96 MiB - zip.length` | 实际 `clamp(…, 1 MiB, 64 MiB)`（`src/hash.ts` 的 `groupZipDecompressionCap`）；并补「膨胀比只在单条目 ≥ 8 MiB 时才判定」 |
+| 10 | §7.1「Basic 鉴权 & 预检 Content-Length」并列 | 顺序为 体预检 → **全局 Basic 鉴权** → 路由内解析 JSON / 校验 hash（中间件先于 handler） |
+| 11 | §7.1「移动写入持久区」 | R2 无 `move`：= `putHistory` + `deleteTemp` 两步（`src/profile.ts`、`src/storage.ts`） |
+| 12 | §7.1 结尾「200 OK（返回更新后 DTO）」 | PUT 成功是 **200 空体**（`src/routes/webdav.ts` 的 `c.body(null, 200)`）；返回 DTO 的是 `POST /api/history` |
+| 13 | §7.2 只画 WS / SSE 两支 | 补 LongPolling 分支（GET 取 / POST 报 / DELETE 关；单次挂起 25s、服务端关闭 = 204） |
+| 14 | §8.1 变量表漏 `AUTH_RATE_LIMIT_*` 四项与 CI 变量 `D1_DATABASE_ID` / `D1_BOOTSTRAP` | `src/rateLimit.ts`、`.github/workflows/deploy.yml` |
+| 15 | §8.1「键为**空**或被清除 → 回退 env」 | 「清除覆盖 = **删键**」；**写空串会解析成 `0` = 关闭该阶段**，与回退相反（`src/db.ts` 的 `deleteMetaValues`、`src/cleanup.ts` 的 `SETTINGS_META_KEYS`） |
+| 16 | §9.2「`docs.test.ts` 校验…**写库套件名单**」 | 它只校验套件数 / 资源数 / `design.md` 套件清单；写库名单是各套件自己调 `assertWritableTarget`（`test/support/target-guard.ts`） |
+| 17 | §10.2「端点表/挂载点由 `docs.test.ts` 机械盯防」 | 端点表、目录树、令牌表、差异登记表**在守卫之外**（`AGENTS.md` §1 原文）；挂载点由 `ui-guard.test.ts` 动态发现守卫；`/ui/api/*` 端点清单是那里的 `EXPECTED_API_ROUTES`（18 条） |
+| 18 | §10.2 DoD 只有三步 | 补第 ④ 条（§1 同步表逐行核对）与第 ⑤ 条（**改前端必须用真实浏览器量一次**） |
+| 19 | §11 演进停在第 100–103 轮 | 重写为最近 20 笔（CI 资源自举 `bc88af4` / mrmime 换表 `09fb758` / 探针 lint 门 `9e63eab` / D1 适配器收敛 `4b9ade4` / 改名事故收敛链） |
+| 20 | §12.2「Multipart **原生流式**扫描（避免 Buffer 复制）」 | `POST /api/history` 是 `await c.req.arrayBuffer()` **整包读入** + 手写字节扫描；流式的只有 `PUT /file/{name}`（`src/routes/history.ts` 的 `parseFormBody`、`src/multipart.ts`） |
+| 21 | 文首无核对基线 | 加一行「核对基线（2026-09-21 / HEAD `cecec3d`）+ `文件:行号` 引用以文件内容为准」 |
+
+### 110.2 校验
+
+- `docs.test.ts`：**7 passed**。该文件**不在**它的 `CURRENT_STATE_FILES`（5 份现状文档）里 ⇒ 本次改动不触碰任何被守卫的数字；
+  跑它是为了证明「守卫口径没被我碰坏」。
+- 结构自检（一次性脚本）：5 个代码块围栏成对；4 个 mermaid 块的 `subgraph`/`alt`/`loop` 与 `end` 数量相等（5/5、1/1、2/2、0/0）。
+- 替换纪律：每处都先断言 `count(old) === 1` 再 replace（21 处全部恰好命中 1 次），避免误伤同形文本。
+- 回读探针：`cleanup:cursor:orphans` / `noEmit: true` / `clamp(96 MiB` / `空体` / `else 降级 2: LongPolling` /
+  `eslint 不覆盖后端` / `FileAndGroup=10` / `核对基线` / `35556677091` 各出现恰好 1 次。
+- **未跑**：22 个套件全量（需 dev server 8787）、`tsc`、`eslint` —— 本次未改 `src/**`、`test/**`、`public/**`、配置或 CI。
+
+### 110.3 结构性成因（它为什么能累积 21 处而门禁一直绿）
+
+`docs/project-analysis.md` 既不在 `docs.test.ts` 的 `CURRENT_STATE_FILES`，也不在 `ui-guard` 的任何扫描面上
+⇒ 它的事实漂移**没有机械判据**，只能靠人读。
+更精确地说：**§108.3 抽核过这份文档**，但抽的是**数字**（48/64 MiB、96 MiB、15s/60s、页大小 50、10240 阈值），
+而本次 21 处里**唯一沾到数字的一处是 §5.3**（原式缺上下限夹取；§108.3 当时写的是「另有 1 MiB 下限，文档未提，可接受」），
+**其余 20 处全是描述性断言**：端点清单、中间件顺序、返回体、Meta 键名、守卫归属、流式与否。
+⇒ 对「叙述稿」的抽核不能只抽数字：要么逐句对代码核，要么把它降级为**不作事实断言的导读**。
+本次取前者（逐句核 + 文首标核对基线），并保留这条记录作为下次复核的入口。
