@@ -12,19 +12,12 @@
 //
 // 跑：npx vitest run test/cleanup-budget.test.ts
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRequire } from 'node:module';
-import type { DatabaseSync as DatabaseSyncCtor } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
 import { CLEANUP_META_KEYS, CLEANUP_PHASES, SETTINGS_META_KEYS, SUBREQUEST_BUDGET, runCleanup } from '../src/cleanup';
 import type { CleanupResult } from '../src/cleanup';
 import type { Bindings } from '../src/env';
+import { createSqliteD1, readSchemaSql, type SqliteD1, type SqliteDb } from './support/d1-sqlite';
 
-// node:sqlite 不能走 Vite 的静态解析（会当成裸包 'sqlite'），与 test/fixes.test.ts 同法用运行时 require 取。
-const nodeRequire = createRequire(import.meta.url);
-const { DatabaseSync } = nodeRequire('node:sqlite') as { DatabaseSync: typeof DatabaseSyncCtor };
-type SqliteDb = InstanceType<typeof DatabaseSyncCtor>;
-
-const schemaSql = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
+const schemaSql = readSchemaSql();
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETENTION_MINUTES = 60;
@@ -47,45 +40,8 @@ class SubrequestMeter {
   }
 }
 
-// D1：真 SQL（node:sqlite），每次语句执行（all/first/run）算 1 次子请求。
-// failWhen 用来注入一个"真实形态"的 D1 语句错误（审计 F11 的注入方式）。
-class CountingD1 {
-  failWhen: ((sql: string) => boolean) | null = null;
-
-  constructor(
-    readonly db: SqliteDb,
-    readonly meter: SubrequestMeter,
-  ) {}
-
-  private fire(sql: string): void {
-    this.meter.charge();
-    if (this.failWhen?.(sql)) throw new Error('D1_ERROR: injected statement failure');
-  }
-
-  prepare(sql: string) {
-    const self = this;
-    let params: never[] = [];
-    const stmt = {
-      bind(...p: never[]) {
-        params = p;
-        return stmt;
-      },
-      async all<T>() {
-        self.fire(sql);
-        return { results: self.db.prepare(sql).all(...params) as T[] };
-      },
-      async first<T>() {
-        self.fire(sql);
-        return (self.db.prepare(sql).get(...params) as T | undefined) ?? null;
-      },
-      async run() {
-        self.fire(sql);
-        self.db.prepare(sql).run(...params);
-      },
-    };
-    return stmt;
-  }
-}
+// D1：真 SQL（node:sqlite），每次语句执行算 1 次子请求；`failWhen` 注入"真实形态"的语句错误
+// （审计 F11 的注入方式）。两者都挂在共享适配器的 `beforeStatement` 钩子上（见 fixture()）。
 
 // R2：对象表 + list(prefix)/cursor 语义（与真实 R2 的分页行为同构：cursor 是"已返回条数"）
 class CountingBucket {
@@ -157,20 +113,27 @@ interface Backlog {
 
 interface Fixture {
   env: Bindings;
-  d1: CountingD1;
+  d1: SqliteD1;
   bucket: CountingBucket;
   hub: CountingHub;
   meter: SubrequestMeter;
   sqlite: SqliteDb;
+  /** 注入"真实形态"的 D1 语句错误：匹配到的语句直接抛（默认不注入） */
+  failWhen: { test: ((sql: string) => boolean) | null };
 }
 
 // 建库（真 schema.sql）、灌积压、给每条记录建 R2 数据目录、再额外放若干真孤儿目录。
 // 直接写底层句柄 ⇒ 构造阶段不被计入子请求。
 function fixture(backlog: Backlog): Fixture {
-  const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec(schemaSql);
   const meter = new SubrequestMeter();
-  const d1 = new CountingD1(sqlite, meter);
+  const failWhen: { test: ((sql: string) => boolean) | null } = { test: null };
+  const d1 = createSqliteD1(schemaSql, {
+    beforeStatement: (sql) => {
+      meter.charge();
+      if (failWhen.test?.(sql)) throw new Error('D1_ERROR: injected statement failure');
+    },
+  });
+  const sqlite = d1.sqlite;
   const bucket = new CountingBucket(meter);
   const hub = new CountingHub(meter);
   const now = Date.now();
@@ -201,7 +164,7 @@ function fixture(backlog: Backlog): Fixture {
     MAX_SAVED_HISTORY_COUNT: String(backlog.maxCount),
     HISTORY_RETENTION_MINUTES: String(RETENTION_MINUTES),
   } as unknown as Bindings;
-  return { env, d1, bucket, hub, meter, sqlite };
+  return { env, d1, bucket, hub, meter, sqlite, failWhen };
 }
 
 // 触发一次"Cron 调用"：每次真实调用都有独立的子请求额度，故先清零计量器再跑。
@@ -363,7 +326,7 @@ describe('F11 · 清理任务的子请求预算', () => {
     const f = fixture({ expired: 300, recent: 60, hardDeletable: 120, orphanDirs: 10, maxCount: MAX_COUNT });
     const logs = captureConsole();
     // trim 阶段的第一条语句（countActiveRecords）注入失败；其余阶段的 SQL 不受影响
-    f.d1.failWhen = (sql) => sql.includes('SELECT COUNT(*) AS c FROM HistoryRecords');
+    f.failWhen.test = (sql) => sql.includes('SELECT COUNT(*) AS c FROM HistoryRecords');
 
     const result = await cronRun(f); // 不抛即通过：runCleanup 承诺不向调用方抛裸错
 
@@ -387,7 +350,7 @@ describe('F11 · 清理任务的子请求预算', () => {
     // 连 Meta 读写都失败时（D1 整体不可用）也必须返回结果而不是抛错
     const dead = fixture({ expired: 1, recent: 1, hardDeletable: 1, orphanDirs: 1, maxCount: 1 });
     captureConsole();
-    dead.d1.failWhen = () => true;
+    dead.failWhen.test = () => true;
     const deadResult = await cronRun(dead);
     expect(deadResult.failures.length).toBeGreaterThan(0);
     expect(deadResult.subrequests).toBeLessThanOrEqual(SUBREQUEST_BUDGET);

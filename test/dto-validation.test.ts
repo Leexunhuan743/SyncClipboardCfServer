@@ -9,9 +9,6 @@
 // `long?`）：模型绑定只做「类型 + 范围」，符号不限。因此 `version:-1` **不是** 400，而是落到既有
 // shouldUpdate 判定（本例记录版本为 0 且时间戳为 now → 版本不前进 → 409）。
 import { describe, expect, it } from 'vitest';
-import { createRequire } from 'node:module';
-import type * as NodeSqlite from 'node:sqlite';
-import { readFileSync } from 'node:fs';
 import type { Hono } from 'hono';
 import { parseHistoryRecordUpdateDto, parseProfileDto } from '../src/serialization';
 import { createHistoryRoutes } from '../src/routes/history';
@@ -20,53 +17,15 @@ import { createUiRoutes } from '../src/ui/routes';
 import { fileProfileHash, sha256Hex } from '../src/hash';
 import { INT32_MAX, INT32_MIN } from '../src/types';
 import type { Bindings } from '../src/env';
+import { createSqliteD1, readSchemaSql } from './support/d1-sqlite';
 
-const nodeRequire = createRequire(import.meta.url);
-// node:sqlite 不能走 Vite 的静态解析（会被当成裸包 'sqlite' 找不到），故用运行时 require 取。
-const { DatabaseSync } = nodeRequire('node:sqlite') as typeof NodeSqlite;
-
-const SCHEMA = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
+const SCHEMA = readSchemaSql();
 const enc = new TextEncoder();
 
-// ============ node:sqlite 上的最小 D1 适配器 ============
-type SqliteDb = InstanceType<typeof DatabaseSync>;
-
-class FakeD1 {
-  private db: SqliteDb;
-  constructor(schemaSql: string) {
-    this.db = new DatabaseSync(':memory:');
-    this.db.exec(schemaSql);
-  }
-  /** 直写一条 SQL：给「带外写入的坏数据」用 —— 三条写路径都不接受那种行，只能这样造 */
-  exec(sql: string): void {
-    this.db.exec(sql);
-  }
-  prepare(sql: string) {
-    const db = this.db;
-    let params: unknown[] = [];
-    const stmt = {
-      bind(...p: unknown[]) {
-        params = p;
-        return stmt;
-      },
-      async all<T>() {
-        return { results: db.prepare(sql).all(...(params as never[])) as T[], meta: {} };
-      },
-      async first<T>() {
-        return (db.prepare(sql).get(...(params as never[])) as T | undefined) ?? null;
-      },
-      async run() {
-        const info = db.prepare(sql).run(...(params as never[]));
-        return {
-          meta: { changes: Number(info.changes ?? 0), last_row_id: Number(info.lastInsertRowid ?? 0) },
-        };
-      },
-    };
-    return stmt;
-  }
-}
-
 // ============ 内存 R2 bucket ============
+// 这个**留在这里**（不并进 test/support/）：它只存字节、`list()` 恒空，与
+// test/fixes.test.ts 的 FakeBucket（只存 size、真分页）和 test/cleanup-budget.test.ts 的
+// CountingBucket（带记账）语义各不相同 —— 合并它们只会为差异造一层配置面（docs/progress.md §105）。
 class FakeR2Bucket {
   objects = new Map<string, Uint8Array>();
   async put(key: string, body: Uint8Array | ArrayBuffer | ReadableStream): Promise<void> {
@@ -91,12 +50,12 @@ interface Harness {
   history: Hono<{ Bindings: Bindings }>;
   webdav: Hono<{ Bindings: Bindings }>;
   ui: Hono<{ Bindings: Bindings }>;
-  /** 直接往库里写一行（见 FakeD1.exec 的说明） */
+  /** 直接往库里写一行（见 createSqliteD1 的 `exec`） */
   exec: (sql: string) => void;
 }
 
 function makeHarness(): Harness {
-  const db = new FakeD1(SCHEMA);
+  const db = createSqliteD1(SCHEMA);
   const bucket = new FakeR2Bucket();
   const env = {
     DB: db as unknown as D1Database,

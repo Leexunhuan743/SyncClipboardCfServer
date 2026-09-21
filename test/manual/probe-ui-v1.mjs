@@ -56,6 +56,18 @@ function findBrowser() {
   throw new Error(`未找到 Edge/Chrome：\n  ${BROWSERS.join('\n  ')}`);
 }
 
+// 失败清单：探针末尾统一决定退出码（与同目录 probe.mjs 的 `problems` 同形）。
+//
+// ⚠️ 2026-09-21 修（真缺陷）：本文件此前在 CLS / 首帧两处直接调用 `check(...)`，而**从未定义它** ——
+// 探针打到 PERF 那一行就抛 `ReferenceError: check is not defined` 退出，后面的骨架几何、主题脚本、
+// 选择流、AUDIT 收尾**一行都没执行**；而那时退出码 1 也不是任何判据给的（见 docs/progress.md §105）。
+// 现在判据与 `auditFindings` 合并进同一个数组，末尾那处 `process.exitCode` 才真正是判据的出口。
+const auditFindings = [];
+function check(name, ok, detail) {
+  if (ok) return;
+  auditFindings.push(detail === undefined || detail === '' ? name : `${name}（读到 ${detail}）`);
+}
+
 class Cdp {
   constructor(ws) {
     this.ws = ws;
@@ -895,7 +907,7 @@ try {
   })()`;
   // 判据一直在，但**只打印、不影响退出码** —— 人工不逐行看输出就发现不了（审计 §12.16③）。
   // 这里把每次结果累计起来，末尾统一决定退出码；同目录的 states.mjs 早已是这个写法。
-  const auditFindings = [];
+  // （`auditFindings` 现在声明在文件头部，与 `check()` 共用同一个数组 —— 见那里的注释。）
   const runAudit = async (label) => {
     const raw = await read(AUDIT_EXPR);
     console.log('AUDIT   ', label + ' ' + raw);

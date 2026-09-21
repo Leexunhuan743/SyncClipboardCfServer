@@ -58,6 +58,8 @@
 | D18 | **推送后不等 CI**（2026-09-18 用户要求）：`git push` 成功即**结束这一轮**。**禁止** `gh run watch`、`gh run watch --exit-status` 以及任何"轮询到跑完为止"的等待；要确认它有没有起跑，最多允许**一次**非阻塞快照 `gh run list --limit 1` | 本仓库的质量门在**本地**：D10 的协议级套件 + `npm run check`，且 D11 已规定"推送前跑全量套件且用真门禁"。CI 是**兜底**，不是我的判据；而 `deploy` 作业还要真的部署到 Cloudflare，一趟 2–3 分钟 —— 阻塞等待只是把用户晾在对话里，等一个与本轮结论无关的状态。跑失败不会丢：GitHub 自己会通知，下一次改动也会撞见 | 已定（2026-09-18） |
 | D19 | **两处「清除筛选」一律回到活跃列表**（2026-09-20 定案）：筛选工具条那枚与空状态里那枚都清掉全部条件（**包括「回收站」这个条件**），语义与 V1 同答；`boot.js` 的 `resetFilters({ keepView })` 形参随之删除 | 这两处此前**行为相反**（工具条回活跃、空状态留在回收站 —— 2026-09-18 只改了后者的遗留，见 `AUDIT-commit-9b4cdca.md` §P2 与 `progress.md` §93.4）：同一个名字的按钮，两种后果。不取"留在所在视图"的理由：它要求把「回收站」从"是否处于筛选态"的判据（`isDefaultFilters`）里排除，否则工具条那枚点完**按钮仍在** ⇒ 读起来像没生效；而"清除筛选 = 回到默认"不需要动那套判据，且与 V1 现状一致。真要"只清条件、不换视图"，那是改按钮文案（换个名字）的事，不是同一个按钮两种行为 | 已定（2026-09-20） |
 
+| D20 | **测试工具链不引入新依赖**（2026-09-21）：`@cloudflare/vitest-pool-workers` 与 Playwright 各做过一次**有判据的试点**，本轮都**不并入产品树**；同时把 5 份 `node:sqlite` D1 适配器收敛为 `test/support/d1-sqlite.ts` 一份 | 池（vitest 2 能用的最高版是 0.12.x）**自带的引擎是另一个构建**：同一个 LIKE 模式，dev server 报 `LIKE or GLOB pattern too complex: SQLITE_ERROR`，池里连 202 字节都通过 ⇒ 把黑盒套件搬进池，会把「真 D1 才复现」的那一族（§95 修的四处 500 全是这类）**测成绿的**。Playwright 能力上可行（同三个读数逐字节吻合、`Performance.enable` 后能取 §11.2 那四个指标），但替换 4112 行探针属"改门禁工具"级别的独立任务。读数、坑与触发条件见 `progress.md` §105.2–§105.7 | 已定（2026-09-21） |
+
 ## 3. 架构总览
 
 ```mermaid
@@ -179,7 +181,9 @@ SyncClipboardCfServer/
     ├── ui.test.ts              # /ui/api/* 的接口与鉴权（含回收站视图与恢复）
     ├── ui-logic.test.ts        # 零构建前端的纯逻辑（筛选/格式化/归一化）
     ├── ui-contract.test.ts     # 跨文件契约（预载清单、BEM 类名、属性生产者、原生可解析）
-    └── support/target-guard.ts # 写库套件的目标守卫（非本机需显式放行）
+    └── support/
+        ├── target-guard.ts     # 写库套件的目标守卫（非本机需显式放行）
+        └── d1-sqlite.ts        # node:sqlite 上的最小 D1 适配器（唯一一份；非 D1，口径差异见 progress §105.3）
 ```
 
 ## 5. 存储设计
@@ -513,6 +517,8 @@ SearchText 按字节限长）、`clipboard`（前端剪贴板写入的判别结�
 其中**纯逻辑套件**（`hash`、`fixes`、`docs`、`next-target`、`limits`、`ui-guard`、`ui-logic` 等）
 进程内运行、不需要
 服务器；其余黑盒套件由运行者（或 CI 的 `quality` job）先起 `wrangler dev` 再跑。
+这些进程内套件里的 D1 是**同一份** `test/support/d1-sqlite.ts`（`node:sqlite` 适配器）——
+它**不是**真 D1，两者的引擎口径差异有实测读数，见 `progress.md` §105.3；平台口径类断言一律不放它上面。
 
 `query-filters` 专门覆盖 `/api/history/query` 的**过滤与排序语义**（SearchText / Starred / Types /
 SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历史 UI 与增量同步直接依赖它们，

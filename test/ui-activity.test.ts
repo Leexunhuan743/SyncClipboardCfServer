@@ -11,20 +11,15 @@
 //
 // 不依赖 dev server：node:sqlite + 真 `schema.sql` + 真实 `createUiRoutes`（Basic 鉴权），全程进程内。
 import { describe, expect, it } from 'vitest';
-import { createRequire } from 'node:module';
-import type * as NodeSqlite from 'node:sqlite';
-import { readFileSync } from 'node:fs';
 import { createUiRoutes } from '../src/ui/routes';
 import { HistoryDb } from '../src/db';
 import { ProfileType } from '../src/types';
 import type { HistoryRecordEntity } from '../src/types';
 import type { Bindings } from '../src/env';
 
-const nodeRequire = createRequire(import.meta.url);
-// node:sqlite 不能走 Vite 的静态解析（会被当成裸包 'sqlite'），故用运行时 require 取（同 fixes.test.ts）。
-const { DatabaseSync } = nodeRequire('node:sqlite') as typeof NodeSqlite;
+import { createSqliteD1, readSchemaSql } from './support/d1-sqlite';
 
-const SCHEMA = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
+const SCHEMA = readSchemaSql();
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 // `Date.prototype.getTimezoneOffset()` 的符号：UTC+8 ⇒ -480。测试**显式指定**这个值，
@@ -32,43 +27,9 @@ const HOUR_MS = 3_600_000;
 const TZ_UTC8 = -480;
 const AUTH = 'Basic ' + Buffer.from('admin:admin').toString('base64');
 
-// node:sqlite 上的最小 D1 适配器（本套件只读库，不需要 R2/HUB 桩）
-type SqliteDb = InstanceType<typeof NodeSqlite.DatabaseSync>;
-
-class FakeD1 {
-  private db: SqliteDb;
-  constructor(schemaSql: string) {
-    this.db = new DatabaseSync(':memory:');
-    this.db.exec(schemaSql);
-  }
-  prepare(sql: string) {
-    const db = this.db;
-    let params: unknown[] = [];
-    const stmt = {
-      bind(...p: unknown[]) {
-        params = p;
-        return stmt;
-      },
-      async all<T>() {
-        return { results: db.prepare(sql).all(...(params as never[])) as T[], meta: {} };
-      },
-      async first<T>() {
-        return (db.prepare(sql).get(...(params as never[])) as T | undefined) ?? null;
-      },
-      async run() {
-        const info = db.prepare(sql).run(...(params as never[]));
-        return {
-          meta: { changes: Number(info.changes ?? 0), last_row_id: Number(info.lastInsertRowid ?? 0) },
-        };
-      },
-    };
-    return stmt;
-  }
-}
-
 function makeEnv(): Bindings {
   return {
-    DB: new FakeD1(SCHEMA) as unknown as D1Database,
+    DB: createSqliteD1(SCHEMA) as unknown as D1Database,
     R2: {} as unknown as R2Bucket,
     HUB: {} as unknown as DurableObjectNamespace,
     VERSION: 'test',

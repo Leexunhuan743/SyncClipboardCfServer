@@ -3,13 +3,9 @@
 // - 服务层：profile.ts（用内存 stub 驱动 R2/D1 接口）
 // - 数据层：db.ts（用 node:sqlite + schema.sql 建真实 SQLite，验证 SQL 语义）
 import { describe, expect, it } from 'vitest';
-import { createRequire } from 'node:module';
-// node:sqlite 不能走 Vite 的静态解析（会被当成裸包 'sqlite' 找不到），故用运行时 require 取。
-const nodeRequire = createRequire(import.meta.url);
-const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
-import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { zipSync, strToU8, Zip, ZipPassThrough } from 'fflate';
+import { createSqliteD1, readSchemaSql, type SqliteD1 } from './support/d1-sqlite';
 
 import { parseMultipart } from '../src/multipart';
 import { parseProfileDto, parseHistoryRecordUpdateDto, profileDtoToJson } from '../src/serialization';
@@ -80,42 +76,6 @@ class FakeR2 {
   }
   hasTemp(name: string): boolean {
     return this.objects.has(`file/${name}`);
-  }
-}
-
-// node:sqlite 上的最小 D1 适配器（prepare/bind/all/first/run + meta）
-type SqliteDb = InstanceType<typeof DatabaseSync>;
-
-class FakeD1 {
-  private db: SqliteDb;
-  constructor(schemaSql: string) {
-    this.db = new DatabaseSync(':memory:');
-    this.db.exec(schemaSql);
-  }
-  prepare(sql: string) {
-    const db = this.db;
-    let params: unknown[] = [];
-    const stmt = {
-      bind(...p: unknown[]) {
-        params = p;
-        return stmt;
-      },
-      async all<T>() {
-        const rows = db.prepare(sql).all(...(params as never[])) as T[];
-        return { results: rows, meta: {} };
-      },
-      async first<T>() {
-        const row = db.prepare(sql).get(...(params as never[])) as T | undefined;
-        return row ?? null;
-      },
-      async run() {
-        const info = db.prepare(sql).run(...(params as never[]));
-        return {
-          meta: { changes: Number(info.changes ?? 0), last_row_id: Number(info.lastInsertRowid ?? 0) },
-        };
-      },
-    };
-    return stmt;
   }
 }
 
@@ -511,10 +471,10 @@ describe('F11 · PUT 空 hash 的 inline Text 在服务端计算哈希与 size',
 });
 
 // ============================================================ F3 / F5 / F9 数据层
-const schemaSql = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
+const schemaSql = readSchemaSql();
 
 function makeDb() {
-  const d1 = new FakeD1(schemaSql);
+  const d1 = createSqliteD1(schemaSql);
   return { d1, db: new HistoryDb(d1 as unknown as D1Database) };
 }
 
@@ -528,45 +488,20 @@ function entity(over: Partial<HistoryRecordEntity>): HistoryRecordEntity {
   };
 }
 
-// 可注入故障的 D1 适配器：验证 insert() 只把「唯一约束冲突」当作并发合并，其余 INSERT 失败必须原样抛出
-class FaultD1 {
-  insertFault: Error | null = null;
-  insertAttempts = 0;
-  private db: SqliteDb;
-  constructor(schema: string) {
-    this.db = new DatabaseSync(':memory:');
-    this.db.exec(schema);
-  }
-  prepare(sql: string) {
-    const self = this;
-    const db = this.db;
-    let params: unknown[] = [];
-    const stmt = {
-      bind(...p: unknown[]) {
-        params = p;
-        return stmt;
-      },
-      async all<T>() {
-        const rows = db.prepare(sql).all(...(params as never[])) as T[];
-        return { results: rows, meta: {} };
-      },
-      async first<T>() {
-        const row = db.prepare(sql).get(...(params as never[])) as T | undefined;
-        return row ?? null;
-      },
-      async run() {
-        if (self.insertFault && /^\s*INSERT INTO HistoryRecords/i.test(sql)) {
-          self.insertAttempts++;
-          throw self.insertFault;
-        }
-        const info = db.prepare(sql).run(...(params as never[]));
-        return {
-          meta: { changes: Number(info.changes ?? 0), last_row_id: Number(info.lastInsertRowid ?? 0) },
-        };
-      },
-    };
-    return stmt;
-  }
+// 可注入故障的 D1：验证 insert() 只把「唯一约束冲突」当作并发合并，其余 INSERT 失败必须原样抛出。
+// 用共享适配器的 `beforeStatement` 钩子（不再为此另抄一份适配器）：状态放在返回的 `fault` 上，
+// 注入只针对 `run`（即 INSERT），不影响同一条用例里的查询。
+function createFaultD1(): { d1: SqliteD1; fault: { error: Error | null; attempts: number } } {
+  const fault: { error: Error | null; attempts: number } = { error: null, attempts: 0 };
+  const d1 = createSqliteD1(schemaSql, {
+    beforeStatement: (sql, op) => {
+      if (op !== 'run' || fault.error === null) return;
+      if (!/^\s*INSERT INTO HistoryRecords/i.test(sql)) return;
+      fault.attempts++;
+      throw fault.error;
+    },
+  });
+  return { d1, fault };
 }
 
 describe('F5 · 写路径唯一约束与乐观并发', () => {
@@ -587,15 +522,15 @@ describe('F5 · 写路径唯一约束与乐观并发', () => {
   });
 
   it('非唯一约束的 INSERT 失败必须原样抛出（不再被当成冲突吞掉，F5 回归）', async () => {
-    const d1 = new FaultD1(schemaSql);
+    const { d1, fault } = createFaultD1();
     const db = new HistoryDb(d1 as unknown as D1Database);
     await db.insert(entity({ hash: 'K', text: 'fresh', version: 7 }));
     // 模拟"非唯一约束"的 INSERT 失败（如 D1 瞬时错误）
-    d1.insertFault = new Error('D1_ERROR: simulated transient failure');
+    fault.error = new Error('D1_ERROR: simulated transient failure');
     await expect(
       db.insert(entity({ hash: 'K', text: 'STALE', version: 0, lastModified: Date.now() - 3_600_000 })),
     ).rejects.toThrow('simulated transient failure');
-    expect(d1.insertAttempts).toBe(1);
+    expect(fault.attempts).toBe(1);
     // 既有行未被陈旧数据覆盖
     const after = await db.getByTypeAndHash(ProfileType.Text, 'K');
     expect(after?.text).toBe('fresh');
@@ -870,7 +805,7 @@ const hubStub = () => ({
 
 describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式必须同构）', () => {
   it('runCleanup：活跃记录的数据保留；真孤儿与已软删记录的目录被清', async () => {
-    const d1 = new FakeD1(schemaSql);
+    const d1 = createSqliteD1(schemaSql);
     const db = new HistoryDb(d1 as unknown as D1Database);
     const bucket = new FakeBucket();
     const storage = new RealR2Storage(bucket as unknown as R2Bucket);

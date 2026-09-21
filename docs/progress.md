@@ -8512,5 +8512,170 @@ V1 另有次生位移：挂载瞬间 `.stats` 2px→92px、`.toolbar` 0px→36px
 2. **`README.md`**：移除 Variables 表格中的废弃开关项，并在 Secrets 处明确说明自动写入机制；
 3. **`README.old.md`**：增加顶部归档警告横幅，并在对应开关处标注已废除。
 
+## 105. 测试基础设施：池试点（**结论：不用**）、D1 适配器收敛、一个探针真缺陷（2026-09-21）
+
+> 触发：用户问「有哪些地方该引用开源实现而不是重复造轮子」。逐条读码后的判断见本节 ——
+> **运行时层面**几乎没有该换的（协议保真与 Workers 平台语义把那些手写实现锁住了），
+> 真正重复的是**开发/验证工具链**。本节把两个候选（`@cloudflare/vitest-pool-workers`、Playwright）
+> 各做了一次**有判据的试点**，并把顺手查到的一处真缺陷修掉。
+
+### 105.1 起点与顺序修正
+
+先记基线，再动任何东西：dev server（`--var` 注入凭据，**不需要建 `.dev.vars`**）
+
+```
+node node_modules/wrangler/bin/wrangler.js dev --test-scheduled --port 8787 --ip 127.0.0.1 \
+  --var USERNAME:admin --var PASSWORD:admin
+node node_modules/vitest/vitest.mjs run --no-file-parallelism   ⇒ 22 文件 / 433 用例全过，68.35s
+```
+
+**顺序修正（原计划是错的）**：原打算先把 5 份 D1 适配器收敛成一份，再做池试点。但若池可用，
+那些适配器**本来就要删** ⇒ 先收敛是白做。故试点优先，用试点结论决定桩的去留。
+
+### 105.2 池试点怎么跑的（含两个坑）
+
+版本约束先钉死：`@cloudflare/vitest-pool-workers` **0.13+ 要求 vitest ^4.1**，本仓库是 **vitest 2.1.9**
+⇒ 不升 vitest 的前提下最高只能用 **0.12.x**（peer 支持 `2.0.x - 3.2.x`），装的是 `0.12.21`。
+独立配置（`test/pool/vitest.config.ts`，不进门禁）+ `vitest.config.ts` 里加一条 `exclude`。
+
+| 坑 | 现象 | 处置 |
+|---|---|---|
+| `wrangler.configPath` **相对配置文件目录**解析 | 写 `'./wrangler.toml'` → `ENOENT: …\test\pool\wrangler.toml` | 写 `'../../wrangler.toml'`（直接指仓库真实配置，不另起一份绑定事实源） |
+| 池**不会**自动圈 `include` | 默认 glob 把**主门禁的 22 个套件**也拖进 workerd 跑：`23 files / 10 failed`（它们依赖 node 侧能力，例如 `protocol.test.ts` 读 `src/index.ts`） | 显式 `include: ['test/pool/**/*.test.ts']` |
+| D1 的 `exec()` **按行**判语句 | `env.DB.exec(schema.sql)` → `D1_EXEC_ERROR: Error in line 1: -- SyncClipboard CfServer D1 schema… SQL code did not contain a statement` | 先剥行注释、再按 `;` 切分逐条 `prepare().run()` |
+
+**能用的部分（实测，6 用例 91ms）**：`SELF.fetch` 走**真实入口**一切正常 ——
+`GET /ui/api/integrity` 200 且字段齐全、未带凭据 401、**hash 含 `/` 的坏行不 500**
+（这条此前只能靠真机端到端验，`src/ui/maintenance.ts` 注释里记的就是"2026-09-20 实测"）；
+真 D1 上 NUL 在 TEXT 列能读回（`"a\u0000b"`，`length()` 会截到 1）；
+`scheduled` 探不到：`/__scheduled` 落到 Worker 的鉴权中间件上得到 **401**（池 0.12 没有
+`createScheduledController` / `runInDurableObject` 这类辅助，`grep` 其 dist 无命中）。
+
+### 105.3 决定性读数：**池内置的引擎不是 dev server 的引擎**
+
+同一个 LIKE 模式、三方各量一次（命令：`wrangler d1 execute syncclipboard --local --file=<每个长度一份 sql>`）：
+
+| 运行时 | 模式 51 字节 | 模式 202 字节 |
+|---|---|---|
+| **dev server**（wrangler 4.131.2 / miniflare 5.20260911.1-alpha / workerd 1.20260911.1） | **报错** `X [ERROR] LIKE or GLOB pattern too complex: SQLITE_ERROR` | 报错 |
+| **池 0.12.21**（其嵌套 miniflare 4.20260103.0 / workerd 1.20260310.1） | `ok` | **`ok` ← 不该通过却通过** |
+| `node:sqlite`（Node 24.18.0） | `ok` | `ok`（连 50001 字节也 `ok`） |
+
+**顺带独立复核了 §95.2 那条常量**：`MAX_LIKE_PATTERN_BYTES = 50` 的依据（模式 50 通过 / 51 报错）成立，
+并补上当时没留的**报错原文**（`LIKE or GLOB pattern too complex: SQLITE_ERROR`；
+它对应 SQLite 的编译期开关 `SQLITE_MAX_LIKE_PATTERN_LENGTH`，故不同 workerd 构建取不同值完全可能）。
+`node:sqlite` 一律通过，与 `test/fix-regressions.test.ts:895`「node:sqlite 不管模式长度，故只能在这一层钉」
+的注释一致。
+
+### 105.4 结论与触发条件
+
+**不采用 pool 0.12.x。** 理由不是"跑不起来"（它跑得很好），而是：**它会放行平台怪癖**。
+把 7 个黑盒套件搬进池，等于让"真 D1 才复现"的那一族（§95 修过的四处 500 全是这类）
+**测成绿的** —— 那正是本仓库最在乎的一类判据。而且池 0.12 自带一套**更旧**的
+wrangler/miniflare/workerd（与仓库自身的 4.131.2 / 5.20260911.1-alpha 并存），
+会让"我到底在测哪个 D1"变成一个新问题，而不是消掉旧问题。
+
+**触发条件（将来若要池）**：升到 vitest 4 + pool 0.22（它跟当前 wrangler），**并且先验**入池引擎是否复现
+上面这三条口径；试验性的配置与套件留在 `.audits/pool-pilot-2026-09-21/`（gitignored：`vitest.config.ts` /
+`cloudflare-test.d.ts` / `real-d1.test.ts`）。**产品树里不留依赖**：`@cloudflare/vitest-pool-workers` 已卸载，
+`package.json` / `package-lock.json` 与改动前逐字节一致（`git diff --stat` 为空）。
+
+### 105.5 落地：**5 份** D1 适配器 → 1 份
+
+试点被否 ⇒ 桩留下，于是收敛它们成为本轮的实际收益。实际副本数是 **5** 份（不是先前以为的 4）：
+
+| 位置 | 特点 |
+|---|---|
+| `test/fixes.test.ts` 的 `FakeD1` | 基础版 |
+| `test/fixes.test.ts` 的 **`FaultD1`** | 注入 `INSERT` 失败（隐藏在同一文件里，先前的清点漏了它） |
+| `test/dto-validation.test.ts` 的 `FakeD1` | 多一个 `exec()`（造带外坏行） |
+| `test/ui-activity.test.ts` 的 `FakeD1` | 基础版 |
+| `test/cleanup-budget.test.ts` 的 `CountingD1` | 每条语句记 1 次子请求 + `failWhen` 注入 |
+
+收敛为 `test/support/d1-sqlite.ts`（与既有 `test/support/target-guard.ts` 同处）：`createSqliteD1(schema, { beforeStatement(sql, op) })`
+—— 记账与故障注入共用一个钩子（`op` 区分 `all/first/run/exec`，F5 那条只注入 `run`），
+`exec()` 与底层 `node:sqlite` 句柄（`.sqlite`，**不计入钩子**，供灌数据/断言取值）都从一份暴露。
+模块头写明了它的**不可替代边界**：它**不是** D1（附 §105.3 的读数），平台口径类断言不许落在用它跑的用例上。
+
+**刻意不合并**：三份 R2 桩（`fixes` 只存 size + 真分页、`dto-validation` 只存字节 + `list()` 恒空、
+`cleanup-budget` 带记账）语义各不相同，合并只会为差异造一层配置面。理由就地写在
+`test/dto-validation.test.ts` 的桩上方，免得下一个人再来"顺手统一"。
+
+### 105.6 修的真缺陷：V1 探针自 `fee8078` 起**就没跑完过**
+
+**现象**：`node test/manual/probe-ui-v1.mjs --port 9333` → 打完 `STATE` / `PERF` 两行后
+`ReferenceError: check is not defined`（`:571`）退出。
+
+**git 归属（可复算）**：
+- `git log --oneline -S "check(" -- test/manual/probe-ui-v1.mjs` ⇒ 只有 **`fee8078`**（2026-09-20，
+  「探针加 CLS/首帧读数」）—— 它**只加了调用，没加定义**（V2 的 `probe.mjs:45` 有 `function check`，V1 没有）；
+- `git show HEAD:test/manual/probe-ui-v1.mjs | grep -nE "(function|const|let|var)\s+check\b"` ⇒ **零命中**。
+
+**影响**：探针在 PERF 处就退出 ⇒ 其后的骨架几何、主题脚本、选择流、`runAudit`(×6)、截图分支**一行都没执行**，
+退出码 1 也不是任何判据给的（`process.exitCode` 那行够不到）。故
+**`§103.6`「门禁补跑：全绿」里那行「V1 探针 ×3 → findings=0、零 console 错误、零失败请求（exit 0）」
+在当前树上不可复现**（`fee8078` 正是最后一次动该文件的提交，其后 9 笔都是文档）——
+按本仓库纪律**不回填历史快照，只在此登记订正**。同时说明：那条 CLS/首帧判据
+（「首屏 CLS ≤ 0.01」「首帧页脚已在折线以下」）**从未在 V1 上真正生效过**；修好后它**是绿的**
+（见下），即"结论对、判据没跑"，与 §103.7 的 W#5 同族（那次是整份文件语法错）。
+
+**修法**：在文件头部（`findBrowser()` 之后）补 `const auditFindings = []` + `function check(name, ok, detail)`
+（与 `probe.mjs` 的 `problems` 同形），并删掉 `:908` 处那份**重复声明** —— 两处判据与 `runAudit`
+从此共用同一个数组，末尾那行 `process.exitCode` 才真正是判据出口。
+
+**修后实跑**（1440×900，本地 dev server）：
+
+```
+node test/manual/probe-ui-v1.mjs --port 9334   ⇒ exit=0、AUDIT SUMMARY findings=0、
+   CONSOLE ERRORS none、FAILED REQUESTS none，55.58s（此前在 ~5s 处崩）
+node test/manual/probe.mjs --port 9335 --width 1440 --height 900 --url /ui_v2/app/
+   ⇒ exit=0、problems=0、CONSOLE ERRORS none、FAILED REQUESTS none，41.25s
+```
+
+### 105.7 Playwright 试点：**可行**，但"替换 4112 行探针"是独立任务
+
+`test/manual/` 四个文件合计 **4112 行**（`probe-ui-v1.mjs` 1732 / `states.mjs` 1477 / `probe.mjs` 607 /
+`shoot.mjs` 296），各自实现：起浏览器、调 `/ui/api/login` 拿真实 Cookie、`Network.setCookie` 手工搬运、
+截图、`Emulation.setEmulatedMedia`、粗指针模拟。试点用 `playwright@1.63.0`（**`channel: 'msedge'`**，
+本机没有 Chrome，故不下载 Chromium）复现同三个读数：
+
+| 读数 | `probe-ui-v1.mjs` | Playwright 试点 |
+|---|---|---|
+| 行数 / 真实行高 | `rows=44` / `rowHeight=47` | `rows=44` / `rowHeight=47` ✓ |
+| 生效主题与 `--bg` | `light` / `#faf8f5` | `light` / `#faf8f5` ✓ |
+| 主题切换（非破坏性同法） | `from light→dark, before #faf8f5, after #191817, stale=false` | **逐字节相同** ✓ |
+| 首屏 CLS | `clsAtLoad=0.0055` | `0.0054`（同量级）✓ |
+
+两处能力读数（都对迁移有利）：
+- `context.request` 与页面**共享 Cookie 罐** ⇒ 登录后不必手工搬 `Set-Cookie`；
+- `context.newCDPSession(page)` + **`Performance.enable`** 之后能取到
+  `LayoutDuration / RecalcStyleDuration / ScriptDuration / TaskDuration`（不 enable 时 `metrics` 是**空数组**）。
+  ⚠️ 顺带查实：`docs/ui.md §11.2` 写的那套性能预算流程（`Emulation.setCPUThrottlingRate{rate:6}` +
+  `Performance.getMetrics` 前后差值 + 同会话 A/B + 3 次中位）**四个探针脚本里没有任何一个实现过**
+  （`grep -E "Performance\.(enable|getMetrics)|CPUThrottling"` 零命中）—— 它目前是一份**人工步骤**。
+
+**判定**：Playwright 在能力上可以承担这件事（含 §11.2 那套），但**本轮不动 4112 行**：
+桩与探针的取舍应当先有结论，且 `AGENTS.md §2` 的 DoD 与 `docs/ui.md §11` 都点名这四个脚本，
+替换是"改门禁工具"级别的改动。依赖已卸载（无产品树消费者 ⇒ 不留死依赖），脚本与读数留在
+`.audits/_pool-probe/`。
+
+### 105.8 本轮的文档影响与门禁
+
+**动的文件**：`test/support/d1-sqlite.ts`（新增）、`test/fixes.test.ts`、`test/dto-validation.test.ts`、
+`test/ui-activity.test.ts`、`test/cleanup-budget.test.ts`、`test/manual/probe-ui-v1.mjs`、
+`docs/design.md`（ADR **D20** + §4 目录树）、本文件。
+**没动的**：套件数（22）、`public/` 资源数与挂载点、`/ui/api/*` 端点表（18）—— 故 `AGENTS.md §1`
+那张表逐行核对后**无一处需要同步**。
+
+**门禁**（同一轮跑完，逐条退出码）：
+
+| 门 | 结果 |
+|---|---|
+| `tsc --noEmit` | **0 错**（exit 0） |
+| `eslint public/ui_v2/js public/ui_v1/js` | **0 告警**（exit 0） |
+| `node --check` × 四个 manual 脚本 | 全绿（`probe-ui-v1.mjs` 改过，另三个照跑） |
+| `vitest run --no-file-parallelism`（dev server 8787） | **22 文件 / 433 用例全过** |
+| 两版真浏览器探针 | V1 `findings=0`／V2 `problems=0`，各 exit 0，零 console 错误、零失败请求 |
+
 
 
