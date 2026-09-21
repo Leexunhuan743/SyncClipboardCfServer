@@ -206,6 +206,7 @@ jobs:
             page=$((page + 1))
           done
 
+          created="false"
           if [ -z "$d1_id" ]; then
             if [ "${ALLOW_BOOTSTRAP:-true}" = "false" ]; then
               echo "::error::D1 库 $db_name 不存在，且仓库变量 D1_BOOTSTRAP=false ⇒ 按配置拒绝创建"
@@ -216,6 +217,7 @@ jobs:
               echo "::error::创建 D1 库失败 —— 检查令牌是否含 D1:Edit 权限、CLOUDFLARE_ACCOUNT_ID 是否正确"
               exit 1
             fi
+            created="true"
             echo "🆕 创建了 D1 库 $db_name（历史记录为**空**；库 id 不再打印，防公开仓库泄露）"
             echo "::warning title=创建了新的 D1 库::$db_name（历史记录为**空**）。若你本以为它已存在，请检查账号与库名；已删库的数据不会自动恢复。"
           else
@@ -226,9 +228,18 @@ jobs:
           sed -i "s|^database_id = .*|database_id = \"$d1_id\"|" wrangler.toml
           grep -q "^database_id = \"$d1_id\"\$" wrangler.toml || { echo "::error::database_id 注入失败"; exit 1; }
           echo "d1_id=$d1_id" >> "$GITHUB_OUTPUT"
-          # 2026-09-21：D1 库的 **id / R2 桶名不再进 run summary 与日志**（仓库可能公开）。
-          # id 不是凭据，但没必要暴露；钉住库的指引仍保留（无泄密内容）。
-          echo "> 想钉住到某个库（例如保护已有数据）：设仓库变量 D1_DATABASE_ID —— 它优先于按名解析，且 Sync fork 不会把它冲掉。"
+          # 2026-09-21：资源表只保留「资源 / 说明」两列 —— 第二列（D1 库 id、R2 桶名）不再进
+          # summary，防公开仓库泄露；「本次新建 / 已存在」这类状态信息保留。
+          {
+            echo "### 本次部署用的资源"
+            echo ""
+            echo "| 资源 | 说明 |"
+            echo "|---|---|"
+            echo "| D1 | $([ "$created" = "true" ] && echo '**本次新建（历史为空）**' || echo '已存在，直接复用') |"
+            echo "| R2 | 按名字寻址，不需要 id |"
+            echo ""
+            echo "> 想钉住到某个库（例如保护已有数据）：设仓库变量 \`D1_DATABASE_ID\` —— 它优先于按名解析，且 \`Sync fork\` 不会把它冲掉。"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v7
         with:
