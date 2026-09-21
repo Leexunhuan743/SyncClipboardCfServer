@@ -205,9 +205,9 @@ export function createList(actions) {
   //
   // 2026-09-18 用户反馈"清除筛选按钮明显点"：此前是 `.btn--quiet`（透明底 + 次要色），
   // 和紧挨着的「筛选中 · 共 N 条」是同一种颜色、又没有边框 —— 读起来像那句说明的后半截，
-  // 不像一个能按的东西。改成默认 `.btn`（有描边、正文色）：① 一眼是按钮；
-  // ② 与**空状态里同一个动作**的按钮长得一样（那里本来就是 `.btn`）——
-  // 同一个动作在两处两种强度，是这套界面一直在避免的事。
+  // 不像一个能按的东西。最终形态（2026-09-21 用户定："复制选中什么样 清除筛选什么样，
+  // 只是颜色换成青色"）：形状 = 标准 `.btn`（与批量按钮同构，16px 图标 + 文字），
+  // 颜色 = 青色（`.results__clear` 只覆盖三枚色令牌，见 components.css）。
   const headClear = el(
     'button',
     {
@@ -216,7 +216,7 @@ export function createList(actions) {
       hidden: true,
       onclick: () => actions.onClearFilters(),
     },
-    [svg(iconPaths('close'), { size: 14 }), el('span', { class: 'btn__label', text: '清除筛选' })],
+    [svg(iconPaths('close'), { size: 16 }), el('span', { class: 'btn__label', text: '清除筛选' })],
   );
   const headSelection = el('div', { class: 'results__selection', hidden: true });
   const head = el('div', { class: 'results__head' }, [headInfo, headClear, headSelection]);
@@ -352,6 +352,19 @@ export function createList(actions) {
   // 骨架的**行**由首帧的 update() 画（`renderSkeletonRows` 需要知道每页条数）。
   setView('loading');
 
+  // 选中态下点「空白处」清空选区（2026-09-21 用户定；范围从卡片内放大到**整页**）。
+  // 挂在 `document` 上：页面背景、表头底色、表格底部留白、卡片内边距、页脚都算空白。
+  // 排除：行体（由行的点击处理器接管）、对话框（`<dialog>` 是模态顶层，点它的空白不该动
+  // 背后的选区）、控件（按钮/复选框/链接/标签/**下拉框**各自办自己的事——漏了 `select` 的话，
+  // 点「每页条数」「时间范围」打开下拉会顺带把选区清空）、划选文字中的点击
+  // （与行体那条守卫同一个判据）。选区为空时是 no-op。
+  document.addEventListener('click', (event) => {
+    if (selection.size === 0) return;
+    if (event.target.closest('tr, dialog, button, input, select, a, label')) return;
+    if ((window.getSelection()?.toString() ?? '') !== '') return;
+    actions.onClearSelection();
+  });
+
   // 画骨架行。行数按**当前页大小**给 —— 这不是审美取舍，是布局正确性：
   // 骨架行高与真实行同高（`.skeleton__row` 的高度：表格档绑 `.table td`、卡片档绑
   // `.table tr.row` 的盒模型，两处推导都在 components.css），
@@ -384,14 +397,18 @@ export function createList(actions) {
   // （实测缺陷：勾选任意一行后，「共 788 条记录」变成「共 50 条记录」）。
   let lastHead = { total: 0, filtered: false };
 
-  function buildEmptyState({ filtered, search, recycle }) {
-    const title = recycle ? '回收站是空的' : filtered ? '没有符合条件的记录' : '还没有任何记录';
-    const hint = recycle
-      ? '删除的记录会在这里保留 30 天：元数据仍在（可恢复的会给出「恢复」按钮），数据文件在删除时已被清除。'
-      : filtered
-        ? search
-          ? `没有匹配「${search}」的记录。可以换个关键词，或清除筛选条件。`
-          : '当前筛选条件下没有记录。可以清除筛选条件查看全部。'
+  function buildEmptyState({ filtered, narrowed, search, recycle }) {
+    // 「被筛空」优先于「回收站为空」：回收站视图自身也算处于筛选态（`isFiltered` 含 `filters.deleted`），
+    // 但**只有用户另外施加的条件**（类型/收藏/关键词/时间）才能说"是条件把这里筛空了"。
+    // 2026-09-21 实测：回收站里套一个 0 命中的类型筛选、或搜一个不存在的词，空态写着
+    // 「回收站是空的」——同一屏的「全部 68」与「清除筛选」当场把它证伪了。
+    const title = narrowed ? '没有符合条件的记录' : recycle ? '回收站是空的' : '还没有任何记录';
+    const hint = narrowed
+      ? search
+        ? `没有匹配「${search}」的记录。可以换个关键词，或清除筛选条件。`
+        : '当前筛选条件下没有记录。可以清除筛选条件查看全部。'
+      : recycle
+        ? '删除的记录会在这里保留 30 天：元数据仍在（可恢复的会给出「恢复」按钮），数据文件在删除时已被清除。'
         : '在任意设备上复制内容后，SyncClipboard 客户端会把它同步到这台服务器，记录会出现在这里。';
     const buttons = [];
     if (filtered || recycle) {
@@ -399,7 +416,12 @@ export function createList(actions) {
         el('button', { class: 'btn', type: 'button', onclick: () => actions.onClearFilters() }, [
           // 文案与结果区头栏那个一键复位**逐字一致**（2026-09-18）：同一个动作在同一屏两处
           // 两个名字（"清除筛选条件" vs "清除筛选"）会让人以为是两件事。
-          el('span', { class: 'btn__label', text: recycle ? '返回历史记录' : '清除筛选' }),
+          // 筛空时也用它（而不是「返回历史记录」）：用户此刻要的是"把这些条件去掉"，
+          // 而这个按钮的语义（ADR D19）本就是"清掉全部条件，包括「回收站」这一位"。
+          // 图标与头栏那枚同款（close，16px）：同一个动作在两处必须有同一个长相
+          // （与 headClear 的 2026-09-18 注释同一判据）。
+          svg(iconPaths('close'), { size: 16 }),
+          el('span', { class: 'btn__label', text: narrowed ? '清除筛选' : '返回历史记录' }),
         ]),
       );
     }
@@ -423,14 +445,20 @@ export function createList(actions) {
   // 「是否处于筛选态」决定）。此前这份判断只在 `update()` 里内联算过一次，收行那条出口就漏了。
   let lastFilters = null;
 
-  // 当前视图是否处于筛选态 —— 空态的文案与按钮由它决定（"没有匹配…" 还是 "还没有记录"）。
+  // 当前视图是否处于筛选态 —— 空态的按钮由它决定（有没有"清掉这些条件"的出口）。
   function isFiltered(filters) {
+    return isNarrowed(filters) || filters.deleted;
+  }
+
+  // **用户另外施加**的筛选（不含「回收站」这一位）。
+  // 空态文案分两档用：'还没有任何记录' / '回收站是空的'（本来就空）与 '没有符合条件的记录'
+  // （是条件把它筛空的）。回收站视图自带的那一位不算"条件"——它只是视图本身。
+  function isNarrowed(filters) {
     return (
       filters.types !== 'All' ||
       filters.starred ||
       filters.search !== '' ||
-      filters.range !== 'all' ||
-      filters.deleted
+      filters.range !== 'all'
     );
   }
 
@@ -580,11 +608,40 @@ export function createList(actions) {
     ];
     row.append(...cells.filter(Boolean));
 
+    // 选中态下 Shift+点击行体 = 范围选择。但原生 Shift+click 会扩展**文字选择**（从上次的
+    // 光标/选区锚点开始选一段文本）——它在 mousedown 就开始了，`click` 里的 preventDefault
+    // 拦不住（2026-09-21 实测：Shift+点行体选中一截文字而不是连续几行）。故在 mousedown 上
+    // 掐掉：仅当「选中态 + Shift + 落在行体（非控件）」时 preventDefault。
+    // 普通 mousedown（无 Shift）**不**拦：用户要拖动划选文字复制，那条路（Q4 守卫）不能堵。
+    row.addEventListener('mousedown', (event) => {
+      if (selection.size === 0) return;
+      if (event.target.closest('button, input, a, label')) return;
+      if (event.shiftKey) event.preventDefault();
+    });
+
     // 整行可点开预览：点在按钮/复选框/标签上时不触发；
     // 用户正在选文字（想手动复制）时也不触发——那一下点是在划线，不是在「打开」。
+    //
+    // 2026-09-21（用户定的选中态交互）：**选区非空时行体点击 = 切换该行选中**（Shift+点击 =
+    // 范围选择，锚点与复选框共用 `anchorIndex`），不再打开预览；预览/下载等图标在按钮区里照常。
+    // 选区为空时维持"行体点击 = 预览"。
     row.addEventListener('click', (event) => {
       if (event.target.closest('button, input, a, label')) return;
       if ((window.getSelection()?.toString() ?? '') !== '') return;
+      if (selection.size > 0) {
+        if (event.shiftKey && anchorIndex !== null && anchorIndex !== index) {
+          event.preventDefault();
+          const from = Math.min(anchorIndex, index);
+          const to = Math.max(anchorIndex, index);
+          actions.onSelectRange(currentItems.slice(from, to + 1));
+          return;
+        }
+        anchorIndex = index;
+        // 用 ref.item 而不是闭包里的 item：行内开关（收藏/置顶）会就地换掉 ref.item，
+        // 存旧对象会让批量按钮的方向（收藏/取消收藏）按旧数据算 —— 与 buildCheckbox 同一条纪律。
+        actions.onSelect(ref.item, !selection.has(item.key));
+        return;
+      }
       actions.onPreview(item);
     });
 
@@ -625,6 +682,10 @@ export function createList(actions) {
         {
           class: action === 'delete' ? 'btn btn--danger-solid' : 'btn',
           type: 'button',
+          // 窄屏（≤560px）下批量按钮只显示图标、文字被 CSS 藏掉（layout.css 的
+          // `.results__selection .btn:has(svg) .btn__label`），`aria-label` 就是这枚按钮
+          // 唯一的名字 —— 与顶栏「复制最近一条」等图标按钮同一手法。
+          'aria-label': label,
           // 进行中态 + 重入守卫（2026-09-18）：批量复制可能发 N 个分片请求（每片 100 条），
           // 批量写也要逐条走服务端 —— 没有 pending 态的按钮在这几秒里读起来就是"点了没反应"。
           // `isPending` 那道守卫与确认框同一个理由：`pointer-events: none` 只挡鼠标、挡不住键盘 Enter。
@@ -667,9 +728,11 @@ export function createList(actions) {
         ];
 
     headSelection.replaceChildren(
-      el('span', { text: `已选 ${selected.size} 条` }),
+      // `role="status"`：计数随选区实时变化，读屏需要这个实时区域播报（V2 的 batchbar 同款判据）；
+      // class 供 CSS 给「不收缩 + 不换行」（见 layout.css 的 .results__selection）。
+      el('span', { class: 'results__selection-count', role: 'status', text: `已选 ${selected.size} 条` }),
       ...buttons,
-      el('button', { class: 'btn btn--quiet', type: 'button', onclick: () => actions.onSelectAll(false) }, [
+      el('button', { class: 'btn btn--quiet', type: 'button', onclick: () => actions.onClearSelection() }, [
         el('span', { class: 'btn__label', text: '取消选择' }),
       ]),
     );
@@ -779,7 +842,12 @@ export function createList(actions) {
       setView(items.length > 0 ? 'table' : 'empty');
       if (items.length === 0) {
         empty.replaceChildren(
-          ...buildEmptyState({ filtered, search: filters.search, recycle: recycleMode }),
+          ...buildEmptyState({
+            filtered,
+            narrowed: isNarrowed(filters),
+            search: filters.search,
+            recycle: recycleMode,
+          }),
         );
       }
 
@@ -799,7 +867,9 @@ export function createList(actions) {
 
     // 初次加载失败：不能把骨架屏留在那里（那就是「无限骨架」），要给出可操作的错误态。
     // 已经有内容时不用它——那种情况下保留旧数据 + 一条提示比清空更正确。
-    showError(message, onRetry) {
+    // `onRetry` 可省：字段级错误（搜索词过长）**没有可重试的东西** —— 重试必然再失败，
+    // 画一个点了没用的按钮正是要避免的（提示条那条路径一直按 status 这么判）。
+    showError(message, onRetry = null) {
       setView('empty');
       // **头栏的口径也必须一起改**（2026-09-18 补）：加载档刚把这里写成「正在加载…」，
       // 而失败路径不调 render()（见 main.js 的 catch），留着它就会出现
@@ -807,16 +877,21 @@ export function createList(actions) {
       // 故这里既不给数字也不给替代文案 —— 说明由错误态正文单独承担。
       headInfo.textContent = '';
       headClear.hidden = true;
-      empty.replaceChildren(
+      const parts = [
         svg(iconPaths('warning'), { size: 32, class: 'empty__icon' }),
         el('p', { class: 'empty__title', text: '加载失败' }),
         el('p', { class: 'empty__hint', text: message }),
-        el('div', { class: 'empty__actions' }, [
-          el('button', { class: 'btn btn--primary', type: 'button', onclick: onRetry }, [
-            el('span', { class: 'btn__label', text: '重试' }),
+      ];
+      if (onRetry) {
+        parts.push(
+          el('div', { class: 'empty__actions' }, [
+            el('button', { class: 'btn btn--primary', type: 'button', onclick: onRetry }, [
+              el('span', { class: 'btn__label', text: '重试' }),
+            ]),
           ]),
-        ]),
-      );
+        );
+      }
+      empty.replaceChildren(...parts);
     },
 
     // 选择变化只改受影响的行：整表重建会让滚动位置与动画每次都重来
@@ -888,6 +963,7 @@ export function createList(actions) {
         empty.replaceChildren(
           ...buildEmptyState({
             filtered: lastFilters ? isFiltered(lastFilters) : false,
+            narrowed: lastFilters ? isNarrowed(lastFilters) : false,
             search: lastFilters?.search ?? '',
             recycle: recycleMode,
           }),

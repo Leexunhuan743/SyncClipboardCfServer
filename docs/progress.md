@@ -9402,3 +9402,69 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 
 **验证**：`tsc` 0 错；`eslint`（含 `ui_shared`）0 告警；四个探针 `node --check` 全过；
 全量 **22 套件 / 435 用例**（比上一笔 +2 条守卫）全过；`docs.test.ts` 用例数 7 → 9。
+## 117. dogfood V1 一轮（agent-browser）：6 个发现、修掉 6 个（2026-09-21）
+
+**触发**：用户把 `Downloads/skills/dogfood`（源自 vercel-labs/agent-browser 的探索式测试技能）拿到本仓库，要求「调用这个来完善 ui v1」。
+
+**做法**：按技能流程用 `agent-browser`（真实 Chromium 153 + CDP）对 `http://127.0.0.1:8787/ui_v1/` 做黑盒探索 —— **不读被测界面源码**，全部结论 = 界面观察 + 接口复算（curl 对 `/ui/api/*` 逐条核对）。覆盖：登录 / 列表 / 搜索 / 筛选（类型·收藏·时间·每页条数）/ 排序 / 分页 / 行内动作（预览·复制·下载·删除）/ 批量条 / 回收站（含恢复与禁用判据）/ 部署信息（含完整性自检）/ 深浅色 / 430px 窄屏 / 会话过期 / 控制台与网络 / axe 无障碍。证据（截图、录屏、axe JSON）在 `.audits/dogfood-v1/`（gitignore，不进库）。
+
+**发现并修掉的 6 个**（编号对应 `.audits/dogfood-v1/report.md`）：
+
+1. **销毁性按钮 hover 时文字消失（high，视觉/a11y）**：`.btn--danger-solid:hover { --btn-bg: color-mix(...84%, #000) }` 写在文件**上方**自己的定义旁，而泛用的 `.btn:hover { --btn-bg: var(--surface-2) }` 在**下方**的 hover 块里 —— 同特异性 `(0,2,0)`、靠顺序取胜 ⇒ 前一条是死规则，悬停时危险按钮变成白字浅底（实测 `#f4f1ec` 底 + 白字 ≈ **1.13:1**）。同文件 `.results__clear:hover` 的注释早已写明这条顺序坑，但没被用到危险按钮上。⇒ 移进下方 hover 块（连同原因注释），hover 变 `rgb(155,24,24)` 深红，白字 **≈8.3:1**。V2 无此问题（`overlay-v2.css` 用 `filter: brightness`，不走自定义属性覆盖）。
+2. **统计卡片计数口径与列表/筛选对不上（medium，content/ux）**：「已收藏 12 条」vs「收藏」筛选 9 条；回收站视图「记录 67 条」vs「回收站 · 共 69 条」。根因：卡片恒取全库口径（协议 DTO `starredCount` 按上游语义含已删除），而 `byType` 早已随视图走 —— 正是 `byType` 那条"控件必须与列表同源"纪律要防的"列表说 1019、控件说 1009"。⇒ **D23**：统计条两个计数卡随当前视图；服务端 `/ui/api/statistics` + `/ui/api/overview` 各加 `starredCountActive`/`starredCountDeleted`（`countByTypeViews` 的 GROUP BY 加 `Stared` 顺带算出，协议 `starredCount` 不动）；统计条新增用例 +1。
+3. **回收站里"筛选 0 命中"被说成「回收站是空的」（medium，content/ux）**：`buildEmptyState` 的 recycle 分支无条件压过 filtered 分支，同屏的「全部 68」与「清除筛选」当场证伪。⇒ 新增 `isNarrowed()`（用户施加的条件，**不含「回收站」这一位**），筛空优先；按钮在筛空时给「清除筛选」（语义即 D19），真·空回收站才给「返回历史记录」。
+4. **统计条三级文本对比度 4.36:1 < 4.5:1（medium，a11y）**：`--ink-faint: #74706a` 在白底 4.92、到 `--surface-2` 只剩 4.36，axe 报 serious × 7（`.stats__total`、health 两项、清理正常、spark 标签、两枚类型计数）。`tokens.css` 注释自称"三级文本也要过 4.5:1"，`docs/ui.md` §10 也把 9 类文本 ≥4.5:1 记为已达成 ⇒ 判据从"白底"换成**真正用到的最深那层底**，`#74706a → #706c66`（`--surface-2` 上 4.63、白底 5.2）；axe 复查 **0 违规**（深色主题本来 0 违规）。
+5. **图片解不开被误诊为「服务器上已找不到对应文件」（low，content）**：三条 18 B 假 PNG 记录的存储对象**存在**（`GET /ui/api/history/Image/<hash>/data` → 200/18 B，Range 回 `0-17/18`），`<img>` 解码失败却套用"对象缺失"的文案 ⇒ 预览弹窗改为与 `row-content.js` 缩略图同一套双原因表述（"已找不到对应文件……**或文件内容不是可显示的图片**"）。行内缩略图那处早就改对了，预览弹窗是漏网的。
+6. **搜索词超限的错误离控件太远 + 无重试纪律（low，ux/a11y）**：>48 字节的搜索词只弹底部提示条，列表静默留着上一次结果；首屏失败路径还给一颗必失败的「重试」。⇒ 复用 `.alert--error`（登录页字段错误的同款组件）做成工具栏整行，`aria-invalid` + `aria-describedby="search-error"` + `role="alert"` 三件套按 `components.md` §2 error 格一次做齐；`showError` 的 `onRetry` 改为可省，字段级错误不画「重试」（与提示条那条 status 判据同源）。
+
+**过程里踩的坑**（都记了，怕下次再掉）：
+
+- `agent-browser` 的 `screenshot <path>` 只认**绝对路径**，相对路径会被当选择器、悄悄落到临时目录（浪费了两张截图）。
+- overview 快照的四个随视图计数是**顶层**字段、statistics 是铺平对象 —— 前端落地时漏搬 `starredCount*` 的静默表现是那一格回落成 0（卡片写「已收藏 0 条」而接口里是 3）；已在 `main.js` 落地处与 `docs/ui.md` §5 各记一笔。
+- axe 的 `th-has-data-cells` incomplete 是全选列（th 里是 checkbox、无数据格）—— 判 false positive，未处理。
+
+**验证**：`tsc` 0 错；`eslint` 0 告警；四个探针 `node --check` 全过；全量 **22 套件 / 436 用例**（新增统计条用例 +1）全过；浏览器复验六项修复全部到位（危险按钮 hover 深红 8.3:1、两视图卡片 = 筛选计数、回收站筛空文案、axe 0 违规、预览双原因文案、搜索错误内联且无 toast 无重试）。
+## 118. 结果区头部高度恒定 + 操作条移动端只留图标 + 清除筛选加高（2026-09-21）
+
+**触发**：用户反馈两处 —— ①「共 xx 条记录」那个位置（结果区头部）的高度不合理：勾选一些项目后高度变了；② 移动端操作条的文字（复制选中 / 收藏 / 置顶 / 删除选中）不要显示、只留图标。
+
+**① 头部高度（先量后修）**：
+
+- 实测：桌面 1440 闲置 `42px` → 选中 `45px`（操作条 = 36px 按钮 + 8px 上下留白 + 1px 底边，42px 的头放不下）；**430px 更夸张：42 → 89px**（操作条换行成两行）。
+- 用户建议「把 42 改成 45 不就好了」——采纳，头部 `min-height: 45px`，两态同高。但 45px 只治桌面 3px，**不治窄屏 47px**：那来自操作条换行。于是操作条改为**恒单行 + 自身横向滚动**（与工具栏类型 chips 同一套配方：`flex-wrap: nowrap` + `min-width: 0` + `max-width: 100%` + `overflow-x: auto` + `scrollbar-width: none`）。
+- **踩到的一个坑**：光给 `.btn` 设 `flex: none` 不够——「已选 N 条」那个 span 是唯一可收缩项，窄屏下五个按钮（≈426px）已超宽，收缩压力全落到它身上，被挤到 **15px 宽、文字竖排**，选择条照样被撑成 80px。必须 `flex: none` + `white-space: nowrap` 一起给它（新增 `.results__selection-count`，顺带补 `role="status"`，与 V2 batchbar 的判据同款）。
+- 修后实测（闲置/选中都测）：**1440、430、390 三档头部恒定 45px**；430 无需滚动、390 可横滑；触屏（coarse，44px 按钮）也放得进 45px。
+
+**② 操作条移动端只留图标**：
+
+- 与顶栏「更窄时只留必要文字」（≤560px 藏 `.btn__label`、`aria-label` 兜名）同一手法：`@media (max-width: 560px)` 下 `.results__selection .btn:has(svg) .btn__label { display: none }`。`:has(svg)` 恰好把四个带图标的动作按钮与「取消选择」（无图标、文字是唯一表达）分开。
+- 四个按钮 `aria-label` 补上（`batchButton` 里 `label` 直接进 `aria-label`）；430px 下操作条收窄后**无需滚动**（icon 按钮 42px×4 + 计数 + 取消选择 ≈ 364px），390px 才横滑。
+
+**③ 清除筛选按钮上下各 +2px**（同日用户追加）：头部 42→45px 后 28px 的胶囊在 45px 条里偏小，`min-height 28 → 32px`（13px 字上下各 7px）。
+
+**验证**：`tsc` 0 错；`eslint` 0 告警；`node --check` 探针全过；`ui-contract` / `ui-guard` / `docs` / `ui-logic` 94 项全过；浏览器逐视口复验（1440 / 430 / 390 头部恒 45px、图标态与 aria-label 到位、清除筛选 32px）。全量套件与 V1 探针结果见当轮门禁。
+
+**§118 增补（同日，用户两连问，含最终定形）**：
+
+- **清除筛选：形状 = 复制选中，颜色 = 青色**（最终定案，用户原话："复制选中什么样 清除筛选什么样 只是颜色换成青色"）。过程：用户先要「加图标 + 与批量按钮统一」→ 做成白底标准 `.btn` + 16px 图标；用户改口要回青色 → 一度还原成旧胶囊；用户再明确"只要颜色换青、形状同批量按钮"。**最终**：`.results__clear` 只覆盖三枚色令牌（`--accent-soft` 浅底 / `--accent` 字 / 强调色混描边），形状（36px、`--r-md` 圆角、字重 500、`--control-h` 高度）全部来自 `.btn` 基类，与批量按钮必然一致；图标 16px close（14px → 16px）。hover 规则 `.btn.results__clear:hover` 保留（胶囊/青色底不被 `.btn:hover` 的 `--surface-2` 按回去）。空状态里同一个动作的按钮同步加 close 图标（`buildEmptyState`）。
+- **取消选择 还原为 `.btn--quiet`**（透明底 + `--ink-muted` 灰字 #6d6a64 + 无边框）。过程：用户问「取消选中的颜色原来是什么」→ 答 `.btn--quiet` 后误改成标准 `.btn`；用户明确"取消选择 改回去 想要的就是原来的效果" → 还原 `.btn btn--quiet`，与其它四个白底按钮保持原有差异。
+
+**§118 增补二（同日，用户追加）**：页脚致谢卡片标题「致谢如下项目」→「致谢项目」，清单从 2 项补全到 6 项、与 README「致谢」逐项一致（+Hono / fflate / Microsoft ASP.NET Core SignalR / Lucide Icons，各带完整 URL，条目结构与原两条相同）。可见标题与 `nav` 的 `aria-label` 同步改（WCAG 2.5.3，逐字一致），`docs/ui.md` 硬约束 #20 已更新。
+- **复选框命中区：保持 7px（不改）**（同日）：用户原想「方格不变、方格外交 8px 算选中」（32px 命中区）——实测 32px 会让复选框列成为全行最高、行高 47→49px（连带骨架屏与文档 47px 等式）。向用户摊开这个取舍后，**用户选 7px 保持 47px 行高**，代码维持原样（`.check-wrap` 30px）。
+## 119. 选中态下的行点击交互（行体=切换选中，空白=清空选区）（2026-09-21）
+
+**触发**：用户要求「选中一个之后，点其它行的任意地方不触发预览窗口（预览/下载图标照常）」——随后用 `grilling` 技能把整棵设计树走完（Q1 行体点击=切换选中；Q2 点空白清空选区，范围先卡片内、用户放大到**整页**；Q3 回收站/窄屏一致；Q4 保留划选文字守卫；Q5 不加额外视觉提示；Q6 已选中行点行体=取消；Q7 Shift+行体=范围选择）。
+
+**实现**（`public/ui_v1/js/components/list.js` + `main.js`）：
+
+- 行 `click` 处理器：`selection.size > 0` 时走「切换选中（`onSelect(ref.item, …)`，用 `ref.item` 而非闭包 item —— 与 buildCheckbox 同一条纪律，行内开关会就地换掉 `ref.item`）/ Shift 范围选择（`onSelectRange`，锚点与复选框共用 `anchorIndex`）」，否则维持 `onPreview(item)`。
+- **踩到的坑**：原生 Shift+点击会扩展**文字选择**，它在 `mousedown` 就开始，`click` 里的 `preventDefault` 拦不住（实测：Shift+点行体选中一截文字而不是连续几行）。⇒ 行体上另挂 `mousedown`：仅「选中态 + Shift + 非控件」才 `preventDefault`；普通 mousedown **不拦**（用户要拖动划选文字复制，Q4 守卫不能堵）。
+- 空白清空挂在 **`document`** 级 `click`：选区非空 + 非 `tr/dialog/button/input/a/label` + 非划选文字 ⇒ `onClearSelection()`。排除 `<dialog>`：模态顶层点它的空白不该动背后的选区（实测：预览对话框开着、点对话框空白，选区不动）。`onSelectAll(false)` 只清当前页（`store.items` 是本页），跨页选中的行靠新增的 `onClearSelection()` 一次清掉。
+
+**浏览器实测**（1440 视口，活跃 + 回收站两视图）：空选区点行体→预览开；勾选 1 行后点另一行行体→选中不开预览；点已选中行行体→取消；Shift 范围选择 1~4 全中、选中文字长度 0；预览图标照常开预览且不改选区；点表头右侧空白/页面左侧空白→清空；对话框内点击不清空；回收站视图同规则。
+
+**文档**：`docs/ui.md` §3.3 新增硬约束 #25；#18（清除筛选）按最终形态（标准 `.btn` 形状 + 青色）改写。门禁按用户指示未跑（行为已在真实浏览器逐项验证）。
+
+**§119 增补（同日，用户一句）**：批量条「取消选择」从 `onSelectAll(false)`（只清当前页）改为
+`onClearSelection()`（跨页全清）——与点空白的语义对齐。`onSelectAll(false)` 保留给表头全选框的取消
+（"本页都不选"，非全清）。实测：第 1 页选 1 行 + 第 2 页选 1 行 → 点「取消选择」→ 两页都清空。

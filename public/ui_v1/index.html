@@ -108,8 +108,9 @@
           <span>剪贴板数据只保存在你自己的 Cloudflare 账户（D1 记录 + R2 文件），不经过任何第三方。</span>
           <span class="toolbar__spacer"></span>
           <!-- **本项目地址就是那个入口**（2026-09-18 用户定形）；悬停或键盘聚焦时向上拉出**致谢**面板，
-               里面是**另外两个**项目。入口本身就是链接（点它开仓库），因此完全不需要 `<details>` 或
-               脚本：展开由 CSS 的 `:hover` / `:focus-within` 驱动，触屏没有 hover，那边把面板改成
+               里面是与 README「致谢」逐项对齐的**全部**依赖/灵感项目（2026-09-21 起六个：上游、参考实现、
+               Hono、fflate、SignalR 规范、Lucide 图标）。入口本身就是链接（点它开仓库），因此完全不需要
+               `<details>` 或脚本：展开由 CSS 的 `:hover` / `:focus-within` 驱动，触屏没有 hover，那边把面板改成
                常驻（见 components.css 的 `pointer: coarse` 分支）。
                `rel="noreferrer noopener"` 三个链接都要有：`target="_blank"` 的新页能通过
                `window.opener` 反向操作本页，而本页持有会话 Cookie。 -->
@@ -123,10 +124,10 @@
                 <path d="M6.5 10.5 12 5l5.5 5.5" />
               </svg>
             </a>
-            <!-- 面板的可访问名与可见标题**逐字一致**（「致谢如下项目」）：
+            <!-- 面板的可访问名与可见标题**逐字一致**（「致谢项目」）：
                  两者不一致会违反"可见标签必须包含在可访问名里"（WCAG 2.5.3）。 -->
-            <nav class="footer-links__panel" aria-label="致谢如下项目">
-              <span class="footer-links__title">致谢如下项目</span>
+            <nav class="footer-links__panel" aria-label="致谢项目">
+              <span class="footer-links__title">致谢项目</span>
               <a class="footer-links__item" href="https://github.com/Jeric-X/SyncClipboard" rel="noreferrer noopener" target="_blank">
                 <span class="footer-links__name">SyncClipboard</span>
                 <span class="footer-links__url">https://github.com/Jeric-X/SyncClipboard</span>
@@ -134,6 +135,22 @@
               <a class="footer-links__item" href="https://github.com/ting1e/clipserver" rel="noreferrer noopener" target="_blank">
                 <span class="footer-links__name">clipserver</span>
                 <span class="footer-links__url">https://github.com/ting1e/clipserver</span>
+              </a>
+              <a class="footer-links__item" href="https://hono.dev/" rel="noreferrer noopener" target="_blank">
+                <span class="footer-links__name">Hono</span>
+                <span class="footer-links__url">https://hono.dev/</span>
+              </a>
+              <a class="footer-links__item" href="https://github.com/101arrowz/fflate" rel="noreferrer noopener" target="_blank">
+                <span class="footer-links__name">fflate</span>
+                <span class="footer-links__url">https://github.com/101arrowz/fflate</span>
+              </a>
+              <a class="footer-links__item" href="https://github.com/dotnet/aspnetcore" rel="noreferrer noopener" target="_blank">
+                <span class="footer-links__name">Microsoft ASP.NET Core SignalR</span>
+                <span class="footer-links__url">https://github.com/dotnet/aspnetcore</span>
+              </a>
+              <a class="footer-links__item" href="https://lucide.dev/" rel="noreferrer noopener" target="_blank">
+                <span class="footer-links__name">Lucide Icons</span>
+                <span class="footer-links__url">https://lucide.dev/</span>
               </a>
             </nav>
           </div>

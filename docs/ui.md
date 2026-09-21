@@ -276,11 +276,15 @@ Worker
     文件名统一过 `safeFileName`：先 basename、洗掉文件系统不认的字符、去掉结尾的点/空白、
     限长 64 且**截断时保留扩展名**（`dataName` 来自客户端，不可信）。
     判据：探针的 `COARSE`（几何 + 媒体查询是否真的匹配）与 `DISABLED`（计算值 `pointer-events`）。
-18. **筛选生效时的出口按钮「清除筛选」**（2026-09-18 用户当场定形）：强调色浅底的**胶囊**
-    （`--accent-soft` 底 + `--accent` 字，与顶栏状态胶囊同一套取色）、字重 600、高 **28px**
-    （36 显胖、24 显小，28 是他当场定的那一档；触屏由 `.btn { min-height: 44px }` 接管命中区）；
-    只在真的有筛选时出现，位置在结果区头栏「筛选中 · 共 N 条」右边。
-    被否掉的两版：透明文字（太像说明文字）与白底描边方框（在灰带上太硬）——见 `progress.md` §67。
+18. **筛选生效时的出口按钮「清除筛选」**（2026-09-18 用户当场定形，2026-09-21 改形）：最终形态 =
+    **形状与批量按钮完全一致**（标准 `.btn`：36px、`--r-md` 圆角、字重 500、16px close 图标 + 文字），
+    **只把颜色换成青色**（用户原话："复制选中什么样 清除筛选什么样 只是颜色换成青色"）——
+    `--accent-soft` 底 + `--accent` 字 + 强调色混出的描边；`.results__clear` 只覆盖三枚色令牌，
+    形状全部来自 `.btn` 基类，两处形状必然一致。历史：2026-09-18 先是胶囊（36 显胖、24 显小、
+    28 当场定）、字重 600；2026-09-21 用户先要"图标 + 与批量按钮统一"、后改口要回青色，
+    最终按上面那句原话定案。hover 规则 `.btn.results__clear:hover` 必须与 `.btn:hover` 同块声明
+    （基色 `--accent-soft` 会被 `.btn:hover` 的 `--surface-2` 按回去）。只在真的有筛选时出现，
+    位置在结果区头栏「筛选中 · 共 N 条」右边；空状态里同一个动作的按钮带同款 close 图标。
 19. **表单错误挂到字段上**（2026-09-18；出处写作 `components.md` §2 的 error 格 —— ⚠️ 该文档
     **不在本仓库**，故要求在这里完整写出，照做不必去找它）：两个表单
     （登录页、部署信息的保留策略）在报错时给**出错的那个字段**置 `aria-invalid` 与
@@ -293,10 +297,12 @@ Worker
     用户要求改回项目名，见 `progress.md` §79）。它带 `title`（本项目的 GitHub 仓库地址）：
     **可见文字是本产品的名字，`title` 才是"它会开到哪"**——有文本内容的链接里 `title` 不参与命名，
     只作描述与悬停提示；悬停（细指针）或键盘聚焦
-    （`:focus-within`）时在它**上方**拉出一张「致谢如下项目」卡片，列上游 `SyncClipboard`
-    与 `clipserver` 及各自完整 URL（2026-09-18 用户要求删掉 `clipserver` 后面的「（另一个实现）」括注、
-    并去掉上游那条的「客户端」三个字：致谢卡片里只要名字就够了，解释留给 README 与 `design.md` D15；
-    卡片标题与 `nav` 的 `aria-label` 逐字一致，均为「致谢如下项目」，见 `progress.md` §82）。收起态是 `opacity: 0 + pointer-events: none`
+    （`:focus-within`）时在它**上方**拉出一张「致谢项目」卡片，列 README「致谢」里那六项
+    （SyncClipboard / clipserver / Hono / fflate / ASP.NET Core SignalR / Lucide Icons）及各自 URL
+    （2026-09-18 用户要求删掉 `clipserver` 后面的「（另一个实现）」括注、并去掉上游那条的「客户端」三个字：
+    致谢卡片里只要名字就够了，解释留给 README 与 `design.md` D15；
+    2026-09-21 用户把标题从「致谢如下项目」改成「致谢项目」、并把清单补全到与 README 一致；
+    卡片标题与 `nav` 的 `aria-label` 逐字一致，均为「致谢项目」，见 `progress.md` §82）。收起态是 `opacity: 0 + pointer-events: none`
     （不是 `display: none`）——链接留在 Tab 顺序里；触屏没有 hover，那一档把卡片改成**常驻**。
     动效是 160ms 的淡入 + 6px 上浮（状态过渡，写在组件里而非 motion.css）。见 `progress.md` §72。
 21. **分页在窄屏的行结构**（2026-09-18 用户截图报的）：范围文本允许独占一行，但
@@ -331,6 +337,21 @@ Worker
     ⚠️ **`search` 一度被漏掉**，理由是"搜索只是高亮过滤"——**与事实相反**：服务端为它生成
     `Text LIKE ?`（`src/ui/query.ts`），被它滤掉的行看不见、却仍留在选择集里，与 F3 完全同型。
     判据：两版 `MEMBERSHIP_KEYS`（V1 `main.js` / V2 `boot.js`）+ `progress.md` §91。
+25. **选中态下点行体 = 切换选中，点空白 = 清空选区**（2026-09-21 用户定案，`grilling` 走完全部
+    分支后落地）：选区非空（≥1 行）即"选中态"——
+    ① **行体点击**（非按钮/复选框/标签、未在划选文字）**切换该行选中**（已选中的行点行体 =
+    取消），**Shift+点击行体 = 范围选择**（锚点与复选框共用 `anchorIndex`）；
+    预览/下载/复制/删除/收藏/置顶图标在按钮区里照常（行体点击的 `closest('button, input, a, label')`
+    排除）。
+    ② **点空白清空选区**，空白 = **整页**（页面背景、表头底色、表格留白、卡片内边距、页脚），
+    排除行体、`<dialog>` 内（模态顶层，点它不该动背后的选区）、控件、划选文字中的点击。
+    ③ 选区变空即退出选中态，行体点击恢复「预览」。
+    实现要点：**原生 Shift+点击会扩展文字选择**（mousedown 就开始，`click` 里 preventDefault 拦不住），
+    故行体上挂 `mousedown`：选中态 + Shift + 非控件才 preventDefault；普通 mousedown **不拦**
+    （用户要拖动划选文字复制）。清空选区一律走 `onClearSelection()`（**跨页全清**）——
+    批量条「取消选择」与点空白同用它；`onSelectAll(false)` 只清**当前页**（`store.items` 是本页），
+    保留给表头全选框的取消（它的语义就是"本页都不选"，不是全清）。
+    判据：行点击处理器 + `document` 级空白点击处理器 + `progress.md` §119。
 
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
@@ -406,8 +427,8 @@ Worker
 | POST | `/ui/api/hub-ticket` | 签发一张 Hub 连接票据（`{token, path}`），供前端建立 WebSocket；DO 打不通时 503（前端据此继续轮询） | 503 |
 | GET | `/ui/api/integrity` | 数据完整性自检：`{checkedAt, recordsWithData, historyObjects, missingCount, missing[], missingTruncated}`。成本 = 1 次 D1 + `ceil(对象数/1000)` 次 R2 列举（**不逐条 HEAD**）。⚠️ hash 含路径分隔符的**坏行**（只能带外写入 —— 三条写路径都拒）按「取不到」计入 `missingCount` 并列进清单：不是 500、也不是静默跳过（2026-09-20；此前 `historyKey()` 的断言会让整个自检 500 —— 而它恰恰是数据坏掉时唯一该工作的诊断面） | — |
 | PUT | `/ui/api/settings` | 保留策略的在线调整：`{retention:{retentionMinutes, maxSavedHistoryCount, retentionSource, maxCountSource}}`；`null` = 清除覆盖、`0` = 关闭该阶段。**没有对应的 GET**：读取走 `/ui/api/info` 的 `retention`（同一份 `readRetentionSettings`，连通来源字段一起给） | 400 / 415 |
-| GET | `/ui/api/statistics` | 官方统计 + 按类型分布。**两个计数键口径不同**：`byType` 随 `?deleted=true` 走（工具栏的类型计数要与当前视图同源），`byTypeActive` **恒为活跃口径**（统计条「存储占用」的明细用它——已删记录的 R2 文件在软删时就删了） | 400 参数非法 |
-| GET | `/ui/api/overview` | **首屏合成快照**：一次往返拿到 `{stats, byType, byTypeActive, marker, info, serverTime}` —— 统计、类型计数、变更标记、部署信息、服务端时间**同源**（数字与列表来自同一瞬间，不会「控件说 1009、列表说 1008」）。`?deleted=true` 时 `byType` 随视图走（`byTypeActive` 恒活跃）。**只读、无副作用**，且统计层只算一次（此前单次请求要列举两遍 R2 全桶，见 O-01）。**不含 `activity`**：那是独立的一天粒度查询，前端在列表落地后单独拉 | 400 参数非法（`deleted` 非法值 → 400 而不是 500） |
+| GET | `/ui/api/statistics` | 官方统计 + 按类型分布。**三个计数键口径不同**：`byType` 随 `?deleted=true` 走（工具栏的类型计数要与当前视图同源），`byTypeActive` **恒为活跃口径**（统计条「存储占用」的明细用它——已删记录的 R2 文件在软删时就删了）；`starredCountActive` / `starredCountDeleted` 是**按视图各一个的收藏计数**（都是全表聚合、与请求的 `deleted` 无关，两个一起给）——统计条「已收藏」那一格与工具栏「收藏」筛选同屏，卡片用**全库**口径（协议 DTO 的 `starredCount`，含回收站里的行）会出现"卡片说 12、点开筛选只有 9"（2026-09-21 dogfood 实测） | 400 参数非法 |
+| GET | `/ui/api/overview` | **首屏合成快照**：一次往返拿到 `{stats, byType, byTypeActive, starredCountActive, starredCountDeleted, marker, info, serverTime}` —— 统计、类型计数、变更标记、部署信息、服务端时间**同源**（数字与列表来自同一瞬间，不会「控件说 1009、列表说 1008」）。`?deleted=true` 时 `byType` 随视图走（`byTypeActive` 恒活跃）；两个 `starredCount*` 与 `byTypeActive` 一样**恒为全表聚合**、与请求视图无关，前端按当前视图取用。⚠️ 这四个计数是**顶层**字段（快照把 stats 与"随视图的计数"并排放，`/ui/api/statistics` 则是铺平的一个对象）——前端落地时漏搬任何一个都会让那一格静默回落成 0（2026-09-21 实测踩过）。**只读、无副作用**，且统计层只算一次（此前单次请求要列举两遍 R2 全桶，见 O-01）。**不含 `activity`**：那是独立的一天粒度查询，前端在列表落地后单独拉 | 400 参数非法（`deleted` 非法值 → 400 而不是 500） |
 | GET | `/ui/api/activity` | 活动趋势（概览带的趋势图 + 抽屉明细）：`?days`（默认 14，上限 **90**）`&tz`（`getTimezoneOffset()` 的分钟数，UTC+8 ⇒ −480）→ `{days:[{day,total,Text,Image,File,Group}], max}`。「一天」按**调用方时区**切分——服务端只知道 UTC，按 UTC 切会让 UTC+8 的用户在早上 8 点前看到的"今天"其实是昨天 | 400 `invalid_range`（days / tz 越界） |
 | GET | `/ui/api/info` | 部署信息（客户端该填的地址、版本、传输、保留策略、存储；`cleanup` 为清理状态：`lastRunAt` / `lastError` / 各阶段游标） | — |
 | GET | `/ui/api/poll` | 变更信号 `{count, lastModified, serverTime}`——`serverTime` 供界面显示与本机的时钟差（官方客户端在 \|差\| > 5 分钟时中止历史同步） | — |
@@ -690,6 +711,15 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 - **触屏命中区补齐**：`.th-sort`（窄屏卡片模式下它就是排序条，命中区只有 42×19）与 `.search__clear`
   （写死 24×24）此前漏在 `pointer: coarse` 白名单外，是全页唯一两处低于 44px 的可点控件。
   现在分别是 **42×44 / 44×44**；清空按钮变大后输入框右侧内边距同步让位（48px），文字不会钻到按钮下面。
+- **结果区头部（「共 N 条记录」那一行）恒为 45px，不随选中态改变**（2026-09-21）：勾选几行后
+  头部换成操作条（36px 按钮 + 上下留白 = 45px），若头部只有 42px 会当场被顶高 3px，窄屏换行更会跳
+  到 89px —— 用户正盯着那行字，跳变看得很清楚。修法是头部固定 45px + 操作条**恒单行、不换行**：
+  放不下时整条**自身横向滚动**（与工具栏类型 chips 同一套，`scrollbar-width: none`）。
+- **操作条在 ≤560px 只显示图标**（2026-09-21）：复制选中 / 收藏 / 置顶 / 删除选中（及回收站里的
+  恢复 / 清空）四个带图标的按钮文字被 CSS 藏掉（`.results__selection .btn:has(svg) .btn__label`），
+  可访问名由 JS 的 `aria-label` 承担（与顶栏「复制最近一条」同一手法）；「取消选择」没有图标、
+  文字是它唯一的表达，**保留**。这一档正好让 430px 下操作条无需滚动（icon 按钮 42px×4 + 计数 +
+  取消选择 ≈ 364px），390px 才需要横滑。
 
 ## 10. 验证记录
 
@@ -698,7 +728,7 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 | `npx tsc --noEmit` | 干净（含 `test/**`） |
 | `npm test` | **全部 22 套件通过**（用例数见命令输出；`test/ui.test.ts` 覆盖 `/ui/api/*` 的鉴权、列表语义、回收站视图与写操作；`test/ui-activity.test.ts` 覆盖活动趋势的按天分桶；`test/ui-logic.test.ts` 覆盖筛选/格式化/归一化等纯逻辑；`test/next-target.test.ts` 覆盖登录跳转的判定） |
 | 横向溢出（320/375/414/768/1024/1440） | **全部 0px**（修复了工具栏与分页在 320px 下溢出 185px） |
-| 对比度（浅/深，9 类文本） | 全部 ≥ 4.5:1（修复了三级文本 2.92 / 4.05 两处不达标） |
+| 对比度（浅/深，9 类文本） | 全部 ≥ 4.5:1（修复了三级文本 2.92 / 4.05 两处不达标；2026-09-21 再修一处：`--ink-faint` 在 `--surface-2` 上只有 4.36，axe 报 7 处 serious —— 判据从"白底"换成它真正被用到的最深那层底后调深到 `#706c66`，`--surface-2` 上 4.63、白底 5.2，axe 0 违规） |
 | 区块重叠 / 非预期裁切 | 0（几何断言） |
 | 浏览器交互（headless Chromium，真实浏览器引擎） | 登录流、筛选/搜索/排序/分页、星标往返、单选/全选、批量删除确认（取消路径）、文本与图片预览、Esc 关闭、空状态、部署信息、主题切换与持久化、`data_missing` 的**三处可达**表现（缩略图占位/预览空态/下载提示） |
 | 路由语义 | 匿名 `/ui_v2/不存在` → 404 页；匿名 `/ui/api/*` → 401 JSON；带凭据 `/ui/api/未知` → 404 JSON；协议路径 404 语义不变 |

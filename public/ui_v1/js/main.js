@@ -257,6 +257,12 @@ const actions = {
     store.set({ selection });
     list.updateSelection(selection);
   },
+  // 清空**全部**选区（跨页）：空态退出（点空白处）用。与 onSelectAll(false) 的区别——
+  // 后者只清当前页（`store.items` 是本页）；跨页选中的行只有这个动作能一次清掉。
+  onClearSelection() {
+    store.set({ selection: new Map() });
+    list.updateSelection(new Map());
+  },
   onBatchDelete: batchDelete,
   onBatchFlag: batchFlag,
   onBatchRestore: batchRestore,
@@ -328,7 +334,7 @@ function renderPagination() {
 function render() {
   const state = store.get();
   syncHeader();
-  stats.update(state.stats);
+  stats.update(state.stats, state.filters.deleted);
   toolbar.update({ filters: state.filters, byType: countsForView(state) });
   list.update(state);
   renderPagination();
@@ -382,6 +388,9 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 成本随页大小上升），换来的只是一个数据表上的交叉淡入；而列表现在是一帧落地，
     // 本就没有「换面」需要掩饰。跨文档过渡（登录页 → 列表页）保留，那条由 CSS 声明、不走这里。
     store.set({ items: page.items, total: page.total, flashKeys, loading: false, error: null });
+    // 取到数据了 ⇒ 上一次那条"搜索词过长"不再成立（用户可能刚好删掉了几个字）。
+    // 清在这里而不是"输入一变化就清"：请求成功才是"这个查询真的被服务端接受了"的证据。
+    toolbar.setSearchError(null);
     render();
 
     if (announce) toasts.info(`已刷新，共 ${page.total} 条记录`);
@@ -398,12 +407,20 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // （`list.update` 与 `renderPagination` 都读这一位）。
     store.set({ loading: false, error: message });
     if (serverUnreachable(error)) setStale(true);
+    // 400 + 搜索词非空 ⇒ 只可能是"搜索词超过服务端上限"（`messages.js` 的 describeListError
+    // 里那一支就是按这个判据分的，两边必须一致）。这条错误属于**搜索框**：此刻列表里留着的是
+    // 上一次查询的结果，用户的眼睛在搜索框上，错误就该说在它下面（`components.md` §2 的 error 格）。
+    const searchFieldError = error.status === 400 && store.get().filters.search !== '';
     if (store.get().items.length === 0) {
-      // 首屏失败：给出可操作的错误态，而不是把骨架屏永远留在那里
-      list.showError(message, () => refresh());
+      // 首屏失败：给出可操作的错误态，而不是把骨架屏永远留在那里。
+      // 结果区这时本来就是空的、整块都是错误面，够显眼 —— 不再往工具栏里重复说一遍同一句话；
+      // 但**不留「重试」**：输入问题重试必然再失败（提示条那条路径一直就是这么判的）。
+      list.showError(message, searchFieldError ? null : () => refresh());
       // 分页那一格也要跟着落到失败档 —— 失败路径不整块 `render()`（理由见上面的 store 说明），
       // 少了这一句它会**永远**停在加载档写下的「正在加载…」，与正下方的「加载失败」互相矛盾。
       renderPagination();
+    } else if (searchFieldError) {
+      toolbar.setSearchError(message);
     } else {
       // 已经有内容时保留旧数据 + 一条提示。带上「重试」：网络抖动这类瞬时故障占多数，
       // 而重试的成本正好是刚刚失败的那一次列表请求 —— 此前只能让用户自己再点一次刷新。
@@ -441,7 +458,7 @@ async function refreshStats() {
   // 绘制放在 fetch 的 try 之外：真出渲染异常时不该被当成网络失败（那正是遮蔽 bug 的藏身处）
   store.set({ stats: { ...data, view } });
   const current = store.get();
-  stats.update(current.stats);
+  stats.update(current.stats, current.filters.deleted);
   toolbar.update({ filters: current.filters, byType: countsForView(current) });
 }
 
@@ -478,8 +495,14 @@ async function refreshOverview() {
       stats: {
         ...(snapshot.stats ?? {}),
         view,
+        // 这四个计数在快照里是**顶层**字段（`/ui/api/overview` 与 `/ui/api/statistics` 的形状差
+        // 就在这里）：快照把 stats 与"随视图的计数"并排放，而 statistics 是铺平的一个对象。
+        // 漏搬任何一个的后果是那一格静默回落成 0（`stats.update` 的 `?? 0`）—— 卡片上写着
+        // 「已收藏 0 条」而接口里是 3。2026-09-21 实测踩过。
         byType: snapshot.byType ?? null,
         byTypeActive: snapshot.byTypeActive ?? null,
+        starredCountActive: snapshot.starredCountActive ?? null,
+        starredCountDeleted: snapshot.starredCountDeleted ?? null,
       },
       info: snapshot.info ?? store.get().info,
     });
@@ -494,7 +517,7 @@ async function refreshOverview() {
 
     setStale(false);
     const current = store.get();
-    stats.update(current.stats);
+    stats.update(current.stats, current.filters.deleted);
     stats.setHealth(healthSnapshot());
     toolbar.update({ filters: current.filters, byType: countsForView(current) });
   } catch (error) {

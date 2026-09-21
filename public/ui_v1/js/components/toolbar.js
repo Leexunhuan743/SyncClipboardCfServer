@@ -230,6 +230,16 @@ export function createToolbar({
     [svg(iconPaths('refresh'))],
   );
 
+  // 搜索框的字段级错误（整行，仅出错时出现）。形状与登录页/对话框里的就地错误同源
+  // （`.alert--error`，`role="alert"` 的用法也与登录页那句一致）；文案由调用方给
+  // （见 main.js 的 refresh：只有"搜索词超过服务端上限"这一支会往这里写）。
+  const searchError = el('p', {
+    class: 'alert--error',
+    id: 'search-error',
+    role: 'alert',
+    hidden: true,
+  });
+
   const node = el('div', { class: 'toolbar' }, [
     // 顺序 = 主次（2026-09-17 重排）：搜索在最前且可伸展，因为它是这个页面最高频的动作；
     // 旧版把它夹在「50 条/页」「刷新」之间，8 个控件同权，用户得先找到它。
@@ -255,6 +265,9 @@ export function createToolbar({
     // 日期行单独占一行（CSS 里 flex-basis: 100%）：塞进上面那组会把整条工具栏挤成三行，
     // 中间那行还会只剩一个被压扁的 spacer。
     dateRange,
+    // 搜索框的错误行同理独占一行，且**必须排在最后**：它是"条件没生效"的说明，
+    // 排在前面会把 8 个控件整体往下推一次。
+    searchError,
   ]);
 
   return {
@@ -264,6 +277,25 @@ export function createToolbar({
     focusSearch() {
       searchInput.focus();
       searchInput.select();
+    },
+
+    /**
+     * 搜索框的字段级错误（`components.md` §2 的 error 格）：文案就近挂在控件下面，
+     * 输入框同时标 `aria-invalid` 并被 `aria-describedby` 关联 —— 三件事一起做，
+     * 颜色只是加速识别（`components.css` 的 `.input[aria-invalid="true"]`）。
+     * 传 `null` 清掉（下一次成功的列表请求会这么做）。
+     */
+    setSearchError(message) {
+      const shown = Boolean(message);
+      searchError.textContent = shown ? message : '';
+      searchError.hidden = !shown;
+      if (shown) {
+        searchInput.setAttribute('aria-invalid', 'true');
+        searchInput.setAttribute('aria-describedby', 'search-error');
+      } else {
+        searchInput.removeAttribute('aria-invalid');
+        searchInput.removeAttribute('aria-describedby');
+      }
     },
 
     update({ filters, byType }) {

@@ -133,9 +133,13 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     const missing = el('div', { class: 'empty', hidden: true }, [
       svg(iconPaths('warning'), { size: 32 }),
       el('p', { class: 'empty__title', text: '数据不可用' }),
+      // 两句必须同时成立（与行内缩略图 `row-content.js` 的同一处文案同源）：`error` 事件
+      // 分不出"对象已被清理策略删掉"与"对象在、但内容不是可显示的图片"（服务端不校验
+      // 扩展名与内容是否一致，上传被截断也会落到这里）。只写前者会在第二种情况下误报
+      // —— 2026-09-21 实测：三条 18 B 的假 PNG 记录，数据端点回 200/18 B，弹窗却说"已找不到文件"。
       el('p', {
         class: 'empty__hint',
-        text: '这条记录标记为有数据，但服务器上已找不到对应文件（可能已被清理策略删除）。',
+        text: '这条记录标记为有数据，但服务器上已找不到对应文件（可能已被清理策略删除），或文件内容不是可显示的图片。',
       }),
     ]);
 

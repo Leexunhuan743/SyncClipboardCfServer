@@ -483,7 +483,11 @@
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  min-height: 42px;
+  /* 45px 而不是 42px（2026-09-21 用户指出 + dogfood 实测）：
+   * 选中后操作条自然高 45px（36px 按钮 + 8px 上下留白 + 1px 底边），42px 的头放不下，
+   * 于是「勾选几行」的瞬间整条头部（连同下面的表）被推下去 3px —— 用户正盯着「共 N 条记录」
+   * 那行字，看得一清二楚。固定 45px 后两态同高、零跳变。 */
+  min-height: 45px;
   transition: background-color var(--dur-fast) var(--ease-standard);
 }
 
@@ -496,13 +500,39 @@
   color: var(--ink-muted);
 }
 
+/* 选中后的操作条：**装进 45px 的头部、不把头部顶高**。
+ * 另一个高度炸弹在窄屏：五个按钮 + 「已选 N 条」放不下时若换行成两行，头部会从 42 跳到
+ * 89px（430px 实测）——那是比 3px 大一个数量级的跳变。做法与工具栏的类型 chips 同一套：
+ * 整行不换行（`flex-wrap: nowrap`）、放不下时**自身横向滚动**（`scrollbar-width: none`）。
+ * 不加纵向 padding：按钮的垂直位置由父级 `align-items: center` 决定，加了那 8px 反而让
+ * 触屏（44px 命中区按钮）超出 45px、把头部顶高。 */
 .results__selection {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
   font-size: var(--fs-sm);
-  padding: 4px 0;
+}
+
+.results__selection::-webkit-scrollbar {
+  display: none;
+}
+
+.results__selection .btn {
+  flex: none;
+}
+
+/* 「已选 N 条」也必须 `flex: none`：它是这一行里唯一没有按钮样式的项，若让它参与收缩，
+ * 窄屏下五个按钮（合计 ≈426px）已经超过选择条宽度，全部收缩压力会落到它身上 —— 实测被挤到
+ * 15px 宽，文字竖排换行，选择条被撑成两行、头部 42→81px。这一行要么放得下、要么整体横向滚动，
+ * 没有第三种（把单个文字挤扁）的状态。 */
+.results__selection-count {
+  flex: none;
+  white-space: nowrap;
 }
 
 /* ---- 页脚 ---- */
@@ -604,6 +634,13 @@
  * "第一次使用者找不到客户端该填哪个地址"那个教训的直接防线。 */
 @media (max-width: 560px) {
   .app-header__actions .btn__label {
+    display: none;
+  }
+
+  /* 批量操作条的动作按钮（复制选中 / 收藏 / 置顶 / 删除选中，及回收站里的恢复 / 清空）同样
+   * 只留图标 —— 它们都有 svg 图标 + `aria-label`（list.js 的 batchButton），藏字后名字不丢；
+   * `:has(svg)` 恰好把这些与「取消选择」分开（后者没有图标，文字是它唯一的表达）。 */
+  .results__selection .btn:has(svg) .btn__label {
     display: none;
   }
 

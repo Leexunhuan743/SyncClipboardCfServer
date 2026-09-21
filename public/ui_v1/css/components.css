@@ -44,30 +44,15 @@
 
 /* 「清除筛选」（结果区头栏里那个出口，见 list.js 的 headClear）。
  *
- * 2026-09-18 用户两句话定形：先说"明显点"（此前是 `.btn--quiet`：透明底 + 次要色，
- * 与紧挨着的「筛选中 · 共 N 条」同色、没有边界，读起来像那句说明的后半截），
- * 我改成描边方框之后又被否："不能设计好看点吗 丑死了" —— 一条 42px 的文字带里压一个
- * 白色方框确实突兀。
- *
- * 现在的形态：**强调色浅底的胶囊**，与顶栏那枚状态胶囊（`.status[data-tone="live"]`）同一套取色
- * （`--accent-soft` 底 + `--accent` 字 + 强调色混出来的描边），字重 600。它在这条灰带上
- * 一眼是"能给点一下的东西"，但没有方框的硬边；胶囊这个形状在本产品里也已经等于"状态/条件"，
- * 与工具栏里的筛选 chip 是同一族语言。
- * 高度沿用 `--control-h`（36px，条高 42px）：不写死 28px 是为了不跟触屏那条
- * `.btn { min-height: 44px }` 打架（写死反而会把 44px 的命中区切掉）。 */
+ * 形状 = 标准 `.btn`（与批量操作条的 复制选中/收藏/置顶/删除选中**完全相同**：36px、
+ * 常规圆角、描边、字重 500、16px 图标 + 文字），**只是颜色换成青色**（2026-09-21 用户定：
+ * "复制选中什么样 清除筛选什么样 只是颜色换成青色"）—— `--accent-soft` 浅底 + `--accent`
+ * 字 + 强调色混出来的描边，一眼是"能点一下的东西"，又与普通白按钮区分开。
+ * 高度/圆角/字重等一律不在此覆盖：它们来自 `.btn` 基类，两处形状因此必然一致。 */
 .results__clear {
   --btn-bg: var(--accent-soft);
   --btn-fg: var(--accent);
   --btn-bd: color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: var(--r-pill);
-  /* 2026-09-18 用户四句话把高度调到位的轨迹（都记在 progress §67 里）：
-   *   36px（--control-h）→ "上下空白小一点" → 30px（--control-h-sm）→ "再小点" → 24px
-   *   → "加大点" → **28px**（现在这一档）。
-   * 24px 是他看着太小、36px 是看着太胖，28px 落在中间：13px 字（行高约 18px）上下各 5px。
-   * 触屏不受影响：`pointer: coarse` 里的 `.btn { min-height: 44px }` 会覆盖它（命中区规则优先）。 */
-  min-height: 28px;
-  padding: 0 var(--sp-2) 0 6px;
-  font-weight: 600;
 }
 
 /* 销毁性操作：**只有这一档**（填色）。
@@ -82,12 +67,6 @@
   --btn-bd: transparent;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .btn--danger-solid:hover {
-    --btn-bg: color-mix(in srgb, var(--danger) 84%, #000);
-  }
-}
-
 .btn__label {
   display: inline-block;
 }
@@ -96,18 +75,26 @@
   .btn:hover {
     --btn-bg: var(--surface-2);
   }
+  /* 「清除筛选」的 hover **必须写在这一块里**（而不是它自己的定义旁边）：
+   * 胶囊的基色来自 `.results__clear`（0,1,0），会被 `.btn:hover`（0,2,0）按回去 ——
+   * 悬停时胶囊从青色浅底变成中性灰。`.btn.results__clear:hover`（0,3,0）靠特异性取胜，
+   * 而且必须与 `.btn:hover` 同块声明，才不会在将来某次"再统一成白按钮"时被漏掉。 */
+  .btn.results__clear:hover {
+    --btn-bg: color-mix(in srgb, var(--accent) 14%, var(--accent-soft));
+  }
+  /* 销毁性按钮的 hover **必须写在这一块里**：`.btn:hover` 与它是同特异性（`0,2,0`），
+   * 靠顺序取胜 —— 2026-09-21 之前它写在文件上方自己的定义旁边，于是被这条泛用规则按回去：
+   * 悬停时底色变成 `--surface-2`（浅色），而 `--btn-fg` 仍是 `--danger-ink`（白）
+   * ⇒ 白字浅底 ≈1.13:1，标签几乎看不见。 */
+  .btn--danger-solid:hover {
+    --btn-bg: color-mix(in srgb, var(--danger) 84%, #000);
+  }
   .btn--primary:hover {
     --btn-bg: var(--accent-hover);
   }
   .btn--quiet:hover {
     --btn-bg: var(--surface-2);
     --btn-fg: var(--ink);
-  }
-  /* 「清除筛选」的 hover 必须写在这一块里（而不是它自己的定义旁边）：
-   * `.btn:hover` 与它是**同特异性**，靠顺序取胜 —— 写在前面会被那条泛用规则按回去，
-   * 悬停时胶囊会从强调色浅底变成中性灰（这个文件的窄屏块也记着同一类坑）。 */
-  .btn.results__clear:hover {
-    --btn-bg: color-mix(in srgb, var(--accent) 14%, var(--accent-soft));
   }
 }
 
@@ -352,6 +339,21 @@ input[type="search"]::-webkit-search-decoration {
 
 .input--date {
   min-width: 138px;
+}
+
+/* 搜索框的字段级错误（工具栏内的整行，仅出错时出现）。
+ *
+ * 形状直接沿用 `.alert--error`（登录页的字段错误、对话框里的就地错误都是同一个组件）——
+ * 同一类信息在两处长得一样，用户不必再学一个盒子。这里只补"它坐在工具栏里"的那一条：
+ * 独占一整行（`flex-basis: 100%`，与 `.date-range` 同一个理由）。
+ *
+ * 为什么就近放在搜索框下面、而不是右下角的提示条：这条错误（"搜索词超过服务端 48 字节上限"）
+ * 唯一的来源就是搜索框里那串字，用户此刻正盯着搜索框——提示条在视口另一端，2026-09-21
+ * dogfood 实测即如此。`components.md` §2 的 error 格要求"信息挨着控件、被 `aria-describedby`
+ * 关联"，这也是本文件 `.input[aria-invalid="true"]` 那条规则假定的搭档（此前没有地方喂给它）。
+ * 高度只在出错时增长，首屏 CLS 不受影响。 */
+.toolbar > .alert--error {
+  flex: 1 1 100%;
 }
 
 /* ============ 分段控件（类型筛选）============ */
