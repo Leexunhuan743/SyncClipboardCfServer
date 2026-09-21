@@ -8972,5 +8972,31 @@ CI 那段逻辑没法在本地对真 Cloudflare 跑（本地没有令牌），�
 5. 与 §107 的关系：§107 修的是"`secrets` 写进 `if` 导致 workflow 解析失败"；本节把预检那一步从
    "只判定"改成"解析/创建"，因此**§107 里引用的旧预检行为已不再适用**（本节的 109.2 是新的权威描述）。
 
+### 109.5 端到端结果（真实 CI run `35556677091`，2026-09-21）
+
+`bc88af4` 推送后 CI **全绿**（2m34s：`quality` 1m33s ✓ / `deploy` 54s ✓）。运行期日志逐条：
+
+```
+🆕 已尝试创建 R2 桶 syncclipboard（HTTP 404；缺失时 wrangler deploy 也会自动建）
+🆕 创建了 D1 库 syncclipboard → id=2acc91d2-7f31-4daa-aff2-0593d49bb8e6
+##[warning] syncclipboard（历史记录为**空**）。若你本以为它已存在，请检查账号与库名；已删库的数据不会自动恢复。
+—— 冒烟（全部只读）——
+冒烟目标：https://syncclipboard-cf-server.<子域>.workers.dev
+✓ 未认证 /api/version → 401（鉴权生效）
+✓ 已认证 /api/version → 3.2.0（凭据可用，且这次部署的版本已生效）
+✓ 已认证 /api/history/statistics → 200 JSON（D1 绑定与查询路径可用）
+✓ 已认证 /SyncClipboard.json → 200 JSON（Meta /「当前 profile」读路径可用）
+✓ /ui/、/ui/js/redirect-hash.js、/ui_v1/、/ui_v1/js/main.js、/ui_v2/app/、/ui_v2/js/boot.js 全 200 且 Content-Type 对
+冒烟通过（全部只读，未修改线上任何数据）
+```
+
+⇒ 用户要的三件事**都成立**：不能手工建资源也能跑通（这一步真的创建了 D1+R2）、拿到了地址
+（run summary 的「🚀 部署结果」段 + `::notice` 播报）、`Apply D1 schema` 与 D1 绑定都活着（`statistics` 200 为证）。
+`🔥 创建了新的 D1 库` 那条 warning 说明"库被删就会建新空库"这条代价**是可见的**，不是静默。
+
+**下一次运行（含 `Sync fork` 之后）走的是 109.2 的第 ② 分支**：按库名解析到 `2acc91d2-…` 并**复用**，
+不重建 —— 该路径已由 109.3 的场景 B 在本地验过（真脚本 + 假 API），并在随后的 `bc88af4` 之后用
+`gh workflow run` 手动再跑一次做了线上确认。
+
 
 
