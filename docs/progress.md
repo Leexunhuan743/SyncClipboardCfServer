@@ -9582,3 +9582,72 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 **教训（写给下一次）**：新增一个**覆盖在既有内容之上**的构件时，判据不能只问"它长对了没有"，
 必须先问"它盖住的东西还能不能用" —— 本仓库的探针里 `elementFromPoint` 就是回答这个问题的工具。
 
+## 123. 图片缩略图 / 悬停预览：可行性评估（**未实施**，plan 见 docs/ui-image-preview-plan.md）（2026-09-21）
+
+**触发**：用户问「评估一下 hover 图片的可行性，是否需要新增加 api 调用压缩后尺寸的图片」，
+随后定调「创建一个文档写入，以后再说吧，标记为 plan」。
+
+**结论**：可行，但**没做**。全部分支、取舍与推荐答案在 `docs/ui-image-preview-plan.md`（标记 `plan`）。
+
+**这轮量出来的数字（以后别再量一遍）**：
+
+- **URL 形态不可用**：该 zone 的 `/cdn-cgi/image/width=64/<公开资源>` → **404**（Cloudflare 页）；
+  **Binding 形态可用**：`env.IMAGES` 吃**原始字节**（R2 流即可）⇒ 私有数据没有"必须公开"的问题。
+- **账号接受该绑定**：临时 Worker `images-spike-probe-20260921` 部署成功（绑定列表里出现
+  `env.IMAGES`），**测完立即删除**；生产 Worker 全程未触碰；临时目录与从实例取回的 994 KiB 图片副本已删。
+- **真实边缘**，994 KiB PNG → WebP：64px 5,782 B/118ms ｜ 160px 17,886 B/167ms ｜ 320px
+  42,014 B/279ms ｜ 640px 101,948 B/407ms ｜ 1024px 193,546 B/575ms（`x-resize-ms` = Worker 内变换耗时）。
+- **同参数重复请求不复用**（边缘 295/231/223ms、本地 408/415/378ms）⇒ 端点必须自带长缓存。
+- **本地 `wrangler dev` 支持**（低保真子集 width/height/rotate/format）⇒ 端点可被本地套件与探针覆盖；
+  但**本地不执行 20 MB 输入上限**（合成 22 MiB 输入照样 200 + 1,252 B）⇒ 上限只在线上生效，
+  端点必须自己加体积门，不能指望绑定报错。
+- **生产取图 A/B**：走沙箱代理**更快**（中位 0.72 s vs 不走 1.39 s）⇒ 引用数字一律取快的口径。
+- **真实数据**：线上 Image 记录 **1 条 / 994 KiB**、File 记录 0 条 ⇒ **1/1 张图正落在
+  「没有缩略图」那一档**（`THUMB_MAX_BYTES = 512 KiB`，`row-content.js` 的 `buildThumb`）。
+
+**未改动**：只记录事实与待定选择 —— `docs/ui.md` §3.3 #26（悬停浮层的现状口径）、§122（悬停重做）
+与全部代码/配置都没有因此改动。
+
+## 124. 事故：一条 shell 命令把**生产 Worker 删了**，以及完整恢复（2026-09-21）
+
+**一句话**：我用 `node -e "…"` 往文档追加正文时，正文里的**反引号被 shell 当成命令替换**展开 ——
+被反引号包着的那段 `wrangler delete` 在**仓库根目录**真的跑了起来（那里 `wrangler.toml` 的
+`name = "syncclipboard-cf-server"` 就是生产那条），于是 Worker 连同**它的 Secrets 与自定义域名**
+一起消失，`syncc.141425.xyz` 中断约 15 分钟。
+
+**三个条件同时成立才会出事（缺一不会）**：
+1. 反引号在**双引号**里仍有命令替换语义；我那条命令是 `node -e "…"`，正文里的单引号**保护不了反引号**
+   （shell 先解析反引号，再把结果交给 node）；
+2. 那条 `wrangler delete` 的**工作目录是仓库根** ⇒ wrangler 按配置里的 `name` 删，删的正是生产；
+3. 非交互环境里 `wrangler delete` 没有停在确认上。
+
+**爆炸半径**（逐项交代）：
+- **丢了**：Worker 脚本本身、Secrets `USERNAME`/`PASSWORD`、**自定义域名**（随脚本被摘掉）、
+  DO 命名空间（由迁移 tag 重建）；`[vars]` 与 cron 写在 `wrangler.toml` 里，重新部署即回。
+- **没丢**：**D1 与 R2 是独立资源，完全没受影响** ⇒ 恢复后 `/ui/api/statistics` =
+  **43 条 / 40 活跃 / 39 Text + 1 Image / 0.97 MB**（与事故前同）；客户端在中断期复制的内容
+  在客户端本地，恢复后照常同步。
+
+**恢复步骤（可复现）**：
+1. 先确认数据面：`wrangler d1 list` / `wrangler r2 bucket list` ⇒ `syncclipboard` 库
+   （`2acc91d2-7f31-4daa-aff2-0593d49bb8e6`）与 `syncclipboard` 桶都在；
+2. 按 CI 的做法注入 `database_id` 后 `wrangler deploy` ⇒ 脚本回来（workers.dev 立刻 200）；
+3. `wrangler secret put USERNAME` / `PASSWORD`（值取既有凭据）⇒ 恢复后 `/api/version` 200、
+   错误口令 401 已验；
+4. **自定义域名**：OAuth token 对 `workers/domains` 只有读权限（`POST` → 405 `10405`）⇒ 改走
+   `wrangler.toml` 顶层 `routes = [{ pattern = "syncc.141425.xyz", custom_domain = true }]` + `deploy`。
+   ⚠️ **顶层键必须写在任何 `[table]` 之前** —— 第一次插在 `[observability]` 之后，wrangler 只给了
+   一条 `Unexpected fields found in observability field: "routes"` 的 warning 然后**静默忽略**；
+5. 域名回来后**把 `routes` 撤掉再部署一次**，以回到事故前的形态。实测两条 wrangler 行为：
+   ① **不会**摘掉未声明的自定义域名（域名活着）；② 声明 `routes` 会顺手把 `workers_dev` 关掉
+   （CI 冒烟取的就是部署输出里的 workers.dev 地址）⇒ 现在：域名在外绑、`workers_dev` 开、
+   `wrangler.toml` 与 HEAD **逐字节一致**。
+6. 冒烟：`/api/version` 200 · `/SyncClipboard.json` 200 · `PROPFIND /` 207 · `/ui_v1/` 200 ·
+   `POST /SyncClipboardHub/negotiate` 200（DO 命名空间重建成功）· 匿名 `/ui/api/session` 200 ·
+   错误口令 401 · workers.dev 200。
+
+**落成规矩（已写进 AGENTS.md §1 的流程惯例）**：**不要**用 `node -e "…"` / `bash -c "…"` 这类
+「把正文塞进命令行字符串」的方式搬运文本 —— 正文里的**反引号或 `${}`** 会被 shell 先解析。
+要么用 `write` 工具落成文件再执行，要么先写成 `*.mjs` 再 `node 文件`。**这条不是洁癖：它刚刚删过一次生产。**
+
+
