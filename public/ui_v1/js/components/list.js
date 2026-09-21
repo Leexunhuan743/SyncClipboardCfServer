@@ -385,8 +385,9 @@ export function createList(actions) {
   }
 
   const rowByKey = new Map();
-  // hover 预览浮层（2026-09-21）：行内正文悬停看 500 字截断预览（见 buildRow 里的 attach）。
-  // 单例：全页一个浮层节点，多个行共享（同一时刻只显示一个）。
+  // 悬停预览浮层（2026-09-21，硬约束 #26）：行内正文悬停时把被 CSS 裁掉的正文给回一点。
+  // 单例：全页一个浮层节点，多行共享（同一时刻只显示一条）。它**不接收指针事件**，
+  // 故压在后面几行上也不会挡那些行的 hover 与点击（见 tooltip.js 文件头）。
   const tooltip = createTooltip();
   // 首屏是否已经画过：入场错峰只属于首屏（见 update 里的说明）
   let hasRendered = false;
@@ -520,26 +521,23 @@ export function createList(actions) {
     const checkboxWrap = buildCheckbox(ref, index);
 
     const preview = previewText(item);
-    // 行内正文：hover 看截断的全文（2026-09-21，硬约束 #26）。单行省略时 hover 弹 500 字
-    // 截断预览；服务端截断（textTruncated）的补一行「长文本 · 点击预览查看完整」。
+    // 行内正文：悬停把被 CSS 裁掉的那部分给回一点（2026-09-21，硬约束 #26）。
+    // 浮层**不接收指针事件**（它必然压住后面几行）—— 理由与取舍写在 tooltip.js 文件头。
     const textEl = el('div', {
       class: `cell-content__text${previewIsEmpty(item) ? ' cell-content__text--empty' : ''}`,
       text: preview,
     });
     tooltip.attach(
       textEl,
-      () => {
-        // 内容用原始正文（item.text，服务端 500 字截断、保留换行），不是单行化的 preview
-        const tooltipBody = el('span', { text: item.text });
-        if (item.textTruncated) {
-          tooltipBody.append(el('span', { class: 'tooltip__hint', text: '长文本 · 点击预览查看完整' }));
-        }
-        return tooltipBody;
-      },
-      // 只在真的被截断时出现：正文是 `line-clamp:1` 的**纵向**裁切（pre-wrap 会换行铺满宽度，
-      // `scrollWidth==clientWidth` 恒成立、检测不到）⇒ 用 scrollHeight > clientHeight；
-      // 服务端截断（textTruncated）的强制出现（长文本）。
-      { check: (t) => t.scrollHeight > t.clientHeight || item.textTruncated },
+      // 内容就是行内那个串本身（`previewText` 已 trim），只是不被 CSS 裁 —— 浮层与行内
+      // 必须同源，否则同一屏两处会给出不同的字。换行留给 `white-space: pre-wrap`。
+      // 读 `ref.item` 而不是构建时的 `item`：行内开关（收藏/置顶）成功后就地换的是 `ref.item`
+      // （见 buildCheckbox 那条注释的同类判据），闭包抓着旧对象就会显示旧数据。
+      () => previewText(ref.item),
+      // 只在真的被裁掉时出现：正文是 `line-clamp:1` 的**纵向**裁切，而 `pre-wrap` 会让长文本
+      // 换行铺满宽度 ⇒ `scrollWidth == clientWidth` 恒成立、横向判据**永远检测不到**
+      // （第一版就是这么漏的）。纵向判据才是对的：scrollHeight > clientHeight。
+      { check: (t) => t.scrollHeight > t.clientHeight },
     );
 
     const body = el('div', { class: 'cell-content__body' }, [
@@ -855,6 +853,11 @@ export function createList(actions) {
       } else {
         reconcile(items, flashKeys ?? new Set());
       }
+
+      // 上面的两条路径都可能把触发行**换成新节点**（首屏整表重建、对账重建内容变了的行、
+      // 以及不在 wanted 里的行被 remove）。指针不动时节点被移除不会产生 mouseleave，
+      // 浮层会连着旧内容留在屏幕上（2026-09-21 实测）⇒ 对账之后主动收一次。
+      tooltip.prune();
 
       lastFilters = filters;
       const filtered = isFiltered(filters);

@@ -1139,6 +1139,79 @@ try {
   })()`);
   console.log('BATCHCOPY', batchCopy);
 
+  // ===== 悬停预览浮层（2026-09-21 重做；docs/ui.md §3.3 硬约束 #26）=====
+  //
+  // 这个构件**唯一**不能出错的地方是：它贴在行下方、必然压住后面几行，却**绝不能接收指针
+  // 事件** —— 一旦接收，被压住那几行的 hover 与点击全被吞掉。2026-09-21 实测过这个形态：
+  // `elementFromPoint` 在浮层覆盖处返回浮层本身，鼠标顺着一列往下走"走不过去"，
+  // 被压住的行连「收藏」都点不到（第一版就是 `pointer-events: auto` + 可滚动）。
+  //
+  // 为什么必须在这里钉：这条性质在别的守卫里**看不见** —— `ui-guard` 只查模块图与挂载点、
+  // `docs.test` 只查数目、`tsc`/eslint 更不管 CSS 的命中测试。它只在这台真实浏览器里成立或不成立。
+  //
+  // 手法：把**真实第一行**的正文宽度收窄 → `line-clamp:1` 的纵向裁切成立 → `buildRow` 里
+  // 那个真实监听器的 `check` 通过 ⇒ 用的是真实浮层节点与真实 CSS，不是另造一个。收窄在同一个
+  // 表达式里还原，后续几何测量不受影响。另外两条一并钉：正文区不超过 6 行的封顶、
+  // 离开触发元素即收起。
+  const hoverTip = await read(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+      return JSON.stringify({ skipped: 'coarse pointer（本构件对触屏有意不挂监听）' });
+    }
+    const el = document.querySelector('tbody tr.row .cell-content__text');
+    if (!el) return JSON.stringify({ skipped: 'no rows' });
+    // 先把它滚进视口：探针跑到这里时页面已经被滚到页脚附近了，触发元素在视口外时量出来的
+    // 浮层坐标没有意义（第一版就是这么读到一个负的 y 的）。
+    el.scrollIntoView({ block: 'center' });
+    await wait(200);
+    const widthBefore = el.style.width;
+    el.style.width = '40px';
+    el.dispatchEvent(new MouseEvent('mouseenter'));
+    await wait(500);
+    const t = document.getElementById('ui-tooltip');
+    const text = t.querySelector('.tooltip__text');
+    const r = t.getBoundingClientRect();
+    // 取浮层的**中心点**：它一定落在浮层矩形内，而浮层又压在某一行上 ⇒ 这个点既是"浮层覆盖处"
+    // 又是"某一行的位置"，正是被吞掉时最容易看出来的那一点。
+    const cx = Math.round(r.left + r.width / 2);
+    const cy = Math.round(r.top + r.height / 2);
+    const hit = document.elementFromPoint(cx, cy);
+    const out = {
+      visible: !t.hidden,
+      pointerEvents: getComputedStyle(t).pointerEvents,
+      hitIsTooltip: t.contains(hit),
+      hitClass: hit ? (hit.className || hit.tagName) : null,
+      pointInRect: cx >= Math.round(r.left) && cx <= Math.round(r.right) && cy >= Math.round(r.top) && cy <= Math.round(r.bottom),
+      point: [cx, cy],
+      height: Math.round(r.height),
+      // 正文区封顶 6 行（6 × 20.8 = 124.8）：长内容被裁在这里，不给滚动条也不给说明行
+      textHeight: Math.round(text.getBoundingClientRect().height),
+    };
+    el.style.width = widthBefore;
+    el.dispatchEvent(new MouseEvent('mouseleave'));
+    await wait(300);
+    out.hiddenAfterLeave = t.hidden;
+    return JSON.stringify(out);
+  })()`);
+  console.log('HOVER   ', hoverTip);
+  {
+    const h = JSON.parse(hoverTip);
+    if (h.skipped) {
+      if (!COARSE) auditFindings.push('hover: ' + h.skipped);
+    } else {
+      if (!h.visible) auditFindings.push('hover: 正文收窄到被裁之后悬停没出浮层 ⇒ 后面几条判据都失去前提');
+      if (h.pointerEvents !== 'none') {
+        auditFindings.push(`hover: 浮层的 pointer-events 是 ${h.pointerEvents}（必须 none）—— 它会吞掉被压住那几行的 hover 与点击`);
+      }
+      if (h.hitIsTooltip) auditFindings.push(`hover: 浮层覆盖处的 elementFromPoint 命中浮层本身（读到 ${h.hitClass}）⇒ 那几行点不到`);
+      if (!h.pointInRect) auditFindings.push(`hover: 取样点 ${JSON.stringify(h.point)} 落在浮层矩形之外 ⇒ 上面那条判据失去了前提`);
+      // 正文区封顶 6 行 = 124.8px（+1 取整余量）。不封顶时一条长记录会弹出一个盖住半屏、
+      // 还要"移进去滚动"的面板 —— 那正是重做要消掉的形态。
+      if (h.textHeight > 126) auditFindings.push(`hover: 正文区高 ${h.textHeight}px，超过 6 行的封顶（125px）`);
+      if (!h.hiddenAfterLeave) auditFindings.push('hover: 离开触发元素之后浮层没收起');
+    }
+  }
+
   // ===== 预览关闭即释放正文（2026-09-20，`docs/archive/AUDIT-v1-v2-divergence.md` §4.2）=====
   //
   // 缺陷形态：预览对话框是**启动期创建、常驻 `body`** 的节点，关闭时只 `dialog.close()`，

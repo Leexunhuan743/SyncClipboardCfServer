@@ -1478,18 +1478,20 @@ th[aria-sort="descending"] .th-sort__arrow {
   flex: 1 1 auto;
 }
 
-/* ============ hover 预览浮层（tooltip，2026-09-21 起 V1 唯一实现）============
- * 语义见 `js/components/tooltip.js` 头部：150ms 延迟、只在截断时出、
- * 到达并停住（可移入滚动/复制）、`aria-describedby` 关联。
- * `position: fixed`：视口定位（挂到 body 或 dialog 里都不受影响）。
- * `pointer-events: auto` 是"可移入"的前提；`white-space: pre-wrap` 让长文本换行而非截断。
- * z-index 50：高于吸顶表头(10)/顶栏(30)，低于提示条(70)与对话框。 */
+/* ============ 悬停预览浮层（tooltip，2026-09-21 起 V1 唯一实现）============
+ * 语义与两条硬前提见 `js/components/tooltip.js` 头部；下面是它们的 CSS 那一半：
+ *   · `pointer-events: none` —— 浮层贴在行下方、必然压住后面几行，**绝不能命中指针**，
+ *     否则被压住的那几行 hover 与点击全被吞掉（实测 `elementFromPoint` 返回浮层本身，
+ *     鼠标顺着一列往下走"走不过去"）。这是本构件的第一硬前提，删掉它整件事就不成立。
+ *   · 正文按**行数**封顶，不做内部滚动（可滚动的前提是能移进去，与上一条直接冲突），
+ *     也不挂"还有更多"的说明 —— 取全文的出口是行内「预览」按钮与点击行体。
+ *   · `position: fixed`：视口定位，不跟行的滚动容器走（滚动一律收起，见 tooltip.js）。
+ * z-index 50：高于吸顶表头(10)/顶栏(30)，低于提示条(70)与对话框（原生 <dialog> 在顶层）。 */
 .tooltip {
   position: fixed;
   z-index: 50;
+  /* 无 width：定宽会让短文本拖出一个大空框，故按内容收缩、只给上限 */
   max-width: min(46ch, calc(100vw - 2 * var(--sp-5)));
-  max-height: min(40vh, 13rem);
-  overflow: auto;
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
@@ -1497,23 +1499,23 @@ th[aria-sort="descending"] .th-sort__arrow {
   color: var(--ink);
   font-size: var(--fs-sm);
   line-height: 1.6;
-  white-space: pre-wrap;
   box-shadow: var(--shadow-pop);
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .tooltip[hidden] {
   display: none;
 }
 
-/* 「长文本 · 点击预览查看完整」那行提示：与正文用一条细线分开 */
-.tooltip__hint {
-  display: block;
-  margin-top: var(--sp-1);
-  padding-top: var(--sp-1);
-  border-top: 1px solid var(--border);
-  color: var(--ink-muted);
-  font-size: 12px;
+/* 正文：**6 行**封顶后裁掉（6 × 行高 1.6em —— 改行高要同步改这里）。
+ * 裁掉就是裁掉，不给滚动条也不给说明行：见文件头 ②。
+ * `pre-wrap` 保留内容里的换行与连续空格（剪贴板内容原样呈现）；长串靠 break-word 断行，
+ * 否则一个不换行的超长 token 会让本块横向溢出容器。 */
+.tooltip__text {
+  max-height: calc(6 * 1.6em);
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ============ 提示条（toast）============ */

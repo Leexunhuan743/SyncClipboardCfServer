@@ -353,19 +353,30 @@ Worker
     批量条「取消选择」与点空白同用它；`onSelectAll(false)` 只清**当前页**（`store.items` 是本页），
     保留给表头全选框的取消（它的语义就是"本页都不选"，不是全清）。
     判据：行点击处理器 + `document` 级空白点击处理器 + `progress.md` §119。
-26. **悬停预览（hover tooltip）是渐进增强，信息绝不靠 hover 单独传达**（2026-09-21 用户定案，
-    grilling 走完全部分支；`js/components/tooltip.js` 是 V1 唯一的实现）：
+26. **悬停预览（hover tooltip）是渐进增强，信息绝不靠 hover 单独传达**（2026-09-21 定案，同日**重做**；
+    `js/components/tooltip.js` 是 V1 唯一的实现）：
     · 触发：`@media (hover: hover) and (pointer: fine)` 内悬停 **150ms** 出现（用户定"悬停一律
-      150ms"）；键盘聚焦即时；触屏不触发（走既有点击预览）。
-    · **只在内容真正被截断时出现**：调用方传 `check(trigger)`（如 `scrollHeight > clientHeight`（line-clamp 纵向裁切）或
-      `textTruncated`），短文本不白占 hover。
-    · **到达并停住**（§8.2 的"跟随"族规则）：tooltip 贴着触发元素出现、可移入滚动/复制，
-      移开两者才消失（离开触发元素留 ~120ms 宽限）。
-    · **无障碍**：`role="tooltip"` + 触发元素 `aria-describedby`；全文/完整内容仍靠点击预览与键盘
-      可达（信息不依赖 hover —— a11y 底线"无仅靠 hover 的控件"不被破坏）。
+      150ms"）；触屏**不挂监听**（走既有点击预览）。
+    · **只在内容真正被裁掉时出现**：调用方传 `check(trigger)`，判据是 `scrollHeight > clientHeight`
+      —— 正文是 `line-clamp:1` 的**纵向**裁切，而 `pre-wrap` 会让长文本换行铺满宽度 ⇒
+      `scrollWidth == clientWidth` 恒成立、横向判据**永远检测不到**（第一版就是这么漏的）。
+    · **绝不接收指针事件**（`pointer-events: none`，本构件的**第一硬前提**）：浮层贴在行下方、必然
+      压住后面几行，一旦它能命中，那几行的 hover 与点击就被吞掉 —— 实测 `elementFromPoint` 在
+      覆盖处返回浮层本身，鼠标顺着一列往下走"走不过去"，被压住的行连「收藏」都点不到。
+    · **高度按行数封顶**（6 行），超出裁掉、**不给滚动条、也不给"还有更多"的说明行**
+      （2026-09-21 用户定：不加提示行）。可滚动的前提是能移进去，与上一条直接冲突；
+      而"这条被裁过"本来就有行内的 `长文本` 徽标与「预览」按钮在说 —— 取全文的出口始终是
+      行内「预览」（可访问、键盘可达）与点击行体。
+    · **纯视觉，不承担无障碍职责**：正文的完整文本本来就在 DOM 里（`.cell-content__text` 只是被
+      CSS 裁切，文本节点一直是从头到尾的完整串），读屏不需要它 ⇒ 浮层 `aria-hidden="true"`、
+      **不挂** `aria-describedby`。第一版写的 `role="tooltip"` + `aria-describedby` + focus/blur
+      监听是**死代码**（触发元素是个不可聚焦的 `div`，那三个监听永远不会响），重做时已删除。
+      取全文的**可访问**路径是行内的「预览」按钮（键盘可达，对话框里有全文）。
+    · 行被对账重建 / 移出文档之后由 `list.js` 的 `update()` 调 `prune()` 主动收起：指针**不动**时
+      节点被 `remove()` 不会产生 `mouseleave`，不主动收就会连着旧内容留在屏上。
     · 短元数据（时间列相对→绝对、图标按钮动作名）继续用原生 `title`；**只有长内容**才用本构件。
-    范围（2026-09-21 首轮）：行内正文 `.cell-content__text`（500 字截断预览 + `textTruncated`
-    时提示「长文本 · 点击预览查看完整」）。判据：`tooltip.js` + `list.js` 的 attach + `progress.md` §121。
+    范围（2026-09-21）：行内正文 `.cell-content__text`。
+    判据：`tooltip.js` + `list.js` 的 attach/prune + 探针的 `HOVER` 行 + `progress.md` §122。
 
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
@@ -600,7 +611,9 @@ hover 一律包在 `@media (hover: hover) and (pointer: fine)` 内（触屏不�
 `handfeel.md` §7 的"跟随"那一族（相机/光标/导轨/tooltip）在 V1 里一度**没有消费者**：`public/ui_v1/js` 里
 没有 rAF、没有插值循环、没有弹簧解算（唯一的时间循环是 `signalr.js` 每 30 秒的保活心跳）。
 **2026-09-21 起 tooltip 成为第一个消费者**（`js/components/tooltip.js`，悬停预览，见 §3.3 硬约束 #26）
-——它遵守 §7 的「必须到达并停住」，但仍是纯 CSS 定位 + 定时器，不引入 rAF/插值循环。
+——它遵守 §7 的「必须到达并停住」（出现即定住、不跟指针走），但仍是纯 CSS 定位 + 定时器，
+不引入 rAF/插值循环。⚠️ 它**不接收指针事件**（`pointer-events: none`）：这是它能在数据表里存在的
+前提（浮层必然压住后面几行，能命中就等于把那几行封死），见 §3.3 #26 的推导与探针的 `HOVER` 行。
 所有"动"都是 CSS 状态过渡 + 一次性 keyframes，停不停由终态负责 —— 这是零构建 ADR D12 的产物。
 
 判据（探针 `SETTLED`）：`document.getAnimations()` 里**没有**还在跑的动画，唯一允许的例外是

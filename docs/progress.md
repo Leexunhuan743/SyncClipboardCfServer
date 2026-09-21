@@ -9500,4 +9500,85 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 
 **实现**：`js/components/tooltip.js`（单例浮层，dialog 内挂载防模态盖住、视口自适应、滚动/缩放收起、`mapLimit` 无——那是批量删除的）、`list.js` 给行内正文 attach、`index.html` modulepreload +1、`components.css` `.tooltip`/`.tooltip__hint`（z-index 50：>吸顶表头/顶栏、<提示条）。
 
+> ⚠️ **本节记的是当时的交付，其中两条当天就被判定为缺陷并重做**：浮层的 `pointer-events: auto` + 可滚动、`role="tooltip"` + `aria-describedby` 的键盘支持。
+> 现行形态见**下一节 §122**（连同这条悬停为什么不能接收指针的推导）。本节按历史快照保留，数字不做校准。
+
 **验证**：见当轮门禁（tsc / eslint / ui-contract 的 modulepreload==import 闭包 / docs.test 的资源数 85 与 V1=34 / 全量套件 / V1 探针）。
+## 122. 悬停预览重做：浮层不接收指针事件、行数封顶、删掉假的键盘支持（2026-09-21）
+
+**触发**：用户就 `6f9110f`（§121 的交付）直接判"实现有非常大的问题"，要求先通读 V1 全部代码、
+再评估该提交、最后交付一个**真实且可发布**的功能。复核确认：首版**不可发布**。
+
+### 一、复核出的缺陷（全部有运行时证据，1440×900 / 真实浏览器 / 本地 dev）
+
+1. **【致命】浮层吞掉被它压住那几行的指针事件。** `.tooltip` 是 `pointer-events: auto` 且
+   `overflow: auto`，它贴在行下方、必然压住后面 2–5 行。实测：
+   - 悬停第 1 行后把指针移到第 2 行正文处 → `document.elementFromPoint(333,395)` 返回
+     **浮层**（`className: tooltip`），第 2 行正文**根本没被 hover 到**；
+   - 继续下移到第 3 行 → 仍命中浮层 ⇒ **鼠标顺着一列往下走"走不过去"**；
+   - 在覆盖区点第 2 行的「收藏」→ 点击被浮层吃掉，`aria-pressed` 不变（修后同一坐标实测
+     `false → true`）。
+   这就是"一张列表读不下去"：悬停是为了看清某行，结果把接下来几行封死。
+2. **浮层没有行数封顶**：只封了 `max-height: min(40vh, 13rem)` 且可滚动，一篇 1100 字的记录
+   弹出 208px 高的面板，需要"把鼠标移进去再滚动"才能读完 —— 而"能移进去"正是缺陷 1 的成因。
+3. **文档声称的键盘支持是死代码。** `role="tooltip"` + `aria-describedby` + `focus`/`blur`/`keydown`
+   三个监听，而触发元素 `.cell-content__text` 是**不可聚焦的 `div`**（实测 `tabIndex: -1`、
+   未设 `tabindex` 属性、`focus()` 后 `activeElement` 仍是 `body`）⇒ 三个监听永远不会响，
+   `aria-describedby` 只可能由 hover 路径写上。`docs/ui.md` §3.3 #26 与 §121 却把它当既成事实写。
+4. **行被对账重建后浮层留在屏上（内容还是旧的）。** 指针不动时节点被 `remove()` 不产生
+   `mouseleave`，而 `hide()` 只挂在 mouseleave/scroll/resize 上。实测：悬停某行后把它从 DOM
+   移走 → 浮层照旧可见、位置不动、显示旧内容（"行已不在，浮层还在"）。
+5. **`check` 用错了轴**：首版是 `scrollWidth > clientWidth`，而正文是 `pre-wrap` + `line-clamp:1`
+   —— 长文本**换行铺满宽度**，`scrollWidth == clientWidth` 恒成立 ⇒ 横向判据**永远检测不到**。
+   实测：一条 720 字记录的正文 `sw=373 cw=373`（判据 false）而 `sh=406 ch=20`（真的被裁）。
+   首版能"看起来能用"只是因为 `|| item.textTruncated` 兜住了服务端截断的那一档，**20–500 字的
+   中长文本一律漏**（它们在行内被裁、却拿不到浮层）。
+6. **重新引入了一个已被删掉的字号档**：`.tooltip__hint` 写 `font-size: 12px`，而 `--fs-xs`
+   （12px）已在 2026-09-18 并入 `--fs-sm`（13px，见 `tokens.css` 的阶梯注释）。全库复查：
+   这是**唯一**一处 `font-size: 12px`。
+7. **文档漂移**：`css/motion.css` 的「跟随」族注释仍写着"这一族在 V1 里**没有任何实现**"，
+   而 §8.2 已改口说 tooltip 是第一个消费者 —— 两份文档互相矛盾（AGENTS.md §1）。
+8. **首次验证的盲区（自评）**：§121 的验证只查了"浮层会不会出现、内容对不对、150ms、能停留"，
+   即**构件自身**；没有查"它出现之后这张表还能不能用"。缺陷 1 就藏在那条缝里 ——
+   单看构件全绿，放进列表就废。这一轮的探针 `HOVER` 行补的就是这条缝。
+
+### 二、重做的形态（取舍写在 ADR D25）
+
+- `pointer-events: none` —— **本构件的第一硬前提**。看得见、不挡路：浮层压在行上，但那些行的
+  hover 与点击照旧。代价明确：不能移进去选中/复制；而"取全文/复制"本来就有行内「预览」「复制」。
+- 正文区 `max-height: calc(6 * 1.6em)` + `overflow: hidden`：**不做内部滚动**（可滚动的前提是
+  能移进去，与上一条互斥），**也不挂"还有更多"的说明行** —— 用户中途定案删掉「点击预览查看完整」：
+  那行字会把一个只为"多看一眼"的浮层读成待点的小面板，而"这条被裁过"已经有行内的 `长文本`
+  徽标在说，取全文也始终有「预览」与点击行体两条路。删掉之后 `place()` 里那次两遍量算
+  （先量 `text.scrollHeight > text.clientHeight + 1` 再决定要不要放提示行）也一并不需要了。
+- 删掉 `role="tooltip"`/`aria-describedby`/focus/blur/keydown 与 dialog 内挂载（当前范围用不到）：
+  浮层标 `aria-hidden="true"`，是**纯视觉**的复述 —— 正文的完整文本本来就在 DOM 里
+  （`.cell-content__text` 只被 CSS 裁切，文本节点一直完整），读屏不需要它。
+- `check` 改为 `scrollHeight > clientHeight`（纵向）；内容改用 `previewText(ref.item)`，
+  与行内显示**同一个串**，不再单独读 `item.text`（少一处同源问题，`ref` 也是仓库既有惯例）。
+- 新增 `prune()`，由 `list.js` 的 `update()` 在对账之后调用：触发行不在文档里就主动收起（缺陷 4）。
+- 视口定位补一步"统一夹回视口内"：触发元素在视口外时会算出负坐标（探针实测 `top: -1584`），
+  浮层被画到视口外、`elementFromPoint` 直接返回 null。
+- 提示行整条删除（连同它那个已被并入 `--fs-sm` 的 `font-size: 12px` —— 缺陷 6 随之消失；
+  全库复查：删掉之后 `font-size: 12px` 为 0 处）。
+
+### 三、验证（全部实跑）
+
+- **真实浏览器逐项复测**（1440×900）：`pointer-events` 读回 `none`；浮层中心点
+  `elementFromPoint` 命中的是 `cell-content__text`（下面那一行），**不是**浮层；同一覆盖区点
+  「收藏」`false → true`；行与行之间移动各自出各自的浮层且内容与行内逐字相同；正文区高度不超过
+  6 行的封顶（长内容静默裁掉，无滚动条、无说明行）；滚动即收；短文本行不出浮层；触屏门（把 `matchMedia` 桩成粗指针
+  后 `attach` 不挂监听、派发 `mouseenter` 也不出浮层）；深色主题下取色全部来自令牌。
+- **`prune()` 端到端**：悬停某行 → **指针不动**、程序化把搜索词改成 0 命中 → 对账把行全部换掉
+  → 浮层 `hidden`（同一路径在修前实测是"浮层照旧可见、内容是旧的"）。
+- **探针新增 `HOVER` 行**（`test/manual/probe-ui-v1.mjs`）：把真实首行正文宽度收到 40px 造出
+  纵向裁切，用真实监听器与真实 CSS 量三件事 —— `pointer-events === 'none'`、
+  浮层中心点的 `elementFromPoint` 不落在浮层里、正文区不超过 6 行封顶，外加离开即收。
+  **敏感性已验证**：把 CSS 改回 `pointer-events: auto` 再跑，探针报出
+  `hover: 浮层的 pointer-events 是 auto` 与 `hover: ... 命中浮层本身（读到 tooltip__text）`
+  两条 findings；改回后 `findings=0`。`--coarse` 档按预期 `skipped`（该构件对触屏有意不挂监听）。
+- **门禁**：见本轮收尾（tsc / eslint / ui-guard / docs.test / 全量套件 / 探针两档）。
+
+**教训（写给下一次）**：新增一个**覆盖在既有内容之上**的构件时，判据不能只问"它长对了没有"，
+必须先问"它盖住的东西还能不能用" —— 本仓库的探针里 `elementFromPoint` 就是回答这个问题的工具。
+
