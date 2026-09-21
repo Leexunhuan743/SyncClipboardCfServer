@@ -352,7 +352,8 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # 把开关绑成 Worker 变量（`vars` 输入 = 按**名字**取同名环境变量的值）。
-          # 名单**只列在这里**：新增可调项时 = Resolve 步骤给默认值 + 这里加一行 + README 开关表加一行。
+          # 名单**只列在这里**：新增可调项时 = Resolve 步骤给默认值 + 这里加一行 + README 开关表加一行
+          # + `.dev.vars.example` 加一行（共四处，靠人记性 ⇒ 改的时候把变量名全文搜一遍）。
           vars: |
             UI_ENABLED
             ENFORCE_STRONG_CREDENTIALS
@@ -502,7 +503,7 @@ jobs:
           if [ "${UI_ENABLED:-true}" = "false" ]; then
             # 关掉界面时**四个挂载点都必须 404** —— 否则"关掉界面"会留下一个仍可访问的旧界面，
             # 那正是这个开关要消除的东西（与 test/ui-guard.test.ts 的同名断言对应）。
-            for p in /ui/ /ui_v1/ /ui_v2/; do
+            for p in /ui/ /ui_v1/ /ui_v2/ /ui_shared/; do
               code=$(curl -s -o /dev/null -w '%{http_code}' "$base$p" || echo 000)
               if [ "$code" = "404" ]; then
                 echo "✓ UI_ENABLED=false：$p → 404（界面已关闭）"
@@ -519,6 +520,7 @@ jobs:
             check_asset '/ui_v2/app/' 'V2 开发测试版本体' 'text/html' || fail=1
             check_asset '/ui_v2/js/boot.js' 'V2 模块（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
             check_asset '/ui_shared/brand/favicon.svg' '共用品牌图标（V1/V2 同一份）' 'image/svg+xml' || fail=1
+            check_asset '/ui_shared/js/icons.js' '共用层模块（两版同一份图标表）' 'text/javascript' || fail=1
           fi
 
           # ---- 无论冒烟是否通过，都把「地址 + 怎么用」写进 run summary：

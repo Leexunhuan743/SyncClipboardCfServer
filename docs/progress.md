@@ -9351,3 +9351,54 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 - **代价如实记**：失败隔离弱于独立页；常驻页面必须管好挂载/销毁（worker、canvas、`blob:` URL）。
 - **顺手排除一个假障碍**（核对过源码）：`ui-guard` 的 import 闭包正则 `import\s+(?:[\s\S]*?\sfrom\s+)?['"]…` **匹配不到 `import(`** ⇒ 动态导入的 vendor 不会被要求进 `modulepreload`，也不进 V1 的模块闭包。
 - 未动代码。
+
+## 116. `deploy.yml` 对照 `.dev.vars.example`：四处清单实测比对 + 修 3 处不一致（2026-09-21）
+
+**触发**：用户问「`.github/workflows/deploy.yml` 对照 `.dev.vars.example` 是否合理」。
+
+**做法**：机械比对四处清单（`.dev.vars.example` / `deploy.yml` / `wrangler.toml [vars]` / `src/env.ts`）与三处默认值、四组范围。
+
+**结论（先给一致性，避免一边倒）**：
+
+- **9 个运行期开关的名字三处完全一致**（示例 / CI 的 Resolve+`vars:` 名单 / `env.ts`）；`USERNAME`/`PASSWORD` 与 `wrangler secret put`、GitHub Secrets 同名；测试覆盖走 `SYNC_USER`/`SYNC_PASS`（CI 的 quality job 正是这么写的）。
+- **默认值全部一致**：`UI_ENABLED=true` / `ENFORCE_STRONG_CREDENTIALS=false` / `1000` / `10080` / `50331648` / `900000` / `10` / `900000` / `50`。
+- **范围也一致**：`MAX_REQUEST_BODY_BYTES` 的 256 KiB–64 MiB 在示例注释、CI 校验、`src/requestLimits.ts` 的 `FLOOR`/`CEILING` 三处逐字相同；四个 `AUTH_RATE_LIMIT_*` 的范围在 CI 与 `src/rateLimit.ts` 的 `AUTH_RATE_LIMIT_RANGES` 逐字相同。
+- 只存在于 CI 的 `D1_DATABASE_ID`/`D1_BOOTSTRAP`/`DEPLOY_URL`/`CLOUDFLARE_*` 与只存在于代码侧的 `VERSION`、`ASSETS`/`DB`/`HUB`/`R2` **各自归位**，没有互相渗透 ⇒ 分层是对的。
+
+**修的 3 处（+1 处同源补齐）**：
+
+1. **README 开关表漏 4 个 `AUTH_RATE_LIMIT_*`**（README 全文此前 0 次出现），而 `deploy.yml` 的注释写着「不建议改（README 已写明）」——**那是假陈述**。⇒ 补 4 行（含默认值与范围）+ 一条注（指向 `src/rateLimit.ts` 的 `RANGES`，并注明"通常保持默认"）。
+2. **`deploy.yml` 冒烟 `UI_ENABLED=false` 分支漏 `/ui_shared/`**：注释写「**四个**挂载点都必须 404」，循环只有 `/ui/ /ui_v1/ /ui_v2/`。⇒ 补成四个。
+3. **`deploy.yml` 的维护规则漏一处**：原句「新增可调项 = Resolve 默认值 + `vars:` 加一行 + README 开关表加一行」没提 `.dev.vars.example`（它正是这 9 项的第二份清单）。⇒ 补上，并加一句"改的时候把变量名全文搜一遍"。
+4. **同源补齐**：开启态对共用层只断言了 `brand/favicon.svg` 一个文件，与"每个挂载点各一对（页面 + 入口 JS）"的既有纪律不齐 ⇒ 补 `/ui_shared/js/icons.js`（`text/javascript`）。
+
+**当时未修、同日已补**（见 §116.1 —— 两处都要动守卫，用户点头后当场改了）：
+
+- `test/ui-guard.test.ts` 的「关闭态」用例是**硬编码清单**（只覆盖 `/ui`、`/ui_v2/*`、`/ui/api/*`），注释里声明要守 `public/ui_v1/*` ⇒ **`/ui_v1/*` 与 `/ui_shared/*` 没有用例**，且注释的"三面"已过时（现在四个）。同文件其它判据（`run_worker_first`/`isUiAsset`/`_headers`）都是**动态发现挂载点**的 ⇒ 纪律不一致。
+- **`.dev.vars.example` 没有任何防漂移守卫**：4 个套件提到它只是注释（"默认与 .dev.vars 示例一致"），`test/docs.test.ts` 的现状文件里也没有它 ⇒ 四处平行清单靠人记性，正是 `AGENTS.md` §1 点名的那类漂移。
+
+**验证**：`deploy.yml` 经 PyYAML 解析通过（jobs = quality/deploy，deploy 10 步）；两段被改动的 shell（Resolve switches / Smoke check）`bash -n` 通过；`docs`/`ui-guard`/`ui-contract`/`ui-logic` 共 **92 项全过**。
+
+### 116.1 两处缺口已补：守卫改造 + 负向验证（同日）
+
+**① `ui-guard` 的"关闭态"用例改为动态发现挂载点。**
+- 新增模块级 `discoverUiMountPoints()`（`public/ui*` 目录）与 `firstAssetUnder(prefix)`（取该挂载点下**一个真实存在**的静态资源）；
+  「界面挂载点的事实源」那一节原有的内联发现逻辑改为调用同一个 helper ⇒ **单一事实源**（此前是两处各写一份）。
+- 关闭态用例从硬编码清单改为**每个挂载点三种形态**（裸前缀 / 带尾斜杠 / 真实深层资源）+ `/ui/api/*` 四条，并加反空断言
+  （"没发现任何挂载点"/"挂载点下没找到资源" ⇒ 直接红，防"空集合让断言永远为真"）。
+- 实测覆盖：动态展开出 4 个挂载点 × 3 条 = `/ui` `/ui/` `/ui/index.html`、`/ui_shared` `/ui_shared/` `/ui_shared/brand/apple-touch-icon.png`、
+  `/ui_v1` `/ui_v1/` `/ui_v1/css/auth.css`、`/ui_v2` `/ui_v2/` `/ui_v2/app/index.html` ⇒ **此前完全缺失的 `/ui_v1/*` 也补上了**。
+- `firstAssetUnder` 动态取路径的理由写进了注释：入口名随界面变过（V2 `main.js`→`boot.js`），写死会在改名后测到**不存在**的路径 —— 那 404 是"路径不存在"给的，不是开关给的（假绿）。
+
+**② `.dev.vars.example` 的防漂移守卫（`test/docs.test.ts` 新增两条用例）。**
+- 判据一：`.dev.vars.example` 的 `NAME=` 集合 **==** `deploy.yml` 的 `vars:` 名单 ∪ {`USERNAME`,`PASSWORD`,`SYNC_USER`}。**双向**断言
+  （示例里出现 CI 不认的名字 ⇒ 红；CI 绑的名字示例里没有 ⇒ 红），并各带一条反空断言（`> 6`）。
+- 判据二：`README.md` 的**开关表**必须覆盖全部运行期开关 + 两个部署期变量（`D1_DATABASE_ID`/`D1_BOOTSTRAP`），且表里不得出现名单外的名字。
+  这条正是 2026-09-21 真实漏过的那一处（README 漏 4 个限速参数，而 CI 注释还写着"README 已写明"）。
+- ⚠️ 踩到的坑（已写进代码注释）：仓库文件是 **CRLF**，按行抽取前必须归一，否则 `\|\n` 这类模式永不命中 —— 第一次跑就红在"抽不到 `vars:` 名单"上。
+- **负向验证（证明守卫真的咬人）**：① 把示例里一个开关改名 → `docs` **红**；② 删掉 README 开关表一行 → `docs` **红**；
+  ③ 把 `src/index.ts` 的 `isUiAsset` 里 `/ui_shared` 两个条件摘掉 → `ui-guard` **2 失败**。三次改坏后均**逐字节还原**（sha256 核对一致）。
+- 连带：`AGENTS.md` §1 同步表新增一行（增删部署开关要四处一起改）；`deploy.yml` 的维护规则注释上一笔已补 `.dev.vars.example`。
+
+**验证**：`tsc` 0 错；`eslint`（含 `ui_shared`）0 告警；四个探针 `node --check` 全过；
+全量 **22 套件 / 435 用例**（比上一笔 +2 条守卫）全过；`docs.test.ts` 用例数 7 → 9。

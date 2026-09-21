@@ -155,11 +155,44 @@ describe('/ui/api/* 鉴权不因注册顺序静默失效（遍历式回归）', 
   });
 });
 
+// 界面挂载点：**一律从 `public/` 动态发现**（`public/ui*` 目录）；本文件多处判据共用这一份事实。
+// 不写死清单的理由见下面「界面挂载点的事实源」那一节：写死只防改名、不防新增（2026-09-19 复查的实况）。
+function discoverUiMountPoints(): string[] {
+  return readdirSync('public', { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('ui'))
+    .map((entry) => `/${entry.name}`)
+    .sort();
+}
+
+/**
+ * 在某个界面挂载点下取**一个真实存在**的静态资源路径（供"关闭态必须 404"的深层用例）。
+ * 动态取、不写死入口名的理由：入口名随界面变过（V2 的 `main.js` → `boot.js` …），写死的话改名之后
+ * 那条用例测到的是一个**不存在**的路径 —— 它拿到的 404 是"路径不存在"给的，不是开关给的（假绿）。
+ */
+function firstAssetUnder(prefix: string): string | null {
+  const walk = (dir: string): string | null => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = walk(path);
+        if (found) return found;
+      } else if (/\.(js|mjs|css|html|svg|png|webmanifest)$/.test(entry.name)) {
+        return path;
+      }
+    }
+    return null;
+  };
+  const found = walk(join('public', prefix.slice(1)));
+  return found === null ? null : `/${found.replace(/\\/g, '/').replace(/^public\//, '')}`;
+}
+
 // 界面部署开关（GitHub 仓库变量 `UI_ENABLED`，判定见 src/uiEnabled.ts）。
-// 它必须**关得住静态资源**：`public/ui_v1/*`、`public/ui_v2/*`、`public/ui/*` 现在由
-// `[assets] run_worker_first = ["/ui", "/ui/*", "/ui_v1", "/ui_v1/*", "/ui_v2", "/ui_v2/*"]`
-// 先送进 Worker，再由出口决定"转回 ASSETS"还是"404"。若哪天 run_worker_first 被删掉，
-// 关闭态下资源仍会被平台直接托管 ⇒ 这两条断言会红（这正是要守的不变式）。
+// 它必须**关得住静态资源**：`public/ui*/*`（含 2026-09-21 起的 `/ui_shared/`）现在由
+// `[assets] run_worker_first` 先送进 Worker，再由出口决定"转回 ASSETS"还是"404"。
+// 若哪天 run_worker_first 被删掉，关闭态下资源仍会被平台直接托管 ⇒ 这两条断言会红（这正是要守的不变式）。
+// ⚠️ 2026-09-21 修：下面"关闭态"的用例原本是**硬编码清单**（只覆盖 `/ui` 与 `/ui_v2/*`，而本注释声明
+// 还要守 `public/ui_v1/*`）⇒ `/ui_v1/*` 与新加的 `/ui_shared/*` 都没有用例，与同文件其它判据的
+// "从 `public/` 动态发现挂载点"纪律不一致。现在改为动态构造用例。
 describe('UI 部署开关（UI_ENABLED）', () => {
   const CTX = { waitUntil: (_p: Promise<unknown>) => {}, passThroughOnException: () => {} } as unknown as ExecutionContext;
 
@@ -186,15 +219,22 @@ describe('UI 部署开关（UI_ENABLED）', () => {
   const at = (path: string, headers: Record<string, string> = {}) =>
     worker.fetch(new Request(`https://sync.example.com${path}`, { headers }), makeEnv('true', 200).env, CTX);
 
-  it('关闭态：/ui、页面、静态资源、/ui/api/* 一律 404，且完全不碰静态资源', async () => {
+  it('关闭态：每个界面挂载点（根 / 根带斜杠 / 深层资源）与 /ui/api/* 一律 404，且完全不碰静态资源', async () => {
     const { env, seen } = makeEnv('false', 200);
+    const mounts = discoverUiMountPoints();
+    // 空集合会让这条断言永远为真 ⇒ 先把「发现器确实在工作」本身钉住
+    expect(mounts.length, '没在 public/ 下发现任何界面挂载点目录（守卫可能失效）').toBeGreaterThan(0);
     const cases: [string, 'page' | 'api'][] = [
-      ['/ui', 'page'],
-      ['/ui_v2/', 'page'],
-      ['/ui_v2/index.html', 'page'],
-      ['/ui_v2/app/', 'page'],
-      ['/ui_v2/app/index.html', 'page'],
-      ['/ui_v2/js/boot.js', 'page'],
+      // 每个挂载点三种形态：裸前缀、带尾斜杠、一个**真实存在**的深层静态资源。
+      ...mounts.flatMap((prefix): [string, 'page' | 'api'][] => {
+        const deep = firstAssetUnder(prefix);
+        expect(deep, `${prefix} 下没找到任何静态资源 —— 这条用例会退化成只测两个不存在的前缀`).not.toBeNull();
+        return [
+          [prefix, 'page'],
+          [`${prefix}/`, 'page'],
+          [deep as string, 'page'],
+        ];
+      }),
       ['/ui/api/session', 'api'],
       ['/ui/api/login', 'api'],
       ['/ui/api/history', 'api'],
@@ -724,11 +764,9 @@ describe('界面挂载点的事实源（run_worker_first / isUiAsset / _headers�
   // ⚠️ 2026-09-19 复查（第二轮）：原判据把"三个挂载点"写成**常量数组**，于是**只防改名、不防新增** ——
   // 将来加 `/ui_v3` 而忘了同步配置时，六个老模式仍在、断言照绿，而那正是本守卫诞生要防的同型失效
   // （上一轮 `d32631b` 已在 `_headers` 判据② 上改过一遍）。现在挂载点从 `public/` **动态发现**，
-  // 与 `_headers` 判据②、下面的 `isUiAsset` 判据共用同一份事实。
-  const uiMountPoints = readdirSync('public', { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith('ui'))
-    .map((entry) => `/${entry.name}`)
-    .sort();
+  // 与 `_headers` 判据②、下面的 `isUiAsset` 判据共用同一份事实（2026-09-21 抽成模块级
+  // `discoverUiMountPoints()`，「关闭态」那条用例也改用同一份）。
+  const uiMountPoints = discoverUiMountPoints();
 
   /** 解析 `wrangler.toml` 的 `run_worker_first`（模式数组）。 */
   function runWorkerFirstPatterns(): string[] {

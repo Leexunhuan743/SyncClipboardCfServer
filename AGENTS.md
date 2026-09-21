@@ -43,6 +43,7 @@
 | 改协议行为（路由、状态码、字段、响应头、哈希） | `docs/protocol.md` §10 差异登记表 —— **它是协议差异的唯一登记处**，每条带上游 `文件:行`；同一差异不要重复登记 |
 | 做了设计取舍（新方案 / 换方案 / 决定不做） | `docs/design.md` §2 加一条 ADR（编号递增），实现处注明 D 号 |
 | 修缺陷、踩到坑、量出数字 | `docs/progress.md` 追加一节（编号递增 + 日期）；**被修的行为若还有测试断言在钉它，同一次改掉断言**——别让旧断言继续固化已被判定为缺陷的行为 |
+| 增删**部署开关**（运行期变量，如新的 `AUTH_RATE_LIMIT_*`） | **四处一起改**：`.dev.vars.example`（本地）、`.github/workflows/deploy.yml`（Resolve 步骤的默认值 + `vars:` 名单）、`README.md` 的开关表、`wrangler.toml` 的 `[vars]`（默认值）；`test/docs.test.ts` 的两条清单守卫会红（示例 ↔ CI ↔ README 的名字集合） |
 | 改文档里写死的数字 / 文件名 / 令牌名 | 全文搜一遍再改：同一事实常散在 3~5 处 —— 套件数 **5 处**（就是 `test/docs.test.ts` 的 `CURRENT_STATE_FILES` 那 5 个文件）、`public/` 资源数 **2 处**（都在 `docs/ui.md` §3：总数 + V1 / V2 / 跳转壳 / 站点根分表）、目录树 **3 处**（`docs/design.md` §4、`docs/ui-v2-design.md` §7、`README.md` 的 `public/` 行） |
 
 **「门禁全绿」不等于「文档对了」。** `test/docs.test.ts` 只把 5 个文件当作现状口径校验

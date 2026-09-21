@@ -278,3 +278,67 @@ describe('代码规模统计', () => {
     expect(read('docs/progress.md')).toContain('### 代码规模');
   });
 });
+
+// ===== 部署开关的四处清单：`.dev.vars.example` ↔ `deploy.yml`（↔ `README.md` 的开关表）=====
+//
+// 由来（2026-09-21 复查）：同一批开关散在四处 —— `.dev.vars.example`（本地开发）、`deploy.yml`
+// （GitHub 仓库变量 → 绑给 Worker）、`wrangler.toml` 的 `[vars]`（默认值）、`README.md` 的开关表。
+// 此前**没有任何判据**看着它们：`.dev.vars.example` 只在四个套件的注释里被提到（"默认与 .dev.vars 示例一致"），
+// 于是"新增一个开关、忘了改示例文件或 README"这类漂移只能靠人去数 —— 正是 `AGENTS.md` §1 点名的那类
+// （2026-09-21 实测：README 的开关表就漏了 4 个 `AUTH_RATE_LIMIT_*`，而 `deploy.yml` 的注释还写着
+// "README 已写明"）。判据只钉**名字集合**：默认值各处已实测一致，范围另有 `src/rateLimit.ts` 的
+// `AUTH_RATE_LIMIT_RANGES`、`src/requestLimits.ts` 的 FLOOR/CEILING 与 CI 的校验。
+describe('部署开关清单：.dev.vars.example / deploy.yml / README 三处一致', () => {
+  // ⚠️ 仓库里的文件是 **CRLF** ⇒ 任何"按行匹配"的抽取都要先归一，否则 `\|\n` 这类模式永远不命中
+  // （2026-09-21 加这条守卫时正踩在这里：抽不到 `vars:` 名单，断言先红在"抽取器失效"上）。
+  const readText = (relative: string): string => read(relative).replace(/\r\n/g, '\n');
+
+  /** `.dev.vars.example` 里的名字（含被注释掉的**可选**行 —— 注释行同样是这份清单的一部分）。 */
+  function exampleNames(): string[] {
+    return [...readText('.dev.vars.example').matchAll(/^\s*#?\s*([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]!);
+  }
+
+  /** `deploy.yml` 里 `Deploy Worker` 步骤的 `vars: |` 名单 —— 即"绑给 Worker"的那批名字。 */
+  function workerBoundNames(): string[] {
+    const list = /\n\s+vars: \|\n((?:\s+[A-Z][A-Z0-9_]*\n)+)/.exec(readText('.github/workflows/deploy.yml'))?.[1];
+    expect(list, '没抽到 deploy.yml 的 vars 名单（守卫可能失效）').toBeTruthy();
+    return [...(list ?? '').matchAll(/([A-Z][A-Z0-9_]*)/g)].map((m) => m[1]!);
+  }
+
+  /** `README.md` **开关表**里被反引号括起来的变量名（只认表格行，避免把散文里的提及算进来）。 */
+  function readmeTableNames(): string[] {
+    return [...readText('README.md').matchAll(/^\s*\|\s*`([A-Z][A-Z0-9_]*)`\s*\|/gm)].map((m) => m[1]!);
+  }
+
+  it('.dev.vars.example == CI 绑给 Worker 的名字 + 凭据 + 测试覆盖（双向，且不放空）', () => {
+    const example = new Set(exampleNames());
+    const bound = new Set(workerBoundNames());
+    // 空集合会让下面两条断言永远为真 ⇒ 先钉住"抽取器在工作"
+    expect(example.size, '没抽到 .dev.vars.example 的名字（守卫可能失效）').toBeGreaterThan(6);
+    expect(bound.size, '没抽到 deploy.yml 的开关名单（守卫可能失效）').toBeGreaterThan(6);
+    // 凭据走 secrets（`wrangler secret put`），SYNC_USER/SYNC_PASS 只是测试覆盖 —— 这五个不进 CI 的 vars 名单
+    const allowed = new Set([...bound, 'USERNAME', 'PASSWORD', 'SYNC_USER']);
+    expect(
+      [...example].filter((name) => !allowed.has(name)).sort(),
+      '.dev.vars.example 里出现了 CI 不认的名字：要么把它接进 deploy.yml 的 vars 名单，要么从示例删掉',
+    ).toEqual([]);
+    expect(
+      [...bound].filter((name) => !example.has(name)).sort(),
+      '.dev.vars.example 缺了 CI 会绑给 Worker 的开关 —— 新增可调项时四处（示例/CI/README/wrangler.toml）都要改',
+    ).toEqual([]);
+  });
+
+  it('README 的开关表覆盖全部运行期开关 + 两个部署期变量（2026-09-21 曾漏 4 个限速参数）', () => {
+    const table = new Set(readmeTableNames());
+    expect(table.size, '没抽到 README 开关表（守卫可能失效）').toBeGreaterThan(6);
+    const required = new Set([...workerBoundNames(), 'D1_DATABASE_ID', 'D1_BOOTSTRAP']);
+    expect(
+      [...required].filter((name) => !table.has(name)).sort(),
+      'README 的开关表漏了这些变量（用户在 README 里根本看不到它们可配）',
+    ).toEqual([]);
+    expect(
+      [...table].filter((name) => !required.has(name)).sort(),
+      'README 开关表里出现了既不是运行期开关、也不是部署期变量的名字（写错了？还是该登记进上面那条判据？）',
+    ).toEqual([]);
+  });
+});

@@ -163,9 +163,16 @@ flowchart LR
    | `HISTORY_RETENTION_MINUTES` | `10080` | 历史记录保留时长（单位分钟，默认 10080 分钟即 7 天）。 |
    | `MAX_REQUEST_BODY_BYTES` | `50331648` | 单次上传请求体大小限制，默认 48 MiB（允许范围 256 KiB–64 MiB）。 |
    | `ENFORCE_STRONG_CREDENTIALS` | `false` | 设为 `true` 时，检测到弱密码会直接中断服务（返回 500）。默认仅打出安全警告。 |
+   | `AUTH_RATE_LIMIT_WINDOW_MS` | `900000` | 认证失败统计窗口（毫秒，默认 15 分钟；范围 1 分钟–24 小时）。 |
+   | `AUTH_RATE_LIMIT_MAX_FAILURES` | `10` | 该窗口内允许的最大失败次数（范围 3–100），超过即封锁来源。 |
+   | `AUTH_RATE_LIMIT_BLOCK_MS` | `900000` | 封锁时长（毫秒，默认 15 分钟；范围 1 分钟–24 小时）。 |
+   | `AUTH_RATE_LIMIT_BURST_WARN` | `50` | 全局失败告警阈值（范围 10–10000），只影响日志。 |
    | `D1_DATABASE_ID` | （未设置） | 钉住要绑定的 D1 库 id；不设置时按库名 `syncclipboard` 自动解析（不存在则创建）。它写在 GitHub 设置里，`Sync fork` 不会把它冲掉。 |
    | `D1_BOOTSTRAP` | `true` | 是否允许 CI 在库不存在时**自动创建**。设为 `false` 则缺库直接报错 —— 适合「已有数据、怕误重建」的场景。 |
 
+   > 上面四个 `AUTH_RATE_LIMIT_*` 属于防暴力破解参数，**通常保持默认即可**（默认策略见「功能与安全」一节的说明）；
+   > 运行期的校验范围另见 `src/rateLimit.ts` 的 `AUTH_RATE_LIMIT_RANGES`（与 CI 里的范围校验一致）。
+   >
    > `MAX_SAVED_HISTORY_COUNT` 与 `HISTORY_RETENTION_MINUTES` 除了在此处通过变量设置，也可以在 Web 界面的「维护面板」中直接在线修改。设置会写入 D1 数据库的 Meta 表并立即生效，不需要重新部署。在界面中清空设置即可恢复使用这里的变量值。
 
 5. **触发部署**：
