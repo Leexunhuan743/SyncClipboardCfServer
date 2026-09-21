@@ -576,6 +576,38 @@ describe('UI API 回收站视图（deleted=true）与恢复', () => {
     );
   });
 
+  it('收藏计数按视图各给一个：统计条那一格与工具栏「收藏」筛选必须同源', async () => {
+    // 统计条「已收藏」与工具栏「收藏」筛选在同一屏。协议 DTO 的 `starredCount` 是**全库**口径
+    // （上游语义），拿它画卡片会出现"卡片说 12、点开筛选只有 9"——2026-09-21 dogfood 实测。
+    // 故两个视图各给一个（都是全表聚合，与请求的 deleted 无关，一次都给）。
+    const text = `${RECYCLE_MARK}-starred`;
+    const hash = await putText(text);
+    const path = `/ui/api/history/Text/${hash}`;
+    const patch = (body: Record<string, unknown>): Promise<Response> =>
+      req(path, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, lastModified: new Date().toISOString() }),
+      });
+    const counts = async (): Promise<{ active: number; deleted: number }> => {
+      const res = await req('/ui/api/statistics');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { starredCountActive: number; starredCountDeleted: number };
+      return { active: body.starredCountActive, deleted: body.starredCountDeleted };
+    };
+
+    const before = await counts();
+    expect((await patch({ starred: true, version: 1 })).status).toBe(200);
+    const starred = await counts();
+    expect(starred.active, '收藏一条活跃记录：活跃口径 +1').toBe(before.active + 1);
+    expect(starred.deleted, '活跃记录的收藏不该进回收站口径').toBe(before.deleted);
+
+    expect((await patch({ isDelete: true, version: 2 })).status).toBe(200);
+    const moved = await counts();
+    expect(moved.active, '同一条进回收站后：活跃口径退回去').toBe(before.active);
+    expect(moved.deleted, '回收站口径 +1（卡片与「收藏」筛选在回收站视图里也同源）').toBe(before.deleted + 1);
+  });
+
   it('deleted 参数只认 true/false：非法值 400（而不是静默当成 false）', async () => {
     const res = await req('/ui/api/history?deleted=yes');
     expect(res.status).toBe(400);

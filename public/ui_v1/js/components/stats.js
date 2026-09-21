@@ -80,10 +80,15 @@ export function createStats() {
 
   return {
     el: node,
-    update(stats) {
+    // 两个计数卡都随**当前视图**走（与工具栏的类型计数同一条约定：控件必须与列表同源）。
+    // 此前它们恒取整个库的口径：回收站视图里卡片写「记录 67 条」而列表写着 69 条；
+    // 活跃视图里卡片写「已收藏 12 条」，点开「收藏」筛选却只有 9 条（那 12 里混着回收站里的记录）。
+    // 两个数都是**全表聚合**（活跃 / 回收站各一个，与取数时选的视图无关），故不存在
+    // "这份响应属于哪个视图"的问题 —— 与 `main.js` 里 `countsForView` 的守卫不是一回事。
+    update(stats, deleted = false) {
       if (!stats) return;
-      records.set(String(stats.activeCount ?? 0), '条');
-      starred.set(String(stats.starredCount ?? 0), '条');
+      records.set(String((deleted ? stats.deletedCount : stats.activeCount) ?? 0), '条');
+      starred.set(String((deleted ? stats.starredCountDeleted : stats.starredCountActive) ?? 0), '条');
 
       storage.set(formatSize(Number(stats.totalFileSizeMB ?? 0) * 1024 * 1024));
 

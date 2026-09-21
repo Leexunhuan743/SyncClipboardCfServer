@@ -27,7 +27,7 @@ import {
   parseUiHistoryQuery,
   toUiItem,
 } from './query';
-import type { BatchMetaItem, UiTypeCounts } from './query';
+import type { BatchMetaItem, UiViewCounts } from './query';
 import { fileHeaders } from '../contentTypes';
 import { AVAILABLE_TRANSPORTS, HUB_PATH, issueConnectionToken } from '../hub';
 import { notFoundPage } from './notFound';
@@ -76,7 +76,7 @@ function readIntParam(raw: string | null, fallback: number, min: number, max: nu
 async function deploymentStats(env: Bindings): Promise<{
   bytes: number;
   stats: HistoryStatisticsDto;
-  views: { byActive: UiTypeCounts; byDeleted: UiTypeCounts };
+  views: UiViewCounts;
 }> {
   const { db, storage } = stores({ env });
   const bytes = await storage.totalHistorySize();
@@ -583,11 +583,16 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       db.statistics(historySizeMB(bytes)),
       countByTypeViews(c.env.DB),
     ]);
-    // byType 随视图走（工具栏的类型计数必须与列表同源），byTypeActive 恒为活跃口径
+    // byType 随视图走（工具栏的类型计数必须与列表同源），byTypeActive 恒为活跃口径。
+    // 两个 starred 计数**都进响应**（各自是全表聚合，与这次请求的视图无关），由前端按当前
+    // 视图取用：统计条「已收藏」那一格与工具栏「收藏」筛选同屏，必须给出同一个数
+    // —— 协议 DTO 的 `starredCount` 是**全库**口径（含着回收站里那几条），卡片用它会与筛选项对不上。
     return Response.json({
       ...stats,
       byType: deleted ? views.byDeleted : views.byActive,
       byTypeActive: views.byActive,
+      starredCountActive: views.starredActive,
+      starredCountDeleted: views.starredDeleted,
     });
   });
 
@@ -635,9 +640,12 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     const info = await deploymentMeta(c.env, new URL(c.req.url).origin, ds);
     return Response.json({
       stats: ds.stats,
-      // 两个计数口径不同（理由与 /ui/api/statistics 一致）：`byType` 随视图走，`byTypeActive` 恒活跃
+      // 三个计数口径不同（理由与 /ui/api/statistics 一致）：`byType` 随视图走，`byTypeActive` 恒活跃，
+      // 两个 `starredCount*` 恒为「按视图各一个」（各是全表聚合，前端按当前视图取用）
       byType: deleted ? ds.views.byDeleted : ds.views.byActive,
       byTypeActive: ds.views.byActive,
+      starredCountActive: ds.views.starredActive,
+      starredCountDeleted: ds.views.starredDeleted,
       marker,
       info,
       serverTime: new Date().toISOString(),

@@ -65,6 +65,16 @@ export interface UiTypeCounts {
   Group: number;
 }
 
+// 一次 GROUP BY 取回的计数：两套类型计数（活跃 / 回收站）+ 两个收藏计数（活跃 / 回收站）。
+// 收藏的两个都**与请求视图无关**（各自是对全表的一次聚合），所以响应里两个一起给，
+// 前端按当前视图取用即可 —— 不必像 `byType` 那样关心"这份响应属于哪个视图"。
+export interface UiViewCounts {
+  byActive: UiTypeCounts;
+  byDeleted: UiTypeCounts;
+  starredActive: number;
+  starredDeleted: number;
+}
+
 export class UiQueryError extends Error {
   constructor(message: string) {
     super(message);
@@ -304,29 +314,38 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
   return { total, page: q.page, pageSize: q.pageSize, items: (rows.results ?? []).map(toItem) };
 }
 
-// 按类型计数（活跃 / 回收站两套视图，一次取回）。
+// 按类型计数（活跃 / 回收站两套视图，一次取回）+ 收藏计数（两个视图各一个）。
 // 为什么一次取两套：`byType` 要随**当前视图**走（回收站里显示活跃数会让列表头与控制条互相矛盾），
 // 而统计条「存储占用」的明细恒用活跃口径——两个消费方各要一套，旧实现为此打两条 `COUNT(*) GROUP BY`
-// 再加一条全表拉取式的统计（后端能力评估 §3.1）。一条 `GROUP BY Type, IsDeleted` 就够。
-export async function countByTypeViews(
-  db: D1Database,
-): Promise<{ byActive: UiTypeCounts; byDeleted: UiTypeCounts }> {
+// 再加一条全表拉取式的统计（后端能力评估 §3.1）。一条 `GROUP BY Type, IsDeleted, Stared` 就够。
+// （`Stared` 进分组是为了顺带算出统计条「已收藏」那一格要的两个数：协议侧的 `starredCount`
+//   是**全库**口径（含已删除），而卡片与「收藏」筛选同屏，必须与它同源。）
+export async function countByTypeViews(db: D1Database): Promise<UiViewCounts> {
   const rows = await db
     .prepare(
-      `SELECT Type, IsDeleted, COUNT(*) AS c FROM HistoryRecords WHERE UserId = ?1 GROUP BY Type, IsDeleted`,
+      `SELECT Type, IsDeleted, Stared, COUNT(*) AS c FROM HistoryRecords WHERE UserId = ?1
+       GROUP BY Type, IsDeleted, Stared`,
     )
     .bind(USER_ID)
-    .all<{ Type: number; IsDeleted: number; c: number }>();
+    .all<{ Type: number; IsDeleted: number; Stared: number; c: number }>();
   const byActive: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
   const byDeleted: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
+  let starredActive = 0;
+  let starredDeleted = 0;
   for (const row of rows.results ?? []) {
-    const bucket = row.IsDeleted !== 0 ? byDeleted : byActive;
-    if (row.Type === ProfileType.Text) bucket.Text = row.c;
-    else if (row.Type === ProfileType.Image) bucket.Image = row.c;
-    else if (row.Type === ProfileType.File) bucket.File = row.c;
-    else if (row.Type === ProfileType.Group) bucket.Group = row.c;
+    const deleted = row.IsDeleted !== 0;
+    // 累加而不是赋值：`Stared` 进了分组，同一个 (Type, IsDeleted) 现在会有两行（收藏 / 未收藏）
+    if (row.Stared !== 0) {
+      if (deleted) starredDeleted += row.c;
+      else starredActive += row.c;
+    }
+    const bucket = deleted ? byDeleted : byActive;
+    if (row.Type === ProfileType.Text) bucket.Text += row.c;
+    else if (row.Type === ProfileType.Image) bucket.Image += row.c;
+    else if (row.Type === ProfileType.File) bucket.File += row.c;
+    else if (row.Type === ProfileType.Group) bucket.Group += row.c;
   }
-  return { byActive, byDeleted };
+  return { byActive, byDeleted, starredActive, starredDeleted };
 }
 
 // 变更信号：前端的自动刷新用它判断「要不要重新拉列表」。
