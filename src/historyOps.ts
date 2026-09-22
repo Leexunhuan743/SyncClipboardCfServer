@@ -5,9 +5,11 @@
 // 若各写一份，UI 侧删掉记录却不广播（或不清数据目录）就会与官方语义分叉。
 import { Bindings } from './env';
 import { HistoryDb } from './db';
-import { R2Storage, workingDirPrefix } from './storage';
+import { stores } from './stores';
+import { workingDirPrefix } from './storage';
 import { entityToDtoWire } from './serialization';
 import { broadcast } from './hub';
+import { isValidProfileHash } from './types';
 import type { HistoryRecordEntity, HistoryRecordUpdateDto, ProfileType } from './types';
 
 // 清空全部历史：协议 `DELETE /api/history/clear` 与 UI `POST /ui/api/history/clear`（scope=all）
@@ -22,8 +24,7 @@ import type { HistoryRecordEntity, HistoryRecordUpdateDto, ProfileType } from '.
 // 2 次子请求/记录，1000 条约 2000 次，**超过单次调用 1000 次内部子请求的上限**，饱和时中途失败）。
 export async function clearAllHistory(env: Bindings): Promise<number> {
   const entities = await new HistoryDb(env.DB).clearAll();
-  const storage = new R2Storage(env.R2);
-  await storage.deleteHistoryDirs(entities.map((entity) => workingDirPrefix(entity.type, entity.hash)));
+  await deleteRecordsWorkingDirs(env, entities);
   return entities.length;
 }
 
@@ -35,10 +36,25 @@ export async function clearAllHistory(env: Bindings): Promise<number> {
 // （最长 20 分钟），而用户点「清空回收站」的期待就是立刻腾空间。
 export async function purgeTrash(env: Bindings): Promise<number> {
   const { deleted, entries } = await new HistoryDb(env.DB).purgeDeletedRecords();
-  await new R2Storage(env.R2).deleteHistoryDirs(
-    entries.map((entry) => workingDirPrefix(entry.type, entry.hash)),
-  );
+  await deleteRecordsWorkingDirs(env, entries);
   return deleted;
+}
+
+// 按记录集合清扫 R2 数据目录。
+//
+// **跳过 hash 非法的行**：`workingDirPrefix` → `workingDirName` 对含路径分隔符的 hash 直接抛
+// （storage.ts 的 `assertHashForPath`，那是 key 构造的最后防线），而本函数在**删行之后**才被调用
+// ⇒ 不跳过就会「行已删掉、接口却报 500」，用户看到失败而数据其实没了、R2 残留还要等孤儿阶段。
+// 坏行只可能来自带外写入（三条写路径都拒这种 hash），它们的目录名也构造不出来 —— 漏掉不可惜，
+// 孤儿阶段照样回收。
+async function deleteRecordsWorkingDirs(
+  env: Bindings,
+  entries: { type: ProfileType; hash: string }[],
+): Promise<void> {
+  const { storage } = stores({ env });
+  await storage.deleteHistoryDirs(
+    entries.filter((e) => isValidProfileHash(e.hash)).map((e) => workingDirPrefix(e.type, e.hash)),
+  );
 }
 
 export type HistoryUpdateResult =

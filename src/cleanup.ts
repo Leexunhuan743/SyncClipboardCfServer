@@ -22,6 +22,7 @@ import { entityToDtoWire } from './serialization';
 import { HistoryRecordEntity } from './types';
 import { Bindings } from './env';
 import { broadcast } from './hub';
+import type { ProfileType } from './types';
 
 // ===== 预算与批量 =====
 
@@ -32,11 +33,10 @@ export const SUBREQUEST_BUDGET = 800;
 
 // 软删（保留期/条数上限）单批条数：**对齐上游**（`HistoryManagerHelper.SetRecordsMaxCount` /
 // `RemoveExpiredInBatchesAsync` 的 `BatchSize = 500`）。批上限只有在预算真放得下时才有意义 ——
-// 靠的是下面「批内一次目录清扫」把每条的成本从 3 次子请求降到 1 次（只剩广播）。
+// 软删每条只花 1 次广播（**不清数据目录**，见下面记账模型），500 条因此落得进 800 的预算。
 const SOFT_DELETE_BATCH_LIMIT = 500;
-// 硬删单批条数：它的每条成本已经降到 0（不广播、目录由所在批次一次清扫），单轮能吃下的量由
-// MAX_BATCHES_PER_PHASE × 本值决定；单批仍设上限是为了让「一次 D1 语句 + 一次批量删」的内存有界
-// （回归的行含 Text/FilePaths）。
+// 硬删单批条数：每条成本为 0（不广播，目录由所在批次一次批量删），单轮能吃下的量由
+// MAX_BATCHES_PER_PHASE × 本值决定；单批设上限是为了让「一次 D1 语句 + 一次批量删」的内存有界。
 const HARD_DELETE_BATCH_LIMIT = 1000;
 // 单阶段批次数上限：防「D1 返回满批却没真正推进」时的死循环。
 const MAX_BATCHES_PER_PHASE = 20;
@@ -46,30 +46,25 @@ const DELETED_RETENTION_DAYS = 30;
 // ===== 子请求记账模型 =====
 // 每个外部调用 = 1 次子请求：D1 语句、R2 调用、DO fetch 各计一次。
 //
-// **批内目录清扫**（2026-09-15）：软删/硬删阶段不再逐条调 `deleteHistoryWorkingDir`（那是
-// "每条 2 次 R2 调用：列举 + 删除"，见 storage.ts 的 deletePrefix），而是每轮**列举一次** history/
-// 拿到「目录 → key」映射（按实际页数记账），再**每批一次**批量删（R2 delete 单次可带 1000 个 key）。
-// 于是每条记录的成本只剩广播：
-//   保留期/条数上限 = 1 次（`RemoteHistoryChanged`）；硬删 = 0 次（上游语义也不广播）
-//   每批额外 = 1 次批量删（已在 drainBatches 的 room 计算里预留）
-// 这是「500 条/批」能落进平台单次调用 1000 上限的前提：逐条删除时 500 条 = 1500 次子请求，
-// 旧实现因此只能按 200 条/批、且实际被预算压到约 106/115 条。
+// **批内目录清扫**（2026-09-15）：硬删与孤儿阶段不做逐条 `deleteHistoryWorkingDir`
+//（那是"每条 2 次 R2 调用：列举 + 删除"，见 storage.ts 的 deletePrefix），而是每轮**列举一次**
+// history/ 拿到「目录 → key」映射（按实际页数记账），再**每批一次**批量删（R2 delete 单次可带
+// 1000 个 key）。逐条删除时 500 条 = 1500 次子请求，会撞上平台单次调用 1000 次的上限。
+//   · 保留期/条数上限（软删）：每条 1 次广播（`RemoteHistoryChanged`），**不清数据目录**
+//     —— 回收站要能连数据拿回来（ADR D29）；字节留到硬删或用户「彻底删除」时才清。
+//   · 硬删：每条 0 次（上游语义也不广播），每批额外 1 次批量删。
 const SUBREQUESTS_PER_D1_STATEMENT = 1;
 const SUBREQUESTS_PER_BROADCAST = 1;
 const SUBREQUESTS_PER_SWEEP_CALL = 1;
-const SUBREQUESTS_PER_EXPIRED_RECORD = SUBREQUESTS_PER_BROADCAST; // 1
-const SUBREQUESTS_PER_TRIMMED_RECORD = SUBREQUESTS_PER_BROADCAST; // 1
-const SUBREQUESTS_PER_HARD_DELETED_RECORD = 0; // 不广播；数据目录由所在批次一次清扫
 
 // 阶段顺序 = 依赖顺序：软删（保留期 → 条数上限）→ 硬删 → 孤儿回收（吃掉前两者留下的无主目录）。
 export const CLEANUP_PHASES = ['retention', 'trim', 'hardDelete', 'orphans'] as const;
 export type CleanupPhase = (typeof CLEANUP_PHASES)[number];
 
 // 每阶段的**保底配额**（子请求）：排在后面的阶段至少能拿到这么多，杜绝「前一阶段吃满预算 ⇒
-// 后续阶段静默跳过」。取值 ≈ 该阶段最小可推进单元的成本（批内清扫后每批 = 1 次 D1 查询 +
-// 1 次批量删 + 每条 1 次广播）：
-//   retention = 1 批查询 + 1 次清扫 + 少量广播；trim 多一条 COUNT；hardDelete 最便宜（不广播）
-//   但仍要留够"一次查询 + 一次清扫"；orphans = 1 次活目录查询 + 1 次列举（按实际页数）+ 1 次批量删。
+// 后续阶段静默跳过」。取值 ≈ 该阶段最小可推进单元的成本：
+//   retention = 1 批查询 + 少量广播；trim 多一条 COUNT；hardDelete = 1 批查询 + 1 次批量删
+//   （不广播）；orphans = 1 次活目录查询 + 1 次列举（按实际页数）+ 1 次批量删。
 // 前序阶段用不完的额度仍会**动态让给**后面的阶段（roomFor = 总预算 − 已花 − 后续阶段保底之和），
 // 所以这些数值是下限而不是上限。前提：SUBREQUEST_BUDGET 必须大于保底之和（当前 72），否则每个阶段
 // 都连第一批都跑不动 —— 调预算时同步复核这张表。
@@ -167,6 +162,21 @@ function parseSettingValue(raw: string | undefined): number | null {
   return Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
+// 纯 env 回落（不含 Meta 覆盖）：Meta 读失败时 runCleanup 用它与正常读取同源判据。
+// `parseSettingValue(env.X)` 非法（含未配置）⇒ 生效的是内置默认 ⇒ 来源记 `'default'`。
+export function settingsFromEnv(env: Bindings): RetentionSettings {
+  const fromEnv = {
+    retentionMinutes: parseSettingValue(env.HISTORY_RETENTION_MINUTES),
+    maxSavedHistoryCount: parseSettingValue(env.MAX_SAVED_HISTORY_COUNT),
+  };
+  return {
+    retentionMinutes: fromEnv.retentionMinutes,
+    maxSavedHistoryCount: fromEnv.maxSavedHistoryCount,
+    retentionSource: fromEnv.retentionMinutes === null ? 'default' : 'env',
+    maxCountSource: fromEnv.maxSavedHistoryCount === null ? 'default' : 'env',
+  };
+}
+
 // 保留策略的**唯一**读入口：cleanup（runCleanup）、/ui/api/info、/ui/api/settings 三处共用，
 // 杜绝「清理按 Meta、界面显示按 env」的分叉。成本 = 1 次 D1 读（getMetaValues 单条 IN 查询）。
 export async function readRetentionSettings(db: HistoryDb, env: Bindings): Promise<RetentionSettings> {
@@ -175,20 +185,17 @@ export async function readRetentionSettings(db: HistoryDb, env: Bindings): Promi
     retentionMinutes: parseSettingValue(meta.get(SETTINGS_META_KEYS.retentionMinutes)),
     maxSavedHistoryCount: parseSettingValue(meta.get(SETTINGS_META_KEYS.maxSavedHistoryCount)),
   };
-  const fromEnv = {
-    retentionMinutes: parseSettingValue(env.HISTORY_RETENTION_MINUTES),
-    maxSavedHistoryCount: parseSettingValue(env.MAX_SAVED_HISTORY_COUNT),
-  };
   // 来源按**生效值的实际出处**取，三档缺一不可：内置默认自 2026-09-22 起是 0（关闭保留期），
   // 「两处都没设」这一态因此**真的会**关掉一个阶段 —— 只报 `env` 会把维护者指向一个根本没配的变量
   // （见 `disabledReason` 的注释与 `docs/ui.md` 的保留策略小节）。
   const sourceOf = (metaValue: number | null, envValue: number | null): RetentionSource =>
     metaValue !== null ? 'meta' : envValue !== null ? 'env' : 'default';
+  const base = settingsFromEnv(env);
   return {
-    retentionMinutes: fromMeta.retentionMinutes ?? fromEnv.retentionMinutes,
-    maxSavedHistoryCount: fromMeta.maxSavedHistoryCount ?? fromEnv.maxSavedHistoryCount,
-    retentionSource: sourceOf(fromMeta.retentionMinutes, fromEnv.retentionMinutes),
-    maxCountSource: sourceOf(fromMeta.maxSavedHistoryCount, fromEnv.maxSavedHistoryCount),
+    retentionMinutes: fromMeta.retentionMinutes ?? base.retentionMinutes,
+    maxSavedHistoryCount: fromMeta.maxSavedHistoryCount ?? base.maxSavedHistoryCount,
+    retentionSource: sourceOf(fromMeta.retentionMinutes, base.retentionMinutes),
+    maxCountSource: sourceOf(fromMeta.maxSavedHistoryCount, base.maxSavedHistoryCount),
   };
 }
 
@@ -280,29 +287,37 @@ function recordFailure(failures: string[], stage: CleanupStage, err: unknown): v
   console.error(`[cleanup] error stage=${stage} message=${message}`);
 }
 
-interface BatchPhaseSpec {
+/** 清理批次里一行记录的最小形状：清扫数据目录只需要 `type`/`hash`（硬删阶段），
+ *  软删阶段还要整行来做广播载荷。 */
+type CleanupRow = { type: ProfileType; hash: string };
+
+interface BatchPhaseSpec<T extends CleanupRow> {
   phase: CleanupPhase;
   /** 每条记录产生的子请求数 */
   costPerRecord: number;
   /** 每批的查询数（trim 一批要 count + trim 两次） */
   queryCost: number;
+  /** 每批的固定开销（子请求）：硬删每批一次批量删目录；软删只在 costPerRecord 里逐条广播 */
+  batchedCallCost: number;
   /** 单批条数上限 */
   batchLimit: number;
-  /** 处理后是否广播变更（软删路径广播，硬删不广播） */
-  notify: boolean;
   /** 取一批候选；hasMore 必须按**实际生效的条数**判定，否则会把"候选已取完"误判成"被截断" */
-  fetchBatch(limit: number): Promise<{ rows: HistoryRecordEntity[]; hasMore: boolean }>;
+  fetchBatch(limit: number): Promise<{ rows: T[]; hasMore: boolean }>;
+  /** 本批的收尾动作：软删广播变更，硬删清扫数据目录（两侧语义见上面记账模型） */
+  applyBatch(rows: T[]): Promise<void>;
 }
 
 // 分批推进一个「按记录处理」的阶段：每批先按剩余额度算出可负担的条数，
 // 连一条都负担不起就停止并把该阶段标记为 truncated（下一轮从游标续跑，绝不静默跳过）。
-async function drainBatches(run: CleanupRun, spec: BatchPhaseSpec): Promise<PhaseOutcome> {
+async function drainBatches<T extends CleanupRow>(
+  run: CleanupRun,
+  spec: BatchPhaseSpec<T>,
+): Promise<PhaseOutcome> {
   let processed = 0;
   let batches = 0;
   for (let i = 0; i < MAX_BATCHES_PER_PHASE; i++) {
-    // 每批的额度里先扣掉"一次批量删"（见 sweepWorkingDirs）：即使 costPerRecord 为 0 的阶段
-    // 也需要这一次调用，所以它是所有走通道的阶段共同的固定开销。
-    const room = run.budget.roomFor(spec.phase) - spec.queryCost - SUBREQUESTS_PER_SWEEP_CALL;
+    // 每批的额度里先扣掉本阶段的固定开销（硬删的一次批量删）与查询，再按每条成本折算条数。
+    const room = run.budget.roomFor(spec.phase) - spec.queryCost - spec.batchedCallCost;
     // costPerRecord 为 0（硬删：不广播、目录并入批次清扫）时不受"每条成本"约束，只按批上限推进；
     // 它仍要求 room ≥ 0，也就是至少付得起这一批的查询与清扫。
     const limit =
@@ -315,7 +330,7 @@ async function drainBatches(run: CleanupRun, spec: BatchPhaseSpec): Promise<Phas
     run.budget.spend(spec.queryCost);
     batches++;
     const { rows, hasMore } = await spec.fetchBatch(limit);
-    await applyRecordCleanup(run, spec.phase, rows, spec.notify);
+    await spec.applyBatch(rows);
     run.budget.spend(rows.length * spec.costPerRecord);
     processed += rows.length;
     if (!hasMore) return { processed, batches, truncated: false };
@@ -385,27 +400,16 @@ async function sweepWorkingDirs(
   return { removedDirs, complete };
 }
 
-// 记录被清理后：① 删其数据目录（上游 DeleteProfileData，本实现按批一次清扫）；
-// ② 软删路径逐条广播（上游 OnRecordDeletedAsync，硬删不广播）。
-// 广播仍**逐条隔离**失败：一条广播失败不影响同批其余记录，也不会连带影响目录清扫。
-async function applyRecordCleanup(
+// 软删阶段的收尾：逐条广播 `RemoteHistoryChanged`（上游 OnRecordDeletedAsync）。
+// **不清数据目录** —— 回收站要能连数据把记录拿回来（ADR D29，与 `historyOps.applyHistoryUpdate`
+// 的软删同一语义）；字节留到 30 天硬删或用户「彻底删除」时才清。上游在这里会调
+// `DeleteProfileDataIfNeed` 立即删目录，那条偏离登记在 `docs/protocol.md` §10。
+// 广播仍逐条隔离失败：一条失败不影响同批其余记录。
+async function broadcastRecords(
   run: CleanupRun,
   phase: CleanupPhase,
   rows: HistoryRecordEntity[],
-  notify: boolean,
 ): Promise<void> {
-  if (rows.length > 0) {
-    try {
-      await sweepWorkingDirs(
-        run,
-        phase,
-        rows.map((e) => workingDirName(e.type, e.hash)),
-      );
-    } catch (err) {
-      recordFailure(run.failures, phase, err);
-    }
-  }
-  if (!notify) return;
   for (const e of rows) {
     try {
       await broadcast(run.env, 'RemoteHistoryChanged', entityToDtoWire(e));
@@ -415,19 +419,38 @@ async function applyRecordCleanup(
   }
 }
 
+// 硬删阶段的收尾：批量清扫这批记录的数据目录（上游 DeleteProfileData 的等价物）。
+// 清扫失败只记账：漏删的目录会被孤儿阶段（全量差集）回收。
+async function sweepRecordDirs(
+  run: CleanupRun,
+  rows: { type: ProfileType; hash: string }[],
+): Promise<void> {
+  if (rows.length === 0) return;
+  try {
+    await sweepWorkingDirs(
+      run,
+      'hardDelete',
+      rows.map((e) => workingDirName(e.type, e.hash)),
+    );
+  } catch (err) {
+    recordFailure(run.failures, 'hardDelete', err);
+  }
+}
+
 // 1) 保留期：过期且未收藏/未置顶/未删除 → 软删（IsDeleted/Version++/LastModified=now）
 function cleanRetention(run: CleanupRun, retentionMinutes: number): Promise<PhaseOutcome> {
   const cutoffMs = run.nowMs - retentionMinutes * 60_000;
   return drainBatches(run, {
     phase: 'retention',
-    costPerRecord: SUBREQUESTS_PER_EXPIRED_RECORD,
+    costPerRecord: SUBREQUESTS_PER_BROADCAST,
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
+    batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
-    notify: true,
     fetchBatch: async (limit) => {
       const rows = await run.db.softDeleteExpiredRecords(cutoffMs, run.nowMs, limit);
       return { rows, hasMore: rows.length === limit };
     },
+    applyBatch: (rows) => broadcastRecords(run, 'retention', rows),
   });
 }
 
@@ -435,11 +458,11 @@ function cleanRetention(run: CleanupRun, retentionMinutes: number): Promise<Phas
 function cleanTrim(run: CleanupRun, maxCount: number): Promise<PhaseOutcome> {
   return drainBatches(run, {
     phase: 'trim',
-    costPerRecord: SUBREQUESTS_PER_TRIMMED_RECORD,
+    costPerRecord: SUBREQUESTS_PER_BROADCAST,
     // 一批两次查询：countActiveRecords（算超量）+ trimToMaxCount
     queryCost: 2 * SUBREQUESTS_PER_D1_STATEMENT,
+    batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
-    notify: true,
     fetchBatch: async (limit) => {
       const overage = (await run.db.countActiveRecords()) - maxCount;
       if (overage <= 0) return { rows: [], hasMore: false };
@@ -449,6 +472,7 @@ function cleanTrim(run: CleanupRun, maxCount: number): Promise<PhaseOutcome> {
       // 否则收藏/置顶占满配额时该阶段会永远"有更多"，每轮空转并把 truncated 永远挂在结果里。
       return { rows, hasMore: rows.length === take && overage > take };
     },
+    applyBatch: (rows) => broadcastRecords(run, 'trim', rows),
   });
 }
 
@@ -456,14 +480,15 @@ function cleanTrim(run: CleanupRun, maxCount: number): Promise<PhaseOutcome> {
 function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutcome> {
   return drainBatches(run, {
     phase: 'hardDelete',
-    costPerRecord: SUBREQUESTS_PER_HARD_DELETED_RECORD,
+    costPerRecord: 0, // 不广播（上游硬删语义也不广播）；目录并入本批的批量清扫
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
+    batchedCallCost: SUBREQUESTS_PER_SWEEP_CALL,
     batchLimit: HARD_DELETE_BATCH_LIMIT,
-    notify: false,
     fetchBatch: async (limit) => {
       const rows = await run.db.hardDeleteOldDeletedRecords(cutoffMs, limit);
       return { rows, hasMore: rows.length === limit };
     },
+    applyBatch: (rows) => sweepRecordDirs(run, rows),
   });
 }
 
@@ -472,11 +497,11 @@ function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutco
 // `db.listReferencedWorkingDirs` 也返回带斜杠形式）。形式不一致会让 `active.has(dir)` 恒为 false，
 // 从而把**所有**历史数据目录当成孤儿删除 —— 曾因此每小时清空一次 history/（见 F33）。
 //
-// 与旧实现的差别只在成本（语义不变）：复用 `historyGroups` 的一次列举（按实际页数记账），
-// 对象按 1000 个一批删；删不下的（预算耗尽）本轮收工，下一轮重新求差集继续 —— 不另立游标。
+// 与旧实现的差别只在成本（语义不变）：复用 `sweepWorkingDirs` 的分块清扫（按实际页数记账，
+// 1000 个一批删）；删不下的（预算耗尽）本轮收工，下一轮重新求差集继续 —— 不另立游标。
 async function cleanOrphans(run: CleanupRun): Promise<PhaseOutcome> {
   // 至少付得起"一次活目录查询 + 一次列举（≥1 页）+ 一次批量删"
-  if (run.budget.roomFor('orphans') < SUBREQUESTS_PER_D1_STATEMENT + 2) {
+  if (run.budget.roomFor('orphans') < SUBREQUESTS_PER_D1_STATEMENT + SUBREQUESTS_PER_SWEEP_CALL + 1) {
     return { processed: 0, batches: 0, truncated: true };
   }
   const groups = await historyGroups(run);
@@ -488,43 +513,8 @@ async function cleanOrphans(run: CleanupRun): Promise<PhaseOutcome> {
   const orphanDirs = [...groups.keys()].filter((dir) => !active.has(dir));
   if (orphanDirs.length === 0) return { processed: 0, batches: 0, truncated: false };
 
-  let processed = 0;
-  let truncated = false;
-  let keys: string[] = [];
-  let pendingDirs: string[] = [];
-
-  // 分块理由与 sweepWorkingDirs 的 flush 完全相同（单目录可超一次 delete 的上限）
-  const flush = async (): Promise<boolean> => {
-    if (keys.length === 0) return true;
-    for (let i = 0; i < keys.length; i += R2_DELETE_BATCH) {
-      if (run.budget.roomFor('orphans') < SUBREQUESTS_PER_SWEEP_CALL) return false;
-      run.budget.spend(SUBREQUESTS_PER_SWEEP_CALL);
-      try {
-        await run.storage.deleteHistoryKeys(keys.slice(i, i + R2_DELETE_BATCH));
-      } catch (err) {
-        recordFailure(run.failures, 'orphans', err);
-        return false;
-      }
-    }
-    processed += pendingDirs.length;
-    keys = [];
-    pendingDirs = [];
-    return true;
-  };
-
-  for (const dir of orphanDirs) {
-    const owned = groups.get(dir);
-    if (owned === undefined) continue;
-    keys.push(...owned);
-    pendingDirs.push(dir);
-    groups.delete(dir);
-    if (keys.length >= R2_DELETE_BATCH && !(await flush())) {
-      truncated = true;
-      break;
-    }
-  }
-  if (!truncated && !(await flush())) truncated = true;
-  return { processed, batches: 0, truncated };
+  const { removedDirs, complete } = await sweepWorkingDirs(run, 'orphans', orphanDirs);
+  return { processed: removedDirs, batches: 0, truncated: !complete };
 }
 
 function runPhase(
@@ -615,16 +605,9 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       settings = await readRetentionSettings(run.db, env);
     } catch (err) {
       recordFailure(run.failures, 'meta', err);
-      // 读 Meta 失败 ⇒ 按「没有 Meta 覆盖」处理、整份回落 env（与 readRetentionSettings 的「无覆盖」
-      // 分支同义），取值仍用 parseNonNegativeInt，与改动前逐位相同。
-      // 来源则要看 env 是否**真的**给了合法值：没给 ⇒ `'default'`（那一刻生效的是内置默认），
-      // 否则会把内置默认造成的关闭归给一个根本没配的变量（与 readRetentionSettings 的三档判据同源）。
-      settings = {
-        retentionMinutes: parseNonNegativeInt(env.HISTORY_RETENTION_MINUTES, DEFAULT_RETENTION_MINUTES),
-        maxSavedHistoryCount: parseNonNegativeInt(env.MAX_SAVED_HISTORY_COUNT, DEFAULT_MAX_SAVED_HISTORY_COUNT),
-        retentionSource: parseSettingValue(env.HISTORY_RETENTION_MINUTES) === null ? 'default' : 'env',
-        maxCountSource: parseSettingValue(env.MAX_SAVED_HISTORY_COUNT) === null ? 'default' : 'env',
-      };
+      // 读 Meta 失败 ⇒ 按「没有 Meta 覆盖」处理、整份回落 env/内置默认
+      // （与 readRetentionSettings 的「无覆盖」分支同源，见 settingsFromEnv）。
+      settings = settingsFromEnv(env);
     }
     const retentionMinutes = settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES;
     const maxCount = settings.maxSavedHistoryCount ?? DEFAULT_MAX_SAVED_HISTORY_COUNT;

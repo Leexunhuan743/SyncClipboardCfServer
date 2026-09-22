@@ -259,10 +259,11 @@ describe('F11 · 清理任务的子请求预算', () => {
     expect(meta[CLEANUP_META_KEYS.lastError]).toBe('');
   });
 
-  it('批内一次清扫：一轮吃下整批 500 条，且 R2 调用数与批内条数无关', async () => {
-    // 这条守住"500 条/批"能成立的地基：旧实现每条记录要 2 次 R2 调用（列举 + 删除所删目录），
-    // 500 条 = 1000 次 R2 调用（外加 500 次广播）⇒ 物理上超过平台单次调用上限，只能退到 200/批并被
-    // 预算压到约 105 条。现在目录清扫是"一轮一次列举 + 每批一次批量删"，与批内条数无关。
+  it('软删阶段一轮吃下整批 500 条，且完全不碰 R2（不清数据目录）', async () => {
+    // 这条守住"500 条/批"能成立的地基：软删每条只花 1 次广播（500 × 1 + 查询 1 ≤ 预算），
+    // **不碰 R2** —— 数据目录留到 30 天硬删阶段才按批清扫（ADR D29：回收站要能连数据拿回来）。
+    // 旧实现软删时逐条删目录（每条 2 次 R2 调用），500 条 = 1000 次 R2 调用 + 500 次广播，
+    // 物理上超过平台单次调用上限，只能退到 200/批并被预算压到约 105 条。
     const f = fixture({ expired: 500, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: 1_000_000 });
     captureConsole();
 
@@ -270,14 +271,11 @@ describe('F11 · 清理任务的子请求预算', () => {
 
     expect(result.expired).toBe(500); // 一轮吃完（旧实现一轮 105 条）
     expect(result.truncated).toEqual([]);
-    expect(f.bucket.listCalls).toBe(1); // 一次列举（history/ 全部对象，1 页）
-    expect(f.bucket.deleteCalls).toBe(1); // 一次批量删（500 个 key ≤ 1000）
-    // 500 条被软删记录的数据目录确实被清掉；只剩两条豁免记录（STAR0/PIN0，fixture 默认各 1 条）的数据
-    expect([...f.bucket.objects.keys()].filter((k) => k.includes('_EXP'))).toEqual([]);
-    expect([...f.bucket.objects.keys()].sort()).toEqual([
-      'history/Text_PIN0/PIN0.bin',
-      'history/Text_STAR0/STAR0.bin',
-    ]);
+    expect(f.bucket.listCalls).toBe(1); // 软删阶段不列举；这一次是孤儿阶段求差集时的枚举
+    expect(f.bucket.deleteCalls).toBe(0); // 软删阶段不批量删（孤儿差集为空，也不删）
+    // 500 条被软删记录的数据目录**原样保留**（等硬删阶段）；豁免记录（STAR0/PIN0）也在
+    expect([...f.bucket.objects.keys()].filter((k) => k.includes('_EXP'))).toHaveLength(500);
+    expect([...f.bucket.objects.keys()].sort()).toHaveLength(502);
     expect(measuredSubrequests(f)).toBeLessThanOrEqual(result.subrequests);
     expect(result.failures).toEqual([]);
   });
@@ -407,15 +405,17 @@ describe('F11 · 清理任务的子请求预算', () => {
       const sql = `SELECT COUNT(*) AS c FROM HistoryRecords WHERE Hash = '${hash}' AND IsDeleted = 0`;
       expect(scalar(f.sqlite, sql), `${hash} 被清掉了`).toBe(1);
     }
-    // 软删记录按上游语义**保留**（30 天窗口内不硬删），但其数据目录已被清
+    // 软删记录按上游语义**保留**（30 天窗口内不硬删），其数据目录同样保留（ADR D29）；
+    // 目录清扫只发生在硬删（HARD 行）与孤儿（ORPHAN 目录）两处
     expect(scalar(f.sqlite, `SELECT COUNT(*) AS c FROM HistoryRecords WHERE IsDeleted = 1`)).toBeGreaterThan(0);
-    const liveDirs = new Set(
-      (f.sqlite.prepare(`SELECT Type, Hash FROM HistoryRecords WHERE IsDeleted = 0`).all() as {
+    const referencedDirs = new Set(
+      (f.sqlite.prepare(`SELECT Type, Hash FROM HistoryRecords`).all() as {
         Type: number;
         Hash: string;
       }[]).map((r) => `${r.Type === 0 ? 'Text' : 'Unknown'}_${r.Hash}/`),
     );
-    const leftovers = activeDirs(f.bucket).filter((d) => !liveDirs.has(d));
+    // 无孤儿目录残留：R2 里的每个目录都必须被**某条记录**（含回收站里的软删行）引用
+    const leftovers = activeDirs(f.bucket).filter((d) => !referencedDirs.has(d));
     expect(leftovers).toEqual([]);
     // 活跃记录的数据仍在
     expect(f.bucket.objects.has('history/Text_STAR0/STAR0.bin')).toBe(true);

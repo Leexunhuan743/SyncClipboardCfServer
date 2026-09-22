@@ -5,12 +5,13 @@ import {
   HISTORY_UPDATE_THRESHOLD_MS,
   HistoryRecordEntity,
   HistoryQueryDto,
+  HistoryRecordUpdateDto,
   ProfileType,
   ProfileTypeFilter,
   HistoryStatisticsDto,
 } from './types';
 import { fromIso } from './serialization';
-import { HistoryRecordUpdateDto } from './types';
+import { formatWorkingDirName } from './storage';
 
 // ===== 本模块负责的共享原语 =====
 // （`INT32_MIN/MAX` 不是其中之一：它们留在 src/types.ts，与其它领域常量同处 —— 见那里的注。）
@@ -104,6 +105,10 @@ function entityParams(e: HistoryRecordEntity): (string | number)[] {
 const INSERT_SQL = `INSERT INTO HistoryRecords
   (UserId, Type, Text, Size, TransferDataFile, TransferDataHash, FilePaths, Hash, CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted)
   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`;
+
+const UPDATE_ALL_SQL = `UPDATE HistoryRecords SET
+  UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, TransferDataHash=?6, FilePaths=?7, Hash=?8,
+  CreateTime=?9, LastAccessed=?10, LastModified=?11, Stared=?12, Pinned=?13, Version=?14, IsDeleted=?15`;
 
 // 仅识别 (UserId,Type,Hash) 唯一约束冲突，避免把其它 INSERT 失败误判成「并发冲突」后静默吞掉（F5 回归）。
 // D1 会把底层 SQLite 错误包一层（message 形如 "D1_ERROR: UNIQUE constraint failed: ..."），
@@ -208,15 +213,11 @@ export class HistoryDb {
     }
   }
 
-  // 全字段更新
+  // 全字段更新。15 列清单与 `entityParams` 逐位对位（位置绑定，编号错会静默写错列）；
+  // 只此一份，updateEntity 与 updateEntityIfVersion 共用，加列/调序时不会漏改一处。
   async updateEntity(entity: HistoryRecordEntity): Promise<void> {
     await this.db
-      .prepare(
-        `UPDATE HistoryRecords SET
-           UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, TransferDataHash=?6, FilePaths=?7, Hash=?8,
-           CreateTime=?9, LastAccessed=?10, LastModified=?11, Stared=?12, Pinned=?13, Version=?14, IsDeleted=?15
-         WHERE ID=?16`,
-      )
+      .prepare(`${UPDATE_ALL_SQL} WHERE ID=?16`)
       .bind(...entityParams(entity), entity.id!)
       .run();
   }
@@ -225,12 +226,7 @@ export class HistoryDb {
   // 返回 false 表示期间已被其它写入修改，调用方应按冲突处理。
   async updateEntityIfVersion(entity: HistoryRecordEntity, expectedVersion: number): Promise<boolean> {
     const res = await this.db
-      .prepare(
-        `UPDATE HistoryRecords SET
-           UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, TransferDataHash=?6, FilePaths=?7, Hash=?8,
-           CreateTime=?9, LastAccessed=?10, LastModified=?11, Stared=?12, Pinned=?13, Version=?14, IsDeleted=?15
-         WHERE ID=?16 AND Version=?17`,
-      )
+      .prepare(`${UPDATE_ALL_SQL} WHERE ID=?16 AND Version=?17`)
       .bind(...entityParams(entity), entity.id!, expectedVersion)
       .run();
     return (res.meta.changes ?? 0) > 0;
@@ -444,12 +440,14 @@ export class HistoryDb {
   // 用单条 DELETE ... RETURNING 保证「读到的集合」与「被删除的行」是同一集合：
   // 此前 SELECT + 独立 DELETE 之间有间隙，并发插入的行会被删掉却不在返回列表里，
   // 路由据此只删返回实体的 R2 目录，留下 DB 已删而 R2 残留的孤儿对象（F5）。
-  async clearAll(): Promise<HistoryRecordEntity[]> {
+  // 只 RETURNING Type/Hash（调用方只需要目录名与条数）：整行返回会把每行的大块 Text
+  // 一起读进 isolate，大库上清空一次就是数百 MB（同 `purgeDeletedRecords` 的口径）。
+  async clearAll(): Promise<{ type: ProfileType; hash: string }[]> {
     const res = await this.db
-      .prepare(`DELETE FROM HistoryRecords WHERE UserId = ?1 RETURNING *`)
+      .prepare(`DELETE FROM HistoryRecords WHERE UserId = ?1 RETURNING Type, Hash`)
       .bind(HARD_CODED_USER_ID)
-      .all<DbRow>();
-    return (res.results ?? []).map(rowToEntity);
+      .all<{ Type: number; Hash: string }>();
+    return (res.results ?? []).map((r) => ({ type: r.Type as ProfileType, hash: r.Hash }));
   }
 
   // PATCH 更新（上游 HistoryService.Update）
@@ -503,25 +501,39 @@ export class HistoryDb {
   // ===== 保留与清理（对齐上游 HistoryService 的 RemoveOutOfRetentionRecords /
   //       SetRecordsMaxCount / RemoveOutOfDateDeletedRecords / CleanOrphanedFolders）=====
 
-  // 保留期过期（未删除、未收藏、未置顶）→ **软删**并返回受影响实体。
-  // 上游 RemoveOutOfRetentionRecords → RemoveExpiredInBatchesAsync → MarkForDeletionAsync：
-  //   IsDeleted = true、Version++、LastModified = now（行保留，由 30 天硬删任务最终清理），
-  //   随后 OnRecordDeletedAsync 删数据目录并广播。排序取上游 QueryDeleteOrderBy（MAX(LastModified, LastAccessed)）。
-  async softDeleteExpiredRecords(cutoffMs: number, nowMs: number, limit: number): Promise<HistoryRecordEntity[]> {
+  // 软删最旧的一批非收藏/非置顶记录（上游 RemoveOutOfRetentionRecords / SetRecordsMaxCount 共用
+  // 同一个 `QueryDeleteOrderBy` = MAX(LastModified, LastAccessed)）。**单份 SQL 两种形态**：
+  // `?2 IS NULL` 时不做保留期过滤（trim），否则按过期时间过滤（retention）—— 占位符编号因此
+  // 不随形态漂移，软删判据（豁免列 + 排序键）只此一份，将来加豁免列不会漏改一条路径。
+  private async softDeleteOldest(
+    userId: string,
+    cutoffMs: number | null,
+    nowMs: number,
+    limit: number,
+  ): Promise<HistoryRecordEntity[]> {
     const res = await this.db
       .prepare(
         `UPDATE HistoryRecords SET IsDeleted = 1, Version = Version + 1, LastModified = ?3
          WHERE ID IN (
            SELECT ID FROM HistoryRecords
            WHERE UserId = ?1 AND IsDeleted = 0 AND Stared = 0 AND Pinned = 0
-             AND LastModified < ?2 AND LastAccessed < ?2
+             AND (?2 IS NULL OR (LastModified < ?2 AND LastAccessed < ?2))
            ORDER BY MAX(LastModified, LastAccessed) ASC, ID ASC
            LIMIT ?4
          ) RETURNING *`,
       )
-      .bind(HARD_CODED_USER_ID, cutoffMs, nowMs, limit)
+      .bind(userId, cutoffMs, nowMs, limit)
       .all<DbRow>();
     return (res.results ?? []).map(rowToEntity);
+  }
+
+  // 保留期过期（未删除、未收藏、未置顶）→ **软删**并返回受影响实体。
+  // 上游 RemoveOutOfRetentionRecords → RemoveExpiredInBatchesAsync → MarkForDeletionAsync：
+  //   IsDeleted = true、Version++、LastModified = now（行保留，由 30 天硬删任务最终清理），
+  //   随后 OnRecordDeletedAsync 删数据目录并广播。**本实现不删数据目录**（ADR D29：回收站要能
+  //   连数据拿回来），只广播；目录由 30 天硬删阶段批量清扫。差异登记在 docs/protocol.md §10。
+  async softDeleteExpiredRecords(cutoffMs: number, nowMs: number, limit: number): Promise<HistoryRecordEntity[]> {
+    return this.softDeleteOldest(HARD_CODED_USER_ID, cutoffMs, nowMs, limit);
   }
 
   // 活跃记录数（未删除）
@@ -535,34 +547,25 @@ export class HistoryDb {
 
   // 超量裁剪：软删最旧的非收藏/非置顶记录（上游 SetRecordsMaxCount → QueryDeleteOrderBy = MAX(LastModified, LastAccessed)）
   async trimToMaxCount(limit: number, nowMs: number): Promise<HistoryRecordEntity[]> {
-    const res = await this.db
-      .prepare(
-        `UPDATE HistoryRecords SET IsDeleted = 1, Version = Version + 1, LastModified = ?2
-         WHERE ID IN (
-           SELECT ID FROM HistoryRecords
-           WHERE UserId = ?1 AND IsDeleted = 0 AND Stared = 0 AND Pinned = 0
-           ORDER BY MAX(LastModified, LastAccessed) ASC, ID ASC
-           LIMIT ?3
-         ) RETURNING *`,
-      )
-      .bind(HARD_CODED_USER_ID, nowMs, limit)
-      .all<DbRow>();
-    return (res.results ?? []).map(rowToEntity);
+    return this.softDeleteOldest(HARD_CODED_USER_ID, null, nowMs, limit);
   }
 
-  // 已删除记录硬删（上游固定 30 天）
-  async hardDeleteOldDeletedRecords(cutoffMs: number, limit: number): Promise<HistoryRecordEntity[]> {
+  // 已删除记录硬删（上游固定 30 天）。
+  // 只 RETURNING Type/Hash：硬删阶段不广播，行只需要用来拼数据目录名做清扫 ——
+  // 全行返回会把每条记录的大块 Text 一起读进 isolate（1000 行/批，真 OOM 风险），
+  // `purgeDeletedRecords`（用户清空回收站）已经是这个口径。
+  async hardDeleteOldDeletedRecords(cutoffMs: number, limit: number): Promise<{ type: ProfileType; hash: string }[]> {
     const res = await this.db
       .prepare(
         `DELETE FROM HistoryRecords WHERE ID IN (
            SELECT ID FROM HistoryRecords
            WHERE UserId = ?1 AND IsDeleted = 1 AND LastModified < ?2
            LIMIT ?3
-         ) RETURNING *`,
+         ) RETURNING Type, Hash`,
       )
       .bind(HARD_CODED_USER_ID, cutoffMs, limit)
-      .all<DbRow>();
-    return (res.results ?? []).map(rowToEntity);
+      .all<{ Type: number; Hash: string }>();
+    return (res.results ?? []).map((r) => ({ type: r.Type as ProfileType, hash: r.Hash }));
   }
 
   // 活记录的工作目录集合，用于孤儿对象判定。
@@ -582,7 +585,8 @@ export class HistoryDb {
       .prepare(`SELECT Type, Hash FROM HistoryRecords WHERE UserId = ?1`)
       .bind(HARD_CODED_USER_ID)
       .all<{ Type: number; Hash: string }>();
-    return new Set((res.results ?? []).map((r) => `${ProfileType[r.Type as ProfileType]}_${r.Hash}/`));
+    // 目录名格式与 storage.ts 的 `formatWorkingDirName` 同源（F33：形式不一致 = 每小时清空一次 history/）
+    return new Set((res.results ?? []).map((r) => formatWorkingDirName(r.Type as ProfileType, r.Hash)));
   }
 
   // ===== Meta（当前剪贴板 Profile / 清理进度）=====

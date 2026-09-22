@@ -26,13 +26,20 @@ function assertHashForPath(hash: string): void {
   }
 }
 
+// 工作目录名（`{Type}_{hash}/`）的**纯格式化**（不带断言、不带前缀）。
+// 孤儿判定的参照集（`db.listReferencedWorkingDirs`）也用它拼目录名 —— 几处集合比较必须同构，
+// 形式不一致会让比较恒不命中（历史上正是这类不一致导致每小时清空一次 history/，见 F33），
+// 所以目录名格式只此一份。
+export function formatWorkingDirName(type: ProfileType, hash: string): string {
+  return `${ProfileType[type]}_${hash}/`;
+}
+
 // 工作目录名（`{Type}_{hash}/`）。**不带 `history/` 前缀** —— 与 `listHistoryObjectsByDir()` 分组后的
-// 目录键、`db.listReferencedWorkingDirs()` 的产物保持同一形式：几处集合比较
-// 必须同构，形式不一致会让比较恒不命中（历史上正是这类不一致导致每小时清空一次 history/，见 F33）。
+// 目录键、`db.listReferencedWorkingDirs()` 的产物保持同一形式（见 formatWorkingDirName 的说明）。
 // 需要构造完整 key/前缀时用 `workingDirPrefix()`（= `history/` + 本函数）。
 export function workingDirName(type: ProfileType, hash: string): string {
   assertHashForPath(hash);
-  return `${ProfileType[type]}_${hash}/`;
+  return formatWorkingDirName(type, hash);
 }
 
 // 带 `history/` 前缀的完整工作目录前缀（R2 key 构造与前缀清理用）
