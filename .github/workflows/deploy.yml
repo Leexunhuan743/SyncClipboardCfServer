@@ -255,6 +255,15 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # 已有库加列（幂等；schema.sql 的 CREATE IF NOT EXISTS 对老库不生效，见 tools/migrate-d1.mjs）。
+      # ⚠️ 顺序硬依赖：新代码的 INSERT/UPDATE 会写 TransferDataHash 这一列，列不存在 ⇒ 部署后每次写库都失败，
+      # 所以必须先迁移再 Deploy Worker。
+      - name: Migrate D1 (idempotent)
+        run: node tools/migrate-d1.mjs --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Resolve deploy switches
         id: switches
         # 把「仓库变量（Settings → Secrets and variables → Actions → Variables）」解析成**有效的部署开关**，

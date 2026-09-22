@@ -32,6 +32,8 @@
   "text": "…",             // Text=内容；File/Image=文件名；Group=路径列表(\r\n 分隔)
   "hasData": false,
   "dataName": null,        // null 时保留字段
+  "transferDataHash": null,// 上游 3.3.0 #413：传输数据文件的声明 SHA-256（64 位 hex，统一大写）；
+                           // null 时省略（WhenWritingNull）——只作校验输入，不落进 Profile 实体
   "size": 123              // null 时省略
 }
 ```
@@ -189,7 +191,7 @@
 | GET | `/api/time` | 200，ISO8601 当前时间（UTC） |
 | GET | `/api/version` | 200，纯文本版本号（须 ≥ 3.1.1） |
 | GET | `/api/history/{profileId}` | `profileId` 格式 `Type-Hash`；解析失败 → 400 `"Invalid profileId format. Expected format: 'Type-Hash'"`；不存在 → 404；成功 → HistoryRecordDto |
-| GET | `/api/history/{profileId}/data` | 按记录取数据文件。**profileId 解析失败也返回 404**（上游此端点不自行校验格式，而是 `GetTransferDataFileByProfileId` 返回 null）；无数据 → 404；**记录里 hash 含路径分隔符的坏行（只能带外写入，本实现构造不出 R2 key）同样 404**（2026-09-20：此前会让 storage 层的断言抛成 500，而上游在同样的数据上是 404 —— 属对齐）；成功 → 二进制 + `Content-Disposition`（文件名） |
+| GET | `/api/history/{profileId}/data` | 按记录取数据文件。**profileId 解析失败也返回 404**（上游此端点不自行校验格式，而是 `GetTransferDataByProfileId` 返回 null）；无数据 → 404；**「有数据但取不到」→ 422**（上游 3.3.0 #413：`LocalProfileDataUnavailable` → `HistoryTransferDataException` → `History transfer data is invalid`；含记录里 hash 含路径分隔符的坏行（只能带外写入，本实现构造不出 R2 key，2026-09-20 起不再让 storage 断言 500）与 R2 对象缺失两类）；成功 → 二进制 + `Content-Disposition`（文件名）+ **`X-SyncClipboard-Transfer-Data-Hash`**（仅当已知且合法；迁移前入库的记录不带 ⇒ 客户端跳过校验） |
 | POST | `/api/history/query` | §3.4 过滤 + 分页，返回 `HistoryRecordDto[]` |
 | POST | `/api/history` | multipart 上传，见 §5.1 |
 | PATCH | `/api/history/{type}/{hash}` | 部分更新，见 §5.2 |
@@ -271,8 +273,14 @@ public static string GetWorkingDirName(ProfileType type, string hash)
     - 返回服务器当前记录 dto（200）。
   - 记录不存在：
     - 有 data → 写 `history/…` 并校验（`SaveTransferDataAsync`，校验失败 → **422**，见 §8.3；成功后用持久化结果回填实体字段）。
-    - 校验本地数据有效（`IsLocalDataValid(true)` 语义，失败 → 400 `"Needs tranfer data."`）。
+    - **无 data → 严格校验**（上游 3.3.0 #413 把 `IsLocalDataValid(true)` 收紧为
+      `IsLocalDataValid(false)`：Text = 内联全文哈希 == 声明 hash；File/Image/Group 没有内联数据 ⇒ 一律拒绝），
+      失败 → 400 `"Local data is missing or does not match the profile hash."`（**旧文案 `Needs tranfer data.`
+      只保留在「既有记录、无 data」的 EnsureExistingRecordData 路径上**）。
     - 入库、广播、返回记录 dto（200）。
+- **可选请求头 `X-SyncClipboard-Transfer-Data-Hash`**（上游 3.3.0 #413）：声明 multipart `data` 部分的
+  SHA-256。形状错误（无 data 却带头 / 重复值 / 非 64 位 hex）→ 400；与文件实际哈希不符 → 422
+  （本实现沿用该路径既有映射；上游是 400，见 §10）。头缺失 = 旧客户端行为，不受影响。
 - 请求体的媒体类型（对齐上游：该 action 有显式 `[Consumes("multipart/form-data")]`）：
   非 `multipart/form-data` → **415**（模型绑定之前就被拒，不是 400）；是 multipart 但缺 boundary → 400。
   `POST /api/history/query`（§5.3）不同：上游只有 `[FromForm]`，故它也接受
@@ -412,8 +420,10 @@ gap >  5 分钟 → newLastModified >= oldLastModified 则更新
 | 大文本带 transfer data | `SHA256hex(文件字节)`（= UTF-8 全文字节哈希，与 inline 公式对同一全文等价） | 全文字符数（`dto.Size` 优先，缺失时读文件 `.Length`） |
 | 服务端接收数据文件校验 | `SetTransferData(verify:true)` 按**文件字节** SHA256 与 `Hash` 比较 | — |
 
-> 服务端 `AddNewRecordDto` 的 `IsLocalDataValid(quick)`：`HasTransferData = TransferDataFile 非空 || Size > Text.Length`；
-> 为真但数据文件缺失 → **400 `Needs tranfer data.`**（本实现按此判定，非对 Text 恒 true）。
+> 服务端 `AddNewRecordDto` 的校验（上游 3.3.0 #413 起为 `IsLocalDataValid(quick:false)`）：
+> `HasTransferData = TransferDataFile 非空 || Size > Text.Length`，为真但数据文件缺失 → **拒绝**。
+> 新建记录、无 data 的失败文案是 `Local data is missing or does not match the profile hash.`
+> （旧文案 `Needs tranfer data.` 只保留在「既有记录、无 data」路径上）。
 
 ### 8.2 File / Image（`上游:Shared/Profiles/FileProfile.cs:CombineHash/GetSHA256HashFromFile`）
 
@@ -462,7 +472,8 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | SignalR 传输 | WebSockets + SSE + LongPolling | 三种均实现，宣告顺序与格式表逐字对齐 | — |
 | 磁盘布局 | 本地文件系统 | R2 对象存储 | 对外不可见，语义等价 |
 | 并发 | 单进程信号量串行（`HistoryService.cs:19` 的 `_processSem`，**static ⇒ 仅同进程有效**）；`Update`（`:33-83`）与 `AddProfile`（`:182-209`）都是「读 → 判定 → 写」，`SaveChangesAsync` **无条件覆盖**；DB 层**无** `(UserId,Type,Hash)` 唯一约束（`Migrations/20251105014242_Init.cs:40-43` 只有主键） | ① `(UserId,Type,Hash)` **UNIQUE 索引**（`schema.sql:35`），并发抢先插入转为确定的合并路径（`src/db.ts:151-182`、`src/profile.ts:336-338`）；② `updateEntityIfVersion`（`src/db.ts:199-210`）`UPDATE … WHERE ID=?15 AND Version=?16`，按受影响行数判定冲突 → 409 | **有意义偏离**（不只是"实现不同"）：上游这两点只有在**多进程/多副本共享同一个 `history.db`** 时才显现 —— 无唯一约束 ⇒ 同 hash 插出重复行（此后 `FirstOrDefaultAsync` 不保证取到哪一行，`GetRecentTransferFile` 的逐条回退会让客户端反复取到"另一行"的数据文件）；无版本条件更新 ⇒ 两个并发 PATCH 各自通过 `ShouldUpdate` 后静默覆盖，而客户端 `OfficialAdapter.cs:323-337` 恰恰**依赖 409** 发现冲突并重试。上游有过一次同主题修复（`e79a18d6`「修复：数据库并发问题」，在基线之前），但只在客户端侧处理。逐条对照见 `docs/upstream-defects.md` Q17/D2 与 `upstream-issues.md` Issue 14 |
-| `/api/history/statistics.totalFileSizeMB` | 遍历本地目录 | 按 R2 对象 size 求和 | 等价（R2 list 最终一致，存在短暂窗口） |
+| 传输数据 SHA-256（上游 3.3.0 #413） | `HistoryRecords.TransferDataHash` 列 + `POST /api/history` 可选请求头 `X-SyncClipboard-Transfer-Data-Hash` + `GET …/data` **回带同头** + 「有数据但取不到」由 404 改 **422**（ProblemDetails `History transfer data is invalid` / `code:"history_data_invalid"`）+ `PrepareTransferData` 对旧记录**惰性回填**哈希 | 同列同头同 422（错误体沿用本实现纯文本约定，状态码一致）；**不做惰性回填** —— 迁移前入库的记录哈希为 `''` ⇒ `/data` **不带**该头、客户端据此跳过校验（上游回填需把对象整体读进内存，代价不成比例；新上传的记录都带） | 兼容性：3.3.0 客户端两个入口都按「可选」处理（头缺失 ⇒ 跳过校验），旧记录与其旧客户端行为不变 |
+| `POST /api/history` 的**声明头形状**（上游 3.3.0 #413） | 无 data 却带头 → 400 `… cannot be set without transfer data`；重复值 → 400 `… must contain exactly one value`；非 64 位 hex → 400 `Hash must be a 64-character SHA-256 hex string. (Parameter 'hash')`；**头与文件不符 → 400** | 前三者同左（逐字）；**头与文件不符 → 422**（沿用本实现该路径既有的「数据/哈希不符 ⇒ 422」映射，见下行） | 官方客户端对 422/400 都走失败分支；差异已在 §10 的 `POST /api/history 400/422` 行登记 |
 | 缓存 | `IMemoryCache` + 显式失效，但**失效语句用的 key 与读写的 key 不是同一个**：`SyncClipboardController.cs:118` 是 `_cache.Remove("SyncClipboard.json")`（字面量），而 `:126/136/148/152/226` 读写的是 `cacheKey = profilePath`（绝对路径）⇒ 失效**从未生效**；且 `_cache.Set` 无任何过期策略 ⇒ 进程外改动（共享卷、手工修复 `server/SyncClipboard.json`、备份恢复）后长期返回内存旧值 | 无缓存（D1/R2 直读，`src/routes/webdav.ts:69-102`） | **更强一致**（不只是"策略不同"）：上游那两条各自都会造成"看到过期的当前剪贴板"，本实现结构性不存在该故障；代价是每次 GET 一次 D1 读（单用户场景可忽略）。逐条对照见 `docs/upstream-defects.md` Q16 与 `upstream-issues.md` Issue 8 |
 | 保留/清理 | `HistoryCleaner` 三类后台任务（10min / 12h / 12h），软删单批 500、无批次上限 | Cron Trigger **每 20 分钟**批量执行同类语义；软删单批 **500**（对齐上游）、受单次调用子请求预算截断并以游标续跑 | 等价（周期 20min vs 10min；批一致；软删/硬删/孤儿判定与广播一致。差异只在"积压收敛速度"与平台预算机制，见 design.md §9） |
 | 软删（`isDelete:true`）对**数据文件**的处置 | **立即删除**工作目录：`HistoryService.cs:80` 的 `DeleteProfileDataIfNeed` → `DeleteProfileData`（`IsDeleted` 为真就删）。**三条写路径都是这个语义**：`PATCH /api/history/{type}/{hash}`（`:80` 的 `Update`）、`POST /api/history` 的既有记录分支（`:328` 的 `UpdateExistingRecordDto`）与新增分支（`:387` 的 `AddNewRecordDto`） | **保留**：数据留到"真的没了"那一刻 —— 30 天硬删（Cron 的 hardDelete 阶段，批次清扫）或用户点「彻底删除」/「清空回收站」时才清。**三条写路径一致保留**（`historyOps.applyHistoryUpdate` 与 `profile.addRecordDto` 都不再调 `DeleteProfileDataIfNeed` 的等价逻辑）。推论：`GET /api/history/{type}/{hash}/data` 对已删记录从 404 变 **200**（回收站里的图片因此能预览） | **有意偏离**（2026-09-22，ADR D29）：上游那条语义让"回收站"对**图片/文件**变成单向门。代价是多占 ≤30 天 R2 空间（$0.015/GB/月；「彻底删除」可立刻释放）。对官方客户端**只更好**：恢复后它照常把数据下回来（`RemoteHistoryChanged` 带 DTO，客户端见 `!IsLocalFileReady` 即 `EnqueueDownload`） |

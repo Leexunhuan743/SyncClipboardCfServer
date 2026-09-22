@@ -52,6 +52,10 @@ export class ProfileDataInvalidError extends Error {
 
 export interface PersistedData {
   hash: string;
+  /** 传输数据文件（R2 对象）的 SHA-256，大写 hex —— 与 `hash`（Profile 哈希）**不是同一个值**
+   * （`fileProfileHash` 是 `sha256(fileName|contentHash)`、Group 是条目哈希）。上游 3.3.0 的
+   * `TransferDataHash` 列存的就是它。 */
+  transferDataHash: string;
   text: string;
   size: number;
   transferDataFile: string; // 相对工作目录的文件名（= R2 history key 的末段）
@@ -133,6 +137,8 @@ export async function validateAndPersistData(
     const hash = await textProfileHashOf(content, dto.hash);
     const persisted: PersistedData = {
       hash,
+      // 传输文件的 SHA-256 = 同一份字节的哈希（textProfileHashOf 已算过，复用）
+      transferDataHash: hash,
       text: dto.text,
       // 上游 TextProfile.Persist：Size = GetSize()，即 dto.Size 优先，缺失时才按全文长度计算
       // （UTF-16 字符数），不是文件的 UTF-8 字节数（F11）
@@ -153,7 +159,14 @@ export async function validateAndPersistData(
     await storage.putHistory(type, hash, dataName, content);
     // 上游 FileProfile(dto).Size = dto.Size 且 GetSize 对非 null 的 Size 直接返回（不再按文件测量）：
     // 声明值优先，缺失时才回退到内容长度（F11）
-    return { hash, text: dataName, size: dto.size ?? content.length, transferDataFile: dataName, filePaths: [dataName] };
+    return {
+      hash,
+      transferDataHash: await sha256Hex(content),
+      text: dataName,
+      size: dto.size ?? content.length,
+      transferDataFile: dataName,
+      filePaths: [dataName],
+    };
   }
 
   if (type === ProfileType.Group) {
@@ -170,7 +183,14 @@ export async function validateAndPersistData(
     const text = topLevel.join('\n');
     await storage.putHistory(type, hash, dataName, content, 'application/zip');
     // 上游 Group 的 Size = 解压后条目长度之和，不是 zip 体积（F11）
-    return { hash, text, size: totalSize, transferDataFile: dataName, filePaths: topLevel };
+    return {
+      hash,
+      transferDataHash: await sha256Hex(content),
+      text,
+      size: totalSize,
+      transferDataFile: dataName,
+      filePaths: topLevel,
+    };
   }
 
   throw new ProfileDataInvalidError(`Unsupported profile type: ${ProfileType[type]}`);
@@ -239,6 +259,10 @@ export async function putSyncProfile(
   // CreateAndSaveNewProfile 分支：上游 `Profile.Create(dto)` 会把 File+图片扩展名提升为 Image，
   // 落库类型随之改变；但上面的既有记录查询用的是 **原始 dto.Type**（上游 GetExistingProfileAsync
   // 在 Create 之前调用），故这里只在创建分支使用提升后的类型。
+  // 上游 3.3.0 #413：`TransferDataHash` 只能在 `hasData=true` 时声明，否则是自相矛盾的请求。
+  if (!dto.hasData && dto.transferDataHash !== null && dto.transferDataHash !== undefined) {
+    throw new BadRequestError('TransferDataHash cannot be set when HasData is false');
+  }
   const createDto: ProfileDto = { ...dto, type: resolveCreateProfileType(dto) };
   let persisted: PersistedData | null = null;
   if (dto.hasData) {
@@ -260,6 +284,15 @@ export async function putSyncProfile(
     }
     const content = new Uint8Array(await temp.arrayBuffer());
     try {
+      // 上游 3.3.0 #413：`ProfileDto.TransferDataHash`（可选）声明的是**传输数据文件的 SHA-256**。
+      // 声明了就必须与暂存文件的实际字节一致（不符 ⇒ 400，与上游 catch 同文案）；
+      // 没声明则跳过 —— 旧客户端不受影响。
+      if (dto.transferDataHash !== null && dto.transferDataHash !== undefined) {
+        const actual = await sha256Hex(content);
+        if (!hashEquals(dto.transferDataHash, actual)) {
+          throw new ProfileDataInvalidError('Hash is not match data.');
+        }
+      }
       persisted = await validateAndPersistData(storage, createDto, fileName, content);
     } catch (err) {
       // 上游 catch 全部异常 → BadRequest("Hash is not match data.")
@@ -270,15 +303,12 @@ export async function putSyncProfile(
     await storage.deleteTemp(fileName);
   }
 
-  // File/Image/Group 必须有传输数据：上游这些 Profile 的 Persist() 在没有数据时抛异常
-  // （FileProfile: "Cannot persist a FileProfile with no data."；GroupProfile:
-  // "No local data available to prepare persistent storage."），请求被拒绝。
-  // 此前本实现静默入库 → 写入一条永远取不到数据的坏记录，并把当前 profile 也污染成
-  // 无数据形态（客户端拉到后反复重试下载 404）。这里明确拒绝（400 而非上游的未处理异常 500）。
-  if (!persisted && createDto.type !== ProfileType.Text) {
-    throw new BadRequestError(
-      `Transfer data is required for ${ProfileType[createDto.type]} profile`,
-    );
+  // File/Image/Group 必须有传输数据；Text 可以只有内联文本，但**必须**与声明哈希一致（严格校验）。
+  // 上游 3.3.0（#413）把这条从「Persist 抛异常被 catch 成 400 `Hash is not match data.`」改为
+  // `!HasData && !IsLocalDataValid(false)` ⇒ 400 `Inline data does not match the profile hash.`
+  // （TextProfile.IsLocalDataValid(quick:false) = 内联全文哈希 == Hash）。
+  if (!dto.hasData && !(await isInlineDataValid(createDto))) {
+    throw new BadRequestError('Inline data does not match the profile hash.');
   }
 
   const entity = await addProfile(db, createDto, persisted, now, notify.notifyHistory);
@@ -309,6 +339,7 @@ async function addProfile(
     // 上游 TextProfile(dto) 的 Size 来自 dto.Size，而非硬编码 0（F11）
     size: persisted?.size ?? dto.size ?? defaultInlineSize(dto),
     transferDataFile: persisted?.transferDataFile ?? '',
+    transferDataHash: persisted?.transferDataHash ?? '',
     filePaths: persisted?.filePaths ?? [],
     hash: (persisted?.hash ?? dto.hash ?? '').toUpperCase(),
     createTime: now,
@@ -346,6 +377,7 @@ async function mergeExistingProfile(
   existing.lastModified = now;
   if (persisted) {
     existing.transferDataFile = persisted.transferDataFile;
+    existing.transferDataHash = persisted.transferDataHash;
     existing.filePaths = persisted.filePaths;
     existing.text = persisted.text;
     existing.size = persisted.size;
@@ -381,17 +413,21 @@ export async function addRecordDto(
   incoming: IncomingRecord,
   content: Uint8Array | null,
   notify: NotifyHandlers,
+  /** 请求头 `X-SyncClipboard-Transfer-Data-Hash` 的声明值（已归一化、大写；null = 客户端未声明）。
+   *  上游 3.3.0 #413：声明值与文件实际 SHA-256 不符 ⇒ 拒绝（本实现沿用该路径既有映射：422）。 */
+  declaredTransferDataHash: string | null = null,
 ): Promise<HistoryRecordDto> {
   const existing = await db.getByTypeAndHash(incoming.type, incoming.hash);
   if (existing) {
     // UpdateExistingRecordDto
     if (existing.isDeleted) {
       if (content) {
-        const persisted = await saveTransferData(db, storage, existing, content); // 失败 → ProfileDataInvalidError（422）
+        const persisted = await saveTransferData(db, storage, existing, content, declaredTransferDataHash); // 失败 → ProfileDataInvalidError（422）
         // 补数据后确保记录指向实际写入位置（正常场景复用旧名、路径不变；
         // 同时覆盖记录原本无名字的异常场景，避免复活后 /data 404）
         if (existing.transferDataFile !== persisted.transferDataFile) {
           existing.transferDataFile = persisted.transferDataFile;
+          existing.transferDataHash = persisted.transferDataHash;
           existing.filePaths = persisted.filePaths;
           await db.updateEntity(existing);
         }
@@ -446,20 +482,20 @@ export async function addRecordDto(
   };
 
   if (content) {
-    const persisted = await saveTransferData(db, storage, entity, content); // 失败 → 422
+    const persisted = await saveTransferData(db, storage, entity, content, declaredTransferDataHash); // 失败 → 422
     entity.text = persisted.text;
     entity.size = persisted.size;
     entity.hash = persisted.hash;
     entity.transferDataFile = persisted.transferDataFile;
+    entity.transferDataHash = persisted.transferDataHash;
     entity.filePaths = persisted.filePaths;
   }
 
-  if (!(await isLocalDataValid(db, storage, entity))) {
-    // ⚠️ `tranfer` 是**上游的拼写**，不是笔误：这条 400 文案是逐字复刻的协议契约
-    // （见 docs/upstream-parity.md 的「状态码/文案」条目、docs/protocol.md §5.1 与 §8.1 ——
-    // 按**节名**引用而不是行号：§3 是 DTO 定义，文案并不在那里），
-    // 改成正确拼写就会变成一处新的协议偏离；test/fixes.test.ts 也是按这个串断言的。
-    throw new BadRequestError('Needs tranfer data.');
+  if (content === null && !(await isLocalDataValidStrict(storage, entity))) {
+    // 上游 3.3.0 #413 把新建记录的无 data 分支从 `IsLocalDataValid(true)` 收紧为
+    // `IsLocalDataValid(false)`，文案也从 `Needs tranfer data.` 换成这条（见 AddNewRecordDto）。
+    // 收紧的语义：Text 记录的内联全文哈希必须等于声明 Hash；File/Image/Group 没有数据文件 ⇒ 一律拒绝。
+    throw new BadRequestError('Local data is missing or does not match the profile hash.');
   }
 
   const inserted = await db.insert(entity);
@@ -475,15 +511,12 @@ async function saveTransferData(
   storage: R2Storage,
   entity: HistoryRecordEntity,
   content: Uint8Array,
+  declaredTransferDataHash: string | null = null,
 ): Promise<PersistedData> {
   if (entity.type === ProfileType.Text) {
-    return await saveTextTransferData(storage, entity, content);
+    return await saveTextTransferData(storage, entity, content, declaredTransferDataHash);
   }
-
-  // 写入文件名（上游 NeedsTransferData）：
-  //   File/Image：{entity.text}（multipart text = 文件名）
-  //   Group：复用实体已有 _transferDataName（上游 `_transferDataName ?? CreateNewDataFileName()`），
-  //         否则已删除记录带 data 重传时会写到新随机名，记录仍指向旧名 → /data 404 且留下孤儿对象
+  // …（File/Image/Group 共用 validateAndPersistWithName；声明的传输数据哈希在下面统一校验）
   let fileName: string;
   if (entity.type === ProfileType.Group) {
     fileName = entity.transferDataFile ? basename(entity.transferDataFile) : createNewGroupDataFileName();
@@ -495,13 +528,19 @@ async function saveTransferData(
   }
 
   try {
-    return await validateAndPersistWithName(
+    const persisted = await validateAndPersistWithName(
       storage,
       entity.type,
       fileName,
       content,
       entity.hash,
     );
+    // 上游 3.3.0 #413：客户端可在请求头里声明传输数据文件的 SHA-256，服务端必须核对。
+    // 这里**没有**头 ⇒ null，直接返回（旧客户端不受影响）。
+    if (declaredTransferDataHash !== null && !hashEquals(declaredTransferDataHash, persisted.transferDataHash)) {
+      throw new ProfileDataInvalidError('Hash is not match data.');
+    }
+    return persisted;
   } catch (err) {
     if (err instanceof ProfileDataInvalidError) throw err;
     throw new ProfileDataInvalidError(err instanceof Error ? err.message : String(err));
@@ -517,6 +556,7 @@ async function saveTextTransferData(
   storage: R2Storage,
   entity: HistoryRecordEntity,
   content: Uint8Array,
+  declaredTransferDataHash: string | null = null,
 ): Promise<PersistedData> {
   const declared = entity.hash.toUpperCase();
   if (declared) {
@@ -533,6 +573,10 @@ async function saveTextTransferData(
       `Transfer data file content does not match the text hash. Expected: ${declared}, Actual: ${hash}`,
     );
   }
+  // 上游 3.3.0 #413：请求头里声明的传输数据哈希同样要核对（没有头 ⇒ null，跳过）
+  if (declaredTransferDataHash !== null && !hashEquals(declaredTransferDataHash, hash)) {
+    throw new ProfileDataInvalidError('Hash is not match data.');
+  }
   // 文件名复用实体已有名（上游 `_transferDataName ?? $"{Type}_{CreateTimeBasedFileName()}.txt"`）：
   // 否则已删除记录带 data 重传会写新随机名、记录仍指向旧名 → /data 404 + 孤儿对象（同 B1/Group）
   const fileName = entity.transferDataFile
@@ -541,6 +585,8 @@ async function saveTextTransferData(
   await storage.putHistory(entity.type, hash, fileName, content, 'text/plain');
   return {
     hash,
+    // 同一份字节的 SHA-256 —— 上面已经算过，不要重复算
+    transferDataHash: hash,
     text: entity.text, // 内联截断文本保持不变（上游 _text）
     // 上游 POST 路径的 Size 口径：`HistoryService.ParseLong(metadata,"size")` → 0（缺失/非法时），
     // 存入实体后 `TextProfile(ProfilePersistentInfo)` 赋值 `Size = entity.Size`
@@ -569,7 +615,15 @@ async function validateAndPersistWithName(
     // 上游 POST 路径此处**忽略 dto.Size**：`FileProfile(ProfilePersistentInfo)` 不设置 Size
     // （保持 null）→ Persist 时 `GetSize()` 走 ComputeSize → `FileInfo(FullPath).Length`，
     // 即实际写入的字节数。（PUT 路径相反：`FileProfile(ProfileDto)` 会带上 dto.Size，故那边优先声明值。）
-    return { hash, text: fileName, size: content.length, transferDataFile: fileName, filePaths: [fileName] };
+    return {
+      hash,
+      // 传输文件的 SHA-256 是**原样字节**的哈希，与上面的 `hash`（= fileProfileHash）不同
+      transferDataHash: await sha256Hex(content),
+      text: fileName,
+      size: content.length,
+      transferDataFile: fileName,
+      filePaths: [fileName],
+    };
   }
 
   if (type === ProfileType.Group) {
@@ -588,7 +642,15 @@ async function validateAndPersistWithName(
     const text = topLevel.join('\n');
     await storage.putHistory(type, hash, fileName, content, 'application/zip');
     // Size = 解压后条目长度之和（上游 totalSize），不是 zip 体积（F11）
-    return { hash, text, size: totalSize, transferDataFile: fileName, filePaths: topLevel };
+    return {
+      hash,
+      // zip **字节**的 SHA-256 ≠ 条目哈希（groupHashFromEntries）
+      transferDataHash: await sha256Hex(content),
+      text,
+      size: totalSize,
+      transferDataFile: fileName,
+      filePaths: topLevel,
+    };
   }
 
   throw new ProfileDataInvalidError(`Unsupported profile type: ${ProfileType[type]}`);
@@ -614,6 +676,28 @@ async function isLocalDataValid(
   if (!obj) return false;
   if (entity.type === ProfileType.Group && entity.filePaths.length === 0) return false;
   return true;
+}
+
+// 严格校验（上游 `IsLocalDataValid(quick: false)`，仅服务于「POST 新建记录、无 data」这一处）。
+// 语义按上游 3.3.0：Text = 内联全文哈希必须等于声明 Hash；File/Image/Group 没有可用的本地数据
+// （新建记录此时还没有数据文件）⇒ false。
+async function isLocalDataValidStrict(
+  _storage: R2Storage,
+  entity: HistoryRecordEntity,
+): Promise<boolean> {
+  if (entity.type !== ProfileType.Text) return false;
+  // 上游 `IsInMemoryTextValid`：`Hash is not null && !SHA256Same(...)` 才判失败 ⇒ **空 hash 视为有效**
+  // （服务端会为它计算哈希，见 F11；这也正是 PUT {"size":5} 这类"无 hash 的 inline Text"能落库的前提）。
+  if (!entity.hash) return true;
+  return hashEquals(await textProfileHash(entity.text), entity.hash);
+}
+
+// PUT /SyncClipboard.json 的无 data 分支（上游 `CreateAndSaveNewProfile` 的 `IsLocalDataValid(false)`）：
+// Text = 内联全文哈希 == 声明 Hash（空 hash 视为有效，同上）；其余类型没有内联数据 ⇒ false（要 data 文件）。
+async function isInlineDataValid(dto: ProfileDto): Promise<boolean> {
+  if (dto.type !== ProfileType.Text) return false;
+  if (!dto.hash) return true;
+  return hashEquals(await textProfileHash(dto.text), dto.hash);
 }
 
 // 已删除记录的本地数据校验（上游 EnsureExistingRecordData）

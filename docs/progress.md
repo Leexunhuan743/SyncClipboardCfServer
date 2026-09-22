@@ -11262,4 +11262,51 @@ JS 未动（护栏本来就在 CSS 里，`syncHeaderCollapse()` 从不看选择�
 - 判据：探针新增 `RETENTION-NOTE` —— 在**打开着的**部署信息对话框里找到那段文案，并确认它
   `display`/`visibility` 正常、矩形非零（**字在但不可见**也算没写）。
 
+## 162. 对齐上游 3.3.0-beta1：版本号 / 保留期默认 0 / 传输数据 SHA-256 / POST 严格校验（2026-09-22）
+
+上游 `../SyncClipboard` 从基线 `28c7e596` 前进到 `984d3463`（12 笔），其中 6 笔碰到服务端。本轮把有影响的部分全部对齐
+（四个选择均由用户逐条确认：**都跟上游**）。
+
+**1. 版本号 → `3.3.0-beta1`**（上游 #435）：`Directory.Build.props` 的 `VersionPrefix` 3.3.0 + `VersionSuffix` beta1。
+`wrangler.toml` 的 `VERSION`、README、protocol §10 取值行、design ADR D7/§10、AGENTS §4 基线行、upstream-parity 头部的增补说明
+全部同步（同一事实散在 6 处）。实测 `/api/version` 体逐字为 `3.3.0-beta1`。
+
+**2. 保留期默认 10080 → 0 = 不限制**（上游 #402/#426）：`Changes.md` 的「服务器」段写明「默认值为 0，表示不限制保留时长」。
+只改默认值会漏掉三件连带事，都做了：
+- **来源第三档 `'default'`**（`src/cleanup.ts`）：默认值变成 0 之后，「Meta 与 env 都没设」这一态**会**真的关掉保留期阶段
+  ⇒ `RetentionSource` 扩成 `'meta' | 'env' | 'default'`、`DISABLED_KEY` 加 default 成员、`disabledReason` 的 `reason=`
+  出现第三种形态 `DEFAULT_RETENTION_MINUTES=0`（Meta 读失败兜底分支的来源判定同步三档化）；
+- **CI 的 `resolve_int` 下界放开到 0**（原来 min=1 ⇒ 把保留期设成 0 这个合法配置会直接把部署打红）；
+- **界面文案**：V1/V2 的「未设置」态从「7 天」改成「不限制保留时长 / 内置默认」。
+测试如实调整：`test/cleanup.test.ts` 第一条与广播条改为**自足前提**（显式 Meta 覆盖保留 10 分钟 + 压 trim + 自清 ——
+不这样写，env=0 时「Cron 未执行保留期清理」实测必红）；「清除覆盖回落 env」从「回落 10080 后记录被删」改成
+「回落 0（不限制）后记录**不被**软删」；`cleanup-budget` 第三态断言 `status=disabled` + `reason=DEFAULT_RETENTION_MINUTES=0`。
+
+**3. 传输数据 SHA-256**（上游 #413，协议可见）：
+- D1 加列 `TransferDataHash`（`schema.sql` + 新脚本 `tools/migrate-d1.mjs` —— 本仓库**第一次**给已有库加列：
+  `CREATE TABLE IF NOT EXISTS` 对老库不生效，脚本用 `PRAGMA table_info` 查、缺了才 `ALTER`，幂等；CI 在 Deploy 前
+  自动跑 `--remote`；README 那句「重新执行 schema.sql 即可」是错的，已改）；
+- 上传路径（POST + PUT）算出并落库：`PersistedData` 加 `transferDataHash`（= `sha256Hex(content)`，**不是** profile 哈希：
+  `fileProfileHash` 是 `sha256(fileName|contentHash)`、Group 是条目哈希 —— 不能复用）；
+- `POST /api/history` 可选请求头 `X-SyncClipboard-Transfer-Data-Hash`：形状错误（无 data 带头 / 重复值 / 非 64 位 hex）
+  ⇒ 400（文案逐字对齐上游）；与文件不符 ⇒ 422（沿用本路径既有映射）；
+- `PUT /SyncClipboard.json` 可选字段 `transferDataHash`：`hasData=false` 时声明 ⇒ 400；与文件不符 ⇒ 400
+  `Hash is not match data.`；序列化只在非 null 时输出；
+- `GET /api/history/{profileId}/data`：**回带同头**（仅当已知且合法 —— 空/非法值会让 3.3.0 客户端直接抛
+  `RemoteHistoryDataRejectedException`，故迁移前入库的记录**不带**头、客户端跳过校验；上游靠 `PrepareTransferData`
+  惰性回填，本实现不做 —— 重算一个 R2 对象的 SHA-256 要把对象整体读进内存，代价不成比例）；「有数据但取不到」由 404
+  改 **422**（坏行 + R2 对象缺失两类）。
+
+**4. POST 严格校验与文案**（上游 #413）：新建记录、无 data 分支从 `IsLocalDataValid(true)` 收紧为
+`IsLocalDataValid(false)`（Text = 内联全文哈希 == 声明 hash，**空 hash 视为有效** —— 上游 `Hash is not null &&`
+才判失败；File/Image/Group 无内联数据 ⇒ 一律拒绝），文案 `Needs tranfer data.` → `Local data is missing or does not
+match the profile hash.`；PUT 无 data 分支改为 `Inline data does not match the profile hash.`。
+`Needs tranfer data.` 只保留在「既有记录、无 data」的 `EnsureExistingRecordData` 路径上（`test/fixes.test.ts:1071` 仍钉着它）。
+
+**判据**：新增 `test/protocol.test.ts` 的声明头五例 + 严格校验两例；`dto-validation` 的 F5 段断言 /data 回带哈希、
+坏行 422、旧记录不带头。门禁：tsc 0 / eslint 0 / 全量 22 套件全过 / V1+V2 探针零问题。
+
+**遗留（有意不做，已在 protocol §10 登记）**：旧记录不回填哈希；声明头与文件不符在 POST 路径沿用本实现 422
+（上游 400，属已登记的那格差异）。
+
 

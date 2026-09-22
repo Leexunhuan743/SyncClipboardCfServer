@@ -41,6 +41,7 @@ export interface DbRow {
   Text: string;
   Size: number;
   TransferDataFile: string;
+  TransferDataHash: string;
   FilePaths: string;
   Hash: string;
   CreateTime: number;
@@ -67,6 +68,7 @@ export function rowToEntity(r: DbRow): HistoryRecordEntity {
     text: r.Text,
     size: r.Size,
     transferDataFile: r.TransferDataFile,
+    transferDataHash: r.TransferDataHash ?? '',
     filePaths,
     hash: r.Hash,
     createTime: r.CreateTime,
@@ -86,6 +88,7 @@ function entityParams(e: HistoryRecordEntity): (string | number)[] {
     e.text,
     e.size,
     e.transferDataFile,
+    e.transferDataHash ?? '',
     JSON.stringify(e.filePaths),
     e.hash,
     e.createTime,
@@ -99,8 +102,8 @@ function entityParams(e: HistoryRecordEntity): (string | number)[] {
 }
 
 const INSERT_SQL = `INSERT INTO HistoryRecords
-  (UserId, Type, Text, Size, TransferDataFile, FilePaths, Hash, CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted)
-  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`;
+  (UserId, Type, Text, Size, TransferDataFile, TransferDataHash, FilePaths, Hash, CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`;
 
 // 仅识别 (UserId,Type,Hash) 唯一约束冲突，避免把其它 INSERT 失败误判成「并发冲突」后静默吞掉（F5 回归）。
 // D1 会把底层 SQLite 错误包一层（message 形如 "D1_ERROR: UNIQUE constraint failed: ..."），
@@ -210,9 +213,9 @@ export class HistoryDb {
     await this.db
       .prepare(
         `UPDATE HistoryRecords SET
-           UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, FilePaths=?6, Hash=?7,
-           CreateTime=?8, LastAccessed=?9, LastModified=?10, Stared=?11, Pinned=?12, Version=?13, IsDeleted=?14
-         WHERE ID=?15`,
+           UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, TransferDataHash=?6, FilePaths=?7, Hash=?8,
+           CreateTime=?9, LastAccessed=?10, LastModified=?11, Stared=?12, Pinned=?13, Version=?14, IsDeleted=?15
+         WHERE ID=?16`,
       )
       .bind(...entityParams(entity), entity.id!)
       .run();
@@ -224,9 +227,9 @@ export class HistoryDb {
     const res = await this.db
       .prepare(
         `UPDATE HistoryRecords SET
-           UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, FilePaths=?6, Hash=?7,
-           CreateTime=?8, LastAccessed=?9, LastModified=?10, Stared=?11, Pinned=?12, Version=?13, IsDeleted=?14
-         WHERE ID=?15 AND Version=?16`,
+           UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, TransferDataHash=?6, FilePaths=?7, Hash=?8,
+           CreateTime=?9, LastAccessed=?10, LastModified=?11, Stared=?12, Pinned=?13, Version=?14, IsDeleted=?15
+         WHERE ID=?16 AND Version=?17`,
       )
       .bind(...entityParams(entity), entity.id!, expectedVersion)
       .run();

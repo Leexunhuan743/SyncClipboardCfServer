@@ -230,6 +230,7 @@ CREATE TABLE IF NOT EXISTS HistoryRecords (
   Text TEXT NOT NULL DEFAULT '',
   Size INTEGER NOT NULL DEFAULT 0,
   TransferDataFile TEXT NOT NULL DEFAULT '',
+  TransferDataHash TEXT NOT NULL DEFAULT '', -- 上游 3.3.0 #413：传输数据文件的 SHA-256（'' = 未知/迁移前入库）
   TransferDataSha256 TEXT NOT NULL DEFAULT '',
   TransferDataMd5 TEXT NOT NULL DEFAULT '',
   FilePaths TEXT NOT NULL DEFAULT '[]',-- JSON 数组（**活跃列**：src/profile.ts 写入，src/serialization.ts 用它推导 DTO 的 hasData；对外协议与前端 DTO 均不含该字段名）
@@ -256,7 +257,11 @@ CREATE TABLE IF NOT EXISTS Meta (
   Key TEXT PRIMARY KEY,
   Value TEXT NOT NULL
 );
--- Meta 行：Key='current_profile' → ProfileDto JSON（camelCase）
+-- 元信息表：Key='current_profile' → ProfileDto JSON（camelCase）
+```
+**表结构演进**：`CREATE TABLE IF NOT EXISTS` 只对新库生效 —— **已有库加列**用
+`node tools/migrate-d1.mjs --local|--remote`（幂等；2026-09-22 为 `TransferDataHash` 列引入，
+CI 在 `Deploy Worker` 之前自动执行 `--remote`，手工部署者见 README「升级与数据备份」）。
 ```
 
 `Type` 枚举值（`ProfileType`）：`Text=0, File=1, Image=2, Group=3, Unknown=4, None=5`。

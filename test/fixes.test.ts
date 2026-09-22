@@ -1060,7 +1060,10 @@ describe('F19 · Text transfer data 语义对齐上游（复用文件名 / Size 
     expect(db.rows[0]!.size).toBe(10);
   });
 
-  it('size > 文本长度但无 transfer data → 拒绝（上游 IsLocalDataValid：HasTransferData 真而文件不存在）', async () => {
+  it('size > 文本长度但无 transfer data → 拒绝（上游 3.3.0 #413 起文案为 Local data is missing…）', async () => {
+    // 上游 `IsLocalDataValid(false)` 的 HasTransferData（Size > Text.Length）为真而文件不存在 ⇒ 拒绝。
+    // 文案随 3.3.0 从 `Needs tranfer data.` 换成 `Local data is missing or does not match the profile hash.`
+    //（`Needs tranfer data.` 只保留在「既有记录、无 data」的 EnsureExistingRecordData 路径上）。
     const db = new FakeDb();
     await expect(
       addRecordDto(
@@ -1068,7 +1071,7 @@ describe('F19 · Text transfer data 语义对齐上游（复用文件名 / Size 
         incoming({ type: ProfileType.Text, hash: sha256('anything'), text: 'short', size: 99999 }),
         null, silentNotify,
       ),
-    ).rejects.toThrow(/Needs tranfer data/);
+    ).rejects.toThrow(/Local data is missing or does not match the profile hash/);
   });
 
   it('inline Text（size == 文本长度）无 data → 正常入库', async () => {

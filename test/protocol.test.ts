@@ -235,6 +235,19 @@ describe('Profile（WebDAV 兼容）', () => {
     expect(got).toMatchObject({ type: 'Text', hash, text, hasData: false });
   });
 
+  it('PUT File profile、无 data → 400 Inline data does not match the profile hash（上游 3.3.0 严格校验）', async () => {
+    // 上游 `CreateAndSaveNewProfile`：`!HasData && !IsLocalDataValid(false)` ⇒ 400；
+    // 文案随 3.3.0 换成 `Inline data does not match the profile hash.`（旧版是 Persist 抛异常被
+    // catch 成 `Hash is not match data.`）。File/Image/Group 没有内联数据 ⇒ 一律拒绝。
+    const put = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'File', hash: sha256('no-data'), text: 'nope.bin', hasData: false }),
+    });
+    expect(put.status).toBe(400);
+    expect(await put.text()).toBe('Inline data does not match the profile hash.');
+  });
+
   it('PUT File profile：上传数据 → 校验 → 下载（历史查找）', async () => {
     const fileName = `file-${RUN}.bin`;
     const content = Buffer.from('file-content-' + RUN);
@@ -322,6 +335,156 @@ describe('历史 API', () => {
     const problem = await res.json() as { code: string; status: number };
     expect(problem.code).toBe('history_data_invalid');
     expect(problem.status).toBe(422);
+  });
+
+  it('POST 请求头 X-SyncClipboard-Transfer-Data-Hash（上游 3.3.0 #413）：与文件不符 → 422，一致 → 200 且 /data 回带', async () => {
+    const content = Buffer.from(`tdhash-${RUN}`);
+    const contentSha = sha256(content);
+    const name = `tdhash-${RUN}.bin`;
+    const hash = sha256(`${name}|${contentSha}`); // fileProfileHash
+
+    // 声明一个**错误**的哈希 → 拒绝（数据/哈希不符，本实现沿用该路径既有映射 ⇒ 422）
+    const bad = new FormData();
+    bad.set('hash', hash);
+    bad.set('type', 'File');
+    bad.set('text', name);
+    bad.set('version', '0');
+    bad.set('isDeleted', 'false');
+    bad.set('size', String(content.length));
+    bad.set('data', new Blob([content], { type: 'application/octet-stream' }), name);
+    const badRes = await req('/api/history', {
+      method: 'POST',
+      body: bad,
+      headers: { 'X-SyncClipboard-Transfer-Data-Hash': 'F'.repeat(64) },
+    });
+    expect(badRes.status, '声明哈希与文件不符必须被拒（422，沿用 POST 路径既有映射）').toBe(422);
+
+    // 声明**正确**的哈希 → 200
+    const good = new FormData();
+    good.set('hash', hash);
+    good.set('type', 'File');
+    good.set('text', name);
+    good.set('version', '0');
+    good.set('isDeleted', 'false');
+    good.set('size', String(content.length));
+    good.set('data', new Blob([content], { type: 'application/octet-stream' }), name);
+    const goodRes = await req('/api/history', {
+      method: 'POST',
+      body: good,
+      headers: { 'X-SyncClipboard-Transfer-Data-Hash': contentSha },
+    });
+    expect(goodRes.status).toBe(200);
+
+    // /data 必须回带同一个哈希（大写）
+    const dataRes = await req(`/api/history/File-${hash}/data`);
+    expect(dataRes.status).toBe(200);
+    expect(dataRes.headers.get('x-syncclipboard-transfer-data-hash')).toBe(contentSha);
+  });
+
+  it('POST 声明头的形状错误：无 data 带头 / 重复值 / 非 hex → 各 400', async () => {
+    // ① 带了头但没有 data 部分 → 400（自相矛盾；上游 HistoryController:172 同文案）
+    const noData = new FormData();
+    noData.set('hash', sha256(`nodata-${RUN}`));
+    noData.set('type', 'Text');
+    noData.set('text', 'no-data');
+    noData.set('version', '0');
+    noData.set('isDeleted', 'false');
+    const res1 = await req('/api/history', {
+      method: 'POST',
+      body: noData,
+      headers: { 'X-SyncClipboard-Transfer-Data-Hash': 'A'.repeat(64) },
+    });
+    expect(res1.status).toBe(400);
+    expect(await res1.text()).toBe(
+      'X-SyncClipboard-Transfer-Data-Hash cannot be set without transfer data',
+    );
+
+    // ② 两个不同的头值（Headers 合并成逗号串）→ 400
+    const two = new FormData();
+    two.set('hash', sha256(`two-${RUN}`));
+    two.set('type', 'Text');
+    two.set('text', 'two');
+    two.set('version', '0');
+    two.set('isDeleted', 'false');
+    two.set('data', new Blob(['two'], { type: 'application/octet-stream' }), 'two.bin');
+    const res2 = await req('/api/history', {
+      method: 'POST',
+      body: two,
+      headers: {
+        'X-SyncClipboard-Transfer-Data-Hash': `${'A'.repeat(64)}, ${'B'.repeat(64)}`,
+      },
+    });
+    expect(res2.status, '两个值必须 400').toBe(400);
+    expect(await res2.text()).toBe(
+      'X-SyncClipboard-Transfer-Data-Hash must contain exactly one value',
+    );
+
+    // ③ 63 位十六进制 → 400（NormalizeSHA256 的 ArgumentException 文案）
+    const short = new FormData();
+    short.set('hash', sha256(`short-${RUN}`));
+    short.set('type', 'Text');
+    short.set('text', 'short');
+    short.set('version', '0');
+    short.set('isDeleted', 'false');
+    short.set('data', new Blob(['s'], { type: 'application/octet-stream' }), 's.bin');
+    const res3 = await req('/api/history', {
+      method: 'POST',
+      body: short,
+      headers: { 'X-SyncClipboard-Transfer-Data-Hash': 'A'.repeat(63) },
+    });
+    expect(res3.status, '非 64 位 hex 必须 400').toBe(400);
+    expect(await res3.text()).toBe(
+      "Hash must be a 64-character SHA-256 hex string. (Parameter 'hash')",
+    );
+  });
+
+  it('POST 新建记录、无 data：内联文本与声明 hash 不符 → 400（上游 3.3.0 严格校验文案）', async () => {
+    // 内联文本是截断的（hash 是全文的），且不带 data → 上游 `IsLocalDataValid(false)` 拒绝
+    const full = `strict-${RUN}`;
+    const truncated = full.slice(0, 5);
+    const form = new FormData();
+    form.set('hash', sha256(full));
+    form.set('type', 'Text');
+    form.set('text', truncated);
+    form.set('version', '0');
+    form.set('isDeleted', 'false');
+    form.set('size', String(full.length)); // 声明全文长度、实际只有截断文本
+    const res = await req('/api/history', { method: 'POST', body: form });
+    expect(res.status, '内联文本与声明 hash 不符必须 400').toBe(400);
+    expect(await res.text()).toBe('Local data is missing or does not match the profile hash.');
+  });
+
+  it('PUT ProfileDto.TransferDataHash（上游 3.3.0 #413）：hasData=false 时声明 → 400；与文件不符 → 400', async () => {
+    // ① hasData=false 却声明哈希 → 400
+    const noData = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'Text', hash: sha256('x'), text: 'x', hasData: false, transferDataHash: 'A'.repeat(64) }),
+    });
+    expect(noData.status).toBe(400);
+    expect(await noData.text()).toBe('TransferDataHash cannot be set when HasData is false');
+
+    // ② 有 data 但声明的哈希与文件不符 → 400
+    const name = `put-hash-${RUN}.bin`;
+    const content = Buffer.from('put-hash-content');
+    const staged = await req(`/file/${name}`, { method: 'PUT', body: content });
+    expect(staged.status).toBe(200);
+    const fileHash = sha256(`${name}|${sha256(content)}`);
+    const put = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'File',
+        hash: fileHash,
+        text: name,
+        hasData: true,
+        dataName: name,
+        size: content.length,
+        transferDataHash: 'F'.repeat(64),
+      }),
+    });
+    expect(put.status, '声明的传输数据哈希与文件不符必须 400').toBe(400);
+    expect(await put.text()).toBe('Hash is not match data.');
   });
 
   it('PATCH：旧版本 → 409 回写服务器值；新版本 → 200', async () => {

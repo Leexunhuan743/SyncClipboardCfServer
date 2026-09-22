@@ -197,8 +197,11 @@ Cloudflare 默认分配的 `*.workers.dev` 域名在部分国内运营商网络�
 ### 升级与数据备份
 
 - **服务升级**：后续版本更新时，数据库建表脚本具备幂等性，升级不会影响已有剪贴板历史。
-  - 命令行部署：拉取最新代码，执行 `npm install && npm run deploy`。若涉及表结构更新，重新执行一次 `npx wrangler d1 execute syncclipboard --remote --file=./schema.sql` 即可。
-  - GitHub Actions 部署：在你的 Fork 仓库页面点击「Sync fork」同步上游更新，推送到 master 分支后会自动触发重新部署。
+  - 命令行部署：拉取最新代码，执行 `npm install && npm run deploy`。**已有库新增列**（如 `TransferDataHash`）
+    用 `node tools/migrate-d1.mjs --remote`（幂等，可重复执行；`--local` 修本地库）——
+    ⚠️ `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 只对新库生效，**老库加列必须跑迁移脚本**，否则
+    新代码的每次写库都会因缺列失败。
+  - GitHub Actions 部署：在你的 Fork 仓库页面点击「Sync fork」同步上游更新，推送到 master 分支后会自动触发重新部署（CI 已内置迁移步骤，部署前自动执行）。
 - **数据备份**：剪贴板历史保存在 D1 数据库中，可通过官方命令导出本地 SQL 备份：
   ```bash
   npx wrangler d1 export syncclipboard --remote --output=./backup.sql

@@ -400,6 +400,11 @@ describe('F5 · /data 的 Content-Disposition 对任意 dataName 都必须合法
       expect(await res.text()).toBe(`payload for ${name}`);
       expect(res.headers.get('content-type')).toBe('application/octet-stream');
       expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+      // 上游 3.3.0 #413：响应用 `X-SyncClipboard-Transfer-Data-Hash` 回带传输文件的 SHA-256
+      //（本 harness 走真实 POST，落库的 transferDataHash = sha256(内容)）⇒ 必须有且等于内容哈希。
+      const tdHash = res.headers.get('x-syncclipboard-transfer-data-hash');
+      expect(tdHash, 'POST 落库后 /data 必须回带传输数据哈希').not.toBeNull();
+      expect(tdHash, '传输数据哈希必须是内容字节的 SHA-256（大写 hex）').toBe(await sha256Hex(content));
     });
   }
 
@@ -482,13 +487,30 @@ describe('库里的坏行（hash 含路径分隔符）：诊断面与读路径�
     expect(body.missing.map((m) => m.hash)).toContain('AA/BB');
   });
 
-  it('GET /api/history/{id}/data → 404（不是 500）：构造不出 key 的记录按缺数据计', async () => {
+  it('GET /api/history/{id}/data → 422 history_data_invalid（不是 500）：构造不出 key 的记录按「有数据但取不到」计', async () => {
+    // 上游 3.3.0（#413）把「记录声称有数据但数据不可用」从 404 改成 422（History transfer data is invalid）。
     const h = makeHarness();
     insertCorruptRow(h, 'AA/BB');
     const res = await send(h.history, h.env, '/api/history/Text-AA%2FBB/data');
-    expect(res.status, '修复前这里是 500（storage 层的 assertHashForPath 抛出）').toBe(404);
+    expect(res.status, '修复前这里是 500（storage 层的 assertHashForPath 抛出）').toBe(422);
     // 对照：同一行的**元数据**端点不受影响（它不碰 R2 key 构造）
     expect((await send(h.history, h.env, '/api/history/Text-AA%2FBB')).status).toBe(200);
+  });
+
+  it('迁移前入库的记录（TransferDataHash 列 = \'\'）→ 数据可取时 200 且**不带**头，取不到时 422 也不带头', async () => {
+    // 上游 3.3.0 客户端对「空/非法头值」会抛 RemoteHistoryDataRejectedException ⇒ 旧记录若带了
+    // 一个空头，下载会整体失败。契约：**只有已知且合法**的哈希才回带（见 src/routes/history.ts）。
+    // ① 数据对象存在（F5 的正常名用例已覆盖「有哈希 ⇒ 带头」）——这里验证**没有存储对象**的
+    //    旧行：422（数据取不到）且不带传输数据哈希头（不能带一个空头）。
+    const h = makeHarness();
+    h.exec(
+      `INSERT INTO HistoryRecords
+         (UserId, Type, Text, Size, TransferDataFile, FilePaths, Hash, CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted)
+       VALUES ('default_user', 0, 'legacy', 6, 'legacy.txt', '["legacy.txt"]', '${'B'.repeat(64)}', 1, 1, 1, 0, 0, 0, 0)`,
+    );
+    const res = await send(h.history, h.env, `/api/history/Text-${'B'.repeat(64)}/data`);
+    expect(res.status).toBe(422);
+    expect(res.headers.get('x-syncclipboard-transfer-data-hash'), '取不到数据的旧行不该带空头').toBeNull();
   });
 });
 

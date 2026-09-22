@@ -38,6 +38,31 @@ function problemDetails(detail: string): Response {
   );
 }
 
+// 上游 3.3.0 #413：`POST /api/history` 的**可选**请求头，声明传输数据文件的 SHA-256。
+// 语义逐字对齐上游 `HistoryController.GetDeclaredTransferDataHash` + `Utility.NormalizeSHA256`：
+//   · 未出现 ⇒ null（旧客户端不受影响）
+//   · 重复值 ⇒ 400（Headers 把重复头合并成逗号串；SHA-256 十六进制不含逗号，按 `,` 切分安全）
+//   · 去空白后为空 ⇒ 400
+//   · 不是 64 位十六进制 ⇒ 400（串与 .NET `ArgumentException` 的 message 一致，含参数后缀）
+//   · 合法 ⇒ 大写归一后返回（客户端 `NormalizeSHA256` 也是统一大写）
+const TRANSFER_DATA_HASH_HEADER = 'X-SyncClipboard-Transfer-Data-Hash';
+
+function readDeclaredTransferDataHash(c: FormRequest): string | null {
+  const raw = c.req.header(TRANSFER_DATA_HASH_HEADER);
+  if (raw === undefined || raw === null) return null;
+  const parts = raw
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p !== '');
+  if (parts.length !== 1) {
+    throw new BadRequestError(`${TRANSFER_DATA_HASH_HEADER} must contain exactly one value`);
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(parts[0]!)) {
+    throw new BadRequestError(`Hash must be a 64-character SHA-256 hex string. (Parameter 'hash')`);
+  }
+  return parts[0]!.toUpperCase();
+}
+
 // "Type-Hash" 解析（上游 Profile.ParseProfileId）
 function parseProfileId(profileId: string): { type: ProfileType; hash: string } | null {
   const parts = profileId.split('-');
@@ -260,16 +285,18 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
       return c.text('Not Found', 404);
     }
     // 库里的坏行（hash 含路径分隔符，只能带外写入）：`storage` 层的 key 构造会断言抛错 ⇒ 500。
-    // 这种记录的数据**取不到就是取不到**（本实现的 key 规则构造不出它）⇒ 按缺数据 404 ——
-    // 与 notFound.ts 头部写的那条契约一致（"例如 `GET /api/history/{id}/data` 缺数据必须 404"），
-    // 也把"手写坏一行数据就能让该条 /data 恒 500"换成一个可解释的语义。
+    // 这种记录声称有数据但**取不到**（本实现的 key 规则构造不出它）⇒ 422 + `history_data_invalid`
+    // —— 上游 3.3.0（#413）把「记录有数据但数据不可用」从 404 改成 422（ProblemDetails
+    // `History transfer data is invalid` / `code: history_data_invalid`），本实现沿用
+    // `problemDetails`（纯文本体，状态码一致；「错误响应体」的差异已登记在 protocol.md §10）。
     if (!isValidProfileHash(rec.hash)) {
-      return c.text('Not Found', 404);
+      return problemDetails('Stored transfer data is invalid and cannot be regenerated.');
     }
     const fileName = basename(rec.transferDataFile);
     const obj = await storage.getHistory(rec.type, rec.hash, fileName);
     if (!obj) {
-      return c.text('Not Found', 404);
+      // 数据文件不在存储里：同样按「有数据但取不到」处理 ⇒ 422（上游 LocalProfileDataUnavailable）
+      return problemDetails('Stored transfer data is invalid and cannot be regenerated.');
     }
     // 出口统一编码（与 `contentTypes.ts` 的 `fileHeaders()`、`ui/routes.ts` 的数据端点同款）：
     // 写路径不拦控制字符
@@ -278,13 +305,21 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     //   filename=   ASCII 兜底串（控制字符与非 ASCII → `_`；去掉会破坏引号串的 `"` 与 `\`）
     //   filename*=  RFC 5987，encodeURIComponent 把控制字符编码为 %XX（仍是合法头值）
     const asciiName = fileName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '');
-    return new Response(obj.body, {
-      headers: {
-        'content-type': 'application/octet-stream',
-        'x-content-type-options': 'nosniff',
-        'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-      },
-    });
+    const headers: Record<string, string> = {
+      'content-type': 'application/octet-stream',
+      'x-content-type-options': 'nosniff',
+      'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    };
+    // 上游 3.3.0 #413：响应头回带传输数据文件的 SHA-256，客户端下载时增量校验。
+    // ⚠️ **只有已知且合法时才发**：空串/非法值会让客户端的 `ReadTransferDataHash` 直接抛
+    // `RemoteHistoryDataRejectedException`（"must contain exactly one value"）⇒ 旧记录（迁移前入库、
+    // 该列为 '') 的下载会整体失败。故旧记录**不带**这个头，客户端据此跳过校验（上游靠
+    // `PrepareTransferData` 惰性回填，本实现不做回填 —— 重算一个 R2 对象的 SHA-256 要把对象
+    // 整体读进内存，代价不成比例，见 docs/protocol.md §10）。
+    if (/^[0-9a-fA-F]{64}$/.test(rec.transferDataHash ?? '')) {
+      headers['x-syncclipboard-transfer-data-hash'] = rec.transferDataHash!.toUpperCase();
+    }
+    return new Response(obj.body, { headers });
   });
 
   // POST /api/history/query —— 分页查询（multipart 表单）
@@ -337,11 +372,27 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
       ? parsed.data?.content ?? new Uint8Array(0)
       : null;
 
+    // 上游 3.3.0 #413：声明头（可选）。**没有 data 却带了这个头** ⇒ 400（自相矛盾）。
+    // 形状错误（重复/空/非 hex）也在 readDeclaredTransferDataHash 里就地 400。
+    let declaredTransferDataHash: string | null = null;
+    try {
+      declaredTransferDataHash = readDeclaredTransferDataHash(c);
+      if (content === null && declaredTransferDataHash !== null) {
+        return c.text(`${TRANSFER_DATA_HASH_HEADER} cannot be set without transfer data`, 400);
+      }
+    } catch (err) {
+      if (err instanceof BadRequestError) {
+        console.log(`[HISTORY POST] 400 (transfer-data-hash): ${err.message}`);
+        return c.text(err.message, 400);
+      }
+      throw err;
+    }
+
     try {
       const dto = await addRecordDto(db, storage, incoming, content, {
         notifyProfile: (p) => broadcast(c.env, 'RemoteProfileChanged', p),
         notifyHistory: (h) => broadcast(c.env, 'RemoteHistoryChanged', h),
-      });
+      }, declaredTransferDataHash);
       return new Response(historyDtoToJson(dto), {
         headers: { 'content-type': 'application/json; charset=utf-8' },
       });

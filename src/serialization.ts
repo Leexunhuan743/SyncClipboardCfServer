@@ -147,6 +147,10 @@ export function profileDtoToJson(dto: ProfileDto): string {
   };
   // 上游 ProfileDto.DataName 无 JsonIgnore → 为 null 时输出 "dataName":null（仅 Size 有 WhenWritingNull）
   obj.dataName = dto.dataName ?? null;
+  // 上游 3.3.0：TransferDataHash 有 `JsonIgnore(WhenWritingNull)` ⇒ 非 null 才输出（与 size 同规则）
+  if (dto.transferDataHash != null) {
+    obj.transferDataHash = dto.transferDataHash;
+  }
   if (dto.size != null) {
     obj.size = dto.size;
   }
@@ -260,6 +264,16 @@ export function parseProfileDto(json: string): ProfileDto {
     hasData: readBool(get('hasData'), 'hasData') ?? false,
     dataName: readString(get('dataName'), 'dataName'),
   };
+  // 上游 3.3.0 #413：`TransferDataHash`（`string?`）声明传输数据文件的 SHA-256。非 null 必须是
+  // 64 位十六进制（大小写不限），统一存大写（`Utility.NormalizeSHA256` 的语义，非法即
+  // ArgumentException → 400）。null 与缺省同义（WhenWritingNull）。
+  const transferDataHash = readString(get('transferDataHash'), 'transferDataHash');
+  if (transferDataHash !== null) {
+    if (!/^[0-9a-fA-F]{64}$/.test(transferDataHash)) {
+      throw new Error(`Hash must be a 64-character SHA-256 hex string. (Parameter 'hash')`);
+    }
+    dto.transferDataHash = transferDataHash.toUpperCase();
+  }
   // size 对齐上游 `ProfileDto.Size`（`long?`）的模型绑定：非空值必须是**整数**（且 JS 能精确
   // 表示 ⇒ Number.isSafeInteger），否则绑定失败 → 400。此前只判 `typeof === 'number'`：
   // `1.5` / `1e400`（Infinity）都会被当成合法体积写进记录（F6）。符号不限（上游 long 可为负）。
@@ -335,6 +349,10 @@ export function profileDtoToWire(dto: ProfileDto): Record<string, unknown> {
   };
   // 上游 ProfileDto.DataName 无 JsonIgnore → 为 null 时输出 "dataName":null（仅 Size 有 WhenWritingNull）
   obj.dataName = dto.dataName ?? null;
+  // 上游 3.3.0：TransferDataHash 有 WhenWritingNull ⇒ 非 null 才输出
+  if (dto.transferDataHash != null) {
+    obj.transferDataHash = dto.transferDataHash;
+  }
   if (dto.size != null) {
     obj.size = dto.size;
   }

@@ -28,6 +28,8 @@ export interface ProfileDto {
   text: string;
   hasData: boolean;
   dataName?: string | null; // null 时序列化保留 "dataName":null
+  /** 传输数据文件的声明 SHA-256（64 位 hex，统一大写）。null 时序列化省略（上游 `JsonIgnore(WhenWritingNull)`）。 */
+  transferDataHash?: string | null;
   size?: number | null; // null 时序列化省略
 }
 
@@ -87,6 +89,8 @@ export interface HistoryRecordEntity {
   text: string;
   size: number;
   transferDataFile: string;
+  /** 传输数据文件（R2 对象）的 SHA-256，大写 hex；缺省/'' = 未知（迁移前入库的记录）。上游 3.3.0 新增列 */
+  transferDataHash?: string;
   filePaths: string[]; // 存储为 JSON
   hash: string;
   createTime: number; // epoch ms

@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS HistoryRecords (
   Text TEXT NOT NULL DEFAULT '',
   Size INTEGER NOT NULL DEFAULT 0,
   TransferDataFile TEXT NOT NULL DEFAULT '',
+  TransferDataHash TEXT NOT NULL DEFAULT '', -- 传输数据文件的 SHA-256（上游 3.3.0 新增列；'' = 未知）
   TransferDataSha256 TEXT NOT NULL DEFAULT '',
   TransferDataMd5 TEXT NOT NULL DEFAULT '',
   FilePaths TEXT NOT NULL DEFAULT '[]', -- JSON 数组（保留镜像列）
