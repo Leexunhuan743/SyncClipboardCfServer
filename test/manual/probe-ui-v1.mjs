@@ -1393,6 +1393,92 @@ try {
     }
   }
 
+  // ===== 顶栏折叠（2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」）=====
+  //
+  // 判据四件事，缺一条都不算做到：
+  //   ① 向下滚且离开顶部 120px 之后**整条滑出**（`transform` 把它推到视口上方）；
+  //   ② 头栏与表头**跟着上移**：顶栏原来占的那 56px**不留空带**（头栏贴 0、表头贴 45）；
+  //   ③ 向上滚**立刻展开**（回到顶部同理）；
+  //   ④ **有选中时不折** —— `data-header` 可以仍是 hidden，但视觉上必须回来（那条由 CSS 的
+  //      `:not(:has(.results__selection-count))` 表达，故这里读的是几何而不是属性）。
+  const headerFold = await read(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const box = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { top: Math.round(r.top), h: Math.round(r.height) };
+    };
+    const snap = () => ({
+      y: Math.round(window.scrollY),
+      vw: window.innerWidth,
+      header: box('.app-header'),
+      head: box('.results__head'),
+      th: box('.table th'),
+      attr: document.documentElement.dataset.header ?? null,
+      headTopCss: getComputedStyle(document.querySelector('.results__head')).top,
+    });
+    const to = async (y) => { window.scrollTo(0, y); await wait(520); };
+    const out = {};
+    await to(0);
+    out.atTop = snap();
+    await to(300);
+    out.down300 = snap();
+    await to(900);
+    out.down900 = snap();
+    await to(600);
+    out.up = snap();
+    // 再折回去，然后在这一态下勾一行（DOM 点击 ⇒ 不会因为"滚进视口"而改变滚动位置）
+    await to(900);
+    await wait(200);
+    const rows = [...document.querySelectorAll('tbody tr.row')];
+    const vis = rows.find((r) => {
+      const b = r.getBoundingClientRect();
+      return b.top > 200 && b.bottom < 700;
+    });
+    out.selectedFound = Boolean(vis);
+    vis?.querySelector('input.checkbox')?.click();
+    await wait(620);
+    out.selected = snap();
+    // 收尾：取消选择 + 回到顶部（别把状态留给后面的检查）
+    [...document.querySelectorAll('.results__selection button')]
+      .find((b) => (b.textContent ?? '').includes('取消选择'))
+      ?.click();
+    window.scrollTo(0, 0);
+    await wait(620);
+    out.reset = snap();
+    return JSON.stringify(out);
+  })()`);
+  console.log('HEADERFOLD', headerFold);
+  {
+    const s = JSON.parse(headerFold);
+    // 表头只在**表格档**（>860px）吸顶；卡片档它是 `top: auto`、随页面滚走（实测 y=900 时 top=−482）。
+    // 故这两条判据必须分档 —— 第一版忘了分，390 档报了两次假阳性（`progress.md` §158 记着这次）。
+    const cardMode = (s.down900?.vw ?? 1440) <= 860;
+    const thCollapsedOk = cardMode ? (s.down900?.th === null || s.down900.th.top < 0) : s.down900?.th?.top === 45;
+    const thExpandedOk = cardMode ? (s.selected?.th === null || s.selected.th.top < 0) : s.selected?.th?.top === 101;
+    const hidden = (x) => x?.header?.top <= -56;
+    check('向下滚离开顶部 120px 之后顶栏整条滑出', s.down900?.attr === 'hidden' && hidden(s.down900), JSON.stringify(s.down900));
+    check('顶栏滑出后头栏贴到顶（不留空带）', s.down900?.head?.top === 0, '头栏 top=' + String(s.down900?.head?.top));
+    check(
+      cardMode ? '卡片档：表头随页面滚走（不参与让位）' : '表格档：顶栏滑出后表头跟着上移一格（top: 45px）',
+      thCollapsedOk,
+      '表头 top=' + String(s.down900?.th?.top) + ' 视口宽=' + String(s.down900?.vw),
+    );
+    check('向上滚立刻展开顶栏', s.up?.attr !== 'hidden' && s.up?.header?.top === 0, JSON.stringify(s.up));
+    // 选中态抑制折叠之后，整条吸顶链回到**未折叠态**：顶栏可见（top 0）、头栏 56、表头 101。
+    // ⚠️ 注意 `attr` 此刻仍是 `'hidden'` —— 抑制由 **CSS** 的 `:not(:has(…))` 表达，
+    // JS 的滚动状态不动（这正是"不需要 JS 钩子"的实现方式，也是这条判据要钉住的不对称）。
+    check(
+      '有选中时不折顶栏（CSS 的 :not(:has(…)) 判据），且整条吸顶链回到未折叠态',
+      s.selected?.attr === 'hidden' &&
+        s.selected?.header?.top === 0 &&
+        s.selected?.head?.top === 56 &&
+        thExpandedOk,
+      `attr=${String(s.selected?.attr)} header.top=${String(s.selected?.header?.top)} head.top=${String(s.selected?.head?.top)} th.top=${String(s.selected?.th?.top)} 找到可见行=${String(s.selectedFound)}`,
+    );
+  }
+
   // ===== 文本下载（2026-09-18，"文本也可以下载，格式保存成 txt"）=====
   // 判据不是"点了有反应"，而是**磁盘上真的出现了一个 .txt，且内容与这条记录的正文对得上**。
   // 列表里的正文被截断到 500 字符，所以这条探针要在命中一条长文本时跑才有意义：

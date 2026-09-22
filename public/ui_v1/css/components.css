@@ -698,11 +698,12 @@ input[type="search"]::-webkit-search-decoration {
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
   position: sticky;
-  /* 吸顶位置 = 顶栏 + **恒吸顶的头栏**（`--results-head-h`）。2026-09-22 起结果区头栏**恒**吸顶
-   * （用户第二次定形，见 layout.css 的 `.results__head`），故这个偏移是**常量** ——
-   * 此前它只在选中态生效（`.results:has(.results__selection-count)` 那条 `@media` 规则），
+  /* 吸顶位置 = **生效的顶栏高度** + 恒吸顶的头栏（`--results-head-h`）。两处都用令牌
+   * ⇒ 顶栏折叠时（`--header-h-effective: 0`）表头跟着上移，不留空带（2026-09-22）。
+   * 2026-09-22 起结果区头栏**恒**吸顶（用户第二次定形，见 layout.css 的 `.results__head`），
+   * 故这一项是**常量**；此前它只在选中态生效（`.results:has(...)` 那条 `@media` 规则），
    * 于是"勾一行"会把表头连同正在读的内容整体推下 45px（实测滚到 800 时 56 → 101）。 */
-  top: calc(var(--header-h) + var(--results-head-h));
+  top: calc(var(--header-h-effective) + var(--results-head-h));
   z-index: 10;
 }
 

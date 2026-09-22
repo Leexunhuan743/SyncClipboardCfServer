@@ -8,6 +8,7 @@
  *   4. 星标弹出     —— 收藏状态改变
  *   5. 浮层进出     —— 对话框与提示条，用原生 <dialog> + @starting-style
  *   6. 选中操作条出现 —— 从「没有选中」到「有选中」那一次（结果区头栏那条批量操作带）
+ *   7. 顶栏折叠     —— **滚动状态变化**：向下滚且离开顶部 120px 时整条滑出、向上滚立刻滑回
  * 不做：滚动淡入（B2）、统一上浮（B1）、页面级入场动画（B4）、装饰性循环动效。
  *
  * ⚠️ 这里**原有第 1 条「行入场」**（首屏前 12 行按 `--row-index × 40ms` 错峰淡入）：
@@ -51,6 +52,21 @@
  * 一并清掉的还有：`list.js` 的 `ENTER_STAGGER_LIMIT` / `data-enter` / `--row-index`、
  * 本文件头部清单里的第 1 条、`docs/ui.md` §3.3 #11 与 §8 动效表那一行、§11.3 的对应约定。
  * 取舍与判据见 `docs/progress.md` §155。**别再照 ui.md 的旧版把它加回来。** */
+
+/* ============ 顶栏折叠（header-fold）============
+ * 2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」—— 向下滚且离开顶部 120px 时整条滑出
+ * （省 56px，让给头栏与表头：那两条的吸顶偏移走 `--header-h-effective`），一向上滚立刻滑回；
+ * **有选中时不折**（那一刻头栏里的批量条正开着）。
+ *
+ * 这一块只管"怎么动"：**状态**（`html[data-header="hidden"]` 两条规则）在 `layout.css`，
+ * **触发**（滚动方向 + 120px 阈值）在 `main.js` 的 `syncHeaderCollapse()`。
+ * 位移走 `transform`（合成层、不动布局）；过渡只在这条 `@media` 里给 ⇒
+ * `prefers-reduced-motion` 下**瞬时**到位（文件的准入规则：关掉动效信息不丢）。 */
+@media (prefers-reduced-motion: no-preference) {
+  .app-header {
+    transition: transform var(--dur-standard) var(--ease-out-expo);
+  }
+}
 
 /* ============ 选中操作条出现（selection-in）============
  * 2026-09-22 用户要求：「选中之后出现 复制选中 / 收藏 / 置顶 / 移动到回收站 / 取消选择 这一行

@@ -149,6 +149,14 @@
    * 内容宽度 1180 → 1280：数据表的正文列实测只有 342px（八个固定列吃掉其余宽度），
    * 放宽容器是唯一不动列宽就能把正文还给用户的做法。 */
   --header-h: 56px;
+  /* 顶栏**此刻**占的吸顶高度：折叠（向下滚且离开顶部）时为 **0**。
+   * 吸顶链上三处一律用它 —— `.results__head` 的 `top`、`.table th` 的 `top`、
+   * `.results` 的 `scroll-margin-top` —— 于是"顶栏滑出"**不会在它原本的位置留一条空带**
+   * （2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」；状态与护栏见 layout.css 与
+   * motion.css，触发逻辑在 main.js 的 `syncHeaderCollapse()`）。
+   * ⚠️ 默认值只写在这里；折叠是**运行期状态**，由 layout.css 那条
+   * `html[data-header="hidden"]:not(:has(.results__selection-count))` 规则改写它。 */
+  --header-h-effective: var(--header-h);
   /* 结果区头栏的高度（`.results__head` 的 `min-height`）。**必须只有一个来源**：
    * 它同时决定 ① 表头吸顶的偏移（选中态时头栏也吸顶，表头要再往下让一格）
    * ② 选中前后两态等高（此前 42 → 45 的跳变是实测出来的，见 layout.css 的说明）。 */

@@ -34,6 +34,28 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* ---- 顶栏折叠（2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」）----
+ *
+ * 形态：**整条滑出**（`translateY(-100%)`，合成层位移、不动布局），省下的 56px 让给头栏与表头
+ * —— 那两条的吸顶偏移改走 `--header-h-effective`，折叠时归 0，因此**不会留空带**。
+ *
+ * 触发（`main.js` 的 `syncHeaderCollapse()`）：向下滚且离开顶部 **120px** 时折；一向上滚立刻展开；
+ * 离顶部 8px 内也一律展开（第二道保险，免得小幅回弹时开合抖动）。
+ *
+ * **有选中时不折**（用户选的护栏：那一刻头栏里的批量条正开着，要点「移动到回收站」，
+ * 顶栏同时滑出去是多余的动作）。这一条**纯 CSS** 表达 —— `:not(:has(.results__selection-count))`
+ * 与"选中态"的判据同源（那条计数在不在），于是"选中 ⇒ 顶栏自动回来"不需要任何 JS 钩子。
+ *
+ * 过渡在 `motion.css`（动效层唯一归属），`prefers-reduced-motion` 下瞬时到位。
+ * 实测与判据见 `docs/progress.md` §158 与探针的 `HEADERFOLD`。 */
+html[data-header="hidden"]:not(:has(.results__selection-count)) .app-header {
+  transform: translateY(-100%);
+}
+
+html[data-header="hidden"]:not(:has(.results__selection-count)) {
+  --header-h-effective: 0px;
+}
+
 .app-header__inner {
   max-width: var(--content-max);
   margin: 0 auto;
@@ -465,8 +487,8 @@
    * 吸顶的参照回到视口：静止时表头在自然位置，滚动时钉在顶栏下方（56px）。 */
   overflow: clip;
   transition: opacity var(--dur-fast) var(--ease-standard);
-  /* 翻页/改筛选后把结果区滚回视野时，别让它钻到吸顶的表头底下 */
-  scroll-margin-top: calc(var(--header-h) + var(--sp-3));
+  /* 翻页/改筛选后把结果区滚回视野时，别让它钻到吸顶的表头底下（用生效高度：折叠时顶栏不占位） */
+  scroll-margin-top: calc(var(--header-h-effective) + var(--sp-3));
 }
 
 /* 加载中：整块轻微降低对比，不做位移（位移会让表格看起来在跳） */
@@ -509,7 +531,9 @@
    * **位置常驻，语义不常驻**。
    * `z-index: 9` 低于表头的 10，且两者不重叠（表头的偏移已经让开 45px）。 */
   position: sticky;
-  top: var(--header-h);
+  /* 用**生效高度**（折叠时为 0）：顶栏滑出之后这一行要顶到视口最上面，否则会留一条空带
+   * （2026-09-22 用户定形，见 tokens.css 的 `--header-h-effective`）。 */
+  top: var(--header-h-effective);
   z-index: 9;
 }
 

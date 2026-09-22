@@ -220,6 +220,41 @@ function scrollToResults() {
   list.el.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
 }
 
+// ===== 顶栏折叠（2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」）=====
+//
+// 形态与护栏（用户三问定下的）：**整条滑出**（省 56px，让给头栏与表头 —— 那两条的吸顶偏移走
+// `--header-h-effective`，折叠时归 0，所以不留空带）；**向下滚且离开顶部 120px** 才折；
+// 一向上滚立刻展开；离顶部 8px 内一律展开（第二道保险，免得小幅回弹时开合抖动）。
+// **有选中时不折** —— 那一条**不在这里**，由 CSS 的
+// `html[data-header="hidden"]:not(:has(.results__selection-count))` 表达（判据与"选中态"同源），
+// 于是"选中 ⇒ 顶栏自动回来"不需要任何 JS 钩子，也不会漏掉清空选择集的那些路径。
+//
+// 三条实现纪律：
+//   · **只在状态变化时写 DOM**（`<html>` 上一个属性），不每帧改样式 —— 滚动是高频事件，
+//     动样式就是动布局（这份位移本身走 `transform`，合成层）；
+//   · 监听器 `passive`：这里只读 `scrollY`，不阻断滚动；
+//   · 方向判据带 2px 死区：亚像素滚动与惯性回弹会让 `y` 在小范围内反复，没死区就会抖。
+const HEADER_HIDE_AFTER = 120;
+const COLLAPSE_DEAD_ZONE = 2;
+let headerHidden = false;
+let lastScrollY = window.scrollY;
+
+function syncHeaderCollapse() {
+  const y = window.scrollY;
+  const goingUp = y < lastScrollY - COLLAPSE_DEAD_ZONE;
+  const goingDown = y > lastScrollY + COLLAPSE_DEAD_ZONE;
+  lastScrollY = y;
+  let next = headerHidden;
+  if (y <= 8 || goingUp) next = false;
+  else if (goingDown && y > HEADER_HIDE_AFTER) next = true;
+  if (next === headerHidden) return;
+  headerHidden = next;
+  if (next) document.documentElement.dataset.header = 'hidden';
+  else delete document.documentElement.dataset.header;
+}
+
+window.addEventListener('scroll', syncHeaderCollapse, { passive: true });
+
 const actions = {
   onTypes: (types) => setFilters({ types, page: 1 }, { push: true, scroll: true }),
   onToggleStarred: () =>
