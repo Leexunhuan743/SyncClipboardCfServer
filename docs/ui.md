@@ -184,7 +184,7 @@ Worker
 | `js/components/list.js` | 结果区：表格、行、**四个固定槽位的行内动作**（预览/复制/下载/删除，缺失的动作放等宽占位——同一动作在每行的位置恒定；文本行的第 3 槽分两支：有原文件是「下载」（原字节+原名）、内联文本是「下载文本」（正文存成 `.txt`））、排序表头、选择条（Shift 范围选择；批量按钮带**进行中态**）、**一键复位筛选**、空状态；**同一视图内的刷新按行对账**（内容未变的行不重建，见 §3.3） |
 | `js/components/row-content.js` | 结果行的行内内容：缩略图（含降级与 512 KiB 阈值）、状态徽标、收藏/置顶开关的字段与文案；从 `list.js` 拆出——对账、选择与焦点仍在那份文件里 |
 | `js/components/pagination.js` | 范围文本、上一页/下一页、跳页（聚焦全选、回车后清空并交还焦点；只有一页时隐藏跳页） |
-| `js/components/preview.js` | 预览对话框（文本全文 / 图片原图 / 不可用态）；点背景关闭、打开时焦点落在主操作、长文本先给加载态；主操作文案与行内统一（「复制文本」「下载文本」「复制图片」「下载」）。**2026-09-22（ADR D30）起文本多一个「编辑」态**：两态机 预览 ⇄ 编辑（等宽 `<textarea>`、页脚换「取消 / 保存」、保存 = 新建一条记录、Esc 只退编辑不关框，见 §3.3 #29） |
+| `js/components/preview.js` | 预览对话框（文本全文 / 图片原图 / 不可用态）；点背景关闭、打开时焦点落在主操作、长文本先给加载态；主操作文案与行内统一（「复制文本」「下载文本」「复制图片」「下载」）。**2026-09-22（ADR D30）起文本多一个「编辑」态**：两态机 预览 ⇄ 编辑（等宽 `<textarea>`、页脚换「取消 / 保存」、保存 = 新建一条记录、保存成功后**改指向新记录**、Esc 只退编辑不关框、保存途中不许关框，见 §3.3 #29）；头部（类型徽标 / 字符数 / 时间）由 `renderHead()` 单点绘制 |
 | `js/components/tooltip.js` | **hover 预览浮层**（2026-09-21 起 V1 唯一实现）：悬停 150ms 出现、只在内容被截断时出、到达并停住；**纯视觉、不接收指针事件**（`pointer-events: none`）且 `aria-hidden="true"`（不挂 `aria-describedby` —— 完整文本本来就在 DOM 里，取全文的可访问出口是行内「预览」；见 §3.3 硬约束 #26） |
 | `js/components/confirm.js` | 确认对话框（销毁性操作前问一句）：请求进行中留在对话框内、失败就地显示原因可重试；**结算不依赖 `close` 事件**（见 §3.3） |
 | `js/components/toast.js` | 反馈层：瞬时提示（离场动画、最多 4 条）+ **原地状态** `setPending` / `flashSuccess`（行内按钮与对话框按钮共用，见 §3.3）；错误提示可带一个**动作**（目前是「重试」，带动作时停留 10 秒，见 §58.4） |
@@ -427,11 +427,28 @@ Worker
       编辑会卡住；请用「下载文本」在本地编辑。"）—— 禁用不带原因等于把用户堵死在这里。
       上限与服务端 `UI_TEXT_CREATE_MAX_BYTES` 同值（纵深防御）。
     · **保存失败留在编辑态**：原因**就地**渲染在 `<textarea>` 正下方（`.alert--error`，`role="alert"`），
-      用户改的内容一个字不动，可以改完再存一次（`components.md` 的 error 格：信息挨着控件、
-      被关联、不靠颜色单独传达）。
-    判据：`preview.js` 的 `enterEdit`/`exitEdit`/`renderView`/`renderViewActions` + `main.js` 的
-    `createTextRecord` + `messages.js` 的 `editTooLargeText`/`textSavedNote`/`textSaveFailedText`
-    （两版逐字一致）+ `docs/ui.md` §5 的 `POST /ui/api/history` 行。
+      textarea **静态** `aria-describedby="preview-edit-error"` 指向它（与 `info.js` 保留策略表单同一手法：
+      目标常驻、无错时 `hidden`），焦点送回正文里；用户改的内容一个字不动，可以改完再存一次。
+      只有**正文本身不合规**（服务端 400，例如超过 1 MiB）才加 `aria-invalid` —— 网络/500 不是字段的问题，
+      标了会让读屏说"这个输入框有误"（第 19 条同一条判据）。
+    · **保存途中不许关框**（2026-09-22 自审补，与 `confirm.js` 的 F2 同源）：`saving` 期间 ✕ 与「点背景」
+      都被挡（`closeButton.disabled` + `requestClose()` 守卫）。理由是可测的：**提示条在顶层对话框之下**
+      —— 实测在这个模态开着时往 `#toasts` 里塞一条提示、再问它自己中心点的 `elementFromPoint`，
+      拿到的是 `dialog` 而不是提示条。在途关框 = 把一次失败丢在屏幕外。
+    · **保存成功后对话框改指向新记录**（2026-09-22 自审补）：`onEdit` 回传刚创建的条目，
+      预览框据此换掉 `currentItem` 并**重画头部**（`renderHead()` 是头部唯一绘制点），
+      深链接也换成新记录的 `#Text-<hash>`。不改的话屏幕上是"头部说旧记录的字符数、正文是新文本"，
+      且刷新页面会弹回旧那一条。⚠️ 这条依赖 `api.createText` **过 `normalizeItem`**：
+      服务端按上游惯例把 `type` 序列化成数字，不过归一化时 `type` 是 `0`，
+      于是「文本」那一支全判错（头部显示成字节数、页脚只剩「下载」）—— 自审时实测踩到过。
+    · **头部与说明的字符数同源**：都用服务端 `size`（= `dto.text.length`，UTF-16 码元），
+      与列表讲的是同一件事；**不在头部本地跑 `charCount`** —— 它走 `Intl.Segmenter`，
+      实测 1.1 MB 的正文要 169ms，而且与同一屏的 `size` 会给出两个不同的数字（10 个 emoji：10 vs 20）。
+      `charCount` 只在响应没带 `size` 时才兜底。
+    判据：`preview.js` 的 `enterEdit`/`exitEdit`/`renderView`/`renderViewActions`/`renderHead` +
+    `main.js` 的 `createTextRecord` + `api.js` 的 `createText` + `messages.js` 的
+    `editTooLargeText`/`textSavedNote`/`textSaveFailedText`（两版逐字一致）+
+    `docs/ui.md` §5 的 `POST /ui/api/history` 行 + `progress.md` §130。
 
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
