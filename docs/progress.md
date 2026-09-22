@@ -9863,4 +9863,65 @@ CI 冒烟加 `/ui_v1/view.html` 断言（G11）、"不做 CAD"的落点（G12）
 **验证**（见本轮实测记录）：本地三档（文本/图片/文件 × 小中大）走「删除 → 回收站里数据还在 →
 恢复连数据一起回来 → 彻底删除才清」；`/ui/api/integrity` 在删除状态下不报缺失；探针与全量套件见收尾。
 
+## 130. 预览框加「编辑」：保存 = 新建一条文本记录（2026-09-22）
+
+**触发**：用户要"能在网页里改一段文本再存回去"。按仓库惯例先 `grilling` 逐问定案，四个答案：
+
+| # | 问题 | 用户的答案 |
+|---|---|---|
+| Q1 | 保存是"改这一条"还是"新建一条"？ | (a) 走协议 `POST /api/history` 新建 —— 当时以为两种都要，Q2 收窄了范围 |
+| Q2 | 哪些类型能编辑？ | 只有 `Text`（图片/文件没有"编辑正文"这回事） |
+| Q3 | 保存成功后对话框怎么办？ | (c) **不关框**：正文换成刚保存的那段 + 一行「已保存为新记录（N 个字符）」 |
+| Q4 | 编辑态的细节 | 等宽 `<textarea>`；Esc = 退出编辑（不关框）；`> 1 MiB` 不给编辑；允许改空；内容没变就不发请求 |
+
+**为什么"编辑"只能是新建（技术依据）**：文本记录的 `hash = SHA256(utf8(正文))`（`src/hash.ts`），
+改一个字 hash 必变 —— 在协议模型里这就是**另一条记录**（同 hash 才能覆盖）。服务端因此复用了
+协议的同一条写路径 `addRecordDto`：**只广播 `RemoteHistoryChanged`、不碰当前剪贴板**
+（`notifyProfile` 压根不会被调用）⇒ 其它设备只是多一条历史，不会有人的剪贴板被换掉。
+`version` 取 **0**（客户端不带 version 时的默认）：`shouldUpdate` 在 5 分钟窗口内比的是
+`newVersion >= oldVersion`，写 1 会让客户端随后重传同一条文本（带 0）被判冲突而**丢更新**。
+
+**服务端（一处新增端点）**：`POST /ui/api/history`（`src/ui/routes.ts`）——
+非 JSON → 415（先排空 body）、缺 `text` → 400 `text_required`、`> 1 MiB` → 400 `text_too_large`
+（`UI_TEXT_CREATE_MAX_BYTES`，纵深防御）、成功 → 回读实体并回 `toUiItem(entity)`（与 PATCH 同形，
+前端复用同一个归一化函数）。同 hash 已存在时 `addRecordDto` 走更新分支，回读拿到的就是落库后的最新状态。
+
+**前端（两态机 + 一处踩到的坑）**：
+
+- `preview.js` 重构成 `renderView()` / `renderViewActions()` / `enterEdit()` / `exitEdit()` 四个出口，
+  状态挂在 `currentItem` / `currentText` / `savedNote` / `editing` 上。**`currentText` 是唯一来源**：
+  预览、复制、下载都读它 —— 编辑保存后屏幕上是新文本，复制/下载必须跟着屏幕走，
+  否则会出现"刚存完、点下载拿到的却是旧文本"（`downloadTextItem(item, textOverride)` 就是为此加的形参）。
+- **`<textarea>` 的「没改字」判据必须先归一化行尾**（本轮的坑，实测踩到）：`<textarea>` 的 `value`
+  会把 CRLF 折成 LF（HTML 规范的 API value），而记录里存的常常就是 CRLF —— 官方客户端从 Windows
+  剪贴板发出的正文就是 CRLF，服务端原样保存。构造用例：一条 913 字符（21 个 CRLF）的记录，
+  `textarea.value.length` 是 **892**、`.dialog__pre` 的 `textContent.length` 是 **913**。
+  不归一的话，**只点一下保存**就会凭空生成一条"只差行尾"的新记录。
+- **Esc 在编辑态只退编辑**（`cancel` 事件里 `preventDefault()`）：一段几千字的编辑不该被一个 Esc 丢掉；
+  非编辑态 Esc 仍是关框。
+- **失败留在编辑态**：`.alert--error`（`role="alert"`）坐在 `<textarea>` 正下方，原因来自服务端/网络，
+  用户改的内容一个字不动（`components.md` 的 error 格：信息挨着控件、不靠颜色单独传达）。
+- **`> 1 MiB` 的「编辑」是 disabled + `title` 说明原因**（"正文超过 1.0 MB，在浏览器里编辑会卡住；
+  请用「下载文本」在本地编辑。"）—— 禁用不带原因等于把用户堵死在这里；同一判据服务端再拦一次。
+- 文案三句住 `messages.js`（两版逐字一致）：`editTooLargeText` / `textSavedNote` / `textSaveFailedText`；
+  `icons.js`（共用层）加 `edit` 图标；`components.css` 加 `.dialog__edit` / `.dialog__body--edit` / `.dialog__note`。
+
+**文档同步**：`docs/ui.md` §5 新增端点行、§3.2 的 `preview.js` 行、§3.3 新增硬约束 **#29**；
+`docs/design.md` §2 新增 **ADR D30**；计数类事实四处一起改（`AGENTS.md` / `docs/frontend-checklist.md` /
+`docs/project-analysis.md` / `test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`：**19 → 20 条**）。
+顺带修掉一处**既有漂移**：`docs/ui.md` §3.2 的 tooltip 行还写着"`aria-describedby` 关联"，
+而 `4034862` 的重做已把它改成 `aria-hidden="true"`、不挂 `aria-describedby`（代码为准）。
+
+**验证（本轮实测）**：
+
+- 端点（本地 dev server，真 HTTP）：新建 200 ✓、同文本重发 200 且 hash/id 相同 ✓、非 JSON 415 ✓、
+  缺 `text` 400 `text_required` ✓、1 MiB + 1 字节 400 `text_too_large` ✓、空文本 200 ✓、
+  **`/SyncClipboard.json` 前后逐字节相同**（剪贴板没被动）✓。
+- 浏览器（真实 Chromium，1440×900）：打开长文本预览 → 「编辑」→ 改字 → 「保存」 →
+  框**不关**、正文换成新文本、说明行报出正确字符数（与屏幕上那段一致）、列表在背后刷新 ✓；
+  未改字保存 → **零请求**（拦截 `window.fetch` 计数为 0）✓；编辑态 Esc → 只退编辑、框仍开 ✓；
+  1.1 MB 的记录 → 「编辑」disabled 且 `title` 给出原因 ✓；让 POST 失败 → 就地报错、仍留在编辑态、
+  内容完整保留 ✓（截图与读数见本轮对话）。
+
+
 

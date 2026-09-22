@@ -184,8 +184,8 @@ Worker
 | `js/components/list.js` | 结果区：表格、行、**四个固定槽位的行内动作**（预览/复制/下载/删除，缺失的动作放等宽占位——同一动作在每行的位置恒定；文本行的第 3 槽分两支：有原文件是「下载」（原字节+原名）、内联文本是「下载文本」（正文存成 `.txt`））、排序表头、选择条（Shift 范围选择；批量按钮带**进行中态**）、**一键复位筛选**、空状态；**同一视图内的刷新按行对账**（内容未变的行不重建，见 §3.3） |
 | `js/components/row-content.js` | 结果行的行内内容：缩略图（含降级与 512 KiB 阈值）、状态徽标、收藏/置顶开关的字段与文案；从 `list.js` 拆出——对账、选择与焦点仍在那份文件里 |
 | `js/components/pagination.js` | 范围文本、上一页/下一页、跳页（聚焦全选、回车后清空并交还焦点；只有一页时隐藏跳页） |
-| `js/components/preview.js` | 预览对话框（文本全文 / 图片原图 / 不可用态）；点背景关闭、打开时焦点落在主操作、长文本先给加载态；主操作文案与行内统一（「复制文本」「下载文本」「复制图片」「下载」） |
-| `js/components/tooltip.js` | **hover 预览浮层**（2026-09-21 起 V1 唯一实现）：悬停 150ms 出现、只在内容被截断时出、到达并停住（可移入滚动/复制）、`aria-describedby` 关联、触屏不触发（见 §3.3 硬约束 #26） |
+| `js/components/preview.js` | 预览对话框（文本全文 / 图片原图 / 不可用态）；点背景关闭、打开时焦点落在主操作、长文本先给加载态；主操作文案与行内统一（「复制文本」「下载文本」「复制图片」「下载」）。**2026-09-22（ADR D30）起文本多一个「编辑」态**：两态机 预览 ⇄ 编辑（等宽 `<textarea>`、页脚换「取消 / 保存」、保存 = 新建一条记录、Esc 只退编辑不关框，见 §3.3 #29） |
+| `js/components/tooltip.js` | **hover 预览浮层**（2026-09-21 起 V1 唯一实现）：悬停 150ms 出现、只在内容被截断时出、到达并停住；**纯视觉、不接收指针事件**（`pointer-events: none`）且 `aria-hidden="true"`（不挂 `aria-describedby` —— 完整文本本来就在 DOM 里，取全文的可访问出口是行内「预览」；见 §3.3 硬约束 #26） |
 | `js/components/confirm.js` | 确认对话框（销毁性操作前问一句）：请求进行中留在对话框内、失败就地显示原因可重试；**结算不依赖 `close` 事件**（见 §3.3） |
 | `js/components/toast.js` | 反馈层：瞬时提示（离场动画、最多 4 条）+ **原地状态** `setPending` / `flashSuccess`（行内按钮与对话框按钮共用，见 §3.3）；错误提示可带一个**动作**（目前是「重试」，带动作时停留 10 秒，见 §58.4） |
 | `js/components/info.js` | 部署信息 / 维护面板对话框：① 客户端该填什么地址（尾斜杠、`/dav` 这类第一个卡点）；② 时钟差（> 5 分钟会让官方客户端中止历史同步，故本地先提醒）；③ 清理状态与数据完整性自检；④ 保留策略在线调整（上界 1 年 / 100 万条，与 `src/ui/maintenance.ts` 逐字同值）；⑤ 危险操作。合成一个面板是因为「这台服务器现在怎么样」本来就是同一个问题 |
@@ -408,6 +408,31 @@ Worker
     判据：`confirm.js` 的 busy 分支 + `api.js` 的 `isAbortError`/`aborted` + `main.js` 的 aborted 分支 +
     `messages.js` 的 `batchAbortedText`（两版逐字一致）。
 
+29. **预览框里的「编辑」是两态机 预览 ⇄ 编辑，保存 = 新建一条记录**（2026-09-22，ADR D30，
+    `progress.md` §130；`grilling` 逐问定案）：
+    · **只对 `Text` 开放**（`File`/`Image`/`Group` 没有"编辑正文"这回事，那是下载/预览的活）。
+    · **保存的是新记录，不是改这一条**：文本记录的 `hash = SHA256(utf8(正文))`，正文一改 hash
+      必变 ⇒ 在协议模型里它就是**另一条记录**。服务端走 `addRecordDto`，**只广播
+      `RemoteHistoryChanged`、不碰当前剪贴板** ⇒ 其它设备只是多一条历史，不会有人被迫换剪贴板。
+      「编辑」按钮的 `title` 就把这句写出来（"保存成一条新记录，当前剪贴板不受影响"）。
+    · **保存后不关框**：正文换成刚保存的那段、上方给一条「已保存为新记录（N 个字符）。原来那条
+      仍在历史里，列表已刷新。」的就地说明（`.dialog__note`），列表在框**背后**静默刷新。
+      复制/下载一律跟着**屏幕上这段**走（`currentText` 是唯一来源）——不许出现"刚存完却复制到旧文本"。
+    · **`<textarea>` 的「没改字」判据必须先归一化行尾**：`<textarea>` 的 `value` 会把 CRLF 折成 LF
+      （HTML 规范的 API value），而记录里存的常常就是 CRLF（官方客户端从 Windows 剪贴板发出的正文）。
+      直接比会得出"改过"，从而让**只点一下保存**凭空生成一条"只差行尾"的新记录（实测踩到）。
+    · **Esc 在编辑态只退出编辑、不关对话框**（`cancel` 事件里 `preventDefault()`）：一段几千字的
+      编辑不该被一个 Esc 丢掉。非编辑态的 Esc 行为不变（关框）。
+    · **`> 1 MiB` 不给编辑**：按钮 `disabled` **且带 `title` 说明原因**（"正文超过 1.0 MB，在浏览器里
+      编辑会卡住；请用「下载文本」在本地编辑。"）—— 禁用不带原因等于把用户堵死在这里。
+      上限与服务端 `UI_TEXT_CREATE_MAX_BYTES` 同值（纵深防御）。
+    · **保存失败留在编辑态**：原因**就地**渲染在 `<textarea>` 正下方（`.alert--error`，`role="alert"`），
+      用户改的内容一个字不动，可以改完再存一次（`components.md` 的 error 格：信息挨着控件、
+      被关联、不靠颜色单独传达）。
+    判据：`preview.js` 的 `enterEdit`/`exitEdit`/`renderView`/`renderViewActions` + `main.js` 的
+    `createTextRecord` + `messages.js` 的 `editTooLargeText`/`textSavedNote`/`textSaveFailedText`
+    （两版逐字一致）+ `docs/ui.md` §5 的 `POST /ui/api/history` 行。
+
 > 前台另有两条与本轮无关但同样承重的旧约定：正文一律走 `textContent`（`dom.js` 不提供插入 HTML 的途径，见 §7）；行入场只在新视图播放（轮询刷新不重放，避免「幻灯片式入场」）。
 
 ---
@@ -476,6 +501,7 @@ Worker
 | GET | `/ui/api/history/:type/:hash` | 单条元数据（**正文完整**） | 400/404 |
 | GET | `/ui/api/history/:type/:hash/data` | 数据文件；`?download=1` 走附件。**支持 Range**（单区间 206 + `content-range` + `accept-ranges`；后缀区间 `bytes=-n`；不可满足 → 416 + `bytes */size`；多段 → 按 200 全量回退；协议侧的 `/file/{name}` 与 `/api/history/{id}/data` **有意忽略 Range**，见 F29b） | 404 `not_found` / 404 `data_missing` |
 | PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`） | 400/404/409 |
+| POST | `/ui/api/history` | **新建一条文本记录**（预览框「编辑」保存时用，ADR D30）：`{text}` → 落库并**回读**该条，回 `toUiItem(entity)`（与 PATCH 同形，前端复用同一个归一化函数）。**只认 Text** —— File/Image/Group 没有"编辑正文"这回事。走协议 `POST /api/history` 的同一条写路径 `addRecordDto`，因此只广播 `RemoteHistoryChanged`、**不碰当前剪贴板**（没有设备会被迫换剪贴板）；`version` 取 **0**（客户端重传同文本时 `shouldUpdate` 的 `newVersion >= oldVersion` 才成立，写 1 会让随后的重传被判冲突）；正文上限 **1 MiB**（`UI_TEXT_CREATE_MAX_BYTES`，前端在按钮上先拦，超限时「编辑」是 disabled + 说明，这条是纵深防御）；**只接受 `application/json`** | 400 `text_required` / 400 `text_too_large` / 400 `invalid_request` / 415 |
 | POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（**单次 ≤100 条**，逐条走同一条写路径；**有界并发 10**（2026-09-21：串行是瓶颈——生产实测 100 条删除 66s，并发后 ~5s；总量子请求不变、仍在 1000 上限内）；更多由界面按 100 分片串行发）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
 | POST | `/ui/api/history/batch-meta` | 批量取记录（**含完整正文**）：`{items:[{type,hash}]}`（**单次 ≤100 条**，超出由界面分片串行发）→ `{items:[完整 HistoryRecordDto]}`。用于「选中多条 → 一起复制/下载」——列表里的正文被服务端截断到 500 字符，而逐条走单条端点是 O(N) 次请求；**只接受 `application/json`**（与 batch-update / clear 同一条纵深防御） | 400 / 415 |
 | POST | `/ui/api/history/batch-purge` | 回收站的**彻底删除**：`{items:[{type,hash}]}`（**单次 ≤100 条**）→ `{purged, failed}`。**本地纯硬删**：只删 `IsDeleted != 0` 的行（判据写在 SQL 里 ⇒ 活跃记录删不掉、不许绕过回收站）；**不广播**（理由同 clear 的三条）、**每条顺带清掉它的数据目录**（+1 次 R2 列举）—— 2026-09-22（ADR D29）起回收站里是真数据，彻底删除的语义就是立刻连字节一起没。上游没有这个能力（它的硬删是 30 天定时任务），属本站自己的面，`docs/protocol.md` §10 无需登记 | 400 / 415 |

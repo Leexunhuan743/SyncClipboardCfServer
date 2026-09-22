@@ -333,7 +333,7 @@ flowchart TD
 | **后台清理** | `cleanup.test.ts`, `cleanup-budget.test.ts` | 800 次子请求记账模型、保底配额、游标续跑、孤儿目录回收 |
 | **查询与目标** | `query-filters.test.ts`, `next-target.test.ts` | 复杂组合 SQL 过滤（类型位掩码、排序方向、时间范围）与焦点切换边界测试 |
 | **WebUI 契约** | `ui.test.ts`, `ui-logic.test.ts`, `ui-guard.test.ts`, `ui-input.test.ts`, `ui-contract.test.ts`, `ui-activity.test.ts` | 多列排序、回收站恢复边界、跨版本文案一致性、挂载点动态发现 |
-| **防漂移守卫** | `docs.test.ts` | 只校验**能从文件系统数出来**的量：5 份现状文档（`README.md`/`AGENTS.md`/`docs/design.md`/`docs/ui.md`/`.github/workflows/deploy.yml`）声明的**套件数（22）**、`docs/ui.md` 的**资源数（88）**、以及 `docs/design.md` 的套件清单是否逐个覆盖实际套件。⚠️ **端点表、目录树、挂载点、写库套件名单都不在它管辖内** —— 挂载点由 `ui-guard.test.ts` 动态发现守卫，「写库套件」是各套件自己调用 `assertWritableTarget`（见 §9.3） |
+| **防漂移守卫** | `docs.test.ts` | 只校验**能从文件系统数出来**的量：5 份现状文档（`README.md`/`AGENTS.md`/`docs/design.md`/`docs/ui.md`/`.github/workflows/deploy.yml`）声明的**套件数（22）**、`docs/ui.md` 的**资源数（85）**、以及 `docs/design.md` 的套件清单是否逐个覆盖实际套件。⚠️ **端点表、目录树、挂载点、写库套件名单都不在它管辖内** —— 挂载点由 `ui-guard.test.ts` 动态发现守卫，「写库套件」是各套件自己调用 `assertWritableTarget`（见 §9.3） |
 
 ### 9.3 安全防护网（`test/support/target-guard.ts`）
 7 个写库套件（`protocol`, `fix-regressions`, `transports`, `signalr`, `cleanup`, `query-filters`, `ui`）在文件顶层调用 `assertWritableTarget(BASE)`：目标主机不属于 `127.0.0.1` / `localhost` / `::1` / `[::1]` / `0.0.0.0` **且**未设 `ALLOW_REMOTE_TARGET=1` 时**直接抛错终止**（连 `beforeAll` 都不会执行），杜绝误向线上实例执行测试导致数据损坏。*(出处：`test/support/target-guard.ts`)*
@@ -344,7 +344,7 @@ flowchart TD
 
 ### 10.1 文档体系分工
 - `README.md`：面向使用者与运维的白描指南（部署、客户端配置、网络、排障）；
-- `docs/design.md`：架构总览与核心架构决策记录（**ADR D1–D20，共 21 行** —— D17 按主题并立两行：界面定位 / 请求体上限）；
+- `docs/design.md`：架构总览与核心架构决策记录（**ADR D1–D30，共 31 行** —— D17 按主题并立两行：界面定位 / 请求体上限）；
 - `docs/protocol.md`：协议唯一权威契约，附带与上游源码行级比对的差异登记表（§10）；
 - `docs/ui.md`：Web 界面设计、安全头策略、接口契约与来源融合清单；
 - `docs/progress.md`：按轮次记录的开发、审计与性能调优历史曲线；
@@ -352,8 +352,8 @@ flowchart TD
 
 ### 10.2 工程红线与规范（`AGENTS.md`）
 1. **代码与文档同改**：责任范围是 `AGENTS.md` §1 那张同步表（**端点表、目录树、令牌表、差异登记表都在守卫之外**，靠人逐行过）。门禁只机械盯住其中一部分：
-   - `test/docs.test.ts` → 套件数（22）、`public/` 资源数（88）、`docs/design.md` 的套件清单；
-   - `test/ui-guard.test.ts` → 三个界面挂载点（`run_worker_first` ×2 + `isUiAsset` ×1 + `_headers` ×2，挂载点集合从 `public/` **动态发现**）、`/ui/api/*` 端点清单（`EXPECTED_API_ROUTES`，19 条）、V1 与 V2 的 `messages.js` 正文对等、V1 预载清单 == import 闭包、`/ui/api/*` 的注册顺序（未认证一律 401）。
+   - `test/docs.test.ts` → 套件数（22）、`public/` 资源数（85）、`docs/design.md` 的套件清单；
+   - `test/ui-guard.test.ts` → 三个界面挂载点（`run_worker_first` ×2 + `isUiAsset` ×1 + `_headers` ×2，挂载点集合从 `public/` **动态发现**）、`/ui/api/*` 端点清单（`EXPECTED_API_ROUTES`，20 条）、V1 与 V2 的 `messages.js` 正文对等、V1 预载清单 == import 闭包、`/ui/api/*` 的注册顺序（未认证一律 401）。
 2. **两套前端定位红线**：`/ui_v1/` 为默认产品面，禁止跨版引用 `/ui_v2/`（V1 自包含）；两版同名的 `messages.js` 正文必须逐字一致（对等守卫断言；文件头**有意不同**）。
 3. **完成定义（DoD，`AGENTS.md` §2 共五条）**：① `tsc --noEmit` 0 错；② eslint 0 告警（范围含 `test/manual`）＋ 4 个 `test/manual/*.mjs` 过 `node --check`；③ 在**端口 8787** 的 dev server 上 **22 个套件全过**；④ §1 同步表逐行核对；⑤ **改前端必须用真实浏览器量一次**（`test/manual/probe.mjs` / `probe-ui-v1.mjs`：零 console 错误、零失败请求）。
 - **出处**：`AGENTS.md` §1–§2。
