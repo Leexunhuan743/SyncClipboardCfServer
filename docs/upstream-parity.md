@@ -132,10 +132,16 @@
 ### 3.2 数据与状态流转
 
 - `ShouldUpdate` 逐字等价（含阈值与两个比较分支）。
-- 软删/硬删/广播/删数据目录的**触发点与顺序**一致：软删 → 广播 `RemoteHistoryChanged` + 删数据目录；
-  硬删不广播；`MarkForDeletion` 后 `Version++`、`LastModified=now`。
+- 软删/硬删/广播的**触发点与顺序**一致：软删 → 广播 `RemoteHistoryChanged`；硬删不广播；
+  `MarkForDeletion` 后 `Version++`、`LastModified=now`。
+  ⚠️ **"删数据目录"这一环自 2026-09-22（ADR D29）起有意不同**：上游 `DeleteProfileDataIfNeed`
+  （`HistoryService.cs:80` 的 `Update`、`:328` 的 `UpdateExistingRecordDto`、`:387` 的
+  `AddNewRecordDto`）在 `IsDeleted` 为真时**立刻**删工作目录，本实现**保留**数据到"真的没了"那一刻
+  （30 天硬删 /「彻底删除」/「清空回收站」）—— 否则「回收站」对图片/文件是单向门。
+  逐条登记见 [`protocol.md`](protocol.md) §10。
 - `Update`（PATCH）：`dto.Version ??= existing.Version + 1`、`dto.LastModified ??= UtcNow`、
-  判定失败 → 409 回服务器当前值、`IsDelete=false` 且已删且有数据文件 → 404 —— **逐条一致**。
+  判定失败 → 409 回服务器当前值 —— 逐条一致；**末了一条守卫是有意去掉的**（同一处登记）：
+  上游「`IsDelete=false` 且已删且有数据文件 → 404」在本实现**允许恢复**（数据保留了，恢复就该成功）。
 - `AddRecordDto`（POST）：既有记录分支只拷元数据（`UpdateEntityFields` 只含 CreateTime/LastAccessed/
   LastModified/Stared/Pinned/Version/IsDeleted）；新增分支 `IsLocalDataValid(true)` 失败 → 400。
 - `AddProfile`（PUT 复用/复活分支）：上游只覆盖 `LastAccessed/IsDeleted/LastModified/TransferDataFile/FilePaths`

@@ -10843,3 +10843,68 @@ size 17 ✓。**残留差异（无法恢复的那部分）**：`CreateTime/LastA
 **代价与边界照实记**：只碰 `opacity` 与 4px `translate`（不动布局、不推挤表头、不影响它自己的吸顶）；
 静止态就是终态（`opacity: 1`、`translate: none`）⇒ 关掉动效时它照旧直接出现，信息一个不少。
 **只做出现、不做离场**：离场要延后隐藏（JS 定时器），而"取消选择"是用户主动动作、当场消失才跟手。
+
+## 152. 全天 26 笔提交的**独立复审**与其后的修复轮（2026-09-22）
+
+**做了什么**：用户要求"从各个方面全面详细完善地审核今天的全部 commit"。范围 = `133c278..3532fdf`
+（26 笔、51 文件、+3703/−621）。四条轴：服务端语义、前端行为、测试守卫、文档一致性。
+**先独立复核再下结论**（不引用提交信息里的自评）：重跑 tsc / eslint（含 `ui_shared`）/ 四个
+`node --check` / 全量套件（**22 套件 445 用例全过**）；三个真实浏览器探针（V1 1440 findings=0、
+V1 900 卡片档 findings=0、V2 1440 problems=0，三者零 console 错误、零失败请求）；CI run
+`35701288549` completed/success；逐条对账跨文件不变量 —— 端点 20 条（源码 15 + maintenance/login 段 5，
+与 `EXPECTED_API_ROUTES` **集合一致、零差集**）、`public/` 资源 85 与 ui.md §3 相符、两份 `messages.js`
+从首个 import 起 md5 相同、`progress.md` 152 个 `##` ↔ `progress-index.md` 151 条逐条相等、
+`icons.js` 33 键 = 23 共用 + 4 只 V1 + 6 只 V2（**零死键**，被删的 `arrowDown`/`external` 零引用）。
+
+**复审抓到的问题**（按严重度）与处置 —— 全部在本节所在这一轮修掉：
+
+1. **`purgeTrash` 的 SELECT→DELETE→清扫窗口会多删**（中）：`purgeDeletedRecords()` 一度写成
+   "先 `SELECT Type,Hash`、再 `DELETE`"，而 `purgeTrash` 照单清扫 R2。两句之间的间隙里若有设备把
+   某条**恢复**成活跃（`IsDeleted = 0`），它躲过了 DELETE（行还在）却仍在 SELECT 名单里 ⇒ 它的数据
+   被扫掉（行在、字节没了，不可恢复）。这与 `clearAll()` 早就写下的 **F5 纪律**（"单条
+   `DELETE … RETURNING` 保证读到的集合就是被删的行"）相悖 —— 属于**退回**。改成
+   `DELETE … WHERE IsDeleted != 0 RETURNING Type, Hash`：窗口消失、还少一次 D1 子请求；
+   只 RETURNING 两列故不触发原注释担心的"整批行进内存"。
+2. **D29 的软删语义只落在 PATCH**（中）：`profile.addRecordDto` 的两处 `deleteDataIfNeed`
+   （上游 `HistoryService.cs:328/387` 的忠实移植）仍在软删时清目录 ⇒ 经 `POST /api/history`
+   软删的记录进回收站后**没有数据**，与"回收站要能连数据拿回来"相反，而 §10 的登记字面只写了 PATCH。
+   **整段删掉那两处 + 死函数**（原处留一条"别照上游加回来"的说明），并把 §10 那行改写为
+   "三条写路径一致保留"。
+3. **六处仍以"已删记录没有数据"为前提的活文档/注释**（中）：`upstream-parity.md` §3.2 两行
+   （"触发点与顺序一致""逐条一致"）、`frontend-checklist.md` §4（"带数据文件=立即清除、不可恢复"）、
+   `ui-v2-design.md` §16.5（整段"不可恢复的记录禁用并说明原因"）、`design.md` 的 D23/D26 理由从句、
+   `ui.md` §5 的 clear 行（trash 分支"只删已删除行"—— 现在还会扫目录）、`routes.ts` 的
+   `byTypeActive` 理由、`main.js` 的 `restoreItem` 头注释与 `purgeItem`/`emptyTrash` 两条成本注释
+   （都写着"不碰 R2"）、`ui.test.ts` Range 的 afterAll 注释。
+   **同一条纪律**：D29 是语义反转，只搜"19→20"这类**数字**不够，旧**口径**要全文搜。
+   逐条改完（D23/D26/D31 那几处按仓库惯例写"修订注"而不是改写历史）。
+4. **新写端点与新清扫没有守卫**（中）：`POST /ui/api/history` 此前只有路由清单、没有功能用例；
+   `batch-purge` 那条用例用的是**无数据文件**的 Text ⇒ 只证明"行没了"。补 4 条：
+   新端点的 200（回读形状 + `type=0` + hash 与协议口径一致 + `version=0`）与两条 400
+   （`text_required` / `text_too_large`）；"彻底删除后**字节**真的从 R2 没了"（可观测量取
+   `/api/history/statistics` 的 `totalFileSizeMB` —— 它来自 R2 实列，2 MiB 记录的前后差 ≥ 2）；
+   `purgeTrash` 的单元级契约（只删已删行 + 按同一集合清扫 + **活跃记录的数据不动**）；
+   `POST /api/history` 带 `isDeleted=true` **保留数据**（修复前会删，故这条同时是回归）。
+5. **V2 批量条的「恢复」仍按 `hasData` 禁用**（低-中）：`ui/batchbar.js` 只跟着改了标签，
+   `items.some(item => item.hasData !== true)` 留在原地 ⇒ 选中"全带数据文件"的回收站记录时按钮是灰的，
+   而服务端允许。改成 `set(buttons.get('restore'), deleted)`，与单条那处（`rowops.js`/`menus.js`）同判据。
+6. **探针断言空转**（低）：`states.mjs` 里 `const expected = trash.firstDisabled ? 'undo' : 'undo'`（两分支同值）
+   与"被禁用时必须含'不可恢复'"（D29 之后永不失败）。改成钉新语义"回收站的「恢复」**不得禁用**"。
+7. **`/ui/api/integrity` 的适用范围被注释说大了**（低）：它只扫**活跃**记录
+   （`listActiveRecordsWithData`），而当天新增的一条注释把"行还在、数据没了"写成"正是自检能查出来的"。
+   注释限定为活跃记录（端点范围本身是有意的：界面文案"可以搜索后移动到回收站"就建立在它之上）。
+8. **「彻底删除」确认框只说"元数据行"**（低）：D29 起"彻底"多出来的正是那份数据文件，而按钮 `title`
+   早就写了"数据文件一并清除"。两版 `messages.js` 同改成"（元数据行及其数据文件）"，
+   `ui-logic` 的两条断言加 `toContain('数据文件')`（对等守卫同时盯着两份逐字一致）。
+
+**没改的、以及为什么**（如实登记，不是遗漏）：
+- **`byTypeActive` 的口径**：D23 把它定为"活跃口径"，理由（"已删记录不占 R2"）在 D29 之后失效，
+  且它今天**已无前端消费方**（统计条 2026-09-17 起不列类型明细）。改口径（新增 `byTypeAll`）会动
+  接口契约 + 测试 + 文档，属产品决定；本轮只把注释与 `ui.md` 的说法改成事实（含"口径不同是有意的"）。
+- **`/ui/api/integrity` 不扩到已删记录**：扩了要连界面文案与出口一起改（回收站里的记录不能"移动到回收站"），
+  且新增数据面；本轮只订正注释。
+
+**门禁（修复后重跑）**：tsc 0 错；eslint 0 告警；四个 `node --check` 全绿；
+`test/fixes.test.ts` 57 用例、`test/ui.test.ts` 50 用例、`test/ui-logic.test.ts` 全过；随后全量 22 套件复跑。
+新增用例的失败过一次并修掉：`withData - after` 用两位小数口径比较时出现 `1.9999999999999998`
+（4.01 − 2.01 的浮点尾差）⇒ 差值先 `Math.round(x*100)/100` 再比。
