@@ -37,22 +37,21 @@
 /* ---- 顶栏折叠（2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」）----
  *
  * 形态：**整条滑出**（`translateY(-100%)`，合成层位移、不动布局），省下的 56px 让给头栏与表头
- * —— 那两条的吸顶偏移改走 `--header-h-effective`，折叠时归 0，因此**不会留空带**。
+ * —— 那两条的吸顶偏移改走 `--header-h-effective`，折叠时归 0，因此**不留空带**。
  *
  * 触发（`main.js` 的 `syncHeaderCollapse()`）：向下滚且离开顶部 **120px** 时折；一向上滚立刻展开；
  * 离顶部 8px 内也一律展开（第二道保险，免得小幅回弹时开合抖动）。
  *
- * **有选中时不折**（用户选的护栏：那一刻头栏里的批量条正开着，要点「移动到回收站」，
- * 顶栏同时滑出去是多余的动作）。这一条**纯 CSS** 表达 —— `:not(:has(.results__selection-count))`
- * 与"选中态"的判据同源（那条计数在不在），于是"选中 ⇒ 顶栏自动回来"不需要任何 JS 钩子。
- *
- * 过渡在 `motion.css`（动效层唯一归属），`prefers-reduced-motion` 下瞬时到位。
- * 实测与判据见 `docs/progress.md` §158 与探针的 `HEADERFOLD`。 */
-html[data-header="hidden"]:not(:has(.results__selection-count)) .app-header {
+ * ⚠️ **多选时不弹回来**（2026-09-22 用户第二次定形，推翻了同日早先的"选中时不折"）：带选中滚动时
+ * 勾一行，整条吸顶链会从 `0/45` 弹回 `56/101` ⇒ **内容被推下 56px**，与"选中前后零位移"（第 33 条）
+ * 自相矛盾；而批量按钮在**结果区头栏**里、不在顶栏 ⇒ 折叠顶栏不影响那句"正要点移动到回收站"。
+ * 于是折叠态只由**滚动**决定，与选择集无关（早先那条 `:not(:has(.results__selection-count))`
+ * 守卫已删除）。 */
+html[data-header="hidden"] .app-header {
   transform: translateY(-100%);
 }
 
-html[data-header="hidden"]:not(:has(.results__selection-count)) {
+html[data-header="hidden"] {
   --header-h-effective: 0px;
 }
 

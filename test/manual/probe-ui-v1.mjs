@@ -1399,8 +1399,9 @@ try {
   //   ① 向下滚且离开顶部 120px 之后**整条滑出**（`transform` 把它推到视口上方）；
   //   ② 头栏与表头**跟着上移**：顶栏原来占的那 56px**不留空带**（头栏贴 0、表头贴 45）；
   //   ③ 向上滚**立刻展开**（回到顶部同理）；
-  //   ④ **有选中时不折** —— `data-header` 可以仍是 hidden，但视觉上必须回来（那条由 CSS 的
-  //      `:not(:has(.results__selection-count))` 表达，故这里读的是几何而不是属性）。
+  //   ④ **多选时不弹回来**（2026-09-22 用户第二次定形）：折叠态下勾一行，顶栏仍滑出、
+  //      头栏仍贴 0、表头仍贴 45 ⇒ **零位移**（早先"选中时不折"那版会让整条链弹回 56/101、
+  //      把内容推下 56px，与第 33 条的"选中前后零位移"自相矛盾）。
   const headerFold = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const box = (sel) => {
@@ -1456,7 +1457,6 @@ try {
     // 故这两条判据必须分档 —— 第一版忘了分，390 档报了两次假阳性（`progress.md` §158 记着这次）。
     const cardMode = (s.down900?.vw ?? 1440) <= 860;
     const thCollapsedOk = cardMode ? (s.down900?.th === null || s.down900.th.top < 0) : s.down900?.th?.top === 45;
-    const thExpandedOk = cardMode ? (s.selected?.th === null || s.selected.th.top < 0) : s.selected?.th?.top === 101;
     const hidden = (x) => x?.header?.top <= -56;
     check('向下滚离开顶部 120px 之后顶栏整条滑出', s.down900?.attr === 'hidden' && hidden(s.down900), JSON.stringify(s.down900));
     check('顶栏滑出后头栏贴到顶（不留空带）', s.down900?.head?.top === 0, '头栏 top=' + String(s.down900?.head?.top));
@@ -1466,16 +1466,22 @@ try {
       '表头 top=' + String(s.down900?.th?.top) + ' 视口宽=' + String(s.down900?.vw),
     );
     check('向上滚立刻展开顶栏', s.up?.attr !== 'hidden' && s.up?.header?.top === 0, JSON.stringify(s.up));
-    // 选中态抑制折叠之后，整条吸顶链回到**未折叠态**：顶栏可见（top 0）、头栏 56、表头 101。
-    // ⚠️ 注意 `attr` 此刻仍是 `'hidden'` —— 抑制由 **CSS** 的 `:not(:has(…))` 表达，
-    // JS 的滚动状态不动（这正是"不需要 JS 钩子"的实现方式，也是这条判据要钉住的不对称）。
+    // ④ 多选时**不弹回来**：折叠态下勾一行，顶栏仍滑出、头栏仍贴 0、表头仍贴 45 ⇒ **零位移**。
+    // （判据必须分档：卡片档表头随页面滚走，见上面那两条。）
+    const thSelectedOk = cardMode ? (s.selected?.th === null || s.selected.th.top < 0) : s.selected?.th?.top === 45;
     check(
-      '有选中时不折顶栏（CSS 的 :not(:has(…)) 判据），且整条吸顶链回到未折叠态',
+      '多选时不弹回顶栏（勾一行仍保持折叠，零位移）',
       s.selected?.attr === 'hidden' &&
-        s.selected?.header?.top === 0 &&
-        s.selected?.head?.top === 56 &&
-        thExpandedOk,
+        hidden(s.selected) &&
+        s.selected?.head?.top === 0 &&
+        thSelectedOk,
       `attr=${String(s.selected?.attr)} header.top=${String(s.selected?.header?.top)} head.top=${String(s.selected?.head?.top)} th.top=${String(s.selected?.th?.top)} 找到可见行=${String(s.selectedFound)}`,
+    );
+    // 收尾状态：取消选择 + 回顶部 ⇒ 顶栏回来（回归到未折叠态）
+    check(
+      '取消选择并回到顶部后顶栏回来',
+      s.reset?.attr !== 'hidden' && s.reset?.header?.top === 0,
+      JSON.stringify(s.reset),
     );
   }
 

@@ -155,7 +155,7 @@
    * （2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」；状态与护栏见 layout.css 与
    * motion.css，触发逻辑在 main.js 的 `syncHeaderCollapse()`）。
    * ⚠️ 默认值只写在这里；折叠是**运行期状态**，由 layout.css 那条
-   * `html[data-header="hidden"]:not(:has(.results__selection-count))` 规则改写它。 */
+   * `html[data-header="hidden"]` 规则改写它（**与选择集无关** —— 多选时不弹回来，见那条的注释）。 */
   --header-h-effective: var(--header-h);
   /* 结果区头栏的高度（`.results__head` 的 `min-height`）。**必须只有一个来源**：
    * 它同时决定 ① 表头吸顶的偏移（选中态时头栏也吸顶，表头要再往下让一格）
