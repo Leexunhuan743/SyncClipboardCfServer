@@ -113,6 +113,32 @@ export function batchAbortedText(done) {
 }
 
 /**
+ * 「编辑」按钮在正文过大时的**禁用说明**（不是错误，是"这条为什么点不动"）。
+ * @param {string} limit 人类可读的上限（如 `1 MB`）
+ */
+export function editTooLargeText(limit) {
+  return `正文超过 ${limit}，在浏览器里编辑会卡住；请用「下载文本」在本地编辑。`;
+}
+
+/**
+ * 编辑保存成功后的**就地说明**：对话框**不关**，正文换成刚保存的那一段（ADR D30 的 Q3=c）。
+ * 必须说明"这是一条新记录、原来那条还在" —— 编辑的语义是新建（正文一改 hash 就变），
+ * 不写清楚用户会以为旧的那条被改掉了。
+ * @param {number} chars
+ */
+export function textSavedNote(chars) {
+  return `已保存为一条新记录（${chars} 个字符）。原来那条仍在历史里，列表已刷新。`;
+}
+
+/**
+ * 编辑保存失败时的就地说明（挨着控件、不靠提示条 —— `components.md` 的 error 格）。
+ * @param {string} reason 服务端/网络给的原因
+ */
+export function textSaveFailedText(reason) {
+  return `保存失败：${reason}。你改的内容还在这，可以改完再存一次。`;
+}
+
+/**
  * 清空历史的确认框文案。
  * @param {'trash'|'all'} scope
  */

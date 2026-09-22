@@ -74,6 +74,8 @@ const preview = createPreview({
   onCopyImage: copyImage,
   onDownload: downloadItem,
   onDownloadText: downloadTextItem,
+  // 预览框里的「编辑」：保存 = 新建一条文本记录（语义见 createTextRecord 的注释）
+  onEdit: createTextRecord,
   // 预览打开时把这一条写进 URL 的 hash（链接可分享），关闭时清掉——
   // 否则刷新页面会突然弹出上一次看过的记录。`#Text-<hash>` 也是深链接的入口（见 openDeepLink）。
   onClose: () => {
@@ -1188,10 +1190,13 @@ async function downloadItem(item) {
 //   · 没有（内联文本，对象存储里根本没有它）→ 把**正文**包成 `text/plain` 存成
 //     `<type>-<hash 前 8 位>.txt`。列表里的正文被截断到 500 字符，故 `textTruncated` 时必须先取全文
 //     （与复制、预览走同一条 `fetchFull`），否则会存下一个半截文件。
-async function downloadTextItem(item) {
+async function downloadTextItem(item, textOverride = undefined) {
   try {
     if (item.hasData) return await downloadItem(item);
-    const full = item.textTruncated ? await api.get(item) : item;
+    // 预览框会传**屏幕上那段**进来（编辑保存之后屏幕上是新文本、记录仍是旧那条）——
+    // 有它就照它写文件；没有才走老路取全文（列表那一槽「下载文本」走的是这条路）。
+    const full =
+      textOverride !== undefined ? { text: textOverride } : item.textTruncated ? await api.get(item) : item;
     if (!full) return false;
     const text = full.text ?? '';
     if (text === '') {
@@ -1209,6 +1214,25 @@ async function downloadTextItem(item) {
       action: { label: '重试', run: () => void downloadTextItem(item) },
     });
     return false;
+  }
+}
+
+// 编辑预览里的文本 → **新建一条记录**（2026-09-22，ADR D30）。
+//
+// 语义要点（用户的四个决定）：正文一改 hash 就变 ⇒ 这是**另一条记录**，旧的原样留在历史里；
+// 服务端的当前剪贴板**不动**（`addRecordDto` 只广播 `RemoteHistoryChanged`）⇒ 其它设备只是多一条历史，
+// 不会有人被迫换掉自己的剪贴板。失败**抛错**：预览框会就地渲染原因并留在编辑态（内容不丢）。
+async function createTextRecord(_item, text) {
+  try {
+    await api.createText(text);
+    toasts.info('已保存为新记录');
+    // 新记录进列表：对话框是模态的，刷新在它背后完成（关框后就能看到）
+    await refresh({ silent: true });
+    void refreshStats();
+    return true;
+  } catch (error) {
+    if (handleAuthError(error)) throw new Error('会话已过期');
+    throw error instanceof Error ? error : new Error(String(error));
   }
 }
 

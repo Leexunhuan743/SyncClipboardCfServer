@@ -72,6 +72,7 @@ const EXPECTED_API_ROUTES: readonly string[] = [
   'POST /ui/api/logout',
   'GET /ui/api/session',
   'GET /ui/api/history',
+  'POST /ui/api/history',
   'GET /ui/api/history/:type/:hash',
   'GET /ui/api/history/:type/:hash/data',
   'PATCH /ui/api/history/:type/:hash',

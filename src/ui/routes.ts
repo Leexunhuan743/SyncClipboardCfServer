@@ -15,6 +15,10 @@ import { issueSession, clearSession } from './session';
 import { uiAuthMiddleware, authenticateUi } from './guard';
 import { parseProfileType, parseHistoryRecordUpdateDto, historySizeMB } from '../serialization';
 import { applyHistoryUpdate, clearAllHistory, purgeTrash } from '../historyOps';
+import { addRecordDto } from '../profile';
+import { textProfileHash } from '../hash';
+import { broadcast } from '../hub';
+import { ProfileType } from '../types';
 import {
   UiQueryError,
   listUiHistory,
@@ -47,6 +51,12 @@ const CLEANUP_META_KEY_LIST: string[] = [
 // lastError 的展示上限：这是**展示侧**自己的边界（不依赖上游自觉）——产出侧 cleanup.ts 已截到
 // 300 且压成单行，这里再夹一道，保证响应体永远不会带出成段的内部错误串（表名/约束/对象键）。
 const CLEANUP_ERROR_MAX_CHARS = 300;
+
+// 「编辑文本」保存时的体积上限（UTF-8 字节）。1 MiB 是**编辑器的**上限而不是协议的：
+// 协议侧的记录可以有 48 MiB，但把这个量级的正文塞进 `<textarea>` 只会把页面卡死
+// （前端同一条判据见 `preview.js` 的 `EDIT_MAX_BYTES` —— 两处必须一致，改一处就要改另一处）。
+// 超限时服务端回 400 `text_too_large`（前端在按钮上就拦下，正常走不到这里；这是纵深防御）。
+const UI_TEXT_CREATE_MAX_BYTES = 1024 * 1024;
 
 /**
  * 取整数值的查询参数。
@@ -453,6 +463,73 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
     return results;
   }
+
+  // POST /ui/api/history —— 新建一条**文本**记录（预览框里的「编辑」保存时用）。
+  //
+  // 为什么是"新建"而不是"改这一条"（ADR D30）：文本记录的 `hash = SHA256(utf8(正文))`，正文一改
+  // hash 必变 —— 在协议模型里它就是**另一条记录**（同 hash 才能覆盖）。于是这里走的是协议
+  // `POST /api/history` 的同一套写路径 `addRecordDto`：
+  //   · 它只广播 `RemoteHistoryChanged`（**不碰当前剪贴板**，`notifyProfile` 压根不会被调用）
+  //     ⇒ 其它设备只是多一条历史，不会有人被迫换掉自己的剪贴板；
+  //   · 官方客户端没有"编辑历史"这个概念（上游源码零命中），所以这次编辑对它们就是普通的新记录。
+  // `version` 取 **0**（= 客户端不带 version 时的默认）：`shouldUpdate` 在 5 分钟窗口内比的是
+  // `newVersion >= oldVersion`，若这里写 1，客户端随后重传同一条文本（带 0）会被判冲突而丢更新。
+  //
+  // 只认 Text（本轮范围）：File/Image/Group 没有"编辑正文"这回事，交给行内的下载/预览。
+  guarded.post('/ui/api/history', async (c) => {
+    if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/json')) {
+      await drainRequestBody(c.req.raw);
+      return Response.json({ error: 'unsupported_media_type' }, { status: 415 });
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return Response.json({ error: 'invalid_request' }, { status: 400 });
+    }
+    const text = (body ?? {}) as { text?: unknown };
+    if (typeof text.text !== 'string') {
+      return Response.json({ error: 'text_required' }, { status: 400 });
+    }
+    const bytes = new TextEncoder().encode(text.text).length;
+    if (bytes > UI_TEXT_CREATE_MAX_BYTES) {
+      return Response.json(
+        { error: 'text_too_large', detail: `${bytes} 字节，上限 ${UI_TEXT_CREATE_MAX_BYTES}` },
+        { status: 400 },
+      );
+    }
+
+    const { db, storage } = stores(c);
+    const now = Date.now();
+    const dto = await addRecordDto(
+      db,
+      storage,
+      {
+        hash: await textProfileHash(text.text),
+        type: ProfileType.Text,
+        text: text.text,
+        size: text.text.length, // 与 profile.ts 对 Text 的口径一致（`dto.text.length`）
+        createTime: now,
+        lastModified: now,
+        lastAccessed: now,
+        starred: false,
+        pinned: false,
+        version: 0,
+        isDeleted: false,
+      },
+      null, // 不带传输数据：正文就在 text 列里（官方客户端对普通文本也是这样）
+      {
+        notifyProfile: (p) => broadcast(c.env, 'RemoteProfileChanged', p),
+        notifyHistory: (h) => broadcast(c.env, 'RemoteHistoryChanged', h),
+      },
+    );
+    // 回读一次拿**实体**（`addRecordDto` 返回的是 DTO，而 `/ui/api` 的其它写端点一律回
+    // `toUiItem(entity)`）：1 次 D1 读换"与 PATCH 同一形状的响应"，前端可以复用同一个归一化函数。
+    // 同 hash 已存在时 `addRecordDto` 会走更新分支，回读拿到的正是落库后的最新状态 ✓。
+    const entity = await db.getByTypeAndHash(ProfileType.Text, dto.hash);
+    if (!entity) return Response.json({ error: 'not_found' }, { status: 500 });
+    return Response.json(toUiItem(entity));
+  });
 
   // POST /ui/api/history/batch-update —— 批量写（收藏 / 置顶 / 删除 / 恢复）
   //

@@ -12,14 +12,21 @@
 //    而不是先 Tab 过一遍。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
-import { formatAbsolute, formatSize, typeLabel, typeChipClass } from '../format.js';
+import { formatAbsolute, formatSize, charCount, typeLabel, typeChipClass } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 // 数据文件地址只在 `api.dataUrl` 里定义（前缀 + `download=1` 的拼法）：
 // 组件里再抄一遍，就是又一处「改了接口前缀、漏了这个文件」的机会。
 import { api } from '../api.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
+// 编辑态的三句**语义文案**（过大禁用的说明 / 保存成功的就地说明 / 保存失败的就地说明）：
+// 它们逐字对齐实现语义，故住在 messages.js（与删除确认同一纪律，两版逐字一致）。
+import { editTooLargeText, textSavedNote, textSaveFailedText } from '../messages.js';
 
-export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onClose }) {
+// 「编辑」的体积上限（UTF-8 字节），与 `src/ui/routes.ts` 的 `UI_TEXT_CREATE_MAX_BYTES` **必须一致**：
+// 前端拦在按钮上（超了直接禁用 + 说明），服务端那一条是纵深防御。改一处就要改另一处。
+const EDIT_MAX_BYTES = 1024 * 1024;
+
+export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onEdit, onClose }) {
   const title = el('h2', { class: 'dialog__title', id: 'preview-title' });
   const meta = el('span', { class: 'dialog__meta' });
   // 类型徽标也放进标题行：同一句「内容」在不同类型下是完全不同的东西
@@ -28,6 +35,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   const typeChip = el('span', { class: 'chip' }, [el('span', { class: 'chip__dot' }), typeChipLabel]);
   const body = el('div', { class: 'dialog__body' });
   const footer = el('div', { class: 'dialog__foot' });
+  // 编辑保存失败的就地错误盒（挂在 textarea 下面，`role="alert"` —— 与确认框、登录页同一套
+  // `.alert--error`；`components.md` 的 error 格要求"信息挨着控件、不靠颜色单独传达"）。
+  const editError = el('p', { class: 'alert--error', role: 'alert', hidden: true });
   const closeButton = el(
     'button',
     { class: 'icon-btn', type: 'button', 'aria-label': '关闭预览', onclick: () => dialog.close() },
@@ -51,6 +61,14 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 点背景关闭（点击落在 dialog 自身而不是其内容上时）
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) dialog.close();
+  });
+  // Esc：**编辑态下只退出编辑、不关对话框**（2026-09-22，ADR D30 的 Q4）—— 一段几千字的编辑
+  // 不该被一个 Esc 丢掉。`cancel` 是可取消事件，`preventDefault()` 就能拦住 UA 的关框行为
+  // （与 `confirm.js` 在途挡 Esc 是同一个手法）；非编辑态保持原样（Esc 关框）。
+  dialog.addEventListener('cancel', (event) => {
+    if (!editing) return;
+    event.preventDefault();
+    exitEdit();
   });
   // 关闭事件对外播一次（Esc、点背景、按钮关闭都会走到这里）。
   // 调用方用它收尾：例如清掉 URL 里的深链接 hash——否则刷新页面会突然弹出上一条看过的记录。
@@ -94,13 +112,17 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     discardFrame = requestAnimationFrame(tick);
   }
 
-  // 对话框里的操作按钮：与行内按钮同一套反馈（进行中 → 结果留在按钮上）
-  function actionButton({ icon, label, run, successLabel }) {
+  // 对话框里的操作按钮：与行内按钮同一套反馈（进行中 → 结果留在按钮上）。
+  // `disabled` / `title` 与 `list.js` 的同类按钮同义：**禁用必须带原因**（title 是"为什么点不动"
+  // 唯一的传达通道，见 components.css 里 `.btn[disabled]` 的注释）。
+  function actionButton({ icon, label, run, successLabel, disabled = false, title: titleText = null }) {
     const button = el(
       'button',
       {
         class: 'btn',
         type: 'button',
+        disabled,
+        title: titleText,
         onclick: async () => {
           if (isPending(button)) return;
           setPending(button, true);
@@ -151,7 +173,165 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     return el('div', { class: 'dialog__body dialog__body--flush' }, [image, missing]);
   }
 
+  // ===== 编辑态（2026-09-22，ADR D30）=====
+  //
+  // 两态机：**预览 ⇄ 编辑**。语义按用户的四个决定落地：
+  //   · Q1(a) 保存 = **新建一条记录**（正文一改 hash 就变，见 ADR D30），当前剪贴板不动；
+  //   · Q2    只对 `Text` 类型的记录开放（其余类型根本没有"编辑正文"这回事）；
+  //   · Q3(c) 保存后**不关框**：正文换成刚保存的那段、就地给一条「已保存为新记录」的说明，
+  //           复制/下载都跟着屏幕上的这段走（见 `currentText` 的用法）；
+  //   · Q4    等宽 textarea；**Esc = 退出编辑（不关对话框）**；> 1 MiB 不给编辑；允许改空；
+  //           内容没变就保存 = 什么都不发。
+  let currentItem = null;
+  // 屏幕上这段正文。它是**编辑保存后就地替换**的那份，也是复制/下载的唯一来源 ——
+  // 这样"屏幕上是什么、复制/下载就是什么"，不会出现"刚存完却复制到旧文本"的坑。
+  let currentText = '';
+  let savedNote = null; // 保存成功后的就地说明（下次 open 清掉）
+  let editing = false;
+
+  function renderView() {
+    body.className = 'dialog__body';
+    const children = [];
+    if (savedNote !== null) children.push(el('p', { class: 'dialog__note', text: savedNote }));
+    children.push(renderText(currentText));
+    body.replaceChildren(...children);
+  }
+
+  function renderViewActions() {
+    const item = currentItem;
+    const primary = [];
+    if (item.type === 'Text') {
+      // 编辑（2026-09-22，ADR D30）：放在最左（用户指定），右侧是既有的复制/下载。
+      // 正文过大时**禁用并说明原因**（1 MiB 上限，与服务端 `UI_TEXT_CREATE_MAX_BYTES` 一致）——
+      // 在 textarea 里放几十 MB 会把页面卡死，那时唯一可行的路径是「下载文本」。
+      const tooLarge = new TextEncoder().encode(currentText).length > EDIT_MAX_BYTES;
+      primary.push(
+        actionButton({
+          icon: 'edit',
+          label: '编辑',
+          disabled: tooLarge,
+          title: tooLarge
+            ? editTooLargeText(formatSize(EDIT_MAX_BYTES))
+            : '编辑这段文本（保存成一条新记录，当前剪贴板不受影响）',
+          run: () => {
+            enterEdit();
+            return true;
+          },
+        }),
+        actionButton({
+          icon: 'copy',
+          // 与行内动作同一个名字（动作标签一律"动词 + 对象"，见 list.js 的说明）。
+          // 预览里显示的本来就是全文，故"全文"两字不承担信息。
+          label: '复制文本',
+          run: () => onCopy(item, currentText),
+          successLabel: '已复制',
+        }),
+        // 文本也能下载（2026-09-18）：与行内那一槽同一个动作、同一个名字 ——
+        // 有数据文件时是"取回原文件"（叫「下载」，原扩展名保留），内联文本才是「下载文本」
+        // （产物是正文生成的 `.txt`，见 main.js 的 downloadTextItem）。放在这里是因为
+        // 用户已经在看这条记录的全文了，"存一份"是最自然的下一步。
+        // ⚠️ 传 `currentText`：编辑保存之后屏幕上是**新**那段，下载必须跟着屏幕走。
+        actionButton({
+          icon: 'download',
+          label: item.hasData ? '下载' : '下载文本',
+          run: () => onDownloadText(item, currentText),
+          successLabel: '已下载',
+        }),
+      );
+    } else {
+      if (itemIsImage(item)) {
+        primary.push(
+          actionButton({
+            icon: 'copy',
+            label: '复制图片',
+            run: () => onCopyImage(item),
+            successLabel: '已复制',
+          }),
+        );
+      }
+      primary.push(
+        actionButton({
+          icon: 'download',
+          label: '下载',
+          run: () => onDownload(item),
+          successLabel: '已下载',
+        }),
+      );
+    }
+    footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }), ...primary);
+    const first = footer.querySelector('.btn');
+    (first ?? closeButton).focus();
+  }
+
+  function enterEdit() {
+    editing = true;
+    dialog.dataset.editing = 'true';
+    const area = el('textarea', {
+      class: 'dialog__edit',
+      spellcheck: 'false',
+      // 可访问名与可见按钮同源（"编辑"这个动作的对象就是这段正文）
+      'aria-label': '编辑这段文本',
+    });
+    area.value = currentText;
+    body.className = 'dialog__body dialog__body--edit';
+    body.replaceChildren(area, editError);
+
+    const cancel = el('button', { class: 'btn', type: 'button', onclick: () => exitEdit() }, [
+      el('span', { class: 'btn__label', text: '取消' }),
+    ]);
+    const save = el('button', { class: 'btn btn--primary', type: 'button' }, [
+      el('span', { class: 'btn__label', text: '保存' }),
+    ]);
+    save.addEventListener('click', async () => {
+      if (isPending(save)) return;
+      const next = area.value;
+      // 「没改字」的判据必须**先把行尾归一**再比：`<textarea>` 的 `value` 会把 CRLF 折成 LF
+      // （HTML 规范的 API value），而记录里存的可能是 CRLF —— 官方客户端从 Windows 剪贴板
+      // 发出的正文就是 CRLF，服务端原样保存。不归一的话，**只点一下保存**也会比出"有变化"，
+      // 从而凭空生成一条"只差行尾"的新记录。
+      const unchanged = next === currentText.replace(/\r\n?/g, '\n');
+      if (unchanged) {
+        exitEdit();
+        return;
+      }
+      editError.hidden = true;
+      setPending(save, true);
+      try {
+        await onEdit(currentItem, next);
+        currentText = next;
+        savedNote = textSavedNote(charCount(next));
+        exitEdit();
+      } catch (error) {
+        // 就地报错（挨着控件、`role="alert"`），**留在编辑态**：用户改的内容还在，可以再存一次
+        editError.textContent = textSaveFailedText(error?.message ?? '未知错误');
+        editError.hidden = false;
+      } finally {
+        setPending(save, false);
+      }
+    });
+    footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }), cancel, save);
+
+    if (!dialog.open) dialog.showModal();
+    area.focus();
+    // 光标落到末尾：改一段已有文本，接着写比全选更常见
+    area.setSelectionRange(area.value.length, area.value.length);
+  }
+
+  function exitEdit() {
+    editing = false;
+    dialog.dataset.editing = 'false';
+    editError.hidden = true;
+    editError.textContent = '';
+    renderView();
+    renderViewActions();
+  }
+
   function open(item, { text = null, loading = false } = {}) {
+    currentItem = item;
+    currentText = text ?? item.text ?? '';
+    savedNote = null;
+    editing = false;
+    dialog.dataset.editing = 'false';
     title.textContent = item.type === 'Text' ? '文本内容' : (item.dataName ?? item.type);
     typeChip.className = `chip ${typeChipClass(item.type)}`;
     typeChipLabel.textContent = typeLabel(item.type);
@@ -181,13 +361,18 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     }
 
     if (item.type === 'Text') {
-      body.append(renderText(text ?? item.text));
-    } else if (itemIsImage(item)) {
+      renderView();
+      renderViewActions();
+      if (!dialog.open) dialog.showModal();
+      return;
+    }
+    if (itemIsImage(item)) {
       // 判据与行内缩略图、行内「复制图片」按钮同一份（理由见 row-content.js 的 buildThumb）：
       // 文件名叫 shot.png 的 File 记录同样是可显示的图片，不该落到下面的「不支持预览」分支。
       body.className = 'dialog__body dialog__body--flush';
       body.append(renderImage(item));
     } else {
+      body.className = 'dialog__body';
       body.append(
         el('div', { class: 'empty' }, [
           svg(iconPaths(item.type === 'Group' ? 'group' : 'file'), { size: 32 }),
@@ -200,54 +385,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
       );
     }
 
-    const primary = [];
-    if (item.type === 'Text') {
-      primary.push(
-        actionButton({
-          icon: 'copy',
-          // 与行内动作同一个名字（动作标签一律"动词 + 对象"，见 list.js 的说明）。
-          // 预览里显示的本来就是全文，故"全文"两字不承担信息。
-          label: '复制文本',
-          run: () => onCopy(item, text ?? item.text),
-          successLabel: '已复制',
-        }),
-        // 文本也能下载（2026-09-18）：与行内那一槽同一个动作、同一个名字 ——
-        // 有数据文件时是"取回原文件"（叫「下载」，原扩展名保留），内联文本才是「下载文本」
-        // （产物是正文生成的 `.txt`，见 main.js 的 downloadTextItem）。放在这里是因为
-        // 用户已经在看这条记录的全文了，"存一份"是最自然的下一步。
-        actionButton({
-          icon: 'download',
-          label: item.hasData ? '下载' : '下载文本',
-          run: () => onDownloadText(item),
-          successLabel: '已下载',
-        }),
-      );
-    } else {
-      if (itemIsImage(item)) {
-        primary.push(
-          actionButton({
-            icon: 'copy',
-            label: '复制图片',
-            run: () => onCopyImage(item),
-            successLabel: '已复制',
-          }),
-        );
-      }
-      primary.push(
-        actionButton({
-          icon: 'download',
-          label: '下载',
-          run: () => onDownload(item),
-          successLabel: '已下载',
-        }),
-      );
-    }
-    footer.append(...primary);
+    renderViewActions();
 
     if (!dialog.open) dialog.showModal();
-    // 焦点落在主操作上：Enter 直接完成这屏最想做的事（无操作时退到关闭按钮）
-    const first = footer.querySelector('.btn');
-    (first ?? closeButton).focus();
   }
 
   return {

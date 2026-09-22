@@ -1459,6 +1459,56 @@ th[aria-sort="descending"] .th-sort__arrow {
   word-break: break-word;
 }
 
+/* ============ 编辑态（预览框里的「编辑」，2026-09-22 ADR D30）============
+ * 两态机：预览 ⇄ 编辑。编辑态把正文区换成等宽 `<textarea>`（与 `.dialog__pre` **同一字体与行高**，
+ * 免得进出编辑时字形跳一下），页脚换成「取消 / 保存」。
+ * 正文区改成 flex 列：textarea 吃掉剩余高度，就地错误（保存失败）坐在它下面且**不被裁掉**。 */
+.dialog__body--edit {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  /* 覆盖 `.dialog__body` 的 64vh 上限：这一档的高度由 textarea 自己管（min/max-height） */
+  max-height: none;
+  overflow: hidden;
+}
+
+.dialog__edit {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 40vh;
+  max-height: 64vh;
+  /* 只许纵向拉伸：横向拉伸会让长行断在奇怪的位置，而正文本来就是按窗口宽度折行的 */
+  resize: vertical;
+  padding: var(--sp-5);
+  border: 0; /* 外层已经是对话框的内框，这里不再画第二层边 */
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  tab-size: 4;
+}
+
+.dialog__edit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.dialog__body--edit .alert--error {
+  flex: none;
+  margin: var(--sp-3) var(--sp-5);
+}
+
+/* 「已保存为新记录」：保存后就地坐在正文上方的一行说明（对话框**不关**，ADR D30 的 Q3=c）。
+ * 用弱化色而不是成功绿：它不是一次"动作成功"的反馈（那种用按钮上的 `data-state="ok"`），
+ * 而是解释"屏幕上这段文字现在是什么"——与 `.dialog__meta` 同一档语气。 */
+.dialog__note {
+  margin: 0 0 var(--sp-3);
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+}
+
 .dialog__image {
   display: block;
   max-width: 100%;

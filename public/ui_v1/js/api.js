@@ -294,6 +294,11 @@ export const api = {
     return { purged, failed, aborted: false };
   },
 
+  // 新建一条**文本**记录（预览框「编辑」保存时用，2026-09-22 ADR D30）。
+  // 服务端只认 Text、不带传输数据、`version` 从 0 起 —— 理由写在 `src/ui/routes.ts` 的该端点注释里
+  // （一句话：正文一改 hash 就变 ⇒ 这是**另一条记录**，而版本 0 才不会把客户端随后的重传判成冲突）。
+  createText: (text) => request(`${API_BASE}/history`, { method: 'POST', body: { text } }),
+
   // 清空历史：scope='trash' 只清回收站、'all' 清全部。
   // 服务端各用一条批量语句（不是逐条删除），也不逐条广播——见 src/ui/routes.ts 里该路由的注释。
   clear: (scope) => request(`${API_BASE}/history/clear`, { method: 'POST', body: { scope } }),
