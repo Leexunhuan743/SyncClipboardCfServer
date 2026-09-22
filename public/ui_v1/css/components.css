@@ -698,19 +698,20 @@ input[type="search"]::-webkit-search-decoration {
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
   position: sticky;
-  top: var(--header-h);
+  /* 吸顶位置 = 顶栏 + **恒吸顶的头栏**（`--results-head-h`）。2026-09-22 起结果区头栏**恒**吸顶
+   * （用户第二次定形，见 layout.css 的 `.results__head`），故这个偏移是**常量** ——
+   * 此前它只在选中态生效（`.results:has(.results__selection-count)` 那条 `@media` 规则），
+   * 于是"勾一行"会把表头连同正在读的内容整体推下 45px（实测滚到 800 时 56 → 101）。 */
+  top: calc(var(--header-h) + var(--results-head-h));
   z-index: 10;
 }
 
-/* 选中态下结果区头栏也是吸顶的（见 layout.css 的 `.results__head`）⇒ 表头必须再让一格，
- * 否则两条带子会重叠（头栏 56–101、表头 101 起）。
- * **只在表格档**（>860px）：卡片档里表头是一条紧凑工具条、`top: auto` 随页面滚走，
- * 让位规则在那里没有意义（那条 `top: auto` 在文件更后面，靠顺序取胜；这里不覆盖它）。 */
-@media (min-width: 861px) {
-  .results:has(.results__selection-count) .table th {
-    top: calc(var(--header-h) + var(--results-head-h));
-  }
-}
+/* 表头的吸顶偏移**不再**是条件式的（2026-09-22 用户第二次定形）：头栏恒吸顶之后，
+ * `.table th` 的基础规则里那条 `top: calc(--header-h + --results-head-h)` 就是常量。
+ * 这里原有 `@media (min-width: 861px) { .results:has(.results__selection-count) .table th { … } }`
+ * —— 它只在选中态把表头再推下 45px，正是"勾一行整屏往下跳"的来源，已随恒吸顶一起删除。
+ * 卡片档（≤860px）的表头仍是 `top: auto`（文件更后面那条，靠顺序取胜）—— 那一档头栏虽然也吸顶，
+ * 但表头是一条紧凑工具条、随页面滚走，不存在重叠。 */
 
 .table td {
   /* 12 → 10 → 8：每压 2px 就是每屏多出约 4 行。行高最终由单元格里最高的那个元素决定

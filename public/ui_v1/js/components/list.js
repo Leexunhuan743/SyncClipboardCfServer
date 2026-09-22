@@ -1,15 +1,18 @@
 // 结果区：计数/选择条 + 数据表 + 空状态。
 //
-// 五件容易做错的事，这里都明确处理：
+// 四件容易做错的事，这里都明确处理：
 // 1. 正文全部走 textContent（剪贴板内容不可信，本页与数据端点同源）；
 // 2. 图片缩略图加载失败要变成「数据不可用」，不是裂图；hasData 为假时直接不请求；
-// 3. 行入场只在「新视图」时做（首次/翻页/改筛选），轮询刷新不得整页重放动画——
-//    否则每次刷新整页闪一遍，正是「幻灯片式入场」的失败形态；
-// 4. **同一视图内的刷新按行对账**（reconcile）：内容没变的行原样留着，不重建 DOM。
+// 3. **同一视图内的刷新按行对账**（reconcile）：内容没变的行原样留着，不重建 DOM。
 //    整表重建会重载缩略图、打断正在跑的动画、丢掉焦点与 hover——
 //    轮询每 10 秒一次，这些副作用本来每 10 秒发生一遍；
-// 5. 行内操作就地给出「进行中 → 结果」：用户按的是哪个按钮，反馈就落在哪个按钮上
+// 4. 行内操作就地给出「进行中 → 结果」：用户按的是哪个按钮，反馈就落在哪个按钮上
 //    （列表刷新不会把它冲掉，因为按钮属于行的状态，不属于一次渲染）。
+//
+// ⚠️ 这里**原有第 3 条「行入场只在首屏错峰播」**（前 12 行按 `--row-index × 40ms` 依次淡入）：
+// **2026-09-22 用户要求移除**（刷新后逐行从上往下冒出来读起来是"慢"，不是"来了"）——
+// CSS 规则、`ENTER_STAGGER_LIMIT`、`data-enter`、`--row-index` 与 `docs/ui.md` 的两处口径
+// 已一起清掉，别再照旧稿加回来。取舍与判据见 `progress.md` §155。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty, typeLabel, typeChipClass } from '../format.js';
@@ -18,8 +21,6 @@ import { buildThumb, buildFlags, TOGGLES, applyToggleState, playPop } from './ro
 import { createTooltip } from './tooltip.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
 import { DEFAULT_FILTERS } from '../filters.js';
-
-const ENTER_STAGGER_LIMIT = 12; // 超过 12 行就不再错峰：延迟累积会让第 50 行等两秒
 
 // 骨架的行数区间。上限 50 与 V2 的 `board.js` 同源：行数只需把折线以下的内容先推开，
 // 而 50 行（表格档 50 × 47px；卡片档 50 × 103px）都远超任何视口，每页 500 行时画 500 条骨架没有意义；
@@ -565,19 +566,17 @@ export function createList(actions) {
     return el('label', { class: 'check-wrap' }, [checkbox]);
   }
 
-  function buildRow(item, index, animate, flashKeys) {
+  function buildRow(item, index, flashKeys) {
     const row = el('tr', {
       class: 'row',
       role: 'row',
       dataset: {
         key: item.key,
         selected: selection.has(item.key) ? 'true' : 'false',
-        enter: animate && index < ENTER_STAGGER_LIMIT ? 'true' : 'false',
         flash: flashKeys.has(item.key) ? 'true' : 'false',
         deleted: item.isDeleted ? 'true' : 'false',
       },
     });
-    if (animate && index < ENTER_STAGGER_LIMIT) row.style.setProperty('--row-index', String(index));
     // 类型色条：把类型写进行内变量，CSS 用它给 hover 时的左侧色条上色
     row.style.setProperty(
       '--row-accent',
@@ -886,7 +885,7 @@ export function createList(actions) {
         next.push(existing);
         continue;
       }
-      const row = buildRow(item, index, false, flashKeys);
+      const row = buildRow(item, index, flashKeys);
       rowSignatures.set(row, sig);
       if (existing) {
         // 内容变了（多半是别的设备改了这条）：闪一次说明「它刚被更新」
@@ -943,10 +942,12 @@ export function createList(actions) {
       // （同一条判据在 V2 是 `boot.js` 的 `boardState()` —— 两版对"现在是不是失败态"必须同答。）
       if (state.error && items.length === 0) return;
 
-      // 入场错峰**只在首屏**（第一份非空结果）播一次，那是「页面来了」的一次性仪式；此后任何更新
-      // （切类型、翻页、改筛选、轮询）都走按行对账：级联的尾巴是 **440ms**，在用户**已经在看
-      // 这张表**时只会读成「内容慢半拍」，而且它要求整表重建（节点全新建）——实测（6× CPU 降速）
-      // 这类切换一次要 250~350ms 主线程，去掉后 38ms。
+      // 首屏（第一份非空结果）：**整表重建**。此后任何更新（切类型、翻页、改筛选、轮询）都走
+      // 按行对账 —— 整表重建要求节点全新建，实测（6× CPU 降速）这类切换一次要 250~350ms
+      // 主线程，对账后 38ms。
+      // 2026-09-22：这里原先还负责「错峰入场」（前 12 行按 `--row-index × 40ms` 依次淡入），
+      // 那条动画已按用户要求**移除**（见 motion.css 与 progress.md §155）—— 首屏与后续更新
+      // 现在唯一的差别只剩"节点是否重建"。
       //
       // 判据不能用「视图标记变了」：boot 的顺序是 `render()`（items 还是空的）→ `refresh()`，
       // 两次的 token 相同，首屏会被自己吃掉（复核发现过一次同类问题——`hasRendered` 无条件置位）。
@@ -955,12 +956,11 @@ export function createList(actions) {
       currentItems = items;
 
       if (firstPaint) {
-        // 首屏：整表重建并错峰入场——这时「整块换掉」正是要表达的
         tbody.replaceChildren();
         rowByKey.clear();
         const flash = flashKeys ?? new Set();
         for (let index = 0; index < items.length; index += 1) {
-          const row = buildRow(items[index], index, true, flash);
+          const row = buildRow(items[index], index, flash);
           rowSignatures.set(row, signature(items[index]));
           rowByKey.set(items[index].key, row);
           tbody.append(row);
