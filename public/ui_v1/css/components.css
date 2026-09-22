@@ -1462,14 +1462,21 @@ th[aria-sort="descending"] .th-sort__arrow {
 /* ============ 编辑态（预览框里的「编辑」，2026-09-22 ADR D30）============
  * 两态机：预览 ⇄ 编辑。编辑态把正文区换成等宽 `<textarea>`（与 `.dialog__pre` **同一字体与行高**，
  * 免得进出编辑时字形跳一下），页脚换成「取消 / 保存」。
- * 正文区改成 flex 列：textarea 吃掉剩余高度，就地错误（保存失败）坐在它下面且**不被裁掉**。 */
+ * 正文区改成 flex 列：textarea 吃掉剩余高度，就地错误（保存失败）坐在它下面且**不被裁掉**。
+ * 高度上限沿用 `.dialog__body` 那一档（64vh/620px）：textarea 自己有 40–64vh 的上下界，
+ * 再加出错时那一条说明，框比预览态高约一行；超出**正文区内部滚动**，不会长出无限高度。
+ * ⚠️ 实测（390×360 视口，本机 Chromium）：预览态页脚 [273,342] 可见；编辑态页脚 [256,325] 可见；
+ * **编辑态 + 错误说明可见**时页脚落到 ~381 —— 比视口矮 20 余 px（`<dialog>` 的 UA `max-height` 把
+ * 框裁住、内容却不收缩）。这是**对话框外壳**的问题（三个对话框共用），不在本轮范围内：
+ * 彻底的解法是 `.dialog` 自己成为 `flex-direction: column` 的定高盒子、正文区 `flex: 1 1 auto;
+ * min-height: 0`，那样任何视口高度都能把页脚留在视野里。此处只如实记下边界：
+ * 视口高度 ≥ 420px 时编辑态（含错误）不越界，仓库的探针口径（900 / 844）都有余量。 */
 .dialog__body--edit {
   display: flex;
   flex-direction: column;
   padding: 0;
-  /* 覆盖 `.dialog__body` 的 64vh 上限：这一档的高度由 textarea 自己管（min/max-height） */
-  max-height: none;
-  overflow: hidden;
+  max-height: min(64vh, 620px);
+  overflow: auto;
 }
 
 .dialog__edit {

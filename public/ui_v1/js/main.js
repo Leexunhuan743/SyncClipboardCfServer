@@ -1190,13 +1190,14 @@ async function downloadItem(item) {
 //   · 没有（内联文本，对象存储里根本没有它）→ 把**正文**包成 `text/plain` 存成
 //     `<type>-<hash 前 8 位>.txt`。列表里的正文被截断到 500 字符，故 `textTruncated` 时必须先取全文
 //     （与复制、预览走同一条 `fetchFull`），否则会存下一个半截文件。
-async function downloadTextItem(item, textOverride = undefined) {
+async function downloadTextItem(item, knownText = undefined) {
   try {
     if (item.hasData) return await downloadItem(item);
     // 预览框会传**屏幕上那段**进来（编辑保存之后屏幕上是新文本、记录仍是旧那条）——
     // 有它就照它写文件；没有才走老路取全文（列表那一槽「下载文本」走的是这条路）。
+    // 形参名与 `copyItem(item, knownText)` 同义：都是"调用方手上已经有那段文本了"。
     const full =
-      textOverride !== undefined ? { text: textOverride } : item.textTruncated ? await api.get(item) : item;
+      knownText !== undefined ? { text: knownText } : item.textTruncated ? await api.get(item) : item;
     if (!full) return false;
     const text = full.text ?? '';
     if (text === '') {
@@ -1222,14 +1223,22 @@ async function downloadTextItem(item, textOverride = undefined) {
 // 语义要点（用户的四个决定）：正文一改 hash 就变 ⇒ 这是**另一条记录**，旧的原样留在历史里；
 // 服务端的当前剪贴板**不动**（`addRecordDto` 只广播 `RemoteHistoryChanged`）⇒ 其它设备只是多一条历史，
 // 不会有人被迫换掉自己的剪贴板。失败**抛错**：预览框会就地渲染原因并留在编辑态（内容不丢）。
+//
+// **返回值是刚创建的那条记录**（`/ui/api/history` 回的 `toUiItem(entity)`）：预览框拿它改指向
+// 新记录（头部与后续编辑都跟着换，见 `preview.js` 的保存分支）。
+// **不给提示条**：这一刻对话框还开着，而提示条在顶层对话框**之下**（实测 `elementFromPoint` 在提示条
+// 自己的中心返回的是 `dialog`）—— 也就看不见；而"已保存为新记录"这句话本来就由对话框里那条
+// 就地说明在说（与 `info.js` 保留策略表单"对话框内的失败不用提示条"是同一个判据）。
 async function createTextRecord(_item, text) {
   try {
-    await api.createText(text);
-    toasts.info('已保存为新记录');
+    const created = await api.createText(text);
     // 新记录进列表：对话框是模态的，刷新在它背后完成（关框后就能看到）
     await refresh({ silent: true });
     void refreshStats();
-    return true;
+    // 深链接跟着**屏幕上这条**走：保存后对话框指向新记录，URL 不跟着换的话，
+    // 刷新页面会弹回旧那一条（与 `previewItem` 打开时可分享链接的行为一致）。
+    if (created?.hash) syncDeepLink(created);
+    return created;
   } catch (error) {
     if (handleAuthError(error)) throw new Error('会话已过期');
     throw error instanceof Error ? error : new Error(String(error));

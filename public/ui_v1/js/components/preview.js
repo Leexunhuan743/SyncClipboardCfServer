@@ -36,11 +36,30 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   const body = el('div', { class: 'dialog__body' });
   const footer = el('div', { class: 'dialog__foot' });
   // 编辑保存失败的就地错误盒（挂在 textarea 下面，`role="alert"` —— 与确认框、登录页同一套
-  // `.alert--error`；`components.md` 的 error 格要求"信息挨着控件、不靠颜色单独传达"）。
-  const editError = el('p', { class: 'alert--error', role: 'alert', hidden: true });
+  // `.alert--error`；`components.md` 的 error 格要求"信息挨着控件、被 `aria-describedby` 关联、
+  // 不靠颜色单独传达"）。textarea 静态指向它（与 `info.js` 的保留策略表单同一手法）：文案为空时
+  // 它仍是 `hidden`，读屏不会念一个空描述。
+  const editError = el('p', {
+    class: 'alert--error',
+    id: 'preview-edit-error',
+    role: 'alert',
+    hidden: true,
+  });
+  // ✕ 与点背景都要过这一道：**保存途中不许关框**（与 `confirm.js` 的 F2 同一条理由）——
+  // 这一刻关掉，失败就会落在已经关掉的框里（提示条在顶层对话框**之下**，实测 `elementFromPoint`
+  // 在提示条自己的中心返回的是 `dialog`），用户只看到"点了保存、什么都没发生"。
+  const requestClose = () => {
+    if (saving) return;
+    dialog.close();
+  };
   const closeButton = el(
     'button',
-    { class: 'icon-btn', type: 'button', 'aria-label': '关闭预览', onclick: () => dialog.close() },
+    {
+      class: 'icon-btn',
+      type: 'button',
+      'aria-label': '关闭预览',
+      onclick: () => requestClose(),
+    },
     [svg(iconPaths('close'))],
   );
 
@@ -58,9 +77,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
       footer,
     ],
   );
-  // 点背景关闭（点击落在 dialog 自身而不是其内容上时）
+  // 点背景关闭（点击落在 dialog 自身而不是其内容上时）。保存途中的点背景与 ✕ 一样被挡（见 requestClose）
   dialog.addEventListener('click', (event) => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog) requestClose();
   });
   // Esc：**编辑态下只退出编辑、不关对话框**（2026-09-22，ADR D30 的 Q4）—— 一段几千字的编辑
   // 不该被一个 Esc 丢掉。`cancel` 是可取消事件，`preventDefault()` 就能拦住 UA 的关框行为
@@ -188,6 +207,28 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   let currentText = '';
   let savedNote = null; // 保存成功后的就地说明（下次 open 清掉）
   let editing = false;
+  let saving = false; // 保存请求在途：挡住关框（见 requestClose）
+
+  // 头部（标题 / 类型徽标 / 「N 个字符 · 时间」）的**唯一绘制点**：`open()` 与"保存成功后改指向新记录"
+  // 两处调它，别在别处散写 `title` / `meta`。
+  //
+  // 字符数**用服务端给的 `size`**，而不是本地按屏幕上那段算：两条理由 ——
+  //   ① 口径统一：列表、头部、提示条讲的都是"这条记录多大"（服务端 `dto.text.length`，UTF-16 码元），
+  //      同屏两个口径的数字（例如正文里 10 个 emoji：本地 `charCount` 说 10、服务端说 20）会互相打脸；
+  //   ② 成本：`charCount` 走 `Intl.Segmenter`，实测 1.1 MB 的正文要 **169ms**（Node 24，本机），
+  //      而重新打开一条大文本预览本来就要一次往返 —— 不该再叠一次百毫秒级的主线程计算。
+  // 这不是新决定：`docs/archive/AUDIT-v1-v2-divergence.md` §12.2 早就把"V1 预览里的「N 个字符」
+  // 读服务端 `size`、**有意不改**"记成了结论（那条与 V2 的口径分歧因此是有记录的）。
+  // 2026-09-22 起"已保存为新记录（N 个字符）"那条说明也取同一个数（服务端的 `size`），
+  // 于是同一屏上不会出现两个不同的字符数。
+  function renderHead(item) {
+    title.textContent = item.type === 'Text' ? '文本内容' : (item.dataName ?? item.type);
+    typeChip.className = `chip ${typeChipClass(item.type)}`;
+    typeChipLabel.textContent = typeLabel(item.type);
+    const sizeText =
+      item.type === 'Text' ? `${Number(item.size) || 0} 个字符` : formatSize(item.size);
+    meta.textContent = `${sizeText} · ${formatAbsolute(item.createTime)}`;
+  }
 
   function renderView() {
     body.className = 'dialog__body';
@@ -265,12 +306,14 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
 
   function enterEdit() {
     editing = true;
-    dialog.dataset.editing = 'true';
     const area = el('textarea', {
       class: 'dialog__edit',
       spellcheck: 'false',
-      // 可访问名与可见按钮同源（"编辑"这个动作的对象就是这段正文）
+      // 可访问名与可见按钮同源（"编辑"这个动作的对象就是这段正文）；
+      // 失败说明**静态关联**到这个框（与 `info.js` 那两个数字输入框同一手法：目标节点常驻、
+      // 无错时是 `hidden`，故不会有空描述被念出来）。
       'aria-label': '编辑这段文本',
+      'aria-describedby': 'preview-edit-error',
     });
     area.value = currentText;
     body.className = 'dialog__body dialog__body--edit';
@@ -295,17 +338,36 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         return;
       }
       editError.hidden = true;
+      // `aria-invalid` 不是"曾经错过"的历史记录：每次重试先清掉（`info.js` 的保留策略表单同一条）
+      area.removeAttribute('aria-invalid');
+      saving = true;
       setPending(save, true);
+      closeButton.disabled = true; // 在途不许关框：提示条压在这个模态之下，关掉就等于把失败丢在屏幕外
       try {
-        await onEdit(currentItem, next);
+        const created = await onEdit(currentItem, next);
         currentText = next;
-        savedNote = textSavedNote(charCount(next));
+        // 对话框**改指向刚创建的那条**：头部（字符数 / 时间）与后续的「编辑」「复制文本」「下载文本」
+        // 从此描述的都是屏幕上这段 —— 不改的话会出现"头说旧记录的字符数、正文是新文本"的自相矛盾。
+        if (created) {
+          currentItem = created;
+          renderHead(created);
+        }
+        // 计数口径与服务端的 `dto.text.length` 一致（同一条记录在列表/头部也是这个数，见 renderHead）；
+        // 只有在响应没给 size 时才退回本地 `charCount`（用户眼里的字素簇数）。
+        const size = Number(created?.size);
+        savedNote = textSavedNote(Number.isFinite(size) ? size : charCount(next));
         exitEdit();
       } catch (error) {
-        // 就地报错（挨着控件、`role="alert"`），**留在编辑态**：用户改的内容还在，可以再存一次
+        // 就地报错（挨着控件、被 `aria-describedby` 关联），**留在编辑态**：用户改的内容还在，可以再存一次。
         editError.textContent = textSaveFailedText(error?.message ?? '未知错误');
         editError.hidden = false;
+        // 只有"这段正文本身不合规"（服务端 400：超限）才标字段错；网络/500 不是字段的问题，
+        // 标了 `aria-invalid` 会让读屏说"这个输入框有误"（`docs/ui.md` §3.3 第 19 条同一条判据）。
+        if (error?.status === 400) area.setAttribute('aria-invalid', 'true');
+        area.focus();
       } finally {
+        saving = false;
+        closeButton.disabled = false;
         setPending(save, false);
       }
     });
@@ -319,7 +381,6 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
 
   function exitEdit() {
     editing = false;
-    dialog.dataset.editing = 'false';
     editError.hidden = true;
     editError.textContent = '';
     renderView();
@@ -331,18 +392,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     currentText = text ?? item.text ?? '';
     savedNote = null;
     editing = false;
-    dialog.dataset.editing = 'false';
-    title.textContent = item.type === 'Text' ? '文本内容' : (item.dataName ?? item.type);
-    typeChip.className = `chip ${typeChipClass(item.type)}`;
-    typeChipLabel.textContent = typeLabel(item.type);
-    // 文本显示「字符数」，其余类型显示字节数——一个 27 B 的文本说"27 B"远不如说"27 个字符"有用。
-    // ⚠️ 但这个数值是 **UTF-16 码元数**，不是字素簇数：服务端对 Text 取 `text.length`／客户端声明的
-    // `dto.size`（见 `src/profile.ts`），emoji 之类会算 2。V2 同一格改用 `charCount()`，所以同一条
-    // 记录两版可能显示不同的数字。此处**有意不改代码**：V1 在这个位置拿不到全文（列表正文截断到 500），
-    // 能用的只有服务端给的 size。
-    const sizeText =
-      item.type === 'Text' ? `${Number(item.size) || 0} 个字符` : formatSize(item.size);
-    meta.textContent = `${sizeText} · ${formatAbsolute(item.createTime)}`;
+    renderHead(item);
     body.className = 'dialog__body';
     body.replaceChildren();
     footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }));
