@@ -379,8 +379,10 @@ describe('F5 · /data 的 Content-Disposition 对任意 dataName 都必须合法
       expect(res.status, '修复前含 CR/LF/NUL 的名称在这里恒 500').toBeLessThan(500);
       if (harnessStorageGap) {
         // 该名称在 harness 存储层上可能取不到（见 NAMES 上方的说明）——那属于适配器限制。
-        expect([200, 404], 'harness 存储层限制只允许 404，不允许别的失败').toContain(res.status);
-        if (res.status === 404) return;
+        // 取不到时按上游 3.3.0（#413）的语义是 **422**（「有数据但取不到」= history_data_invalid），
+        // 不再是 404 —— 两种都允许；真实运行时（miniflare/生产 D1+R2）该场景是 200。
+        expect([200, 404, 422], 'harness 存储层限制只允许 404/422，不允许别的失败').toContain(res.status);
+        if (res.status !== 200) return;
       } else {
         expect(res.status, '其余名称必须能取到（含 CRLF）').toBe(200);
       }

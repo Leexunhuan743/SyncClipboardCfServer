@@ -41,7 +41,12 @@ async function main() {
     });
     let columns;
     try {
-      const parsed = JSON.parse(probe.stdout);
+      // ⚠️ 不能直接 `JSON.parse(stdout)`：`wrangler d1 execute --remote` 会在 JSON **之前**打印
+      // 非 JSON 行（如 `🌀 Executing on remote database …`），直接解析会抛错 ⇒ 脚本退出 1 ⇒
+      // **把部署挡在迁移这一步**（比"没迁移"更糟）。所以从第一个 `[`/`{` 起截取再解析。
+      const start = probe.stdout.search(/[[{]/);
+      if (start < 0) throw new Error('输出里没有 JSON');
+      const parsed = JSON.parse(probe.stdout.slice(start));
       const rows = (Array.isArray(parsed) ? parsed : [parsed])
         .flatMap((page) => page?.results ?? []);
       columns = new Set(rows.map((r) => String(r.name)));
