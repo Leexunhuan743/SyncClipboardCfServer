@@ -74,6 +74,10 @@ export function createToasts(container) {
           : null,
       ],
     );
+    // 宿主被摘掉（别的模块整块 `replaceChildren` 是可能的）就先接回来：否则这条提示会写进一个
+    // 游离节点，永远看不见 —— 而那种失败**完全静默**（2026-09-22 实测踩到过：预览框重建页脚时
+    // 把停靠中的宿主一起清掉，此后所有提示都不再出现）。一行自愈，代价为零。
+    if (!container.isConnected) document.body.append(container);
     dockHost(); // 有对话框开着就先搬进它的 top layer（见 dockHost 的说明）
     container.append(node);
     // 超出上限先收掉最早的：窄屏上堆到第五条会把列表底部的操作整片盖住。

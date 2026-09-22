@@ -100,6 +100,37 @@ function actionSlot(button) {
   return button ?? el('span', { class: 'row-actions__slot', 'aria-hidden': 'true' });
 }
 
+// 行内动作的**键**（2026-09-22 用户："使用键盘将光标移动到某一行 …… 复制、预览等后面的几个按钮
+// 这里的快捷键你是不是没有想到"）：焦点落在某一行时，用字母键直接触发**那一行**对应的动作。
+//
+// 与预览框同一套做法 —— **点那一行的按钮**（按钮那侧已带"禁用原因、在途挡重复、成功就地反馈"的判据），
+// 这里只负责"把这行的那枚按钮找出来按下去"。`data-action` 是固定槽位的产物（见 `buildActions`），
+// 因此"键 → 动作"的映射是确定的；一个键可能对应两个候选（文本行是「复制文本」、图片行是
+// 「复制图片」），按存在者取。
+//
+// 这张表同时是帮助浮层的数据源（`shortcuts.js` 读 `keys`/`label`）⇒ 不会"帮助里写了、实际没绑"。
+//
+// ⚠️ **作用域**：这些键只在焦点位于行内时生效，且 `r`（恢复）与列表级的 `r`（刷新）**同名不同域** ——
+// 焦点在行内时行内优先（`tbody` 的监听器先跑并 `preventDefault`），否则落到列表级那条。
+// 行间移动的键（**只描述**，实现在下面 `createList` 的 tbody 监听里；帮助浮层读它）。
+// 与 `ROW_SHORTCUTS` 分开是因为这组没有"要点的那枚按钮" —— 它们是导航，不是动作。
+export const ROW_NAV_SHORTCUTS = [
+  { keys: ['↑', '↓'], label: '上 / 下一行（焦点落在同一个控件上）' },
+  { keys: ['Home', 'End'], label: '第一行 / 最后一行' },
+  { keys: ['Shift', '↑/↓'], label: '从锚点行扩展选择（与 Shift+点击同一套语义）' },
+  { keys: ['Tab'], label: '按 DOM 顺序在控件间移动（方向键不改变 Tab 顺序）' },
+];
+
+export const ROW_SHORTCUTS = [
+  { keys: ['v'], label: '预览这一条', actions: ['preview'] },
+  { keys: ['c'], label: '复制（文本或图片，按记录类型）', actions: ['copy', 'copy-image'] },
+  { keys: ['d'], label: '下载', actions: ['download'] },
+  { keys: ['s'], label: '收藏 / 取消收藏', actions: ['star'] },
+  { keys: ['i'], label: '置顶 / 取消置顶', actions: ['pin'] },
+  { keys: ['r'], label: '恢复到历史记录（回收站视图）', actions: ['restore'] },
+  { keys: ['Delete', 'Backspace'], label: '移动到回收站 / 彻底删除（要过确认框）', actions: ['delete', 'purge'] },
+];
+
 function buildActions(item, actions) {
   // 回收站里的行只做两件事（见下）：恢复与彻底删除。**能否恢复不在这里判**——
   // 2026-09-22（ADR D29）改成真回收站之后，软删不再清数据，带数据文件的记录恢复时
@@ -122,7 +153,7 @@ function buildActions(item, actions) {
         icon: 'undo',
         run: () => actions.onRestore(item),
         successLabel: '已恢复',
-        title: '恢复到历史记录（含数据文件）',
+        title: '恢复到历史记录（含数据文件）（r）',
       }),
       // 与活跃视图同一个动作、同一个名字、同一份实现（`main.js` 的 previewItem：长文本先取全文）
       actionButton({
@@ -139,7 +170,7 @@ function buildActions(item, actions) {
         label: '彻底删除',
         icon: 'trash',
         run: () => actions.onPurge(item),
-        title: '从服务器永久删除这条记录（不可撤销）',
+        title: '从服务器永久删除这条记录（不可撤销）（Delete）',
       }),
     ]);
   }
@@ -153,6 +184,7 @@ function buildActions(item, actions) {
     label: '预览',
     icon: 'eye',
     run: () => actions.onPreview(item),
+    title: '预览这一条（v）',
   });
 
   // 图片（或文件名是图片的 File/Group）可以复制到系统剪贴板——clipserver 的行内复制即按此分发
@@ -167,6 +199,7 @@ function buildActions(item, actions) {
           icon: 'copy',
           run: () => actions.onCopy(item),
           successLabel: '已复制',
+          title: '复制这段文本（c）',
         })
       : itemIsImage(item)
         ? actionButton({
@@ -176,7 +209,7 @@ function buildActions(item, actions) {
             run: () => actions.onCopyImage(item),
             successLabel: '已复制',
             disabled: !item.hasData,
-            title: item.hasData ? '复制图片' : '数据不可用，无法复制',
+            title: item.hasData ? '复制这张图片（c）' : '数据不可用，无法复制（c）',
           })
         : null;
 
@@ -193,6 +226,7 @@ function buildActions(item, actions) {
           icon: 'download',
           run: () => actions.onDownloadText(item),
           successLabel: '已下载',
+          title: item.hasData ? '下载这条记录的数据文件（d）' : '把这段正文存成 .txt（d）',
         })
       : actionButton({
           action: 'download',
@@ -201,7 +235,7 @@ function buildActions(item, actions) {
           run: () => actions.onDownload(item),
           successLabel: '已下载',
           disabled: !item.hasData,
-          title: item.hasData ? '下载' : '数据不可用，无法下载',
+          title: item.hasData ? '下载这条记录（d）' : '数据不可用，无法下载（d）',
         });
 
   // 行内槽 4：**移动到回收站**（软删，30 天内可恢复）。
@@ -213,6 +247,9 @@ function buildActions(item, actions) {
     label: '移动到回收站',
     icon: 'trash',
     run: () => actions.onDelete(item),
+    // 键与 hover 一起写：`Delete` 是本行唯一的销毁性动作，但它**照旧要过确认框**
+    // （确认框的初始焦点在「取消」，所以一次误按不至于删掉东西）。
+    title: '移动到回收站（Delete，30 天内可以从回收站恢复）',
   });
 
   return el('div', { class: 'row-actions' }, [
@@ -321,7 +358,11 @@ export function createList(actions) {
     const NAV_KEYS = new Set(['ArrowDown', 'ArrowUp', 'Home', 'End']);
     tbody.addEventListener('keydown', (event) => {
       if (!NAV_KEYS.has(event.key)) return;
-      if (event.defaultPrevented || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+      // Shift 在这里**不再一律让路**（2026-09-22）：Shift+方向键 = 从锚点行扩展选择 ——
+      // 与鼠标 Shift+点击同一套语义、共用同一个 `anchorIndex`。此前键盘用户只能一条条按 Space，
+      // 勾 50 行就是 50 次；而"连续选一段"本来就是批量操作的常见起点。
+      // 其余修饰键（Ctrl/Alt/Meta）仍然让路。
+      if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
       const control = event.target.closest?.('button, input, label');
       const row = control?.closest('tr.row');
       if (!row || row.dataset.leaving === 'true') return;
@@ -342,6 +383,19 @@ export function createList(actions) {
         return;
       }
       const next = rows[targetIndex];
+      if (event.shiftKey) {
+        // 扩展选择：锚点缺失时落在**当前行**（与 Shift+点击「没有锚点就先锚在这里」同义），
+        // 然后按 [min, max] 取整段 —— 与鼠标那条路用的是同一个 `onSelectRange`。
+        const anchor = anchorIndex ?? index;
+        anchorIndex = anchor;
+        const from = Math.min(anchor, targetIndex);
+        const to = Math.max(anchor, targetIndex);
+        actions.onSelectRange(currentItems.slice(from, to + 1));
+      } else {
+        // 普通移动把锚点跟着走：与鼠标"最后点过的那一行"是同一条纪律，
+        // 否则"先点一下、再按几下 ↓、然后 Shift+↓"会从很旧的那一行开始扩，读起来像跳选。
+        anchorIndex = index;
+      }
       // 定位"同一个控件"：动作按钮按 data-action 找。**四个槽位是固定的**
       // （预览 / 复制 / 下载 / 移动到回收站，见 `buildActions`），回收站行则是"恢复"固定在槽 1
       // 另加三个等宽占位 —— 所以同一动作在每行的位次一致，跨行找得到。
@@ -356,6 +410,25 @@ export function createList(actions) {
       if (!target) return;
       event.preventDefault();
       target.focus();
+    });
+
+    // 行内动作键（表见上面的 `ROW_SHORTCUTS`）：与方向键同一个委托点、同一套前置守卫
+    // （带修饰键一律让路 —— `Ctrl+V` 是粘贴、`Ctrl+C` 是复制文字，绝不能抢）。
+    // 找不到对应动作、或那枚按钮当时不可用（禁用 / 在途）时**不 `preventDefault`**：
+    // 让这次按键继续往上传（列表级的 `r` 刷新就是靠这条落下来的）。
+    tbody.addEventListener('keydown', (event) => {
+      if (event.defaultPrevented || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+      const control = event.target.closest?.('button, input, label');
+      const row = control?.closest('tr.row');
+      if (!row || row.dataset.leaving === 'true') return;
+      const hit = ROW_SHORTCUTS.find((entry) => entry.keys.includes(event.key));
+      if (!hit) return;
+      const button = hit.actions
+        .map((action) => row.querySelector(`[data-action="${action}"]`))
+        .find((candidate) => candidate instanceof HTMLButtonElement);
+      if (!button || button.disabled || isPending(button)) return;
+      event.preventDefault();
+      button.click();
     });
   }
 

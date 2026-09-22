@@ -1445,9 +1445,10 @@ async function createTextRecord(_item, text) {
     // 深链接跟着**屏幕上这条**走：保存后对话框指向新记录，URL 不跟着换的话，
     // 刷新页面会弹回旧那一条（与 `previewItem` 打开时可分享链接的行为一致）。
     syncDeepLink(created);
-    // 保存成功的反馈走**全局提示条**（真提示条：`toast.js` 的 dockHost 会在有对话框时把它搬进框的
-    // top layer，故它在框上看得见、也点得动）；字符数取服务端的 `size`，与头部/列表同一口径。
-    toasts.show(textSavedNote(created.size));
+    // 保存成功的反馈走**全局提示条**（`toasts.info` —— 这个对象只有 `info`/`error` 两个口，
+    // 与「已复制」「已移动到回收站」同一条通道；`toast.js` 的 `dockHost` 会在有对话框时把它搬进
+    // 框的 top layer，故它在框上看得见、也点得动）；字符数取服务端的 `size`，与头部/列表同一口径。
+    toasts.info(textSavedNote(created.size));
     return created;
   } catch (error) {
     if (handleAuthError(error)) throw new Error('会话已过期，正在跳转登录页…');

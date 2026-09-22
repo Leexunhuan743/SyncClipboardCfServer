@@ -16,6 +16,7 @@
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { EDIT_SHORTCUTS, PREVIEW_SHORTCUTS } from './preview.js';
+import { ROW_NAV_SHORTCUTS, ROW_SHORTCUTS } from './list.js';
 
 /** 一组快捷键 → DOM。`keys` 是**按键序列**（如 ['Ctrl', 'Enter']），逐个渲染成键帽。 */
 function renderGroup(title, entries) {
@@ -44,7 +45,13 @@ function renderGroup(title, entries) {
  *   `list` = 列表页那一组（由 `main.js` 传入，含 `run`；这里只读 `keys`/`label`）。
  */
 export function createShortcutsHelp({ list = [] } = {}) {
-  const dialog = el('dialog', { class: 'dialog dialog--narrow', 'aria-labelledby': 'shortcuts-title' });
+  // `tabindex="-1"`：打开时把焦点交给**对话框本身**（读屏先念标题，Tab 再到 ✕ 与「知道了」）——
+  // 与预览框"焦点落在正文框"同一条取向：不要停在某个按钮上，免得多按一次 Enter 就把它按了。
+  const dialog = el('dialog', {
+    class: 'dialog dialog--narrow',
+    'aria-labelledby': 'shortcuts-title',
+    tabindex: '-1',
+  });
   const closeButton = el(
     'button',
     { class: 'icon-btn', type: 'button', 'aria-label': '关闭快捷键列表', onclick: () => dialog.close() },
@@ -57,6 +64,7 @@ export function createShortcutsHelp({ list = [] } = {}) {
     ]),
     el('div', { class: 'dialog__body' }, [
       renderGroup('列表页', list),
+      renderGroup('行内（焦点落在某一行上时）', [...ROW_NAV_SHORTCUTS, ...ROW_SHORTCUTS]),
       renderGroup('预览框', PREVIEW_SHORTCUTS),
       renderGroup('编辑正文', EDIT_SHORTCUTS),
     ]),
@@ -71,7 +79,9 @@ export function createShortcutsHelp({ list = [] } = {}) {
   return {
     el: dialog,
     open() {
-      if (!dialog.open) dialog.showModal();
+      if (dialog.open) return;
+      dialog.showModal();
+      dialog.focus();
     },
   };
 }

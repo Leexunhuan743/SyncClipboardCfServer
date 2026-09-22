@@ -974,6 +974,16 @@ try {
     const rows = [...document.querySelectorAll('.table tr.row')];
     if (!rows.length) return JSON.stringify({ skipped: 'no rows' });
     const hs = rows.map((r) => r.getBoundingClientRect().height);
+    // 「设计保证的那一档」= **没有徽标**的普通卡片行：带徽标且内容格 ≤360px 时那一档会换成
+    // 131px（粗指针 145px，见 docs/ui.md §3.3 第 30 条与 components.css 末尾的推导），
+    // 而骨架**画不了"哪一行带徽标"**，按基础值估 —— 拿它当基准是数据相关的假阳性
+    // （2026-09-22 实测：列表首两行恰好都是带徽标的那档时报 131 vs 103）。
+    const plain = rows.filter((r) => r.querySelector('.cell-content__flags .chip') === null);
+    const plainHs = plain.map((r) => r.getBoundingClientRect().height);
+    const plainPitch =
+      plain.length > 1
+        ? Math.round(plain[1].getBoundingClientRect().top - plain[0].getBoundingClientRect().top)
+        : null;
     const probe = document.createElement('div');
     probe.className = 'skeleton';
     probe.setAttribute('role', 'status');
@@ -995,13 +1005,13 @@ try {
       rows: rows.length,
       realMin: Math.round(Math.min(...hs)),
       realMax: Math.round(Math.max(...hs)),
-      realPitch:
-        rows.length > 1
-          ? Math.round(rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top)
-          : null,
+      plainRows: plain.length,
+      // 判据用的基准：优先取"无徽标"那批（设计保证档），一个都没有就退回全体最小值
+      baseMin: plainHs.length > 0 ? Math.round(Math.min(...plainHs)) : Math.round(Math.min(...hs)),
+      realPitch: plainPitch,
       skeleton: skRow,
       skPitch,
-      gap: Math.round(Math.min(...hs)) - skRow,
+      gap: (plainHs.length > 0 ? Math.round(Math.min(...plainHs)) : Math.round(Math.min(...hs))) - skRow,
     });
   })()`);
   console.log('SKELETON', skeletonGeom);
@@ -1017,6 +1027,11 @@ try {
       }
       // 卡片档还要「相邻」：真实卡片是 0 间距 + 1px 分隔线，骨架的行距必须等于卡片行距。
       // 表格档的 12px 行距是那一档自己的观感选择（骨架＝一列小条），不在本条判据里。
+      if (s.mode === 'card' && s.realPitch === null) {
+        // 一屏里没有"无徽标"的卡片行可比（全是带徽标那档）：这条判据**取不到基准**，
+        // 记一条已跳过而不是判红（判红就成了数据相关的假阳性）。
+        console.log('[skip] skeleton: 没有无徽标的卡片行可作基准（plainRows=' + s.plainRows + '）');
+      }
       if (s.mode === 'card' && s.realPitch !== null && s.skPitch !== s.realPitch) {
         auditFindings.push(
           'skeleton: 卡片档骨架行距 ≠ 卡片行距（骨架 ' + s.skPitch + ' vs 卡片 ' + s.realPitch + 'px）',
@@ -1742,12 +1757,13 @@ try {
   {
     check('`?` 打开快捷键帮助浮层', helpState.open === true && helpState.title === '键盘快捷键', JSON.stringify(helpState.groups ?? null));
     check(
-      '帮助浮层列全了三组键（列表页 / 预览框 / 编辑正文）',
-      (helpState.groups ?? []).join(',') === '列表页,预览框,编辑正文',
+      '帮助浮层列全了四组键（列表页 / 行内 / 预览框 / 编辑正文）',
+      (helpState.groups ?? []).join(',') === '列表页,行内（焦点落在某一行上时）,预览框,编辑正文',
       JSON.stringify(helpState.groups ?? null),
     );
     const keys = new Set((helpState.labels ?? []).map((l) => l.keys));
-    const wanted = ['/', '?', 'r', 't', 'n', 'p', 'c', 'd', 'e', 'Ctrl+Enter', 'Esc'];
+    // 新增的行内一组：导航（↑↓ / Home·End / Shift+方向键 / Tab）+ 动作（v/c/d/s/i/r/Delete）
+    const wanted = ['/', '?', 'r', 't', 'n', 'p', 'v', 's', 'i', 'c', 'd', 'e', 'Ctrl+Enter', 'Esc', 'Delete+Backspace', 'Shift+↑/↓'];
     check(
       '帮助浮层里每个键都在（含本轮新增的 r/t/n/p/c/d/e 与编辑态的 Ctrl+Enter）',
       wanted.every((w) => keys.has(w)),
@@ -1760,6 +1776,291 @@ try {
     check('`p` 翻回上一页', pageAfterPrev === pageBefore, `${pageAfterNext} → ${pageAfterPrev}`);
     check('搜索框里按 `r` 不触发刷新（输入处让路）', rInInput === 0 && searchValue === 'r', `窗口内请求数=${String(rInInput)}，输入框值=${String(searchValue)}`);
     check('对话框打开时按 `r` 不触发刷新（对话框有自己的键）', rInDialog === 0, '窗口内请求数=' + String(rInDialog));
+  }
+
+  // ===== 键盘可用性（2026-09-22 用户："你还要详细点捋一下现在的键盘操作都合理完善吗 达到了可用的水平吗"）=====
+  //
+  // 快捷键只是其中一半 —— 这一块量的是"**只用键盘**能不能把整页用完"：
+  //   ① 行内动作键：`v` 预览、`s` 收藏（可逆）、`Delete` 进确认框（初始焦点必须是「取消」、Esc 取消、行数不变）；
+  //   ② `c` 复制：剪贴板里真的出现这一行的正文（不是"按钮亮了"）；
+  //   ③ `Shift+↓` 从锚点行**扩展选择**（键盘等价于 Shift+点击），选中数按行数增长；
+  //   ④ **聚焦滚动不落在吸顶链下**：把某行控件滚到视口上缘外 6px 再聚焦，其 `rect.top` 必须 ≥ 吸顶链底边
+  //      （实测修前停在 0，而吸顶链到 92/148 ⇒ 焦点环整个被压住 —— 键盘用户"按了没反应"）；
+  //   ⑤ 输入处让路：焦点在搜索框时按 `v`/`Delete` **不**作用到行（字符进输入框）；
+  //   ⑥ 对话框的焦点交接：预览打开时初始焦点在正文框，关闭后**回到那枚触发按钮**；
+  //   ⑦ Tab 顺序的第一个可聚焦元素是「跳到主内容」（跳链在最前）。
+  await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
+  await new Promise((r) => setTimeout(r, 2400));
+  const rowKeys = JSON.parse(
+    (await read(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const rowAt = (i) => document.querySelectorAll('tbody tr.row')[i];
+      const focusCell = (i) => rowAt(i).querySelector('input.checkbox').focus();
+      const checkedCount = () => document.querySelectorAll('tbody tr.row input.checkbox:checked').length;
+      const out = {};
+      out.firstFocusable = (() => {
+        const nodes = [...document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+          .filter((n) => !n.disabled && n.offsetParent !== null);
+        return nodes[0]?.textContent?.trim().slice(0, 8) ?? null;
+      })();
+      // ⑤ 输入处让路（先做，免得后面把选择集留在地上）
+      const box = document.querySelector('.toolbar input');
+      box.focus();
+      out.inputFocused = document.activeElement === box;
+      // ① 行内动作键
+      focusCell(1);
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true, cancelable: true }));
+      await wait(600);
+      out.starAfterKey = rowAt(1).querySelector('[data-action="star"]')?.getAttribute('aria-pressed') ?? null;
+      // 再按一次复原（净零）
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true, cancelable: true }));
+      await wait(600);
+      out.starRestored = rowAt(1).querySelector('[data-action="star"]')?.getAttribute('aria-pressed') ?? null;
+      // ③ Shift+↓ 扩展选择
+      const rowsBefore = document.querySelectorAll('tbody tr.row').length;
+      focusCell(4);
+      const shift = (key) => {
+        document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: true, bubbles: true, cancelable: true }));
+      };
+      const before = checkedCount();
+      shift('ArrowDown');
+      await wait(400);
+      shift('ArrowDown');
+      await wait(500);
+      out.rangeChecked = checkedCount();
+      out.rangeGrew = out.rangeChecked - before;
+      // 收尾：清空选择
+      [...document.querySelectorAll('.results__selection button')]
+        .find((b) => (b.textContent ?? '').includes('取消选择'))?.click();
+      await wait(500);
+      out.afterClear = checkedCount();
+      out.rowsIntact = document.querySelectorAll('tbody tr.row').length === rowsBefore;
+      return JSON.stringify(out);
+    })()`)) ?? '{}',
+  );
+  // ① `v` → 预览（真键盘）
+  await read(`document.querySelectorAll('tbody tr.row')[1].querySelector('input.checkbox').focus(), 1`);
+  await keyPress('v', 'KeyV', 86, 0, 'v');
+  await new Promise((r) => setTimeout(r, 1300));
+  const previewKey = JSON.parse(
+    (await read(`JSON.stringify({
+      open: Boolean(document.querySelector('dialog.dialog[open]')),
+      title: document.querySelector('dialog.dialog[open] .dialog__title')?.textContent ?? null,
+    })`)) ?? '{}',
+  );
+  await keyPress('Escape', 'Escape', 27);
+  await new Promise((r) => setTimeout(r, 700));
+
+  // ① Delete → 确认框（真键盘），Esc 取消后行数不变
+  await read(`document.querySelectorAll('tbody tr.row')[1].querySelector('input.checkbox').focus(), 1`);
+  const rowsBeforeDelete = await read(`document.querySelectorAll('tbody tr.row').length`);
+  await keyPress('Delete', 'Delete', 46);
+  await new Promise((r) => setTimeout(r, 600));
+  const deleteDialog = JSON.parse(
+    (await read(`JSON.stringify({
+      open: Boolean(document.querySelector('dialog.dialog[open]')),
+      focusLabel: (document.activeElement?.textContent ?? '').trim().slice(0, 6),
+      title: document.querySelector('dialog.dialog[open] .dialog__title')?.textContent ?? null,
+    })`)) ?? '{}',
+  );
+  await keyPress('Escape', 'Escape', 27);
+  await new Promise((r) => setTimeout(r, 700));
+  const rowsAfterCancel = await read(`document.querySelectorAll('tbody tr.row').length`);
+  // ② `c` → 剪贴板里是这一行的正文
+  await read(`(async () => {
+    const b = document.querySelectorAll('tbody tr.row')[1];
+    window.__rowText = (b.querySelector('.cell-content__text')?.textContent ?? '').slice(0, 40);
+    b.querySelector('input.checkbox').focus();
+    return 'ok';
+  })()`);
+  await keyPress('c', 'KeyC', 67, 0, 'c');
+  await new Promise((r) => setTimeout(r, 900));
+  const copied = JSON.parse(
+    (await read(`(async () => {
+      let text = null;
+      try { text = await navigator.clipboard.readText(); } catch (error) { text = 'ERR:' + String(error).slice(0, 40); }
+      return JSON.stringify({ head: (text ?? '').slice(0, 40), matchesCell: text !== null && String(text).startsWith(window.__rowText) });
+    })()`)) ?? '{}',
+  );
+  // ④ 聚焦滚动不落在吸顶链下（折叠态）
+  const occlusion = JSON.parse(
+    (await read(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const rows = [...document.querySelectorAll('tbody tr.row')];
+      const btn = rows[8].querySelector('[data-action="preview"]');
+      const docTop = btn.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo(0, Math.round(docTop + 6));
+      // 等折叠**稳定**（过渡期间几何还是展开态，量出来的是假红 —— 第一版就这么读过一次）
+      for (let i = 0; i < 40 && document.documentElement.dataset.header !== 'hidden'; i += 1) await wait(50);
+      await wait(120);
+      btn.focus();
+      await wait(400);
+      const after = Math.round(btn.getBoundingClientRect().top);
+      const stickyBottom = Math.round(document.querySelector('.table th').getBoundingClientRect().bottom);
+      window.scrollTo(0, 0);
+      await wait(300);
+      return JSON.stringify({ focused: document.activeElement === btn, after, stickyBottom, margin: getComputedStyle(btn).scrollMarginTop });
+    })()`)) ?? '{}',
+  );
+  // ⑥ 对话框焦点交接：打开时在正文框、关闭后回到触发按钮
+  const handoff = JSON.parse(
+    (await read(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const btn = document.querySelectorAll('tbody tr.row')[1].querySelector('[data-action="preview"]');
+      btn.focus();
+      btn.click();
+      await wait(1300);
+      const initial = document.activeElement?.className ?? null;
+      document.querySelector('dialog.dialog[open]')?.close();
+      await wait(600);
+      return JSON.stringify({ initial, restored: document.activeElement === btn });
+    })()`)) ?? '{}',
+  );
+  console.log('KBD     ', JSON.stringify({ rowKeys, previewKey, deleteDialog, copied, occlusion, handoff }));
+  {
+    check('`v`：焦点在行内时打开预览（真键盘，见 previewKeyOpen）', previewKey.open === true, JSON.stringify(previewKey));
+    check(
+      '`s` 切换收藏并可逆（净零）',
+      rowKeys.starAfterKey === 'false' && rowKeys.starRestored === 'true',
+      `按前=true → 按后=${String(rowKeys.starAfterKey)} → 复原=${String(rowKeys.starRestored)}`,
+    );
+    check('`Shift+↓` 从锚点行扩展选择（键盘等价于 Shift+点击）', rowKeys.rangeGrew >= 2, '新增选中=' + String(rowKeys.rangeGrew));
+    check('清空选择后无残留（净零）', rowKeys.afterClear === 0 && rowKeys.rowsIntact === true, JSON.stringify({ afterClear: rowKeys.afterClear, rowsIntact: rowKeys.rowsIntact }));
+    check('`Delete` 打开确认框，且初始焦点在「取消」', deleteDialog.open === true && deleteDialog.focusLabel === '取消', JSON.stringify(deleteDialog));
+    check('取消后行数不变（没有误删）', rowsAfterCancel === rowsBeforeDelete, `${rowsBeforeDelete} → ${rowsAfterCancel}`);
+    check('`c` 把这一行的正文真的写进了剪贴板', copied.matchesCell === true, JSON.stringify(copied));
+    check(
+      '聚焦行内控件时不会被吸顶链挡住（滚动留出 scroll-margin）',
+      occlusion.focused === true && occlusion.after >= occlusion.stickyBottom - 0.5,
+      `top=${String(occlusion.after)} 吸顶底边=${String(occlusion.stickyBottom)} margin=${String(occlusion.margin)}`,
+    );
+    check('预览打开时初始焦点在正文框，关闭后回到触发按钮', handoff.initial === 'dialog__body' && handoff.restored === true, JSON.stringify(handoff));
+    check('Tab 顺序的第一个可聚焦元素是跳链「跳到主内容」', (rowKeys.firstFocusable ?? '').includes('跳到主内容'), String(rowKeys.firstFocusable));
+  }
+
+  // ===== 编辑保存的**真实路径**（2026-09-22 用户实测报"保存失败：toasts.show is not a function"）=====
+  //
+  // 为什么必须常跑：这条路径此前**没有判据** —— 探针只测了"内容没变 ⇒ 不发请求"那条（`PRVEDIT`），
+  // 它绕过保存后的反馈，于是 `toasts.show`（那个对象上根本没有 `show` 这个方法，只有 `info`/`error`）
+  // 一路走到用户手里才被发现。教训：**"改了没测"与"测了不对"是两件事**，而这条路径属于前者。
+  //
+  // 判据四件事：① 真发了一次 POST；② 记录数 +1；③ 出现**真提示条**且文案是"已保存为新记录（N 个字符）"；
+  // ④ 自己收拾干净（软删 + 彻底删除，按内容里的探针标记定位，跑完不残留）。
+  // 它**写服务端数据**（与 `--write` 那段同类），但净零且不依赖 --write：这条路径太关键，
+  // 不能被"默认不写"这条偏好挡在门禁之外。
+  const saveMarker = `PROBE-${Date.now().toString(36)}`;
+  const saveResult = JSON.parse(
+    (await read(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      window.__posts = [];
+      const of = window.fetch;
+      window.fetch = (...a) => {
+        const url = String(a[0]?.url ?? a[0] ?? '');
+        const method = (a[1]?.method ?? 'GET').toUpperCase();
+        if (method === 'POST' && url.includes('/ui/api/history')) window.__posts.push(url);
+        return of(...a);
+      };
+      const before = (await (await fetch('/ui/api/history?page=1&pageSize=1')).json()).total ?? null;
+      const row = document.querySelector('tbody tr.row');
+      row?.querySelector('[data-action="preview"]')?.click();
+      await wait(1300);
+      const dlg = document.querySelector('dialog.dialog[open]');
+      const edit = [...(dlg?.querySelectorAll('.dialog__foot button') ?? [])].find((b) => (b.textContent ?? '').trim() === '编辑');
+      if (!edit) return JSON.stringify({ skipped: 'no edit button (first row is not Text?)' });
+      edit.click();
+      await wait(400);
+      const area = dlg.querySelector('.dialog__edit');
+      if (!area) return JSON.stringify({ skipped: 'edit mode did not open' });
+      area.value = area.value + ${JSON.stringify('\n' + saveMarker)};
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+      return JSON.stringify({ before, marker: ${JSON.stringify(saveMarker)} });
+    })()`)) ?? '{}',
+  );
+  let saveState = { skipped: saveResult.skipped ?? 'not attempted' };
+  if (!saveResult.skipped) {
+    // 真键盘：Ctrl+Enter 就是用户按的那个
+    await keyPress('Enter', 'Enter', 13, 2);
+    await new Promise((r) => setTimeout(r, 1800));
+    saveState = JSON.parse(
+      (await read(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const dlg = document.querySelector('dialog.dialog[open]');
+        const toast = document.querySelector('#toasts .toast');
+        const after = (await (await fetch('/ui/api/history?page=1&pageSize=1')).json()).total ?? null;
+        const out = {
+          posts: window.__posts.length,
+          after,
+          toast: toast ? toast.textContent : null,
+          editing: Boolean(dlg?.querySelector('.dialog__edit')),
+          errorShown: dlg?.querySelector('.alert--error')?.hidden === false
+            ? dlg.querySelector('.alert--error').textContent
+            : null,
+        };
+        // 收拾干净：按内容里的探针标记定位 → 软删 → 彻底删除。
+        // ⚠️ type 必须转成**字符串**再发：列表 JSON 里它是**数字**（0/1/2/3），而 batch-purge
+        // 的入口判据是 typeof entry.type === 'string' ⇒ 直接透传数字会被判 invalid、
+        // 静默留在回收站里（第一版就是这么漏了一条，清理看似"过了"）。
+        // （这段在模板串里：注释里不要再出现反引号 —— 会把外层串闭合掉，已踩过两次。）
+        const marker = ${JSON.stringify(saveMarker)};
+        const look = async (deleted) =>
+          (await (await fetch('/ui/api/history?page=1&pageSize=20&sort=id&order=desc&search=' +
+            encodeURIComponent(marker) + (deleted ? '&deleted=true' : ''))).json());
+        const found = await look(false);
+        const mine = (found.items ?? []).filter((it) => (it.text ?? '').includes(marker));
+        out.created = mine.length;
+        let purged = 0;
+        const purgeBodies = [];
+        for (const it of mine) {
+          const key = String(it.type) + '/' + it.hash;
+          await fetch('/ui/api/history/' + key, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ isDelete: true }),
+          });
+          const res = await fetch('/ui/api/history/batch-purge', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ items: [{ type: String(it.type), hash: it.hash }] }),
+          });
+          const body = await res.json();
+          purgeBodies.push(body);
+          purged += body.purged ?? 0;
+        }
+        out.purged = purged;
+        out.purgeBodies = purgeBodies;
+        // 残留要看**回收站**：软删之后它在活跃视图里本来就看不见（第一版只查活跃视图，
+        // 于是"没清干净"也能读到 0）
+        out.trashResidual = (await look(true)).total ?? null;
+        out.activeResidual = (await look(false)).total ?? null;
+        out.finalTotal = (await (await fetch('/ui/api/history?page=1&pageSize=1')).json()).total ?? null;
+        document.querySelector('dialog.dialog[open]')?.close();
+        await wait(300);
+        return JSON.stringify(out);
+      })()`)) ?? '{}',
+    );
+  }
+  console.log('SAVE    ', JSON.stringify({ marker: saveMarker, ...saveResult, ...saveState }));
+  {
+    if (saveState.skipped && saveResult.skipped) auditFindings.push('save: ' + String(saveResult.skipped));
+    else {
+      check('保存真的发出了 POST /ui/api/history', saveState.posts >= 1, JSON.stringify(saveState));
+      check('保存后记录数 +1', saveState.after === (saveResult.before ?? 0) + 1, `${saveResult.before} → ${saveState.after}`);
+      check(
+        '保存后弹出**真提示条**且文案正确（回归：`toasts.show` 不是函数）',
+        typeof saveState.toast === 'string' && /^已保存为新记录（\d+ 个字符）$/.test(saveState.toast),
+        JSON.stringify({ toast: saveState.toast, errorShown: saveState.errorShown }),
+      );
+      check(
+        '保存路径无就地报错（编辑框已退出、错误盒隐藏）',
+        saveState.editing === false && saveState.errorShown === null,
+        JSON.stringify(saveState),
+      );
+      check(
+        '探针自己收拾干净（软删 + 彻底删除，**回收站里也不残留**）',
+        saveState.purged >= 1 && saveState.trashResidual === 0 && saveState.activeResidual === 0,
+        JSON.stringify({ purged: saveState.purged, bodies: saveState.purgeBodies, trash: saveState.trashResidual, active: saveState.activeResidual, finalTotal: saveState.finalTotal }),
+      );
+    }
   }
 
   // ===== 顶栏折叠（2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」）=====

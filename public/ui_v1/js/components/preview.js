@@ -200,13 +200,28 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
       // 1s 只是**兜底**（不是设计值）：标签页进后台时 `requestAnimationFrame` 会被饿死，
       // 那也不能让正文永远留在 DOM 里。
       if (getComputedStyle(dialog).display === 'none' || performance.now() - started > 1000) {
-        body.replaceChildren();
-        footer.replaceChildren();
+        replaceOwn(body);
+        replaceOwn(footer);
         return;
       }
       discardFrame = requestAnimationFrame(tick);
     };
     discardFrame = requestAnimationFrame(tick);
+  }
+
+  // 重建正文/页脚：**只清本组件自己放进去的节点**。
+  //
+  // 为什么不能直接 `replaceChildren`：有对话框开着时，提示条宿主 `#toasts` 会**暂住在页脚里**
+  // （`toast.js` 的 `dockHost` —— 模态在 top layer，宿主留在 body 下就既被压暗又点不动）。
+  // 整块 `replaceChildren` 会把它连同正在显示的提示一起从 DOM 摘掉 —— 那不只是少一条提示，
+  // 而是把**全局提示系统**摘下来：此后所有提示都写进游离节点，永远看不见（2026-09-22 用户实测
+  // "已保存为新记录的 toast 为什么不会消失"就是这条：宿主被摘掉后提示留在游离树里）。
+  // 判据是"不是本组件放的都留着"—— 目前唯一的外部节点就是 `#toasts`。
+  function replaceOwn(node, ...children) {
+    for (const child of [...node.children]) {
+      if (child.id !== 'toasts') child.remove();
+    }
+    node.append(...children);
   }
 
   // 对话框里的操作按钮：与行内按钮同一套反馈（进行中 → 结果留在按钮上）。
@@ -326,7 +341,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
 
   function renderView() {
     body.className = 'dialog__body';
-    body.replaceChildren(renderText(currentText));
+    replaceOwn(body, renderText(currentText));
   }
 
   function renderViewActions() {
@@ -419,7 +434,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     // 其余动作仍靠右 —— `[移动到回收站|彻底删除] [spacer] [编辑] [复制文本] [下载文本]`。
     // 判据是 spacer 的位置：`.dialog__foot-spacer` 是 `flex: 1 1 auto`（components.css），
     // 它把**排在它后面**的东西推到右边 ⇒ 把销毁性那枚放在 spacer 之前，它就贴在左缘。
-    footer.replaceChildren(destructive, el('span', { class: 'dialog__foot-spacer' }), ...primary);
+    replaceOwn(footer, destructive, el('span', { class: 'dialog__foot-spacer' }), ...primary);
     // 初始焦点落在**正文框**上（2026-09-22 用户要求）：滚轮与键盘立刻能滚这段内容。
     // 此前它落在页脚第一枚动作上（那还是"编辑"时留下的巧合），而正文框当时根本不可聚焦 ——
     // 鼠标停在正文上滚是能滚的，但键盘没有任何落点。
@@ -494,7 +509,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     });
     area.value = currentText;
     body.className = 'dialog__body dialog__body--edit';
-    body.replaceChildren(area, editError);
+    replaceOwn(body, area, editError);
 
     // 两枚按钮的 hover 提示就是各自的**快捷键**（2026-09-22 用户要求"hover 显示对应的快捷键"）：
     // 用原生 `title`（与页脚其余动作、行内槽位同一套提示通道，见 actionButton 的说明），
@@ -566,7 +581,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     };
     save.addEventListener('click', saveEdit);
     activeSave = saveEdit; // Ctrl/⌘+Enter 走的也是这一个
-    footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }), cancel, save);
+    replaceOwn(footer, el('span', { class: 'dialog__foot-spacer' }), cancel, save);
 
     if (!dialog.open) dialog.showModal();
     // **焦点立刻给，但"光标落到末尾"放到第一帧画完之后**（2026-09-22 用户实测："编辑打开之后
@@ -619,8 +634,8 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     activeSave = null; // 同上：换记录时旧编辑会话的保存闭包必须失联
     renderHead(item);
     body.className = 'dialog__body';
-    body.replaceChildren();
-    footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }));
+    replaceOwn(body);
+    replaceOwn(footer, el('span', { class: 'dialog__foot-spacer' }));
 
     // ⚠️ **先 `showModal()`，再画、再定焦点。** `showModal()` 自己会把焦点移到第一个可聚焦元素
     // （这里是右上角的 ✕），在它**之前**调 `focus()` 等于白调 —— 于是文件头那句"打开后焦点落在

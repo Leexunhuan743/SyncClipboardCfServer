@@ -93,7 +93,9 @@ function applyToggleState(button, on, labels) {
   const label = on ? labels.on : labels.off;
   button.setAttribute('aria-pressed', on ? 'true' : 'false');
   button.setAttribute('aria-label', label);
-  button.setAttribute('title', label);
+  // 键一并写进 hover 提示（`s` 收藏 / `i` 置顶，见 `list.js` 的 `ROW_SHORTCUTS`）：这两枚开关的
+  // 文案随状态变（收藏 ⇄ 取消收藏），键恒定 —— 在**唯一改文案的地方**一并写，别处不必知道。
+  button.setAttribute('title', `${label}（${button.dataset.action === 'pin' ? 'i' : 's'}）`);
 }
 
 // 重放开关动画：同一个 data-pop 属性不会重启动画，故先删、强制回流、再置上。
