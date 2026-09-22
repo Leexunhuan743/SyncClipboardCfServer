@@ -62,7 +62,7 @@
 | 上游 | 迁移对应物 | 结论 |
 |---|---|---|
 | `Program.cs` | `wrangler.toml`（绑定/变量/定时）+ `src/index.ts`（`export default.fetch`/`scheduled`） | 等价。上游「环境变量优先、否则配置文件」的凭据选择 → 迁移只用 Cloudflare secrets（**fail-closed**，不保留 `admin/admin` 回退） |
-| `appsettings.json` | `wrangler.toml [vars]` + secrets + `src/env.ts` | 等价：`MaxSavedHistoryCount=1000`、`HistoryRetentionMinutes=10080` 数值一致；Kestrel/日志节不适用 |
+| `appsettings.json` | `wrangler.toml [vars]` + secrets + `src/env.ts` | 等价：`MaxSavedHistoryCount=1000`、`HistoryRetentionMinutes=0` 数值一致（上游 3.3.0 起默认 0 = 不限制）；Kestrel/日志节不适用 |
 | `appsettings.Development.json` | `.dev.vars.example` | 等价（都只是本地开发凭据样例） |
 | `Dockerfile` / `docker-compose.yml` / `.dockerignore` | 无 / 无 / `.gitignore` | 不适用（托管平台）；`.dockerignore` 的作用由 `.gitignore` 的 `.dev.vars` 规则承担 |
 | `README_DOCKER.md` | `README.md` 的部署章节（含 GitHub Actions 方式） | 等价（重写，且新增 CI 路径） |
@@ -73,7 +73,7 @@
 | 上游 | 迁移对应物 | 结论 |
 |---|---|---|
 | `Web.cs` | `src/index.ts`（中间件链、路由装配）+ `src/hub.ts`（negotiate/转发） | 等价。上游 `AddSignalR()` 默认值（KeepAlive 15s / ClientTimeout 30s / 传输宣告顺序）逐项对齐；`MaxRequestBodySize=int.MaxValue` → 迁移**默认 48 MiB**（可调 64 MiB）+ 413（已登记，安全收紧） |
-| `BasicAuthenticationHandler.cs` | `src/auth.ts` | 等价 + 增强（常量时间比较、失败限速、弱凭据告警、未配置 fail-closed）；畸形头上游 500 / 迁移 401（已登记） |
+| `BasicAuthenticationHandler.cs` | `src/auth.ts` | 等价 + 增强（长度相同后逐字节常量时间比较、失败限速、弱凭据告警、未配置 fail-closed）；畸形头上游 500 / 迁移 401（已登记） |
 | `CredentialChecker/{I,Static,File}CredentialChecker.cs` | `src/auth.ts#verifyCredentials` + `env.USERNAME/PASSWORD` | 等价（三文件合并为一，**默认口令回退被有意去掉**） |
 | `Constants/SignalRConstants.cs` | `src/hub.ts#HUB_PATH` | 等价（`/SyncClipboardHub` 逐字） |
 | `Controllers/SyncClipboardController.cs` | `src/routes/webdav.ts` + `src/index.ts`（`/api/time`、`/api/version`） | 等价：18 个返回点全覆盖（含 3 个降级出口、`InvalidFileName`、404 文案）；PROPFIND 200→207 已登记 |

@@ -90,7 +90,7 @@
 
 1. **类型**：`node node_modules/typescript/bin/tsc --noEmit` → 0 错。
    （`npm run <script>` 在本机 Git Bash 里会被安全策略拦，直接调 `node node_modules/...` 的 CLI 入口。）
-2. **静态检查**：`node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js test/manual` → 0 告警。
+2. **静态检查**：`node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` → 0 告警。
    外加**四个 `test/manual/*.mjs` 的语法门**：`node --check test/manual/probe.mjs`、
    `.../probe-ui-v1.mjs`、`.../states.mjs`、`.../shoot.mjs` → 全 0。它们既不在 `tsc` 的 include 里、
    也不进任何套件，而**模板字面量里的一个反引号就能让整份探针不可运行**（N-14 形态：

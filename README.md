@@ -115,7 +115,7 @@ flowchart LR
 
 4. **初始化线上 D1 数据库表**：
    ```bash
-   npx wrangler d1 execute syncclipboard --remote --file=./schema.sql
+   npx wrangler d1 execute DB --remote --file=./schema.sql
    ```
    这一步会创建存储历史记录所需的表和索引，操作具备幂等性。
 
@@ -247,7 +247,7 @@ Cloudflare Workers 免费计划提供每日 10 万次请求额度：
 
 ### 历史记录清理机制
 
-后台定时任务通过 Cron Trigger 每 20 分钟执行一轮，单批处理 500 条记录。日常使用记录会按时清除。如果换机后客户端一次性同步数千条历史，或者临时大幅缩短了保留时间，超期记录不会立刻在页面中消失，需要等待数轮清理任务（每轮间隔 20 分钟）逐步分批删除。在此期间这些记录仍属于活跃状态。
+后台定时任务通过 Cron Trigger 每 20 分钟执行一轮，单批处理 500 条记录。**默认只按条数上限（1000 条，收藏/置顶豁免）回收**——保留期默认 0 = 不限制（对齐上游 3.3.0）；要按时间自动清理需显式设置 `HISTORY_RETENTION_MINUTES`。被软删的记录连同数据进回收站（最长留 30 天后硬删）。如果换机后客户端一次性同步数千条历史，或者临时大幅缩短了保留时间，超期记录不会立刻在页面中消失，需要等待数轮清理任务（每轮间隔 20 分钟）逐步分批删除。在此期间这些记录仍属于活跃状态。
 
 ---
 
@@ -306,7 +306,7 @@ Cloudflare 不支持传统意义上的文件日志级别配置，日志通过以
 npm install
 
 # 初始化本地 D1 数据库（保存在 .wrangler 目录下）
-npx wrangler d1 execute syncclipboard --local --file=./schema.sql
+npx wrangler d1 execute DB --local --file=./schema.sql
 
 # 配置本地环境变量与测试凭据
 cp .dev.vars.example .dev.vars

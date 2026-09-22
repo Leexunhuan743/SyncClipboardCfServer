@@ -11306,7 +11306,80 @@ match the profile hash.`；PUT 无 data 分支改为 `Inline data does not match
 **判据**：新增 `test/protocol.test.ts` 的声明头五例 + 严格校验两例；`dto-validation` 的 F5 段断言 /data 回带哈希、
 坏行 422、旧记录不带头。门禁：tsc 0 / eslint 0 / 全量 22 套件全过 / V1+V2 探针零问题。
 
-**遗留（有意不做，已在 protocol §10 登记）**：旧记录不回填哈希；声明头与文件不符在 POST 路径沿用本实现 422
-（上游 400，属已登记的那格差异）。
+**遗留（有意不做，已在 protocol §10 登记）**：旧记录不回填哈希。
+
+> **更正（2026-09-22 发布审计）**：上面「声明头与文件不符在 POST 路径沿用本实现 422（上游 400）」记错了 ——
+> 逐行复核上游源码（`HistoryService.cs:449` 的 `VerifyFileSHA256` 抛 `InvalidDataException` → `:457-461` 包成
+> `HistoryTransferDataException` → `HistoryController.cs:185-192` 映射 422）后确认**两侧都是 422**，不构成差异；
+> `docs/protocol.md` §10 已改正，本小节保留原文以见沿革。
 
 
+## 163. 发布前全面审计：17 个只读分片 + 一轮收敛修复（2026-09-22）
+
+发布前按用户要求做全面审计（只读 scout 分片 ×17：协议逐端点对上游 / WebDAV / SignalR / 数据层 / 认证限流 /
+清理 / 杂项端点 / 四片精简审计 / UI-V1 / 文档真值 / 部署链 / 生产风险 / 测试质量 / 安全）。无 HIGH 的面上结论：
+**协议面 10 个端点、哈希算法、JSON 字段名/大小写、SignalR 三传输与载荷、清理语义与上游逐条对齐**，官方 3.x
+客户端可正常连接与同步。发现并修复的真实问题：
+
+**行为/一致性**
+1. **清理驱动的软删会立即删掉 R2 数据目录，与 ADR D29 的"真回收站"承诺冲突**（会产出 hasData=true 但对象
+   已删的僵尸记录；`/data` 按 #413 新语义回 422）。修复：软删阶段（retention/trim）只广播、**不清目录**，
+   目录留到 30 天硬删或用户彻底删除时才清 —— 与 `historyOps` 的用户路径同一语义。`cleanup.ts` 的
+   `applyRecordCleanup` 重构为 `drainBatches` 的 `applyBatch`（软删 = 逐条广播 / 硬删 = 批量清扫），
+   阶段固定开销按 `batchedCallCost` 分开记账；`cleanOrphans` 复用 `sweepWorkingDirs`（消灭死返回值 + 一份
+   分块纪律）。
+2. **`clearAll`/`purgeTrash` 在坏 hash 行上"行已删、接口却 500"**（`workingDirPrefix` 的断言在删行之后才
+   触发）。修复：`deleteRecordsWorkingDirs` 先 `filter(isValidProfileHash)`，坏行目录由孤儿阶段兜底。
+3. **DO 心跳 alarm 会被连接事件推后、可能永不触发**（8 个调用点都 `setAlarm(now+15s)` 覆盖；连接比 15s 更
+   勤时 WS/SSE 客户端在 30s ServerTimeout 处反复重连）。修复：`heartbeatScheduled` 内存标志，只在无待触发
+   alarm 时排程。
+4. **`/ui/api/session`（或 logout）挂一个假 `Authorization` 头即返回 200 → `noteAuthSuccess` 清零 IP 维度
+   失败计数**，限速防爆破可被绕过。修复：只有登录成功（`isLogin && c.res.ok`）才清零。
+5. **登录 body 被中间件读两次**（我引入 capped 读取时没走 clone）⇒ login 恒 400。修复：中间件读 `clone()`。
+6. **multipart 以 `--boundary` 结尾（缺闭合 `--`）被静默当作解析成功**，半截上传可入库。修复：循环结束校验
+   `closed`，缺闭合抛错 → 400（对齐上游 MultipartReader）。
+
+**内存/资源（全部有实测或算术依据）**
+7. **Group 上传峰值内存被低估 2~3 倍**（`contents` 全量留存 + fflate 缓冲翻倍 + ondata 交付拷贝；20MiB zip
+   即可撞穿 128MiB isolate）。修复两件套：`parseGroupZip` 改为**条目内容用后即弃、只留 SHA-256 与长度**
+   （`GroupEntrySpec.content` → `contentHash`/`contentLength`，`parseGroupZip` 变 async）；解压预算按 2 分摊
+   （`groupZipDecompressionCap` 的 `remaining/2`）+ **单条目 24MiB 上限**。峰值 ≈ body + 3×最大条目 ≤ 预算。
+8. **chunked/无 content-length 请求绕过 F9 体量预检**，平台 100MiB 整包可被读进 isolate（OOM 连累并发请求）。
+   修复：新增 `requestLimits.readBodyCapped`（边读边计数，超限即 413），接入 `parseFormBody`、PATCH、
+   `/ui/api/login`（中间件 + `readCredentials`）三个整包读取点；`/api/history/query` 也补进 F9 名单。
+9. **UI 列表 `SELECT *` 把整列 Text 拉进内存**（500 行 × 2MB 上限 = OOM 面）。修复：`listUiHistory` 改列投影
+   `substr(Text,1,501)` + `length(Text) AS TextFullLength`（截断判定改用完整长度列）。
+10. **硬删/清空 `RETURNING *` 把整行（含大 Text）读进 isolate**。修复：`hardDeleteOldDeletedRecords` 与
+    `clearAll` 都只 `RETURNING Type, Hash`（与 `purgeDeletedRecords` 同口径）。
+11. **内联 text 无长度校验**，>2MB 会让 INSERT 以 D1 错误 500。修复：`parseIncomingForm` 按 UTF-8 字节
+    判 1MiB 上限 → 400（与界面编辑器上限同量级；官方客户端恒发 ≤10KB）。
+
+**协议/文档真值**
+12. **`POST /api/history` 声明头与文件不符，上游其实是 422 不是 400**（§162 记错，见上方更正）——
+   本实现 422 与上游一致，§10 两行改正、代码注释同步。
+13. **422 错误体实际是 ProblemDetails JSON，注释与 §10 却写"纯文本"**：改正为「400 类纯文本 / 422 为与
+    上游同构的 ProblemDetails JSON」（`problemDetails()` 本就发 JSON）。
+14. **`GET /SyncClipboard.json` 与 `RemoteProfileChanged` 不输出 `transferDataHash`**（上游 `ToProfileDto`
+    有数据就带；客户端因此静默跳过当前剪贴板的完整性校验）。修复：`entityToProfileDto` 在哈希合法时回带
+    （与 `/data` 回带头的同一判据）。
+15. 空声明头文案对齐上游（`cannot be empty` 先于 `must contain exactly one value`）；`upstream-parity.md`
+    保留期 10080→0、`ui.md` 5k 行 D29 口径、`README` 清理机制默认值口径、`design.md` §9 硬删广播措辞、
+    `AGENTS.md` lint 命令补 `ui_shared`、`.dev.vars.example` 关闭态清单补 `ui_shared`、§10 新增 5 行
+    （401 响应体 / 未知路径 401 计数 / SearchText 48B / statistics 口径 / 声明头 422）、`db.ts` 行号与
+    占位符引用更新 —— 全部逐处核代码后改正。
+
+**部署链**
+16. `tools/migrate-d1.mjs`：寻址从库名 `syncclipboard` 改为 **binding 名 `DB`**（与 Worker 绑定、CI schema
+    步骤同库 —— 按名寻址会与注入的 `database_id` 解耦，迁移可能落在别的库上）；ALTER 后**复查**列存在，
+    假成功非零退出；`parseD1Output` 抽成导出纯函数。`deploy.yml` 三处 d1 execute 全部改 `DB`、paths 白名单
+    补 `tools/**`、方式 A 冒烟跳过提示升级为 `::warning::`。新增常驻守卫（`docs.test.ts`）：parse 三形态 +
+    步骤顺序 + 同库寻址。
+17. **限速清零修复**（见 4）之外，还顺带把 404 页图标指向 `/ui_shared/brand/favicon.svg`（原 `/ui_v2/favicon.svg`
+    已随改名消失）、`batch-meta` 的 hash 校验与写路径同判据、`broadcast` 复用 `broadcastMany`（消除第二份
+    DO fetch）、删除 6 处无外部消费者的导出、`notFoundPage` 去参数。
+
+**判据**：tsc 0 / eslint 0 / `node --check` ×5 / **全量 22 套件全过（458 用例）** / docs.test.ts 新增 2 条迁移
+守卫全绿 / 本地迁移脚本幂等复跑 `already present`（`--local`，binding 名寻址实测通过）。发布审计的 17 份
+分片报告未纳入仓库（一次性输入），发现与处置如上；有意不做并登记：statistics 全桶列举成本、`GET /file`
+全表扫描、孤儿列举的页数上限、DO 长轮询全局队列预算、File/Image 上传的二次 SHA-256（CPU 优化，改 API 面
+风险大于收益）——见 `docs/protocol.md` §10 与 `docs/design.md` §13。

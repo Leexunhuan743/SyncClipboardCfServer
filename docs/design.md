@@ -200,7 +200,8 @@ SyncClipboardCfServer/
 │       └── signalr.ts          # SignalR JSON 协议消息编解码
 ├── tools/                      # 按需运行的核实工具（不进任何套件、不参与部署产物）
 │   ├── ab-upstream-probe.ps1   # 真上游 A/B：官方发布件逐条对照，退出码 = 未登记差异数（D10）
-│   └── check-d1-like-limit.mjs # D1 引擎的 LIKE 模式上限是否仍与 MAX_LIKE_PATTERN_BYTES 一致（progress §105.3）
+│   ├── check-d1-like-limit.mjs # D1 引擎的 LIKE 模式上限是否仍与 MAX_LIKE_PATTERN_BYTES 一致（progress §105.3）
+│   └── migrate-d1.mjs          # 老库加列（幂等；CI 在 Deploy 前执行，见 §9 与 README「升级与数据备份」）
 └── test/
     ├── hash.test.ts            # 哈希算法对照 C# 参考值
     ├── protocol.test.ts        # HTTP 协议黑盒测试
@@ -208,8 +209,13 @@ SyncClipboardCfServer/
     ├── transports.test.ts      # 三种传输的 negotiate 与握手
     ├── query-filters.test.ts   # 查询过滤与排序
     ├── cleanup.test.ts         # 保留/清理语义
+    ├── cleanup-budget.test.ts  # 清理预算/游标/失败可观测
     ├── fixes.test.ts           # 历次缺陷的回归
     ├── fix-regressions.test.ts # 修复回归
+    ├── dto-validation.test.ts  # DTO 类型校验与 /data 头编码
+    ├── ui-guard.test.ts        # UI 挂载点/端点/令牌守卫
+    ├── ui-contract.test.ts     # 前端跨文件契约（modulepreload/BEM 类名双向）
+    └── …（其余见下方「套件清单」，共 22 个）
     ├── ui.test.ts              # /ui/api/* 的接口与鉴权（含回收站视图与恢复）
     ├── ui-logic.test.ts        # 零构建前端的纯逻辑（筛选/格式化/归一化）
     ├── ui-contract.test.ts     # 跨文件契约（预载清单、BEM 类名、属性生产者、原生可解析）
@@ -443,12 +449,16 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
   上游是"10min / 12h / 12h"三个独立后台任务，本实现合成一条 Cron）
 - 配置：`MAX_SAVED_HISTORY_COUNT`（默认 1000）、`HISTORY_RETENTION_MINUTES`（**默认 0 = 不限制**，对齐上游 3.3.0 的 `AppSettings.HistoryRetentionMinutes`；见 §9 的保留规则）
 - 保留规则：过期的**未收藏/未置顶/未删除**记录才删 —— 但保留期**默认不限制**（0），所以默认只有条数裁剪（1000 条）在按时间之外兜底；条数裁剪按 `MAX(LastModified, LastAccessed)` 升序软删最旧的，收藏/置顶豁免
-- 每次删除同步清理 R2 工作目录，并广播 `RemoteHistoryChanged`（与上游逐条通知一致）
+- **软删不清数据目录**（ADR D29：回收站要能连数据拿回来；`src/cleanup.ts` 的 broadcastRecords 只广播），
+  目录在 **30 天硬删**阶段按批清扫（`sweepRecordDirs`）或用户「彻底删除/清空回收站」时清；
+  广播只在软删阶段（硬删不广播，与上游一致）
 - 吞吐与批次（2026-09-15 起）：软删单批 **500 条**（对齐上游 `HistoryManagerHelper.BatchSize`）；
   目录清扫改为"每轮一次列举 + 每批一次批量删"，于是**每条记录只花 1 次子请求**（广播；硬删 0 次），
   而不是旧实现的 3 次（R2 列举 + R2 删除 + 广播）。实测：300 条过期 / 500 条超量都在**一轮内**处理完
   （旧实现分别为 105 / 115 条每轮）。约束仍是平台单次调用的 1,000 次内部子请求上限（本项目按 800 计预算）。
-- 实现：`src/cleanup.ts`（`runCleanup`）+ `src/index.ts` 的 `scheduled` handler + `db.ts`/`storage.ts` 数据层方法
+- 实现：`src/cleanup.ts`（`runCleanup`）+ `src/index.ts` 的 `scheduled` handler + `db.ts`/`storage.ts` 数据层方法。
+  每个阶段各带**子请求预算**（默认 800/轮，`SUBREQUEST_BUDGET`）与 Meta 游标：Free 计划每轮约 50 条
+  D1 语句 / 10ms CPU 的硬顶下，积压大的库会「一轮跑不完、下轮续跑」——这是设计行为（见 §13 风险表）
 
 > **孤儿判定的键形式契约（曾因此出一小时清空一次的生产事故）**：
 > 目录名一律用 `{Type}_{hash}/`（**不带 `history/` 前缀**、**带尾斜杠**）这一种形式 ——
@@ -609,6 +619,11 @@ D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需
 | D1 免费版写并发/读主库限制 | 低 | 单用户秒级频率，远低于限额 |
 | Group ZIP 校验在 JS 端性能（大压缩包） | 低 | fflate 流式处理；单文件解压逐条哈希 |
 | DO 单实例为广播单点 | 低 | 个人场景足够；DO 迁移由平台保障连接不掉 |
+| 默认保留期 0 + 收藏/置顶豁免 => 默认态只有条数上限（1000）在回收，且收藏/置顶**不参与裁剪** | 中 | 对齐上游 3.3.0 的既定语义（`AppSettings.HistoryRetentionMinutes=0`）；要按时间回收需显式设置 `HISTORY_RETENTION_MINUTES`。极端情形（收藏/置顶占满 1000）下 D1 行数无界增长直至平台容量上限 —— 个人场景不可达 |
+| Free 计划的清理硬顶（约 50 条 D1 语句 / 10ms CPU 每次 Cron） | 低 | 积压库一轮跑不完，由 Meta 游标**下一轮续跑**（不会静默丢阶段）；README 已注明「清理与 >1MB 上传建议 Workers Paid」。对齐上游的清理语义不变，只是收敛速度受平台约束 |
+| `statistics.totalFileSizeMB` 每次全桶列举 R2（O(对象数) 次子请求） | 低 | 单用户规模（数千对象）≈ 数次调用；十万对象级再考虑落 Meta 缓存（见 protocol.md §10 的 statistics 行） |
+| Group 上传峰值内存 = body + 2×解压（fflate 缓冲翻倍 + 交付拷贝） | 低 | 解压预算按 2 分摊（`groupZipDecompressionCap`）+ 单条目 24 MiB 上限；条目内容用后即弃只留哈希（`src/hash.ts` 2026-09-22 重构） |
+| 长轮询队列上限按连接计（每连接 ≤1M 码元 / 64 条） | 低 | 30–60 条停滞连接才逼近 DO 内存（算术推算，未压测）；客户端 100s 轮询超时 + 60s 静默清理兜底 |
 
 ## 14. 里程碑
 

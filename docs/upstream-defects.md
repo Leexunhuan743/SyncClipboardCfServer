@@ -113,7 +113,7 @@ Q10 是**拒绝语义**（上游 500 vs 本实现 400，客户端对两者同为
 - **上游**：`HistoryService.Update`（`HistoryService.cs:33-83`）是「查 → 判定 → 改字段 → `SaveChangesAsync`」，
   进程内用 `_processSem`（`:19`，**static** ⇒ 仅同进程有效）串行化。多副本共享同一个 `history.db` 时，
   两个并发 PATCH 可各自通过 `shouldUpdate` 再各自 `SaveChanges` ⇒ **后者静默覆盖前者**。
-- **本实现**：`updateEntityIfVersion`（`src/db.ts:199-210`）`UPDATE ... WHERE ID=?15 AND Version=?16` +
+- **本实现**：`updateEntityIfVersion`（`src/db.ts:222-228`）`UPDATE ... WHERE ID=?16 AND Version=?17` +
   受影响行数判定 ⇒ 冲突时返回 409（`src/db.ts:398-403`）。理由此前只写在 `src/db.ts:197-198` 的注释里。
 - **处置**：已在本轮把该理由补进 `protocol.md` §10「并发」行（原文只写"UNIQUE 索引 + 唯一冲突合并 + 乐观锁"，
   没说乐观锁**防的是上游哪一类故障**）。
