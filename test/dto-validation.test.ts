@@ -10,7 +10,7 @@
 // shouldUpdate 判定（本例记录版本为 0 且时间戳为 now → 版本不前进 → 409）。
 import { describe, expect, it } from 'vitest';
 import type { Hono } from 'hono';
-import { parseHistoryRecordUpdateDto, parseProfileDto } from '../src/serialization';
+import { parseHistoryRecordUpdateDto, parseProfileDto, historySizeMB } from '../src/serialization';
 import { createHistoryRoutes } from '../src/routes/history';
 import { createWebdavRoutes } from '../src/routes/webdav';
 import { createUiRoutes } from '../src/ui/routes';
@@ -489,5 +489,18 @@ describe('库里的坏行（hash 含路径分隔符）：诊断面与读路径�
     expect(res.status, '修复前这里是 500（storage 层的 assertHashForPath 抛出）').toBe(404);
     // 对照：同一行的**元数据**端点不受影响（它不碰 R2 key 构造）
     expect((await send(h.history, h.env, '/api/history/Text-AA%2FBB')).status).toBe(200);
+  });
+});
+
+// `historySizeMB`：统计接口的体积口径。此前**没有任何断言**，而它是两个"跨测量差值"判据的输入
+// （`test/ui.test.ts` 的"彻底删除清字节"就是其中之一）—— 2026-09-22 CI 实测读到 1.99 而不是 2.00，
+// 根因正是下面这条**地板**：CI 的库几乎空 ⇒ 清空后总字节 ≈ 40 B ⇒ 四舍五入成 0 ⇒ 被抬到 0.01。
+describe('historySizeMB：两位小数 + 「非零不得显示成 0」的地板', () => {
+  it('0 给 0（真值）；非零但不足 0.005 MB 给 0.01；正常值取两位小数', () => {
+    expect(historySizeMB(0), '真的一个字节都没有 —— 0 是**真值**，不该被抬成 0.01').toBe(0);
+    expect(historySizeMB(1), '非零不得显示成 0（那是"取不到/坏了"的读数）').toBe(0.01);
+    expect(historySizeMB(40), 'CI 那次就是这一档（清空后只剩几十字节）').toBe(0.01);
+    expect(historySizeMB(2 * 1024 * 1024), '正好 2 MiB').toBe(2);
+    expect(historySizeMB(1024 * 1024 * 3.14159), '两位小数').toBe(3.14);
   });
 });

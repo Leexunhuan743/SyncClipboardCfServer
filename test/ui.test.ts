@@ -1276,13 +1276,21 @@ describe('UI API · 彻底删除把字节从 R2 里清掉（D29：回收站里�
     expect(gone.status, '行没了').toBe(404);
     await gone.text(); // 排空
     const after = await totalFileSizeMB();
-    // 两位小数口径（`historySizeMB` 就是 `Math.round(mb*100)/100`）：差值必须先归一再比，
-    // 否则 4.01 − 2.01 = 1.9999999999999998 会把"确实释放了 2 MiB"判成失败。
+    // 两次读数都是**两位小数的 MB**（`historySizeMB` = `Math.round(mb*100)/100`），差值要留余量：
+    //   ① 浮点尾差（4.01 − 2.01 = 1.9999999999999998）—— 先归一再比即消除；
+    //   ② **`historySizeMB` 的地板**：`bytes > 0 && mb === 0` ⇒ 抬到 `0.01`（"非零不得显示成 0"，
+    //      那条规则本身是对的）。CI 的库几乎空 ⇒ 清空后总字节 ≈ 40 B ⇒ 四舍五入成 0 ⇒ 被抬到
+    //      **0.01** ⇒ 差值 = 2.00 − 0.01 = **1.99**。这条**消不掉**，只能让阈值容下它。
+    // 2026-09-22 CI 实测：同一份用例本地读到 2.00、CI 读到 1.99（那次推送的 quality 因此红、
+    // 部署被跳过）⇒ 阈值取 **1.98**（地板 0.01 + 取整 0.01 的最坏情形），
+    // 而"一个字节都没释放"（≈0）照样判红。
+    // 「字节真的从桶里没了」的**确定性**覆盖在单元层：`test/fixes.test.ts` 的 `purgeTrash`
+    // 用内存 bucket 直接断言对象消失，不受任何全局计数/取整影响。
     const freed = Math.round((withData - after) * 100) / 100;
     expect(
       freed,
       '彻底删除必须把字节从 R2 里清掉（不扫目录就是留给孤儿阶段等 ≤20 分钟）',
-    ).toBeGreaterThanOrEqual(2);
+    ).toBeGreaterThanOrEqual(1.98);
   });
 });
 
