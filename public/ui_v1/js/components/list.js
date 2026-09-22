@@ -965,6 +965,19 @@ export function createList(actions) {
       // 徽标（置顶/数据可用性/长文本）也要跟着变：置顶按钮按下后，徽标不该等到下一次轮询才出现
       const flags = row.querySelector('.cell-content__flags');
       if (flags) flags.replaceWith(buildFlags(item));
+      // **三个时间列也要跟着走**（2026-09-22 发布前审核实测补）：此前只换徽标与开关，
+      // 于是「触碰访问时间」（复制/下载后推进 `lastAccessed`，ADR D32）在屏幕上完全看不出来 ——
+      // 实测：复制一条之后 `lastAccessed` 已经变了，行内那一格仍显示旧值。
+      // 列的顺序是固定的（创建 / 修改 / 访问，与 `buildRow` 的 cells 一致）。
+      const timeValues = [item.createTime, item.lastModified, item.lastAccessed];
+      row.querySelectorAll('.cell-time').forEach((cell, index) => {
+        const value = timeValues[index];
+        if (value === undefined) return;
+        const span = cell.querySelector('span');
+        if (!span) return;
+        span.textContent = formatRelative(value);
+        span.title = formatAbsolute(value);
+      });
       if (pop) playPop(row.querySelector(`[data-action="${pop}"]`));
       const index = currentItems.findIndex((entry) => entry.key === item.key);
       if (index >= 0) currentItems[index] = item;

@@ -10474,5 +10474,40 @@ headless 渲染进程被这张图的 PNG 编码**占满**（eval 已超时但 JS
 对该记录的正常同步判成冲突；ADR D30 的「编辑」用 `version: 0` 建新记录防的是同一个坑）。
 顺带订正 §5 的前言（写"四处刻意的设计"，实际已有 8 条）。
 
+> ⚠️ **本条结论已被 §146 推翻**（同一天，用户定案「方案 B」）：界面自己的复制 / 下载**改为推进**
+> `LastAccessed`，做法是回显 `version` / `lastModified` ⇒ 落库只改 `lastAccessed`、**零版本扰动**
+> —— 也就是本节担心的 `Version++` 可以完全避开。
+
+## 146. 复制 / 下载推进访问时间（用户定案「方案 B」）＋ 行内时间列就地同步（2026-09-22）
+
+§145 那轮判定"不推进"，用户随后定案要推进（**方案 B**）。落地与取证：
+
+**① 载荷（"只改一个字段"的关键）**：`{lastAccessed: now, lastModified: item.lastModified, version: item.version}`
+—— 回显后两者，是为了让 `db.updateHistory` 的两条缺省（`newVersion = dto.version ?? version + 1`、
+`newLastModified = dto.lastModified ?? max(now, existing + 1)`）**不生效**。`src/ui/routes.ts` 的 UI PATCH
+白名单相应从"三个开关"放宽到接受 `lastAccessed`（`lastModified`/`version` 只在带它时透传）。
+
+**② 实测（`test/ui.test.ts` 新增「触碰访问时间」用例 + 浏览器端到端）**
+
+| 断言 | 结果 |
+|---|---|
+| 触碰后 `lastAccessed` | 推进（`2020-01-01` → `2026-09-22 11:59:58`） |
+| 触碰后 `lastModified` | **逐字不变** |
+| 触碰后 `version` | **不变** ⇒ 官方客户端随后对该记录的正常同步不会被 `shouldUpdate` 判成冲突 |
+| 过期 `version` 的触碰 | **409**（界面静默忽略 ⇒ 不碰别人刚改过的记录） |
+| PATCH 被强制 500 时 | 复制照样成功、**零错误提示**（静默） |
+| 行内「访问」列 | 就地变（`2020-01-01` → `刚刚`，title `2026-09-22 11:59:58`） |
+| 按「访问」倒序 + 触碰 | 该行当场挪到正确位置（实测它上方 9 行**全部**是未来时间戳夹具，`aboveAllFuture: true`） |
+
+**③ 顺带修掉一个既有缺陷**：`list.patchItem()` 此前只换徽标与开关、**不重画三个时间列** ⇒
+"触碰访问时间"在屏幕上完全看不出来（本次实测才发现；收藏 / 置顶造成的 `lastModified` 变化同样一直没刷新）。
+现在创建 / 修改 / 访问三列跟着 `item` 一起更新（`public/ui_v1/js/components/list.js`）。
+
+**④ 范围**：复制文本 / 复制图片 / 下载 / 下载文本 / 复制最近一条各算一次"使用"；
+**「批量复制」不触碰**（一次点击 N 条 ⇒ N 次写 + N 次广播，代价与收益不成比例，登记为明确例外）。
+
+**⑤ 文档**：`docs/ui.md` §5 第 8 条**改写**（"不推进"的取舍 → "推进 + 三条约束 + 批量例外"）；
+ADR **D32**（`docs/design.md` §2）；`docs/ui.md` §5 端点表的 PATCH 行补上这个 body 形态。
+
 
 

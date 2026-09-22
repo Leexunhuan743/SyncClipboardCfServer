@@ -1064,6 +1064,48 @@ async function openDeepLink() {
   }
 }
 
+// 「使用一条记录」= 把它的内容拿到本机（复制到剪贴板 / 存成文件）⇒ **推进它的访问时间**
+// （2026-09-22 用户定案「方案 B」，ADR D32）。
+//
+// 语义来源：上游把 `LastAccessed` 定义为"最近一次被某个客户端拿去用"（推进它的是客户端
+// `HistoryManager.AddLocalProfile(updateLastAccessed: true)`，服务端只负责存回）。
+// 本界面是同一个协议的一个客户端，所以它自己的复制/下载同样算"使用"。
+//
+// 两条硬约束（缺一条都会伤到官方客户端，别改）：
+//   ① **载荷要回显 `version` 与 `lastModified`**：`db.updateHistory` 的规则是
+//      `newVersion = dto.version ?? existing.version + 1`、`newLastModified = dto.lastModified ?? max(now, …)`
+//      ⇒ 只发 `lastAccessed` 会让**版本自增、修改时间也变**；回显两者之后，落库改动的**只有
+//      `lastAccessed`**（版本不动 ⇒ 官方客户端随后对该记录的正常同步不会被 `shouldUpdate` 判成冲突；
+//      修改时间不动 ⇒ 「修改」列不因一次复制而跳）。实测见 `docs/progress.md` §146。
+//   ② **失败必须静默**：这是一次"顺手记一笔"，绝不能让它的失败影响复制/下载本身 ——
+//      409（别的设备刚改过）与网络抖动都只丢这一次触碰；只有 401 仍然走统一的回登录页。
+//
+// 返回值不进任何 UI：成功时顺手把这一行的「访问」列就地更新（`adoptPatch` + `list.patchItem`），
+// 不必等下一次轮询；按「访问」排序时再多做一次静默对账，让这一行当场移到它的新位置。
+function touchAccess(item) {
+  const payload = {
+    lastAccessed: new Date().toISOString(),
+    // 回显：这两条让落库只改 lastAccessed（见上面 ①）
+    lastModified: item.lastModified,
+    version: item.version,
+  };
+  return api
+    .patch(item, payload)
+    .then((updated) => {
+      const next = adoptPatch(item, updated);
+      list.patchItem(next);
+      store.set({
+        items: store.get().items.map((entry) => (entry.key === next.key ? next : entry)),
+      });
+      // 排序字段就是「访问」时，这一行该当场挪位置（与置顶那条同一条判据）
+      if (store.get().filters.sort === 'lastAccessed') void refresh({ silent: true });
+    })
+    .catch((error) => {
+      if (handleAuthError(error)) return;
+      /* 其余一律静默：触碰失败不该冒泡到用户面前 */
+    });
+}
+
 async function copyItem(item, knownText) {
   try {
     let text = knownText;
@@ -1074,6 +1116,7 @@ async function copyItem(item, knownText) {
     }
     if (await writeText(text)) {
       toasts.info(`已复制 ${charCount(text)} 个字符`);
+      void touchAccess(item); // 复制 = 使用 ⇒ 推进访问时间（失败静默，见该函数的说明）
       return true;
     }
     // 带"重试"：剪贴板写入失败多半是权限/焦点这类瞬时原因，让用户能在原地再来一次，
@@ -1113,6 +1156,7 @@ async function copyImage(item) {
     const result = await writeImage(blob);
     if (result.status === 'ok') {
       toasts.info('已复制图片');
+      void touchAccess(item);
       return true;
     }
     toasts.error(
@@ -1161,6 +1205,7 @@ async function copyLatest(button) {
     if (await writeText(text)) {
       flashSuccess(button, { label: '已复制' });
       toasts.info(`已复制最近一条（${charCount(text)} 个字符）`);
+      void touchAccess(item);
       return true;
     }
     toasts.error(clipboardFailureHint(window.isSecureContext, '可以在列表里打开那一行手动复制。'), {
@@ -1210,6 +1255,7 @@ async function downloadItem(item) {
   try {
     // 名字走同一个安全化入口（服务端给的是 basename，但那是客户端上传时带来的，不可信）
     saveBlob(blob, safeFileName(item.dataName ?? '', `${item.type}-${item.hash.slice(0, 8)}`));
+    void touchAccess(item);
     return true;
   } catch (error) {
     toasts.error(`下载失败：${error.message}`);
@@ -1243,6 +1289,7 @@ async function downloadTextItem(item, knownText = undefined) {
     const name = downloadNameForText(item);
     saveBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), name);
     toasts.info(`已下载 ${name}（${charCount(text)} 个字符）`);
+    void touchAccess(item);
     return true;
   } catch (error) {
     if (handleAuthError(error)) return false;

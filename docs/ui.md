@@ -525,7 +525,7 @@ Worker
 | GET | `/ui/api/history` | 列表：`page` `pageSize`(≤500) `types` `search` `starred` `after` `before` `deleted` `sort` `order` `includeDeleted` `pinnedFirst`（默认 true = 置顶恒优先，见下第 7 条） | 400 参数非法 |
 | GET | `/ui/api/history/:type/:hash` | 单条元数据（**正文完整**） | 400/404 |
 | GET | `/ui/api/history/:type/:hash/data` | 数据文件；`?download=1` 走附件。**支持 Range**（单区间 206 + `content-range` + `accept-ranges`；后缀区间 `bytes=-n`；不可满足 → 416 + `bytes */size`；多段 → 按 200 全量回退；协议侧的 `/file/{name}` 与 `/api/history/{id}/data` **有意忽略 Range**，见 F29b） | 404 `not_found` / 404 `data_missing` |
-| PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`） | 400/404/409 |
+| PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`）；也承接「触碰访问时间」的 `{lastAccessed, lastModified, version}`（ADR D32：回显后两者 ⇒ 落库只改 `lastAccessed`） | 400/404/409 |
 | POST | `/ui/api/history` | **新建一条文本记录**（预览框「编辑」保存时用，ADR D30）：`{text}` → 落库并**回读**该条，回 `toUiItem(entity)`（与 PATCH 同形，前端复用同一个归一化函数）。**只认 Text** —— File/Image/Group 没有"编辑正文"这回事。走协议 `POST /api/history` 的同一条写路径 `addRecordDto`，因此只广播 `RemoteHistoryChanged`、**不碰当前剪贴板**（没有设备会被迫换剪贴板）；`version` 取 **0**（客户端重传同文本时 `shouldUpdate` 的 `newVersion >= oldVersion` 才成立，写 1 会让随后的重传被判冲突）；正文上限 **1 MiB**（`UI_TEXT_CREATE_MAX_BYTES`，前端在按钮上先拦，超限时「编辑」是 disabled + 说明，这条是纵深防御）；**只接受 `application/json`** | 400 `text_required` / 400 `text_too_large` / 400 `invalid_request` / 415 |
 | POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（**单次 ≤100 条**，逐条走同一条写路径；**有界并发 10**（2026-09-21：串行是瓶颈——生产实测 100 条删除 66s，并发后 ~5s；总量子请求不变、仍在 1000 上限内）；更多由界面按 100 分片串行发）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
 | POST | `/ui/api/history/batch-meta` | 批量取记录（**含完整正文**）：`{items:[{type,hash}]}`（**单次 ≤100 条**，超出由界面分片串行发）→ `{items:[完整 HistoryRecordDto]}`。用于「选中多条 → 一起复制/下载」——列表里的正文被服务端截断到 500 字符，而逐条走单条端点是 O(N) 次请求；**只接受 `application/json`**（与 batch-update / clear 同一条纵深防御） | 400 / 415 |
@@ -581,21 +581,28 @@ Worker
    也不豁免「清空回收站」。界面侧：行内置顶成功后立刻静默对账一次，让这一行**当场**移到最前，
    而不是等下一次轮询时自己跳走（`public/ui_v1/js/main.js` 与 `public/ui_v2/js/boot.js` 的同一条判据）。
 
-8. **界面自己的复制 / 下载**不**推进 `LastAccessed`**（2026-09-22 发布前审核实测 + 与上游对照，
-   登记为一条**明确的取舍**）：
-   - 事实：`GET /ui/api/history/{type}/{hash}`（复制文本要先取全文，走它）与 `…/data`（下载 / 复制图片）
-     都是**纯读** —— 读前后 `lastAccessed` 一模一样（实测同值）；UI 的写操作也只有 PATCH 的
-     starred/pinned/isDelete 与新建（新建记录 `lastAccessed = now`）⇒ **没有任何动作推进已有记录的访问时间**。
-   - 与上游一致：上游**服务端**同样从不推进它（`SyncClipboard.Server*` 零处赋值；`LastAccessed` 是随
-     DTO 往返、由 `PATCH` 落库的字段）；推进它的是上游**客户端**
+8. **界面自己的复制 / 下载**会**推进 `LastAccessed`**（2026-09-22 用户定案「方案 B」，ADR D32；
+   本节此前那版写的是"**不**推进"的取舍，被同一天的这次定案**推翻**，理由见下）：
+   - 语义依据：上游把 `LastAccessed` 定义为"最近一次被某个客户端拿去用" —— 推进它的是**客户端**
      （`HistoryManager.AddLocalProfile(updateLastAccessed: true)` → `entity.LastAccessed = DateTime.UtcNow`，
-     再随同步写回）。故本界面在这一点上按"服务端读者"行事 ⇒ **「访问」列反映的是官方客户端的使用，
-     不含网页界面的复制 / 下载** —— 按「访问」排序时，"我刚在网页里复制过的"不会因此上浮。
-   - 为什么**不**让界面也推进它（曾被考虑的方案，收益是"按访问排序对网页用户也说得通"）：
-     那要给每次复制 / 下载加一次 `PATCH {lastAccessed}` ⇒ `Version++` + 一次 `RemoteHistoryChanged` 广播，
-     而**版本号正是官方客户端判冲突的依据**（`shouldUpdate` 在 5 分钟窗口内比 `newVersion >= oldVersion`）
-     —— 一次纯读取就抬高版本，会让客户端随后对该记录的正常同步被判冲突。ADR D30 的「编辑」用
-     `version: 0` 建**新**记录，防的是同一个坑。故取"读不写库"。
+     再随同步写回），服务端只负责存回。**本界面就是同一个协议的一个客户端** ⇒ 它自己的复制 / 下载
+     同样算"使用"；「访问」列因此反映网页用户的操作，按「访问」排序时刚复制过的会上浮。
+   - **载荷必须回显 `version` 与 `lastModified`**（这是"只改一个字段"的全部秘密）：
+     `db.updateHistory` 的缺省是 `newVersion = dto.version ?? version + 1`、
+     `newLastModified = dto.lastModified ?? max(now, existing + 1)` ⇒ 只发 `lastAccessed` 会顺带
+     **抬高版本、改掉修改时间**；回显两者之后，落库改动的**只有 `lastAccessed`**
+     （版本不动 ⇒ 官方客户端随后对该记录的正常同步不会被 `shouldUpdate` 判成冲突；
+     修改时间不动 ⇒「修改」列不因一次复制而跳）。`test/ui.test.ts` 的「触碰访问时间」用例钉住这三条。
+   - **失败静默**：这是一次"顺手记一笔" ⇒ 409（别的设备刚改过）与网络抖动只丢这一次触碰，
+     绝不影响复制 / 下载本身（只有 401 仍走统一的回登录页）。静默之所以安全：过期版本就是 409，
+     而 409 意味着"这条记录刚被别人改过" —— 此时**不碰它**正是想要的。
+   - **单条动作触发，批量不触发**：复制文本 / 复制图片 / 下载 / 下载文本 / 复制最近一条各算一次"使用"；
+     「批量复制」是批量导出（一次点击 N 条）⇒ 逐条触碰 = N 次写 + N 次广播，代价与收益不成比例，
+     故**不触碰**，在此登记为明确的例外。
+   - 落地：`public/ui_v1/js/main.js` 的 `touchAccess()`（`api.patch` + 就地更新该行）；行内「访问」列靠
+     `list.patchItem()` 同步的三个时间列就地更新，按「访问」排序时再多一次静默对账让这一行当场挪位。
+     服务端面：`PATCH /ui/api/history/:type/:hash` 的 body 从"三个开关"放宽到"再加上 `lastAccessed`
+     （`lastModified`/`version` 只在它同时出现时才透传）"（`src/ui/routes.ts`）。
 
 ---
 

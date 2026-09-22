@@ -1092,6 +1092,42 @@ describe('UI API · batch-meta 的入参上限（100 条 = D1 的参数上限边
   });
 });
 
+// 「使用记录」的触碰语义（2026-09-22 用户定案「方案 B」，ADR D32）：界面自己的复制/下载要推进
+// `LastAccessed`，而**不能**顺带改版本或修改时间 —— 版本号是官方客户端判冲突的依据
+// （`shouldUpdate` 在 5 分钟窗口内比 `newVersion >= oldVersion`），一次纯读取抬高版本会让
+// 客户端随后对该记录的正常同步被判成 409。界面的载荷因此**回显** `version` 与 `lastModified`。
+describe('UI API · 触碰访问时间（lastAccessed）只改这一个字段', () => {
+  it('回显 version/lastModified ⇒ 只有 lastAccessed 变；版本过期 ⇒ 409（所以界面敢静默忽略失败）', async () => {
+    const text = `${MARK}-touch`;
+    const hash = await putText(text);
+    const read = async () => {
+      const res = await req(`/ui/api/history/Text/${hash}`);
+      expect(res.status, '读单条').toBe(200);
+      return (await res.json()) as { lastAccessed: string; lastModified: string; version: number };
+    };
+    const before = await read();
+    const touchedAt = new Date(Date.now() + 1000).toISOString(); // 比既有值新，确保"推进"可断言
+    const patch = await req(`/ui/api/history/Text/${hash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lastAccessed: touchedAt, lastModified: before.lastModified, version: before.version }),
+    });
+    expect(patch.status, '触碰必须 200').toBe(200);
+    const after = await read();
+    expect(after.lastAccessed, '访问时间被推进').toBe(touchedAt);
+    expect(after.lastModified, '修改时间**不变**（界面只是"用"了一下，没改内容）').toBe(before.lastModified);
+    expect(after.version, '版本**不变**（否则官方客户端的正常同步会被判冲突）').toBe(before.version);
+
+    // 过期版本 ⇒ 409：这正是界面"静默忽略失败"所依赖的语义（别的设备刚改过就放弃这次触碰）
+    const stale = await req(`/ui/api/history/Text/${hash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lastAccessed: new Date().toISOString(), lastModified: before.lastModified, version: before.version - 1 }),
+    });
+    expect(stale.status, '过期版本要 409 而不是静默覆盖').toBe(409);
+  });
+});
+
 // 收尾：本套件会写目标库，必须自己清理干净（即使用例中途失败 —— 记录可能已处于
 // 星标/非星标、已删/未删任一状态，用官方 PATCH isDelete 走与 UI 相同的写路径，
 // 与 UI 实现缺陷解耦）。清单来自 putText 的登记，故 beforeAll 建的每条都在这里回收。

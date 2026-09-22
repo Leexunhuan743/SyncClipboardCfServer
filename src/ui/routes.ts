@@ -428,7 +428,23 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       pinned: parsed.pinned,
       isDelete: parsed.isDelete,
     };
-    if (fields.starred == null && fields.pinned == null && fields.isDelete == null) {
+    // 「触碰访问时间」（2026-09-22 用户定案「方案 B」，ADR D32）：界面在**复制/下载成功之后**
+    // 发一条 `{lastAccessed, lastModified, version}` 来推进这条记录的访问时间 ——
+    // 因为"使用一条记录"这件事在协议语义里由客户端负责（上游
+    // `HistoryManager.AddLocalProfile(updateLastAccessed: true)` 推进它，服务端只存回），
+    // 而本界面就是同一个协议的一个客户端。
+    // ⚠️ `lastModified` / `version` **只在带 `lastAccessed` 时**一并透传，且用途是"**别动它们**"：
+    // `db.updateHistory` 的缺省是 `newVersion = version + 1`、`newLastModified = max(now, …)`
+    // ⇒ 只发 lastAccessed 会顺带抬高版本、改掉修改时间；回显这两者之后落库改动的只有 `lastAccessed`
+    // （版本不动 ⇒ 官方客户端随后对该记录的正常同步不会被 `shouldUpdate` 判成冲突；
+    // 修改时间不动 ⇒「修改」列不因一次复制而跳）。三者都是协议 PATCH 本来就接受的字段。
+    const touched = parsed.lastAccessed != null;
+    if (touched) {
+      fields.lastAccessed = parsed.lastAccessed;
+      fields.lastModified = parsed.lastModified;
+      fields.version = parsed.version;
+    }
+    if (fields.starred == null && fields.pinned == null && fields.isDelete == null && !touched) {
       return Response.json({ error: 'no_supported_field' }, { status: 400 });
     }
 
