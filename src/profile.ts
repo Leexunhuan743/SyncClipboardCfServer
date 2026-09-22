@@ -418,7 +418,11 @@ export async function addRecordDto(
       existing.isDeleted = incoming.isDeleted;
       await db.updateEntity(existing);
       await notify.notifyHistory(entityToDtoWire(existing));
-      await deleteDataIfNeed(storage, existing);
+      // **软删不再清数据目录**（2026-09-22，ADR D29；与 `historyOps.applyHistoryUpdate` 同一次改）。
+      // 上游 `Add` 的两个分支（`HistoryService.cs:328` 的 `UpdateExistingRecordDto` 与 `:387` 的
+      // `AddNewRecordDto`）都在 `IsDeleted` 为真时调 `DeleteProfileDataIfNeed` 删工作目录，本实现
+      // 曾原样移植 —— 但真回收站要能**连数据**把记录拿回来，所以数据留到"真的没了"那一刻
+      // （30 天硬删 / 用户点「彻底删除」/「清空回收站」）。协议面的偏离登记在 `docs/protocol.md` §10。
     }
     return entityToDto(existing);
   }
@@ -460,7 +464,7 @@ export async function addRecordDto(
 
   const inserted = await db.insert(entity);
   await notify.notifyHistory(entityToDtoWire(inserted));
-  await deleteDataIfNeed(storage, inserted);
+  // 同上（ADR D29）：这条新记录若自带 `isDeleted: true`，它的数据同样留在回收站里等硬删。
   return entityToDto(inserted);
 }
 
@@ -623,16 +627,12 @@ async function ensureExistingRecordData(
   }
 }
 
-// IsDeleted 时删除历史工作目录（上游 DeleteProfileDataIfNeed）。
-// 只用到 entity 与存储：调用方一直传的 `db` **从来没被用过**（`tsconfig` 未开 noUnusedLocals、
-// `eslint` 也不覆盖 `src/`，故它一直静默留着）—— 2026-09-20 删掉这个形参，两处调用点同步。
-async function deleteDataIfNeed(
-  storage: R2Storage,
-  entity: HistoryRecordEntity,
-): Promise<void> {
-  if (!entity.isDeleted) return;
-  await storage.deleteHistoryWorkingDir(entity.type, entity.hash);
-}
+// 这里原有 `deleteDataIfNeed`（上游 `DeleteProfileDataIfNeed` 的移植：`IsDeleted` 为真就删工作目录）。
+// **2026-09-22（ADR D29）整段删掉**：真回收站要能**连数据**把记录拿回来，两个调用点
+// （`addRecordDto` 的既有分支与新增分支）各自写明了理由；数据的清理由 30 天硬删（`cleanup.ts`）、
+// `purgeTrash`、「彻底删除」（`/ui/api/history/batch-purge`）三处负责。
+// ⚠️ **别照上游把它加回来** —— 那会让「回收站」对图片/文件又变成单向门（用户 2026-09-22 的原话）。
+// 差异登记在 `docs/protocol.md` §10。
 
 function hashEquals(a: string, b: string): boolean {
   return a.toUpperCase() === b.toUpperCase();

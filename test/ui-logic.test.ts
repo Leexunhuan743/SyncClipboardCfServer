@@ -389,12 +389,16 @@ describe('messages · 用户文案对齐服务端语义', () => {
     expect(one.title).toBe('彻底删除这条记录？');
     expect(one.confirmLabel).toBe('彻底删除');
     expect(one.message).toContain('不可撤销');
+    // 2026-09-22（ADR D29）起"彻底"二字多出来的正是那份**数据文件**（软删已改成保留它），
+    // 故确认框必须说清这一点 —— 只说"元数据行"会让用户以为字节还在。
+    expect(one.message).toContain('数据文件');
     expect(one.message).toContain(`「${'x'.repeat(40)}…」`);
     expect(one.message).not.toContain('30 天内');
     const many = batchPurgeConfirmSpec(12);
     expect(many.title).toBe('彻底删除选中的 12 条记录？');
     expect(many.confirmLabel).toBe('彻底删除 12 条');
     expect(many.message).toContain('不可撤销');
+    expect(many.message, '批量同一条口径').toContain('数据文件');
   });
 
   it('批量进度与部分失败的文案：进度带 i/n，失败口径要说明"已生效多少"而不是"整体失败"', () => {

@@ -18,6 +18,8 @@ import type { R2Storage } from '../src/storage';
 import { R2Storage as RealR2Storage } from '../src/storage';
 import { runCleanup } from '../src/cleanup';
 import { createWebdavRoutes } from '../src/routes/webdav';
+import { createHistoryRoutes } from '../src/routes/history';
+import { purgeTrash } from '../src/historyOps';
 import type { Bindings } from '../src/env';
 
 const sha256 = (data: Uint8Array | string) =>
@@ -835,7 +837,9 @@ describe('F33 · 孤儿目录清理不得误删活跃记录的数据（键形式
     await storage.putHistory(ProfileType.File, 'ORPHAN9', 'gone.bin', new Uint8Array([9]));
     // ③ 已软删记录的目录 —— **必须保留**（2026-09-22，ADR D29）：真回收站里那行还在，
     //    它就引用着这份数据；孤儿阶段若按"只算活跃记录"求差集，会每 20 分钟把回收站的数据删一次
-    //    （行还在、数据没了 —— 正是 /ui/api/integrity 能查出来、但用户先撞上的那种坏法）。
+    //    （行还在、数据没了 —— 用户会先撞上它。`/ui/api/integrity` **只扫活跃记录**
+    //      （`src/ui/maintenance.ts` 的 `listActiveRecordsWithData`，`IsDeleted = 0`），
+    //      所以回收站里这一档它查不出来 —— 别在别处写成"自检能查出来"）。
     await db.insert(rec('DEL1', { isDeleted: true }));
     await storage.putHistory(ProfileType.File, 'DEL1', 'DEL1.bin', new Uint8Array([8]));
 
@@ -1077,5 +1081,110 @@ describe('F19 · Text transfer data 语义对齐上游（复用文件名 / Size 
     );
     expect(dto.hasData).toBe(false);
     expect(db.rows[0]!.transferDataFile).toBe('');
+  });
+});
+
+// ============ D29（2026-09-22 审核补）：软删语义必须在**所有**写路径上一致 ============
+//
+// 背景：ADR D29 把「软删即删数据目录」改成「保留到真的没了那一刻」。当天只改了 PATCH 路径
+// （`historyOps.applyHistoryUpdate`），而 `POST /api/history`（`profile.addRecordDto`，上游
+// `HistoryService.cs:328/387` 的忠实移植）仍在软删时清目录 ⇒ 经 POST 软删的记录进回收站后
+// **没有数据**，"回收站要能连数据拿回来"对那条路径不成立。
+// 两条用例分别钉住修好后的语义（都在内存 stub 上跑：node:sqlite + FakeBucket，不碰 dev 库）：
+//   ① `purgeTrash`（清空回收站）：单语句 `DELETE … RETURNING Type, Hash` ⇒ 删掉的行与要清扫的目录
+//      是**同一集合**。此前写成 SELECT + 独立 DELETE，两者之间的间隙正好会**多删**：期间被恢复成
+//      活跃的记录躲过了 DELETE（行还在），却仍在 SELECT 的名单里 ⇒ 照单清扫会删掉它的数据；
+//   ② `POST /api/history` 带 `isDeleted=true`：只标记删除，不动 R2。
+
+describe('D29 · purgeTrash：只删已删除的行，并按同一集合清扫 R2', () => {
+  it('清空回收站：删行 + 清掉它们的数据目录；**活跃记录的数据不动**', async () => {
+    const d1 = createSqliteD1(schemaSql);
+    const db = new HistoryDb(d1 as unknown as D1Database);
+    const bucket = new FakeBucket();
+    const storage = new RealR2Storage(bucket as unknown as R2Bucket);
+    const env = { DB: d1, R2: bucket, HUB: hubStub() } as unknown as Bindings;
+    const now = Date.now();
+    const rec = (hash: string, over: Partial<HistoryRecordEntity> = {}): HistoryRecordEntity => ({
+      userId: 'default_user',
+      type: ProfileType.File,
+      text: `${hash}.bin`,
+      size: 3,
+      transferDataFile: `${hash}.bin`,
+      filePaths: [`${hash}.bin`],
+      hash,
+      createTime: now,
+      lastAccessed: now,
+      lastModified: now,
+      stared: false,
+      pinned: false,
+      version: 0,
+      isDeleted: false,
+      ...over,
+    });
+
+    await db.insert(rec('KEEP3'));
+    await storage.putHistory(ProfileType.File, 'KEEP3', 'KEEP3.bin', new Uint8Array([1]));
+    await db.insert(rec('TRASH1', { isDeleted: true }));
+    await storage.putHistory(ProfileType.File, 'TRASH1', 'TRASH1.bin', new Uint8Array([2]));
+    await db.insert(rec('TRASH2', { isDeleted: true }));
+    await storage.putHistory(ProfileType.File, 'TRASH2', 'TRASH2.bin', new Uint8Array([3]));
+
+    const deleted = await purgeTrash(env);
+    expect(deleted, '只数回收站里那两条').toBe(2);
+
+    expect(bucket.objects.has('history/File_TRASH1/TRASH1.bin'), '回收站记录的数据必须被清掉').toBe(false);
+    expect(bucket.objects.has('history/File_TRASH2/TRASH2.bin'), '回收站记录的数据必须被清掉').toBe(false);
+    expect(bucket.objects.has('history/File_KEEP3/KEEP3.bin'), '活跃记录的数据**不得**被清').toBe(true);
+    expect(await db.getByTypeAndHash(ProfileType.File, 'KEEP3'), '活跃记录的行还在').not.toBeNull();
+    expect(await db.getByTypeAndHash(ProfileType.File, 'TRASH1'), '已删记录的行没了').toBeNull();
+    expect(await db.getByTypeAndHash(ProfileType.File, 'TRASH2'), '已删记录的行没了').toBeNull();
+  });
+});
+
+describe('D29 · POST /api/history 的软删同样保留数据（三条写路径同一语义）', () => {
+  it('带 isDeleted=true 的 POST 只标记删除，**不**清 R2 目录', async () => {
+    const d1 = createSqliteD1(schemaSql);
+    const db = new HistoryDb(d1 as unknown as D1Database);
+    const bucket = new FakeBucket();
+    const storage = new RealR2Storage(bucket as unknown as R2Bucket);
+    const env = { DB: d1, R2: bucket, HUB: hubStub() } as unknown as Bindings;
+    const now = Date.now();
+    const name = 'post-soft.bin';
+    await db.insert({
+      userId: 'default_user',
+      type: ProfileType.File,
+      text: name,
+      size: 5,
+      transferDataFile: name,
+      filePaths: [name],
+      hash: 'POST1',
+      createTime: now,
+      lastAccessed: now,
+      lastModified: now,
+      stared: false,
+      pinned: false,
+      version: 0,
+      isDeleted: false,
+    });
+    await storage.putHistory(ProfileType.File, 'POST1', name, new Uint8Array([1, 2, 3, 4, 5]));
+
+    // 与官方客户端同形：multipart 表单（字段名大小写不敏感），**不带** data 部分
+    // （即"只改元数据"的那条分支 —— 上游 `UpdateExistingRecordDto`）。
+    const form = new FormData();
+    form.set('type', 'File');
+    form.set('hash', 'POST1');
+    form.set('text', name);
+    form.set('isDeleted', 'true');
+    form.set('version', '10000');
+    form.set('lastModified', new Date(now).toISOString());
+    const res = await createHistoryRoutes().request('/api/history', { method: 'POST', body: form }, env);
+    expect(res.status, 'POST /api/history').toBe(200);
+
+    const after = await db.getByTypeAndHash(ProfileType.File, 'POST1');
+    expect(after?.isDeleted, '行被标记为已删除（进回收站）').toBe(true);
+    expect(
+      bucket.objects.has(`history/File_POST1/${name}`),
+      '数据必须留下 —— 修复前这里被 DeleteProfileDataIfNeed 等价逻辑删掉，回收站里那条就永远没有数据了',
+    ).toBe(true);
   });
 });

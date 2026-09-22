@@ -72,7 +72,7 @@ export function batchDeleteConfirmSpec(count) {
 export function purgeConfirmSpec(item) {
   return {
     title: '彻底删除这条记录？',
-    message: `将从服务器永久删除 ${describeTarget(item)}（元数据行）—— 回收站里也不会再出现，此操作不可撤销。`,
+    message: `将从服务器永久删除 ${describeTarget(item)}（元数据行及其数据文件）—— 回收站里也不会再出现，此操作不可撤销。`,
     confirmLabel: '彻底删除',
   };
 }
@@ -84,7 +84,7 @@ export function purgeConfirmSpec(item) {
 export function batchPurgeConfirmSpec(count) {
   return {
     title: `彻底删除选中的 ${count} 条记录？`,
-    message: '这些记录会从服务器永久删除（元数据行），回收站里也不会再出现。此操作不可撤销。',
+    message: '这些记录会从服务器永久删除（元数据行及其数据文件），回收站里也不会再出现。此操作不可撤销。',
     confirmLabel: `彻底删除 ${count} 条`,
   };
 }

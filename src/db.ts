@@ -370,23 +370,26 @@ export class HistoryDb {
   // 回收站里躺的是**真的数据**，不扫就是"把行抹掉、字节留在 R2 里等孤儿阶段"（最长 20 分钟，
   // 而且用户点「清空回收站」的期待就是立刻腾空间）。
   //
-  // 只取两列而不是整行：原注释里"不 RETURNING 整批行"的顾虑是 FilePaths/Text 会进 isolate 内存，
-  // 而 (Type, Hash) 两列加起来的体积可以忽略。
+  // 形态与 `clearAll()` **同一条纪律（F5）**：单条 `DELETE ... RETURNING` 保证"读到的集合"与
+  // "被删的行"是**同一集合**。2026-09-22 审核：此处一度写成 SELECT + 独立 DELETE，而那个间隙
+  // 在这条路径上正好会**多删** —— 期间有设备把某条恢复成活跃（`IsDeleted = 0`）⇒ 它躲过了 DELETE
+  // （行还在），却仍在 SELECT 的名单里 ⇒ 调用方照单清扫 R2，把一条**活跃记录**的数据删掉
+  // （行在、字节没了，且不可恢复）。单语句没有这个间隙，顺带还省一次 D1 子请求。
+  //
+  // 只 RETURNING 两列而不是整行：原注释里"不 RETURNING 整批行"的顾虑是 FilePaths/Text 会进
+  // isolate 内存（本机回收站 1000+ 行），而 (Type, Hash) 两列加起来的体积可以忽略。
   async purgeDeletedRecords(): Promise<{
     deleted: number;
     entries: { type: ProfileType; hash: string }[];
   }> {
-    const rows = await this.db
-      .prepare(`SELECT Type, Hash FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted != 0`)
+    const res = await this.db
+      .prepare(`DELETE FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted != 0 RETURNING Type, Hash`)
       .bind(HARD_CODED_USER_ID)
       .all<{ Type: number; Hash: string }>();
-    const res = await this.db
-      .prepare(`DELETE FROM HistoryRecords WHERE UserId = ?1 AND IsDeleted != 0`)
-      .bind(HARD_CODED_USER_ID)
-      .run();
+    const rows = res.results ?? [];
     return {
-      deleted: res.meta.changes ?? 0,
-      entries: (rows.results ?? []).map((r) => ({ type: r.Type as ProfileType, hash: r.Hash })),
+      deleted: rows.length,
+      entries: rows.map((r) => ({ type: r.Type as ProfileType, hash: r.Hash })),
     };
   }
 

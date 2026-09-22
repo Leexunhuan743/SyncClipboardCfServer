@@ -836,16 +836,18 @@ try {
   record('回收站主操作', trashPrimary);
   const trash = JSON.parse(trashPrimary);
   if (trash.hasRows) {
-    const expected = trash.firstDisabled ? 'undo' : 'undo';
     expect(
       '回收站主操作是「恢复」',
-      trash.firstIcon === expected,
+      trash.firstIcon === 'undo',
       `主操作是 ${trash.firstIcon}（${trash.firstLabel}），用户进回收站几乎总是为了恢复`,
     );
+    // 2026-09-22（ADR D29）：回收站里**没有**"不可恢复"这一档 —— 软删不再清数据，带数据文件的记录
+    // 恢复时连数据一起回来，故这里钉的是"**不禁用**"。此前钉的是"被禁用时标签必须含'不可恢复'"
+    // （形如 `!firstDisabled || /不可恢复/…`），D29 之后它永远不会失败 —— 等于空转。
     expect(
-      '不可恢复的记录给出原因',
-      !trash.firstDisabled || /不可恢复|数据文件/.test(trash.firstLabel ?? ''),
-      `按钮被禁用了但标签只说「${trash.firstLabel}」`,
+      '回收站的「恢复」不得禁用（所有记录都能恢复）',
+      trash.firstDisabled !== true,
+      `「恢复」被禁用了（${trash.firstLabel}）—— D29 之后没有不可恢复的记录`,
     );
   }
   // 回到活跃视图

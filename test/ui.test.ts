@@ -948,7 +948,9 @@ describe('UI API 数据端点 Range（206 / 416 / 回退 200）', () => {
   });
 
   afterAll(async () => {
-    // 软删收尾（走官方 PATCH，与 UI 同一写路径；软删会连带清掉 R2 数据目录）。
+    // 软删收尾（走官方 PATCH，与 UI 同一写路径）。⚠️ 2026-09-22（ADR D29）起软删**不再**清 R2 目录
+    // —— 这两条记录（各 20 字节）的数据随记录留在回收站里，由 30 天硬删最终清掉：这是**有意**的，
+    // 不是残留（记录本身处于软删态，不出现在活跃列表里）。
     // 路径必须是 `:type/:hash` 三段形态：`File-<hash>` 是 GET/DELETE 的 profileId 形态，
     // 用在 PATCH 上只会 404 —— 同时容忍那个 404 就会「看起来清理成功、记录其实还在」。
     // 只容忍「记录根本没建成」（例如 beforeAll 就失败），真正的残留由下面的活跃列表断言兜底。
@@ -1125,6 +1127,162 @@ describe('UI API · 触碰访问时间（lastAccessed）只改这一个字段', 
       body: JSON.stringify({ lastAccessed: new Date().toISOString(), lastModified: before.lastModified, version: before.version - 1 }),
     });
     expect(stale.status, '过期版本要 409 而不是静默覆盖').toBe(409);
+  });
+});
+
+// 「预览 → 编辑 → 保存」走的新端点（2026-09-22，ADR D30）。它此前**没有任何功能用例**
+// （只有 `ui-guard` 的路由清单提到过它），而它是一条**写**路径：契约（只认 Text、version 取 0、
+// 1 MiB 上限、回读形状与 PATCH 同形）全都只靠注释约束 —— 同类缺口上一轮刚出过一次
+// （`batch-meta` 100 条 500，见本文件上面那条 describe 的注释）。
+// 响应形状一律**先校验再断言**（本用例就是这些端点的契约测试：字段缺失/类型不对必须当场失败，
+// 而不是断言一个 cast 出来的形状 —— 那会把"服务端少回一个字段"变成静默通过）。
+async function uiItemOf(res: Response): Promise<{
+  type: number;
+  hash: string;
+  text: string;
+  version: number;
+  isDeleted: boolean;
+}> {
+  const raw: unknown = await res.json();
+  if (typeof raw !== 'object' || raw === null) throw new Error('响应不是对象');
+  if (!('type' in raw && 'hash' in raw && 'text' in raw && 'version' in raw && 'isDeleted' in raw)) {
+    throw new Error(`响应缺字段：${JSON.stringify(raw).slice(0, 200)}`);
+  }
+  const { type, hash, text, version, isDeleted } = raw;
+  if (
+    typeof type !== 'number' ||
+    typeof hash !== 'string' ||
+    typeof text !== 'string' ||
+    typeof version !== 'number' ||
+    typeof isDeleted !== 'boolean'
+  ) {
+    throw new Error(`响应字段类型不对：${JSON.stringify(raw).slice(0, 200)}`);
+  }
+  return { type, hash, text, version, isDeleted };
+}
+
+// R2 实列的 MB 合计：`/api/history/statistics` 的 `totalFileSizeMB` 来自 `storage.totalHistorySize()`
+// （列举 history/ 累加对象大小），**不是** DB 元数据推导 —— "字节真的从桶里没了"只能靠它观测。
+async function totalFileSizeMB(): Promise<number> {
+  const res = await req('/api/history/statistics');
+  expect(res.status, '统计').toBe(200);
+  const raw: unknown = await res.json();
+  if (typeof raw !== 'object' || raw === null || !('totalFileSizeMB' in raw) || typeof raw.totalFileSizeMB !== 'number') {
+    throw new Error('statistics 响应缺少 totalFileSizeMB');
+  }
+  return raw.totalFileSizeMB;
+}
+
+describe('UI API · 新建文本记录（POST /ui/api/history，预览「编辑」保存）', () => {
+  it('200 且回读与 PATCH 同形；缺 text → 400；超 1 MiB → 400 text_too_large', async () => {
+    const text = `${MARK}-edit-新建`;
+    const res = await req('/ui/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    expect(res.status, '新建文本记录').toBe(200);
+    const item = await uiItemOf(res);
+    createdHashes.push(item.hash); // 收尾交给本套件的 afterAll（与 putText 同一份清单）
+    expect(item.text, '正文原样回读').toBe(text);
+    expect(item.type, 'Type 必须是 Text（=0，不是字符串 "Text"）').toBe(0);
+    // hash 必须与协议口径一致（文本记录 = SHA256(utf8(正文))）：不一致意味着前端拿它做深链接
+    // 或后续 PATCH 时会指向一条不存在的记录。
+    expect(item.hash, 'hash 与协议口径一致').toBe(sha256(text));
+    // version 取 0：`shouldUpdate` 在 5 分钟窗口内比 `newVersion >= oldVersion`，写 1 会让客户端
+    // 随后重传同一条文本（带 0）被判冲突而丢更新。
+    expect(item.version, 'version 取 0').toBe(0);
+    expect(item.isDeleted, '新建即活跃').toBe(false);
+    // 它能被单条端点读到（回读用的就是这条路径）
+    const read = await req(`/ui/api/history/Text/${item.hash}`);
+    expect(read.status, '刚建的记录可读（回读走的就是这条路径）').toBe(200);
+    await read.text(); // 排空
+
+    const missing = await req('/ui/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(missing.status, '缺 text 要 400').toBe(400);
+    const missingBody: unknown = await missing.json();
+    expect(missingBody, '错误码要可诊断').toMatchObject({ error: 'text_required' });
+
+    // 1 MiB 是**编辑器的**上限（`UI_TEXT_CREATE_MAX_BYTES` ↔ `preview.js` 的 `EDIT_MAX_BYTES`），
+    // 不是协议的（协议侧记录可以有 48 MiB）。前端在按钮上先拦，这里是纵深防御那一层。
+    const huge = await req('/ui/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'x'.repeat(1024 * 1024 + 1) }),
+    });
+    expect(huge.status, '超 1 MiB 要 400').toBe(400);
+    const hugeBody: unknown = await huge.json();
+    expect(hugeBody, '超限有专属错误码').toMatchObject({ error: 'text_too_large' });
+  });
+});
+
+// 「彻底删除」必须把**字节**从 R2 里清掉（2026-09-22，ADR D29 起回收站里是真数据）。
+// 此前那条 batch-purge 用例用的是**无数据文件**的 Text ⇒ 它只能证明"行没了"，
+// 而"字节没了"这条正是 D29 之后新加的清扫（`storage.deleteHistoryWorkingDir`）负责的。
+// 可观测量取 `/api/history/statistics` 的 `totalFileSizeMB` —— 它来自 R2 实列
+// （`storage.totalHistorySize()`，不是 DB 元数据推导），故是真正的"桶里有没有那份字节"。
+describe('UI API · 彻底删除把字节从 R2 里清掉（D29：回收站里是真数据）', () => {
+  it('带数据文件的记录：软删后数据仍在，彻底删除后对象真的没了', { timeout: 60_000 }, async () => {
+    const name = `${MARK}-purge.bin`;
+    // 2 MiB：让 MB 口径（两位小数）有可断言的变化，同时压得住并发写入带来的噪声。
+    const content = Buffer.alloc(2 * 1024 * 1024, 7);
+    const hash = createHash('sha256')
+      .update(`${name}|${createHash('sha256').update(content).digest('hex').toUpperCase()}`)
+      .digest('hex')
+      .toUpperCase();
+    // 1) 造一条带数据的记录（先暂存、再入库：与官方客户端同一条路径）
+    expect((await req(`/file/${name}`, { method: 'PUT', body: content })).status, '暂存').toBe(200);
+    const put = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'File',
+        hash,
+        text: name,
+        hasData: true,
+        dataName: name,
+        size: content.length,
+      }),
+    });
+    expect(put.status, '入库').toBe(200);
+    const withData = await totalFileSizeMB();
+    expect(withData, '入库后 R2 里多出这 2 MiB').toBeGreaterThanOrEqual(2);
+
+    // 2) 软删（进回收站）→ 数据**必须还在**（D29：回收站要能连数据拿回来）
+    const soft = await req(`/api/history/File/${hash}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isDelete: true, version: 10_000, lastModified: new Date().toISOString() }),
+    });
+    expect(soft.status, '软删').toBe(200);
+    const stillThere = await req(`/api/history/File-${hash}/data`);
+    expect(stillThere.status, '回收站里数据必须还在').toBe(200);
+    await stillThere.arrayBuffer(); // 排空，避免 undici 连接不释放
+
+    // 3) 彻底删除 → 行与字节一起没
+    const purged = await req('/ui/api/history/batch-purge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ type: 'File', hash }] }),
+    });
+    expect(purged.status, '彻底删除').toBe(200);
+    const purgedBody: unknown = await purged.json();
+    expect(purgedBody, '这一条应当被删掉').toMatchObject({ purged: 1 });
+    const gone = await req(`/api/history/File-${hash}/data`);
+    expect(gone.status, '行没了').toBe(404);
+    await gone.text(); // 排空
+    const after = await totalFileSizeMB();
+    // 两位小数口径（`historySizeMB` 就是 `Math.round(mb*100)/100`）：差值必须先归一再比，
+    // 否则 4.01 − 2.01 = 1.9999999999999998 会把"确实释放了 2 MiB"判成失败。
+    const freed = Math.round((withData - after) * 100) / 100;
+    expect(
+      freed,
+      '彻底删除必须把字节从 R2 里清掉（不扫目录就是留给孤儿阶段等 ≤20 分钟）',
+    ).toBeGreaterThanOrEqual(2);
   });
 });
 

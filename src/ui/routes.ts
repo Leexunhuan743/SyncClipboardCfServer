@@ -756,8 +756,14 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // 两个键是有意分开的，因为**两个消费方的口径不同**：
   //   · `byType`        —— 随 `deleted` 走：工具栏的类型计数必须与当前视图同源，否则回收站里
   //                        会写着活跃记录的数（列表说 1019、控件说 1009）。
-  //   · `byTypeActive`  —— **恒为活跃口径**：统计条「存储占用」的明细用它。已删记录的 R2 数据文件
-  //                        在软删时就已删除，把那行换成已删计数会与"存储占用"这个标题对不上。
+  //   · `byTypeActive`  —— **恒为活跃口径**（与请求的 `deleted` 无关）。⚠️ 2026-09-22（ADR D29）起
+  //                        旧理由"已删记录的 R2 数据文件在软删时就已删除"**不再成立**：软删保留数据
+  //                        ≤30 天，而「存储占用」那一格的字节数来自 R2 实列
+  //                        （`storage.totalHistorySize()`，已含回收站里的字节）⇒ 总数（全库口径）
+  //                        与这个按类型计数（活跃口径）**口径不同**，这是**有意的**。
+  //                        它当前**没有前端消费方**：统计条 2026-09-17 起不再列类型明细（明细行只留
+  //                        `totalCount` 的「全库 N 条」）。保留它是因为接口契约与 `test/ui.test.ts`
+  //                        在钉这条分法 —— 别按"没人用"删掉。
   guarded.get('/ui/api/statistics', async (c) => {
     const { db, storage } = stores(c);
     const flag = readDeletedFlagOr400(new URL(c.req.url).searchParams);

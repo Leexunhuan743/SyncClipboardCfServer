@@ -704,8 +704,9 @@ async function purgeFromPreview(item) {
   return ok;
 }
 
-// 恢复：回收站里唯一的写操作。服务端只对「已删除且数据文件名为空」的记录放开（db.ts 的守卫），
-// 带数据文件的行在列表里已禁用按钮，这里再兜一次错误——用户可能用旧页面点它。
+// 恢复：回收站里的写操作之一（另一处是「彻底删除」）。**带数据文件的记录同样能恢复**
+// （2026-09-22，ADR D29：软删保留数据、`db.ts` 那条上游守卫已去掉，行内按钮也不再按 `hasData` 禁用）
+// —— 于是 404 只剩一种含义：这条记录**真的不在**了（被「彻底删除」或 30 天硬删清掉），文案据此写。
 async function restoreItem(item) {
   try {
     await api.patch(item, { isDelete: false });
@@ -879,8 +880,10 @@ async function batchRestore() {
 }
 
 // 彻底删除（回收站）：**不可恢复**，故过确认框；服务端只删已删除的行（判据写在 SQL 里，
-// 活跃记录走不到这条路径）。与软删相比它更便宜（每条 1 次 D1 子请求，不广播、不碰 R2），
-// 所以批量时进度通常一闪而过 —— 但 300 条仍是 3 批，进度照样写进框里。
+// 活跃记录走不到这条路径）。与软删相比它更便宜（每条 1 次 D1 子请求 + 1 次 R2 目录清扫，不广播）——
+// 2026-09-22（ADR D29）起"彻底"要连数据一起清，故那次清扫是**必须**的（成本口径见
+// `src/ui/routes.ts` 的 batch-purge 注释）；批量时进度通常一闪而过 —— 但 300 条仍是 3 批，
+// 进度照样写进框里。
 async function purgeItem(item) {
   const spec = purgeConfirmSpec(item);
   const ok = await confirm.ask({
@@ -1027,8 +1030,10 @@ async function batchDelete() {
   return ok;
 }
 
-// 清空回收站：服务端用一条 DELETE 批量清掉全部已删除记录（不是逐条走写路径）。
-// 这**不可逆**——回收站的前提就是「30 天内还能恢复」，所以文案必须把代价说清。
+// 清空回收站：服务端用一条 `DELETE … RETURNING Type, Hash` 批量清掉全部已删除记录，
+// 再按**同一集合**清扫它们的数据目录（不是逐条走写路径；2026-09-22（ADR D29）起回收站里是真数据，
+// 只删行等于把字节留给孤儿阶段）。这**不可逆**——回收站的前提就是「30 天内还能恢复」，
+// 所以文案必须把代价说清。
 async function emptyTrash() {
   const spec = clearHistorySpec('trash');
   const ok = await confirm.ask({

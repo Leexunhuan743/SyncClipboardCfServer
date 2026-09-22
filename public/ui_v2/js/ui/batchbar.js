@@ -96,12 +96,15 @@ export function createBatchbar({ onClose, onAction }) {
 
       count.textContent = `已选 ${size} 条`;
 
-      // 视图决定可用性：活跃列表里没有"恢复"，回收站里没有"删除"（那是重复删除）。
-      // 收藏/置顶在回收站里仍可用（记录还在，只是已删除），
-      // 但**下载**只在有数据文件时可用 —— 软删已经清掉了数据文件，点了必然 404。
+      // 视图决定可用性：活跃列表里没有"恢复"，回收站里没有"移动到回收站"（那是重复删除）。
+      // 收藏/置顶在回收站里仍可用（记录还在，只是已删除）。
+      // **下载**只在有数据文件时可用（活跃视图里没有数据可下 → 点了必然 404）。
+      // **恢复**不按 `hasData` 判（2026-09-22，ADR D29，与单条那处 `rowops.js`/`menus.js` 同一次改）：
+      // 真回收站保留了数据，回收站里**所有**记录都能恢复；此前 `items.some(item => item.hasData !== true)`
+      // 会让"选中的全带数据文件"时按钮变灰，而服务端明明允许。
       const hasData = items.some((item) => item.hasData === true && item.type !== 'Text');
       set(buttons.get('delete'), !deleted && size > 0);
-      set(buttons.get('restore'), deleted && items.some((item) => item.hasData !== true));
+      set(buttons.get('restore'), deleted);
       set(buttons.get('download'), !deleted && hasData);
     },
   };
