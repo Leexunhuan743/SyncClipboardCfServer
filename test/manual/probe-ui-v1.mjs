@@ -538,6 +538,16 @@ try {
       // 见下方 overflowers 那条同款提醒）—— 2026-09-20 这处正是这么把整份探针写坏过一次。
       noticeBarRemoved: q('.notice-bar') === null,
       pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      // 吸顶元素必须**不透明**：吸顶意味着它会盖在滚过的内容上，透明底会让下面的行透出来
+      // （2026-09-22 用户截图报的「共 N 条记录 这一行透明了」—— 头栏改成恒吸顶后底色仍只在选中态，
+      // 于是未选中时滚动就是一块透明玻璃）。几何判据看不见这件事，只有计算色能看见。
+      // （本段在模板字符串里，注释中不能出现反引号。）
+      stickyBg: ['.results__head', '.table th']
+        .map((sel) => {
+          const el = document.querySelector(sel);
+          return el ? { sel, bg: getComputedStyle(el).backgroundColor } : null;
+        })
+        .filter(Boolean),
       // 横向溢出的**肇事者**：scrollWidth > clientWidth 只说"有溢出"，
       // 定位还得逐元素量右边缘。取最靠右的前 5 个，附标签名与类名。
       // （本条注释里不能出现反引号：整段是模板字面量，一个反引号就会把它提前结束。）
@@ -561,6 +571,24 @@ try {
     });
   })()`);
   console.log('STATE   ', state);
+
+  // ===== 吸顶元素必须**不透明**（2026-09-22 用户截图："共 1012 条记录 这一行透明了"）=====
+  // 头栏改成**恒吸顶**之后，底色仍只在选中态出现（`--accent-soft`）⇒ 未选中时它是一块透明玻璃，
+  // 滚过的行从背后透出来。这一类的性质在**别的守卫里全都看不见**：几何审计只比矩形关系、
+  // 行高/间距判据只看布局、`ui-guard` 只看模块图与挂载点 —— 只有**计算色**能看见"透不透"。
+  // 两条都要查（头栏 + 表头），缺一条就漏一半。
+  {
+    const s = JSON.parse(state);
+    const bg = s.stickyBg ?? [];
+    const seeThrough = bg.filter(
+      (x) => x.bg === 'transparent' || /^rgba?\([^)]*,\s*0(\.0*)?\)$/.test(String(x.bg).replace(/\s+/g, ' ')),
+    );
+    check(
+      '吸顶的头栏与表头都有不透明底色（否则滚过的行会透出来）',
+      bg.length === 2 && seeThrough.length === 0,
+      JSON.stringify(bg),
+    );
+  }
 
   // ── 首屏性能：CLS 与加载各阶段高度（把「CLS 全 0」变成判据）──
   // 读点放在**首屏刚落地、探针还没开始交互**的位置（同 V2 的 `probe.mjs`，理由见那边的注释）。
