@@ -10445,5 +10445,34 @@ headless 渲染进程被这张图的 PNG 编码**占满**（eval 已超时但 JS
 **结论：排序（含置顶优先、分页重置、选择集保持、卡片档、非法参数回落）全部正确处理**，
 本轮**无缺陷**、无代码改动。夹具（一条置顶记录）已回收（软删 + 彻底删除，复查 0）。
 
+## 145. 「复制文本 / 下载文本」与访问时间（用户直接问的，2026-09-22）
+
+用户问：复制文本 / 下载文本之后能不能正确更新**访问时间**。分三处取证：
+
+**① 实测（服务端读操作有没有副作用）**
+
+| 动作 | 实际请求 | `lastAccessed` |
+|---|---|---|
+| 复制文本（截断记录 ⇒ 要取全文） | `GET /ui/api/history/Text/<hash>` | **不变**（读前读后同值：`01:31:44.832Z`） |
+| 下载文本（内联短文本） | **一个请求都不发**（列表里的值就够，`textTruncated` 为假时不取单条） | 无从变起 |
+| 下载 / 复制图片（带数据） | `GET /ui/api/history/Image/<hash>/data?download=1` | **不变** |
+| 对照·收藏 | `PATCH {starred}` | 也不动它（只走 `lastModified` / `version`） |
+
+**② 代码（谁在写它）**：UI 的写操作只有 PATCH 的 starred/pinned/isDelete 与新建（新建记录
+`lastAccessed = now`）⇒ 全仓**没有任何动作推进"已有"记录的访问时间**。
+
+**③ 上游对照（本机 `../SyncClipboard` 源码）**：上游**服务端**从不推进它
+（`SyncClipboard.Server*` 零处赋值，`LastAccessed` 是随 DTO 往返、由 `PATCH` 落库的字段）；
+推进它的是上游**客户端** —— `HistoryManager.AddLocalProfile(updateLastAccessed: true)` 里
+`entity.LastAccessed = DateTime.UtcNow`，再随同步写回服务器。
+
+⇒ **判定**：行为**与"服务端忠实上游"一致**（读操作零副作用），但**「访问」列只反映官方客户端的使用、
+不含网页界面的复制/下载** —— 而这一条此前**在文档里完全没写**（全文搜过 ⇒ 缺口）。
+**已补登记**：`docs/ui.md` §5 第 8 条（含"为什么不让界面也推进它"的推导：那要给每次复制/下载加一次
+`PATCH {lastAccessed}` ⇒ `Version++` + `RemoteHistoryChanged` 广播，而版本号正是官方客户端判冲突的依据
+（`shouldUpdate` 在 5 分钟窗口内比 `newVersion >= oldVersion`）⇒ 一次纯读取就抬高版本会把客户端随后
+对该记录的正常同步判成冲突；ADR D30 的「编辑」用 `version: 0` 建新记录防的是同一个坑）。
+顺带订正 §5 的前言（写"四处刻意的设计"，实际已有 8 条）。
+
 
 

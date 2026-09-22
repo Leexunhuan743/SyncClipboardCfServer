@@ -540,7 +540,7 @@ Worker
 | GET | `/ui/api/info` | 部署信息（客户端该填的地址、版本、传输、保留策略、存储；`cleanup` 为清理状态：`lastRunAt` / `lastError` / 各阶段游标） | — |
 | GET | `/ui/api/poll` | 变更信号 `{count, lastModified, serverTime}`——`serverTime` 供界面显示与本机的时钟差（官方客户端在 \|差\| > 5 分钟时中止历史同步） | — |
 
-四处刻意的设计：
+八处刻意的设计：
 
 1. **列表正文截断（500 字符）并带 `textTruncated`**：粘一段日志是常态，一页几百条长文会有几十 MB。
    前端在复制/预览时若看到该标记，**先取单条全文**——否则用户复制到的是被砍过一半的剪贴板内容。
@@ -580,6 +580,22 @@ Worker
    保留期软删与条数裁剪（`db.ts` 的两条 SQL 都带 `Pinned = 0`），但**不豁免**已删除记录的 30 天硬删，
    也不豁免「清空回收站」。界面侧：行内置顶成功后立刻静默对账一次，让这一行**当场**移到最前，
    而不是等下一次轮询时自己跳走（`public/ui_v1/js/main.js` 与 `public/ui_v2/js/boot.js` 的同一条判据）。
+
+8. **界面自己的复制 / 下载**不**推进 `LastAccessed`**（2026-09-22 发布前审核实测 + 与上游对照，
+   登记为一条**明确的取舍**）：
+   - 事实：`GET /ui/api/history/{type}/{hash}`（复制文本要先取全文，走它）与 `…/data`（下载 / 复制图片）
+     都是**纯读** —— 读前后 `lastAccessed` 一模一样（实测同值）；UI 的写操作也只有 PATCH 的
+     starred/pinned/isDelete 与新建（新建记录 `lastAccessed = now`）⇒ **没有任何动作推进已有记录的访问时间**。
+   - 与上游一致：上游**服务端**同样从不推进它（`SyncClipboard.Server*` 零处赋值；`LastAccessed` 是随
+     DTO 往返、由 `PATCH` 落库的字段）；推进它的是上游**客户端**
+     （`HistoryManager.AddLocalProfile(updateLastAccessed: true)` → `entity.LastAccessed = DateTime.UtcNow`，
+     再随同步写回）。故本界面在这一点上按"服务端读者"行事 ⇒ **「访问」列反映的是官方客户端的使用，
+     不含网页界面的复制 / 下载** —— 按「访问」排序时，"我刚在网页里复制过的"不会因此上浮。
+   - 为什么**不**让界面也推进它（曾被考虑的方案，收益是"按访问排序对网页用户也说得通"）：
+     那要给每次复制 / 下载加一次 `PATCH {lastAccessed}` ⇒ `Version++` + 一次 `RemoteHistoryChanged` 广播，
+     而**版本号正是官方客户端判冲突的依据**（`shouldUpdate` 在 5 分钟窗口内比 `newVersion >= oldVersion`）
+     —— 一次纯读取就抬高版本，会让客户端随后对该记录的正常同步被判冲突。ADR D30 的「编辑」用
+     `version: 0` 建**新**记录，防的是同一个坑。故取"读不写库"。
 
 ---
 
