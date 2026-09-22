@@ -372,10 +372,16 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
       ]),
       el('span', {
         class: 'note',
+        // 2026-09-22 用户问「收藏和置顶的会不会被清理」之后补的一句：这条豁免在服务端是**硬判据**
+        // （`src/db.ts` 的两条软删查询都带 `Stared = 0 AND Pinned = 0`，与上游 `HistoryService.cs`
+        // 的同名谓词一致，见 `progress.md` §161），但界面上原本一个字都没说 —— 用户看不到，
+        // 就等于这个承诺不存在。文案与 V2 那版提示（`ui_v2/js/ui/drawer.js` 的「最多条数」行）
+        // 说的是同一件事，两版都别只改一处。
         text:
           '留空 = 回落到部署时的环境变量（两边都没有时用内置默认：保留 ' +
           `${DEFAULT_RETENTION_MINUTES / 1440} 天、最多 ${DEFAULT_MAX_HISTORY_COUNT} 条）；` +
-          '0 = 关闭对应阶段。改动立即对下一轮清理生效。' +
+          '0 = 关闭对应阶段。收藏与置顶的记录不受这两项清理影响。' +
+          '改动立即对下一轮清理生效。' +
           `可填范围：保留分钟 0–${RETENTION_MINUTES_MAX}（1 年）、条数 0–${MAX_SAVED_HISTORY_COUNT_MAX}。`,
       }),
       source,

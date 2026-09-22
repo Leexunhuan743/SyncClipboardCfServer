@@ -11235,4 +11235,31 @@ JS 未动（护栏本来就在 CSS 里，`syncHeaderCollapse()` 从不看选择�
 代价不是"多一次动作"，而是"把内容推下 56px"；而它想要保护的那个按钮根本不在被折叠的那条带子上。
 也说明用户当场看的比我"三问确认"时的推演更准。
 
+## 161. 界面上写明"收藏与置顶不受清理"（用户提问后补，2026-09-22）
+
+**起因**：用户问「收藏和置顶的会不会被清理」。查证结论：**不会** —— 两条自动软删查询都带豁免谓词，
+且与上游一致（不是本实现额外发明的保证）：
+
+| 阶段 | 本仓库 | 上游（`../SyncClipboard`） |
+|---|---|---|
+| 保留期到期 → 软删 | `src/db.ts:512`：`IsDeleted = 0 AND Stared = 0 AND Pinned = 0 AND LastModified < ?2 AND LastAccessed < ?2` | `HistoryService.cs:549`：`r.UserId == … && !r.IsDeleted && !r.Stared && !r.Pinned` |
+| 条数超上限 → 软删 | `src/db.ts:540`：同样带 `Stared = 0 AND Pinned = 0` | `HistoryService.cs:580`：`QueryToDeleteByOverCount => !entity.Stared && !entity.Pinned && !entity.IsDeleted` |
+
+**连带的边界也处理了**：收藏/置顶不计入可裁配额 —— 即使它们占满上限，裁剪阶段也**收工**而不是去删它们
+（`src/cleanup.ts:432` 的注释与 `hasMore` 判据：实际删到少于请求条数 ⇒ 可裁的已耗尽）。
+
+会被清掉的只有三条路，都要显式动作：① 你自己**移到回收站**之后的 30 天硬删 —— 那一步只看
+`IsDeleted = 1 AND LastModified < cutoff`、**不看**收藏/置顶（`src/db.ts:556`；上游 `:522` 同源；
+但 V1 的回收站里没有收藏/置顶入口，正常操作到不了那一步）；② 你自己点的「彻底删除 / 清空回收站 /
+清空全部历史」（客户端**不会**触发清空 —— `/api/history/clear` 只有本站界面用）；③ 孤儿数据目录回收
+（只删没有任何记录行引用的 R2 目录）。
+
+**改动**：把这句承诺写进界面（服务端有硬判据，但界面上原本**一个字都没说** —— 用户看不到，
+就等于这个承诺不存在）：
+- V1：`public/ui_v1/js/components/info.js` 保留策略那段 `.note` 加一句「收藏与置顶的记录不受这两项清理影响。」
+- V2：`public/ui_v2/js/ui/drawer.js` 的「最多条数」行提示补成「超过后从最旧的开始软删（收藏、置顶的不会被裁）」
+  （「保留天数」那行本来就写着"未收藏、未置顶"）。
+- 判据：探针新增 `RETENTION-NOTE` —— 在**打开着的**部署信息对话框里找到那段文案，并确认它
+  `display`/`visibility` 正常、矩形非零（**字在但不可见**也算没写）。
+
 

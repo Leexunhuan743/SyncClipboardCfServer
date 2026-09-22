@@ -1485,6 +1485,44 @@ try {
     );
   }
 
+  // ===== 部署信息的「保留策略」说明里必须写着那条豁免（2026-09-22 用户问「收藏和置顶的会不会被清理」后补的）=====
+  // 判据是"看得见且读得到"：静态文案被折掉、被压住、字在但不可见，都等于这个承诺没出现
+  // （文案在 `ui_v1/js/components/info.js` 的 `.note` 里，`progress.md` §161）。
+  // ⚠️ 必须放在**默认流程**里：第一版写进了 `if (SHOTS)` 那段（只在 `--shots` 时跑），
+  // 结果默认跑的探针根本不打印它 —— 判据没执行，`findings=0` 是假的。
+  await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
+  await new Promise((r) => setTimeout(r, 2000));
+  await read(
+    `[...document.querySelectorAll('.app-header__actions button')]
+      .find((b) => (b.getAttribute('aria-label') ?? '').includes('部署信息'))?.click(), 'clicked'`,
+  );
+  await new Promise((r) => setTimeout(r, 800));
+  const retentionNote = await read(`(() => {
+    const notes = [...document.querySelectorAll('dialog[open] .note')];
+    const note = notes.find((n) => (n.textContent || '').indexOf('两项清理') >= 0);
+    if (!note) return JSON.stringify({ found: false, candidates: notes.length });
+    const r = note.getBoundingClientRect();
+    const cs = getComputedStyle(note);
+    return JSON.stringify({
+      found: true,
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      visible: r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility === 'visible',
+      exempt: (note.textContent || '').indexOf('收藏与置顶的记录不受这两项清理影响') >= 0,
+    });
+  })()`);
+  console.log('RETENTION-NOTE', retentionNote);
+  {
+    const n = JSON.parse(retentionNote);
+    check(
+      '保留策略的说明里写明「收藏与置顶的记录不受这两项清理影响」，且它在对话框里真的可见',
+      n.found && n.visible && n.exempt,
+      JSON.stringify(n),
+    );
+  }
+  await read(`document.querySelector('dialog[open]')?.close(), 'closed'`);
+  await new Promise((r) => setTimeout(r, 300));
+
   // ===== 文本下载（2026-09-18，"文本也可以下载，格式保存成 txt"）=====
   // 判据不是"点了有反应"，而是**磁盘上真的出现了一个 .txt，且内容与这条记录的正文对得上**。
   // 列表里的正文被截断到 500 字符，所以这条探针要在命中一条长文本时跑才有意义：
@@ -1897,6 +1935,8 @@ try {
     await wait(900);
     await runAudit('info-dialog');
     await shot('04-info');
+    // 保留策略那段说明的判据在**默认流程**里（见前面 `RETENTION-NOTE` 段）：写在这里会在
+    // `--shots` 之外完全不执行，而判据没执行时 `findings=0` 是假的。
     await read(`document.querySelector('dialog[open]')?.close(), 'closed'`);
     await wait(400);
 

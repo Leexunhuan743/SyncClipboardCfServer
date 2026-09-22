@@ -205,7 +205,9 @@ export function createDrawer(handlers) {
   });
   const retentionSection = section('保留策略', [
     row('保留天数', '超过这个天数的未收藏、未置顶记录会被软删', retentionInput),
-    row('最多条数', '超过后从最旧的开始软删', maxCountInput),
+    // 与 V1 那条说明（`ui_v1/js/components/info.js` 的 `.note`）说的是同一件事：
+    // **收藏与置顶不受这两项清理影响**，2026-09-22 用户问起后两版一起写明（`progress.md` §161）。
+    row('最多条数', '超过后从最旧的开始软删（收藏、置顶的不会被裁）', maxCountInput),
     row(null, null, saveRetention),
     retentionSource,
   ]);
