@@ -7,6 +7,7 @@
 // 2. 数据可能根本不在：hasData 是元数据推导，R2 对象可能已被清理。
 //    <img> 加载失败必须变成可读的「数据不可用」，而不是一个裂图图标。
 // 3. 点背景关闭：原生 <dialog> 默认不这么做，而这是用户对「浮层」最普遍的一次尝试。
+//    **编辑态例外**（2026-09-22 用户要求）：编辑中段误点不关框，退出编辑只有「取消」与 Esc 两个显式入口。
 //    （确认对话框不在此列——销毁性操作不给「点外面就当我没说」的出口。）
 // 4. 打开后焦点落在**正文框**上（`.dialog__body` 带 `tabindex="-1"`，2026-09-22 用户要求）：
 //    滚轮与键盘（↑↓ / PageUp·Down / Space）立刻能滚这段内容。**不是**"落在第一个按钮上" ——
@@ -19,9 +20,24 @@ import { itemIsImage } from '../clipboard.js';
 // 组件里再抄一遍，就是又一处「改了接口前缀、漏了这个文件」的机会。
 import { api } from '../api.js';
 import { setPending, flashSuccess, isPending } from './toast.js';
-// 编辑态的三句**语义文案**（过大禁用的说明 / 保存成功的就地说明 / 保存失败的就地说明）：
-// 它们逐字对齐实现语义，故住在 messages.js（与删除确认同一纪律，两版逐字一致）。
-import { editTooLargeText, textSavedNote, textSaveFailedText } from '../messages.js';
+// 编辑态的两句**语义文案**（过大禁用的说明 / 保存失败的就地说明）：它们逐字对齐实现语义，
+// 故住在 messages.js（与删除确认同一纪律，两版逐字一致）。保存成功的文案在 main.js 那侧用
+// （`textSavedNote`），因为它弹的是全局提示条。
+import { editTooLargeText, textSaveFailedText } from '../messages.js';
+
+// 本组件负责的快捷键（**只描述**，实现就在下面：对话框级的 `keydown` 派发 + 页脚按钮）：
+// 帮助浮层（`shortcuts.js`）读这份描述来渲染，因此"帮助里写的"与"实际绑的"不会漂移。
+export const PREVIEW_SHORTCUTS = [
+  { keys: ['c'], label: '复制（文本或图片，按记录类型）' },
+  { keys: ['d'], label: '下载' },
+  { keys: ['e'], label: '编辑正文（仅文本记录，且不超过 1 MiB）' },
+  { keys: ['Esc'], label: '关闭预览' },
+];
+
+export const EDIT_SHORTCUTS = [
+  { keys: ['Ctrl', 'Enter'], label: '保存为新记录' },
+  { keys: ['Esc'], label: '退出编辑，不保存' },
+];
 
 // 「编辑」的体积上限（UTF-8 字节），与 `src/ui/routes.ts` 的 `UI_TEXT_CREATE_MAX_BYTES` **必须一致**：
 // 前端拦在按钮上（超了直接禁用 + 说明），服务端那一条是纵深防御。改一处就要改另一处。
@@ -56,7 +72,6 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   const requestClose = () => {
     if (saving) return;
     dialog.close();
-    hideSavedToast();
   };
   const closeButton = el(
     'button',
@@ -69,47 +84,8 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     [svg(iconPaths('close'))],
   );
 
-  // 「已保存为新记录…」的反馈：**弹出一条提示**（用户 2026-09-22："想要的是 弹出的一个提示 就像点击
-  // 复制最近一条之后弹出来的那样"），用的是同一个 `.toast` 构件与同一套进出动画（`motion.css` 的
-  // `toast-in`/`toast-out`），2.6s 后自己收掉（与 `createToasts` 的默认时长同值）。
-  //
-  // ⚠️ **为什么不用全局的 `#toasts`**（那是"复制最近一条"用的那条通道）：模态 `<dialog>` 进的是
-  // **top layer**，而 `#toasts` 是 body 下的普通节点 ⇒ 模态开着时它被盖住。实测（本轮复核过三条路）：
-  //   · 往 `#toasts` 塞一条，`elementFromPoint` 拿到的是 **dialog / 它的 backdrop**（ADR D30 早记过这条）；
-  //   · 把 `#toasts` 改成 `popover="manual"`：已显示的 popover 再 `showPopover()` 是 no-op、**不会升层**；
-  //   · `hidePopover(); showPopover()` 也不行 —— 后来打开的模态仍在它上面（实测命中 dialog）。
-  // 于是把这条提示挂在**对话框自己的槽位**里（正文区与页脚之间，`flex: none` 恒在视野内）：
-  // 视觉与全局提示条逐字相同，位置也恒可见。
-  // `role="status"`：它不在 `#toasts`（那个宿主已是 `aria-live="polite"`）里，所以**由它自己播报** ——
-  // 这正是"宿主已宣布时不要再嵌一个实时区域"那条纪律的反面情形（见 `toast.js` 的说明）。
-  const savedToast = el('div', { class: 'toast dialog__toast', role: 'status', hidden: true });
-  let savedToastTimer = 0;
-  let savedToastLeaveTimer = 0;
-
-  function hideSavedToast() {
-    clearTimeout(savedToastTimer);
-    clearTimeout(savedToastLeaveTimer);
-    savedToastTimer = 0;
-    savedToastLeaveTimer = 0;
-    savedToast.hidden = true;
-    savedToast.removeAttribute('data-leaving');
-  }
-
-  function showSavedToast(message) {
-    clearTimeout(savedToastTimer);
-    clearTimeout(savedToastLeaveTimer);
-    savedToast.textContent = message;
-    savedToast.hidden = false;
-    savedToast.removeAttribute('data-leaving'); // 连着保存两次时：撤销上一次的离场动画，重新计时
-    // 时长与 `toast.js` 的默认停留一致（2.6s）；离场动画跑完（`--dur-fast` = 200ms）再真正隐藏
-    savedToastTimer = setTimeout(() => {
-      savedToast.setAttribute('data-leaving', 'true');
-      savedToastLeaveTimer = setTimeout(() => {
-        savedToast.hidden = true;
-        savedToast.removeAttribute('data-leaving');
-      }, 200);
-    }, 2600);
-  }
+  // 保存成功的反馈**不在这里**：走全局那一条真提示条（`toast.js` 的 `createToasts`，由动作的
+  // 拥有者 `main.js` 的 `createTextRecord` 弹），因此本组件不再自己造一条"长得像提示条"的东西。
 
   const dialog = el(
     'dialog',
@@ -122,13 +98,15 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         closeButton,
       ]),
       body,
-      savedToast,
       footer,
     ],
   );
-  // 点背景关闭（点击落在 dialog 自身而不是其内容上时）。保存途中的点背景与 ✕ 一样被挡（见 requestClose）
+  // 点背景关闭（点击落在 dialog 自身而不是其内容上时）。保存途中的点背景与 ✕ 一样被挡（见 requestClose）。
+  // **编辑态不关框**（2026-09-22 用户要求）：编辑框里可能是一段没保存的长文，而"点外面关掉浮层"
+  // 是用户对浮层最自觉的一次尝试 —— 越自觉越容易误触，误触的代价是整段正文。与 ADR D30 的 Q4
+  // （编辑态 Esc 只退编辑、不关框）同一条精神：退出编辑的**显式**入口只有「取消」与 Esc。
   dialog.addEventListener('click', (event) => {
-    if (event.target === dialog) requestClose();
+    if (event.target === dialog && !editing) requestClose();
   });
 
   // 滚轮落在**页眉 / 页脚**上时转给正文（2026-09-22 用户实测报的）：
@@ -159,6 +137,36 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     event.preventDefault();
     exitEdit();
   });
+  // Ctrl/⌘ + Enter = 保存（编辑态；2026-09-22 用户要求"保存和取消合理设置快捷键"）。
+  // 为什么不是 Ctrl+S：那是浏览器自己的"保存网页"，要抢就得拦默认行为；而 Ctrl+Enter 在多行
+  // 编辑器里就是"提交/应用"的通用键，且与"Enter 换行"不冲突（换行是用户在正文里的正常操作，
+  // 绝不能拿 Enter 当保存）。
+  // `isComposing`：中日文输入法组字期间 Enter 是"上屏"，那一下不是保存。
+  // 用 `event.key` 而非 `code`：小键盘 Enter 的 code 是 NumpadEnter，key 才是 'Enter'。
+  dialog.addEventListener('keydown', (event) => {
+    if (!editing || saving) return;
+    if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey) || event.isComposing) return;
+    event.preventDefault();
+    activeSave?.();
+  });
+  // 预览框自己的键：`c` 复制 / `d` 下载 / `e` 编辑。做法是**找到并点击对应页脚按钮**，
+  // 而不是另写一套动作 —— 按钮那侧已经带着"无数据时隐藏、超限时禁用并说明原因、在途时挡重复点击"
+  // 这些判据，抄一份必然会分叉。`e` 因此在文本过大时自然变成"按了没反应"（按钮是 disabled 的，
+  // 而它的 hover 提示写着为什么）。
+  // 列表页那条派发器见到 `dialog[open]` 会退出（见 main.js 的 installShortcuts），两边不重叠。
+  dialog.addEventListener('keydown', (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+    if (editing) return; // 编辑态只有保存/取消两个键（见上面的 Ctrl+Enter 与 `cancel` 分支）
+    const label = { c: '复制', d: '下载', e: '编辑' }[event.key];
+    if (label === undefined) return;
+    const button = [...footer.querySelectorAll('button')].find((b) =>
+      (b.textContent ?? '').trim().startsWith(label),
+    );
+    if (!button || button.disabled || isPending(button)) return;
+    event.preventDefault();
+    button.click();
+  });
+
   // 关闭事件对外播一次（Esc、点背景、按钮关闭都会走到这里）。
   // 调用方用它收尾：例如清掉 URL 里的深链接 hash——否则刷新页面会突然弹出上一条看过的记录。
   dialog.addEventListener('close', () => {
@@ -267,7 +275,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 两态机：**预览 ⇄ 编辑**。语义按用户的四个决定落地：
   //   · Q1(a) 保存 = **新建一条记录**（正文一改 hash 就变，见 ADR D30），当前剪贴板不动；
   //   · Q2    只对 `Text` 类型的记录开放（其余类型根本没有"编辑正文"这回事）；
-  //   · Q3(c) 保存后**不关框**：正文换成刚保存的那段、就地给一条「已保存为新记录」的说明，
+  //   · Q3(c) 保存后**不关框**：正文换成刚保存的那段、由调用方弹一条「已保存为新记录」提示条，
   //           复制/下载都跟着屏幕上的这段走（见 `currentText` 的用法）；
   //   · Q4    等宽 textarea；**Esc = 退出编辑（不关对话框）**；> 1 MiB 不给编辑；允许改空；
   //           内容没变就保存 = 什么都不发。
@@ -277,6 +285,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   let currentText = '';
   let editing = false;
   let saving = false; // 保存请求在途：挡住关框（见 requestClose）
+  // 本次编辑会话的保存动作。按钮点击与 Ctrl/⌘+Enter 走**同一个函数**（在 `enterEdit` 里登记、
+  // `exitEdit` 里清空）—— 两条入口各写一份，迟早出现"快捷键保存的东西和按钮不一样"。
+  let activeSave = null;
 
   // 当前"该被滚动的那个元素"：编辑态是 `<textarea>`（正文框里只有它，正文框自己不滚），
   // 其余是正文框本身。给滚轮转发用（见 dialog 的 `wheel` 监听）。
@@ -295,7 +306,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   //      而重新打开一条大文本预览本来就要一次往返 —— 不该再叠一次百毫秒级的主线程计算。
   // 这不是新决定：`docs/archive/AUDIT-v1-v2-divergence.md` §12.2 早就把"V1 预览里的「N 个字符」
   // 读服务端 `size`、**有意不改**"记成了结论（那条与 V2 的口径分歧因此是有记录的）。
-  // 2026-09-22 起"已保存为新记录（N 个字符）"那条说明也取同一个数（服务端的 `size`），
+  // 2026-09-22 起"已保存为新记录（N 个字符）"那条提示条也取同一个数（服务端的 `size`），
   // 于是同一屏上不会出现两个不同的字符数。
   function renderHead(item) {
     title.textContent = item.type === 'Text' ? '文本内容' : (item.dataName ?? item.type);
@@ -354,7 +365,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
           disabled: tooLarge,
           title: tooLarge
             ? editTooLargeText(formatSize(EDIT_MAX_BYTES))
-            : '编辑这段文本（保存成一条新记录，当前剪贴板不受影响）',
+            : '编辑这段文本（保存成一条新记录，当前剪贴板不受影响）（e）',
           run: () => {
             enterEdit();
             return true;
@@ -367,6 +378,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
           label: '复制文本',
           run: () => onCopy(item, currentText),
           successLabel: '已复制',
+          title: '复制这段文本（c）',
         }),
         // 文本也能下载（2026-09-18）：与行内那一槽同一个动作、同一个名字 ——
         // 有数据文件时是"取回原文件"（叫「下载」，原扩展名保留），内联文本才是「下载文本」
@@ -378,6 +390,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
           label: item.hasData ? '下载' : '下载文本',
           run: () => onDownloadText(item, currentText),
           successLabel: '已下载',
+          title: `${item.hasData ? '下载这条记录的数据文件' : '把这段正文存成 .txt'}（d）`,
         }),
       );
     } else {
@@ -388,6 +401,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
             label: '复制图片',
             run: () => onCopyImage(item),
             successLabel: '已复制',
+            title: '复制这张图片（c）',
           }),
         );
       }
@@ -397,6 +411,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
           label: '下载',
           run: () => onDownload(item),
           successLabel: '已下载',
+          title: '下载这条记录（d）',
         }),
       );
     }
@@ -481,13 +496,32 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     body.className = 'dialog__body dialog__body--edit';
     body.replaceChildren(area, editError);
 
-    const cancel = el('button', { class: 'btn', type: 'button', onclick: () => exitEdit() }, [
-      el('span', { class: 'btn__label', text: '取消' }),
-    ]);
-    const save = el('button', { class: 'btn btn--primary', type: 'button' }, [
-      el('span', { class: 'btn__label', text: '保存' }),
-    ]);
-    save.addEventListener('click', async () => {
+    // 两枚按钮的 hover 提示就是各自的**快捷键**（2026-09-22 用户要求"hover 显示对应的快捷键"）：
+    // 用原生 `title`（与页脚其余动作、行内槽位同一套提示通道，见 actionButton 的说明），
+    // 另加 `aria-keyshortcuts` 让读屏也能报出按键。取消那枚不写"不保存"以外的语义 ——
+    // 它**只**退出编辑，改动留在记录里（编辑的是本地副本）。
+    const cancel = el(
+      'button',
+      {
+        class: 'btn',
+        type: 'button',
+        title: '退出编辑，不保存改动（Esc）',
+        'aria-keyshortcuts': 'Escape',
+        onclick: () => exitEdit(),
+      },
+      [el('span', { class: 'btn__label', text: '取消' })],
+    );
+    const save = el(
+      'button',
+      {
+        class: 'btn btn--primary',
+        type: 'button',
+        title: '保存为新记录（Ctrl/⌘ + Enter）',
+        'aria-keyshortcuts': 'Control+Enter Meta+Enter',
+      },
+      [el('span', { class: 'btn__label', text: '保存' })],
+    );
+    const saveEdit = async () => {
       if (isPending(save)) return;
       const next = area.value;
       // 「没改字」的判据必须**先把行尾归一**再比：`<textarea>` 的 `value` 会把 CRLF 折成 LF
@@ -514,9 +548,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         // 从此描述的都是屏幕上这段 —— 不改的话会出现"头说旧记录的字符数、正文是新文本"的自相矛盾。
         currentItem = created;
         renderHead(created);
-        // 字符数取**服务端的 `size`**：头部、列表讲的是同一条记录的那个数（口径见 `renderHead`）
-        // 反馈走**弹出的提示**（用户要求：像「复制最近一条」那样），2.6s 后自己收掉
-        showSavedToast(textSavedNote(created.size));
+        // 保存成功的提示由 `main.js` 的 `createTextRecord` 弹（真提示条，见 `toast.js` 的 dockHost）
         exitEdit();
       } catch (error) {
         // 就地报错（挨着控件、被 `aria-describedby` 关联），**留在编辑态**：用户改的内容还在，可以再存一次。
@@ -531,7 +563,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         closeButton.disabled = false;
         setPending(save, false);
       }
-    });
+    };
+    save.addEventListener('click', saveEdit);
+    activeSave = saveEdit; // Ctrl/⌘+Enter 走的也是这一个
     footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }), cancel, save);
 
     if (!dialog.open) dialog.showModal();
@@ -569,6 +603,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
 
   function exitEdit() {
     editing = false;
+    activeSave = null; // 编辑会话结束：快捷键不再指向一个已经不存在的 textarea 上的闭包
     clearTimeout(refitTimer); // 离开编辑态：不再有"停止输入后重量"这回事（定时器会改一个已被移除的节点）
     refitTimer = 0;
     editError.hidden = true;
@@ -580,8 +615,8 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   function open(item, { text = null, loading = false } = {}) {
     currentItem = item;
     currentText = text ?? item.text ?? '';
-    hideSavedToast(); // 打开一条新记录：上一条留下的「已保存为新记录…」提示立刻收掉（图片/不支持档也走这里）
     editing = false;
+    activeSave = null; // 同上：换记录时旧编辑会话的保存闭包必须失联
     renderHead(item);
     body.className = 'dialog__body';
     body.replaceChildren();

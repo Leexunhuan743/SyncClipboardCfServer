@@ -1404,6 +1404,20 @@ th[aria-sort="descending"] .th-sort__arrow {
 .dialog__head,
 .dialog__foot {
   flex: none;
+  /* `<dialog>` 在 rest 态也有 `translate: 0 0`（`motion.css` 的进出动效），因此它**是**内部
+   * fixed/absolute 后代的包含块 —— 这一点是 `.dialog__foot > .toasts` 那条规则的前提。 */
+  position: relative;
+}
+
+/* 提示条宿主被搬进对话框时（`toast.js` 的 dockHost）：浮在页脚**之上**、水平居中。
+ * 必须 `absolute`（而不是留在对话框的 flex 列里）：提示条不该推动正文/页脚的位置 ——
+ * "看起来像对话框的一部分"正是那么来的；也因此它不参与 `.dialog` 的布局。 */
+.dialog__foot > .toasts {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  translate: -50% 0;
+  margin-bottom: var(--sp-2);
 }
 
 /* 对话框/表单内的就地错误（确认失败、登录失败）：两处形状相同，故只有一份实现——
@@ -1641,12 +1655,6 @@ th[aria-sort="descending"] .th-sort__arrow {
  * 全局的 `#toasts` 在 top layer 之下，模态开着时看不见（`preview.js` 那段注释记着三条实测）。
  * `align-self: flex-start`：`.dialog` 是列 flex，默认 `stretch` 会把胶囊拉满整宽；
  * 左右外边距与 `.dialog__body` 的 `--sp-5` 对齐，读起来与正文同一列。 */
-.dialog__toast {
-  flex: none;
-  align-self: flex-start;
-  margin: var(--sp-3) var(--sp-5) 0;
-}
-
 .dialog__image {
   display: block;
   max-width: 100%;
@@ -1664,6 +1672,54 @@ th[aria-sort="descending"] .th-sort__arrow {
 
 .dialog__foot-spacer {
   flex: 1 1 auto;
+}
+
+/* ============ 快捷键列表（`components/shortcuts.js`）============
+ * 键帽用 `kbd`：等宽字体 + 细边框，读者一眼能分出"这是键盘上的键"而不是按钮名。
+ * 两列用 grid（键帽列 `auto`、说明列 `1fr`）——列表项长度不一时说明左缘仍对齐。 */
+.shortcuts + .shortcuts {
+  margin-top: var(--sp-4);
+}
+
+.shortcuts__title {
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+  font-weight: 600;
+  margin-bottom: var(--sp-2);
+}
+
+.shortcuts__list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.shortcuts__item {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, auto) 1fr;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+
+.shortcuts__keys {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.shortcuts__keys kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.shortcuts__label {
+  font-size: var(--fs-sm);
 }
 
 /* ============ 悬停预览浮层（tooltip，2026-09-21 起 V1 唯一实现）============

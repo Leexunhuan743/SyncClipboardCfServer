@@ -80,7 +80,7 @@ export function createHeader({ onToggleTheme, onLogout, onInfo, onCopyLatest }) 
       class: 'icon-btn',
       type: 'button',
       'aria-label': '切换深浅色',
-      title: '切换深浅色',
+      title: '切换深浅色主题（t）',
       onclick: () => onToggleTheme(),
     },
     [svg(iconPaths('moon'))],

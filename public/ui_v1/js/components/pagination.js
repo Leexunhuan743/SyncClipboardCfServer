@@ -16,13 +16,13 @@ export function createPagination({ onPage }) {
     // `pagination__prev` 只为一件事存在：`margin-left: auto`（见 components.css）—— 它把
     // 「上一页 / 第 X/Y 页 / 下一页」这一组推到行尾。桌面靠 spacer 推；窄屏 spacer 被隐藏、
     // 且这一组经常换行到第二行，那时只有 auto margin 还能把它们贴到右边（2026-09-18 用户要求）。
-    { class: 'btn pagination__prev', type: 'button', disabled: true, onclick: () => onPage(currentPage - 1) },
+    { class: 'btn pagination__prev', type: 'button', disabled: true, title: '上一页（p）', onclick: () => onPage(currentPage - 1) },
     [svg(iconPaths('chevronLeft'), { size: 16 }), el('span', { class: 'btn__label', text: '上一页' })],
   );
 
   const next = el(
     'button',
-    { class: 'btn', type: 'button', disabled: true, onclick: () => onPage(currentPage + 1) },
+    { class: 'btn', type: 'button', disabled: true, title: '下一页（n）', onclick: () => onPage(currentPage + 1) },
     [el('span', { class: 'btn__label', text: '下一页' }), svg(iconPaths('chevronRight'), { size: 16 })],
   );
 

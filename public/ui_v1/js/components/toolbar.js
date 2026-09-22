@@ -213,7 +213,7 @@ export function createToolbar({
       class: 'icon-btn',
       type: 'button',
       'aria-label': '刷新',
-      title: '刷新',
+      title: '刷新列表（r）',
       // 刷新期间按钮自己转起来：整块列表只是变淡，光靠它读不出「正在取」还是「卡住了」
       onclick: async (event) => {
         const button = event.currentTarget;

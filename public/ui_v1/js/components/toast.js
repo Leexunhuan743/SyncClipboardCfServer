@@ -20,6 +20,25 @@ export function createToasts(container) {
     setTimeout(() => node.remove(), LEAVE_MS);
   }
 
+  // 模态对话框进的是 **top layer**：宿主留在 body 下时，提示条既被半透明 backdrop 压暗、又**完全
+  // 收不到点击**（2026-09-22 实测：宿主在 body 下点提示条中心，命中的是 `dialog`）。
+  // 换成 `popover="manual"` 也不行 —— 模态把 top layer 之外的 popover 也置为 inert，实测同样点不中。
+  // 唯一"既看得见、又点得动"的落点是把宿主**临时搬进**最上层那个对话框：在 top layer 之内它照样是
+  // 同一个组件、同一套样式与同一条 `aria-live`。位置由 CSS 钉在页脚**之上**（`.dialog__foot > .toasts`），
+  // 故它不参与对话框的列布局、也不盖住页脚按钮。
+  function dockHost() {
+    const open = document.querySelectorAll('dialog[open]');
+    const top = open.length > 0 ? open[open.length - 1] : null;
+    if (top === null) {
+      if (container.parentElement !== document.body) document.body.append(container);
+      return;
+    }
+    if (container.closest('dialog') === top) return; // 已经停在这个框里
+    (top.querySelector('.dialog__foot') ?? top).append(container);
+    // 框关了就把宿主放回 body：剩下的提示条继续显示（宿主是 `position: fixed`，视觉落点不变）。
+    top.addEventListener('close', () => document.body.append(container), { once: true });
+  }
+
   function show(message, { error = false, duration = 2600, action = null } = {}) {
     // `action`（2026-09-18）：把"重试"这一类补救动作**放在提示条里**。
     // 为什么值得：失败路径此前只有两种结局 —— 对话框内失败可原地重试（好），
@@ -55,6 +74,7 @@ export function createToasts(container) {
           : null,
       ],
     );
+    dockHost(); // 有对话框开着就先搬进它的 top layer（见 dockHost 的说明）
     container.append(node);
     // 超出上限先收掉最早的：窄屏上堆到第五条会把列表底部的操作整片盖住。
     // **同步移除**是被挤掉那条的正确处置（它多半还没被读到，动画只是推迟腾位置），

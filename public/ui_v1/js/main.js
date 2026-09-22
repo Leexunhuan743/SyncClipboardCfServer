@@ -26,6 +26,7 @@ import {
   clearHistorySpec,
   describeListError,
   clipboardFailureHint,
+  textSavedNote,
 } from './messages.js';
 import { createHeader } from './components/header.js';
 import { createStats } from './components/stats.js';
@@ -36,6 +37,7 @@ import { createPreview } from './components/preview.js';
 import { createConfirm } from './components/confirm.js';
 import { createToasts, setPending, flashSuccess, isPending } from './components/toast.js';
 import { createInfo } from './components/info.js';
+import { createShortcutsHelp } from './components/shortcuts.js';
 
 // 可见 10s / 隐藏 30s：一次轮询是一次 D1 读 + 一次 Workers 请求，
 // 5s 间隔意味着「一个标签开一天」≈ 17k 请求，接近免费版日额度的两成（见 README 容量提示）。
@@ -1443,6 +1445,9 @@ async function createTextRecord(_item, text) {
     // 深链接跟着**屏幕上这条**走：保存后对话框指向新记录，URL 不跟着换的话，
     // 刷新页面会弹回旧那一条（与 `previewItem` 打开时可分享链接的行为一致）。
     syncDeepLink(created);
+    // 保存成功的反馈走**全局提示条**（真提示条：`toast.js` 的 dockHost 会在有对话框时把它搬进框的
+    // top layer，故它在框上看得见、也点得动）；字符数取服务端的 `size`，与头部/列表同一口径。
+    toasts.show(textSavedNote(created.size));
     return created;
   } catch (error) {
     if (handleAuthError(error)) throw new Error('会话已过期，正在跳转登录页…');
@@ -1565,12 +1570,41 @@ function schedulePoll() {
 }
 
 // ===== 快捷键 =====
-// 只加一个 `/`（聚焦搜索）：功能页面的快捷键贵在少而稳，多了就是和浏览器抢键。
-// 输入框内、对话框打开时、带修饰键时一律让路。
+// **列表页这一组**的表：`keys` 是按键序列（本组只支持单键），`label` 是它在帮助浮层里的说明。
+// 表本身也是帮助浮层的数据源（`createShortcutsHelp({ list })`）⇒ 帮助里写的与实际绑定的同源，
+// 不会漂移。取向与取舍（为什么不做销毁性单键、为什么输入处让路）见 `components/shortcuts.js` 头部。
+//
+// 为什么每一条都必须有对应的**按钮**：把键绑在"用户已经在用的东西"上，就同时得到了 hover 提示
+// （各按钮的 `title` 里都写着键）与一条不会过期的语义 —— 单键只是那条路径的别名。
+function listShortcuts() {
+  const state = store.get();
+  const pages = Math.max(1, Math.ceil((state.total ?? 0) / state.filters.pageSize));
+  const goto = (page) => {
+    if (page < 1 || page > pages || page === state.filters.page) return;
+    actions.onPage(page);
+  };
+  return [
+    { keys: ['/'], label: '聚焦搜索框', run: () => toolbar.focusSearch() },
+    { keys: ['?'], label: '显示这份快捷键列表', run: () => help.open() },
+    { keys: ['r'], label: '刷新列表', run: () => actions.onRefresh() },
+    { keys: ['t'], label: '切换深色 / 浅色主题', run: () => toggleTheme() },
+    { keys: ['n'], label: '下一页', run: () => goto(state.filters.page + 1) },
+    { keys: ['p'], label: '上一页', run: () => goto(state.filters.page - 1) },
+  ];
+}
+
+// `help` 建在 `listShortcuts()` 之后（它需要那份表），而表里 `?` 那条的 `run` 在**调用时**才读它。
+// ⚠️ 顺序是这个模块的一条硬约束：`help` 必须先声明、再在被调用前赋值 —— 第一版把赋值写在了
+// `createPagination(...)` 那一行后面（声明之前），于是整页在启动期抛 TDZ `ReferenceError`：
+// 列表一行都没渲染（探针里到处 `skipped: no rows`，正是这次抓到的形态）。
+let help = null;
+help = createShortcutsHelp({ list: listShortcuts() });
+
 function installShortcuts() {
   document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
-    if (event.key !== '/') return;
+    // 带修饰键的一律让路（本组没有组合键；`Ctrl/⌘+Enter` 属于编辑框，见 preview.js）；
+    // 输入处（含 IME 组字）让路；对话框打开时由对话框自己处理（见 preview.js 的派发）。
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
     const target = event.target;
     if (
       target instanceof HTMLElement &&
@@ -1579,8 +1613,10 @@ function installShortcuts() {
       return;
     }
     if (document.querySelector('dialog[open]')) return;
+    const hit = listShortcuts().find((s) => s.keys.length === 1 && s.keys[0] === event.key);
+    if (!hit) return;
     event.preventDefault();
-    toolbar.focusSearch();
+    hit.run();
   });
 }
 

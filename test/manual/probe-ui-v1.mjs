@@ -1393,6 +1393,375 @@ try {
     }
   }
 
+  // ===== 编辑态的关闭语义与快捷键（2026-09-22 用户要求：编辑中点空白不关框 / 保存与取消要有快捷键 / hover 显示快捷键）=====
+  //
+  // 四条判据：
+  //   ① 编辑中点**背景**（真实鼠标点在框外的遮罩上，CDP 真事件）：框不关、也不退出编辑；
+  //   ② Ctrl/⌘ + Enter = 保存 —— 用"内容没改"这条路径验（它与按钮点击走同一个函数，
+  //      但**不发请求**，零副作用）：框仍开着、编辑态退出、且没有弹出「已保存」提示；
+  //   ③ 单独按 Enter **不是**保存（那是正文换行）：编辑态仍在、正文多了一个换行；
+  //   ④ 两枚按钮的 hover 提示（`title`）与 `aria-keyshortcuts` 就是各自快捷键。
+  // 为什么用真事件：`.click()` 只证明"监听器在"，而用户是拿鼠标点在遮罩上、拿键盘按下去的；
+  // 这一条正是"DOM 在 ≠ 看得见"的同一纪律（`--shots` 与探针的分工见 docs/ui.md §11）。
+  await send('Page.navigate', { url: `${BASE}/ui_v1/?types=Text` });
+  await new Promise((r) => setTimeout(r, 2200));
+  const editOpen = JSON.parse(
+    (await read(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const row = document.querySelector('tbody tr.row');
+      if (!row) return JSON.stringify({ skipped: 'no rows' });
+      row.querySelector('[data-action="preview"]')?.click();
+      await wait(1300);
+      const dlg = document.querySelector('dialog.dialog[open]');
+      if (!dlg) return JSON.stringify({ skipped: 'preview did not open' });
+      const editBtn = [...dlg.querySelectorAll('.dialog__foot button')]
+        .find((b) => (b.textContent ?? '').trim() === '编辑');
+      if (!editBtn) return JSON.stringify({ skipped: 'no edit button (first row is not Text?)' });
+      editBtn.click();
+      await wait(400);
+      const area = dlg.querySelector('.dialog__edit');
+      if (!area) return JSON.stringify({ skipped: 'edit mode did not open' });
+      const box = dlg.getBoundingClientRect();
+      return JSON.stringify({
+        chars: area.value.length,
+        foot: [...dlg.querySelectorAll('.dialog__foot button')].map((b) => ({
+          label: (b.textContent ?? '').trim(),
+          title: b.getAttribute('title'),
+          keys: b.getAttribute('aria-keyshortcuts'),
+        })),
+        box: { l: Math.round(box.left), t: Math.round(box.top) },
+      });
+    })()`)) ?? '{}',
+  );
+  const editState = async () =>
+    JSON.parse(
+      (await read(`(() => {
+        const dlg = document.querySelector('dialog.dialog[open]');
+        return JSON.stringify({
+          open: Boolean(dlg),
+          editing: Boolean(dlg ? dlg.querySelector('.dialog__edit') : null),
+          toasts: dlg ? dlg.querySelectorAll('#toasts .toast').length : null,
+          chars: dlg && dlg.querySelector('.dialog__edit') ? dlg.querySelector('.dialog__edit').value.length : null,
+        });
+      })()`)) ?? '{}',
+    );
+  const keyEvent = (kind, k, code, vk, modifiers = 0, text = undefined) =>
+    send('Input.dispatchKeyEvent', {
+      type: kind,
+      key: k,
+      code,
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk,
+      modifiers,
+      ...(text === undefined ? {} : { text, unmodifiedText: text }),
+    });
+  const pressKey = async (k, code, vk, modifiers = 0, text = undefined) => {
+    await keyEvent('keyDown', k, code, vk, modifiers, text);
+    await keyEvent('keyUp', k, code, vk, modifiers);
+  };
+  // ① 真实鼠标点背景：取对话框外、视口内的一个点（左上角四分之一处，框居中时必然落在遮罩上）
+  // （`editOpen.skipped` 时没有 box 可读 —— 探针自己也要能带着前提缺失继续跑，别把整份探针打断。）
+  const backdrop = editOpen.skipped === undefined
+    ? { x: Math.max(2, Math.floor(editOpen.box.l / 2)), y: Math.max(2, Math.floor(editOpen.box.t / 2)) }
+    : null;
+  if (backdrop) {
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...backdrop });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...backdrop });
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const afterBackdrop = backdrop ? await editState() : { open: null, editing: null };
+  // ② Ctrl+Enter（内容没改 ⇒ 走"无变化"分支：不写库、退出编辑、框仍开着）
+  if (backdrop) await pressKey('Enter', 'Enter', 13, 2);
+  await new Promise((r) => setTimeout(r, 350));
+  const afterCtrlEnter = await editState();
+  // ③ 重新进入编辑，单独按 Enter：必须是**换行**，不是保存
+  await read(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dlg = document.querySelector('dialog.dialog[open]');
+    [...dlg.querySelectorAll('.dialog__foot button')]
+      .find((b) => (b.textContent ?? '').trim() === '编辑')?.click();
+    await wait(350);
+    dlg.querySelector('.dialog__edit')?.focus();
+    return 'ok';
+  })()`);
+  await pressKey('Enter', 'Enter', 13, 0, '\r');
+  await new Promise((r) => setTimeout(r, 250));
+  const afterPlainEnter = await editState();
+  // Esc：退出编辑、但**不关框**（= 取消的快捷键）
+  await pressKey('Escape', 'Escape', 27);
+  await new Promise((r) => setTimeout(r, 300));
+  const afterEsc = await editState();
+  console.log(
+    'PRVEDIT',
+    JSON.stringify({ editOpen, afterBackdrop, afterCtrlEnter, afterPlainEnter, afterEsc }),
+  );
+  {
+    const o = editOpen;
+    if (o.skipped) auditFindings.push('preview-edit: ' + o.skipped);
+    else {
+      check(
+        '编辑中点背景不关框（真实鼠标点在遮罩上）',
+        afterBackdrop.open === true && afterBackdrop.editing === true,
+        JSON.stringify(afterBackdrop),
+      );
+      check(
+        'Ctrl+Enter = 保存（内容没改 ⇒ 退出编辑、不关框、不发请求）',
+        afterCtrlEnter.open === true && afterCtrlEnter.editing === false && afterCtrlEnter.toasts === 0,
+        JSON.stringify(afterCtrlEnter),
+      );
+      check(
+        '单独按 Enter 不是保存（正文换行，编辑态保持）',
+        afterPlainEnter.editing === true && afterPlainEnter.chars === (o.chars ?? 0) + 1,
+        JSON.stringify(afterPlainEnter) + ' 编辑前正文长度=' + String(o.chars),
+      );
+      check('Esc = 取消（退出编辑但不关框）', afterEsc.open === true && afterEsc.editing === false, JSON.stringify(afterEsc));
+      const saveBtn = (o.foot ?? []).find((b) => b.label === '保存') ?? {};
+      const cancelBtn = (o.foot ?? []).find((b) => b.label === '取消') ?? {};
+      check(
+        '保存/取消的 hover 提示写着各自快捷键（title + aria-keyshortcuts）',
+        typeof saveBtn.title === 'string' &&
+          saveBtn.title.includes('Ctrl') &&
+          saveBtn.keys === 'Control+Enter Meta+Enter' &&
+          typeof cancelBtn.title === 'string' &&
+          cancelBtn.title.includes('Esc') &&
+          cancelBtn.keys === 'Escape',
+        JSON.stringify({ save: saveBtn, cancel: cancelBtn }),
+      );
+    }
+    // 收尾：关掉对话框（后面的块要求一个干净的页面状态）
+    await read(`document.querySelector('dialog.dialog[open]')?.close(), 'closed'`);
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  // ===== 对话框开着的提示条必须是**真提示条**（2026-09-22 用户："这个根本不是真实的toast"）=====
+  //
+  // 判据四件事，缺一条都不算做到：
+  //   ① 弹的是全局那条（同一个 `#toasts` 宿主、同一个 `.toast` 节点），不是对话框里另造的一份；
+  //   ② 宿主被搬进**当前这个对话框**里（top layer —— 这是它看得见的前提）；
+  //   ③ 它**真的在 backdrop 之上**：临时打开命中区后，**真实鼠标**点在它中心，命中的是它自己
+  //      （提示条平时 `pointer-events: none` —— 它不该吞掉底下的点击，所以量之前要临时打开）；
+  //   ④ 不压页脚（尾巴在页脚上缘之上），且 2.6s 后自己收掉。
+  // 用「复制文本」触发（预览页脚那枚按钮）：它会走 `toasts.show`，而**不写任何记录** ——
+  // 探针不该为了让提示条出现而往库里塞数据。
+  const prvToast = JSON.parse(
+    (await read(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const row = document.querySelector('tbody tr.row');
+      row?.querySelector('[data-action="preview"]')?.click();
+      await wait(1300);
+      const dlg = document.querySelector('dialog.dialog[open]');
+      if (!dlg) return JSON.stringify({ skipped: 'preview did not open' });
+      const copy = [...dlg.querySelectorAll('.dialog__foot button')]
+        .find((b) => (b.textContent ?? '').trim().startsWith('复制'));
+      if (!copy) return JSON.stringify({ skipped: 'no copy button in footer' });
+      copy.click();
+      await wait(500);
+      const host = document.querySelector('#toasts');
+      const toast = host ? host.querySelector('.toast') : null;
+      if (!toast) return JSON.stringify({ skipped: 'no toast appeared' });
+      const r = toast.getBoundingClientRect();
+      const foot = dlg.querySelector('.dialog__foot').getBoundingClientRect();
+      // 命中区临时打开，只为量「它有没有被 backdrop 盖住」（提示条平时是 pointer-events: none：
+      // 它不该吞掉底下的点击）—— 这与仓库里「量过渡属性前注入 transition:none」是同一类手法。
+      window.__toastHit = null;
+      toast.style.pointerEvents = 'auto';
+      toast.addEventListener('click', () => { window.__toastHit = 'toast'; }, { once: true });
+      const cs = document.createElement('style');
+      cs.id = 'probe-hit';
+      cs.textContent = '#toasts{pointer-events:auto}';
+      document.head.append(cs);
+      const out = {
+        dockedInDialog: dlg.contains(host),
+        hostParent: host.parentElement?.className ?? null,
+        toastClass: toast.className,
+        insideDialogRect:
+          r.top >= dlg.getBoundingClientRect().top - 1 && r.bottom <= dlg.getBoundingClientRect().bottom + 1,
+        aboveFooter: Math.round(r.bottom) <= Math.round(foot.top) + 1,
+        rect: { t: Math.round(r.top), b: Math.round(r.bottom) },
+        footTop: Math.round(foot.top),
+        center: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) },
+      };
+      return JSON.stringify(out);
+    })()`)) ?? '{}',
+  );
+  // 真实鼠标点在提示条中心：这一下能证明**没有任何东西盖在它上面**（被 backdrop 压住时，
+  // 点击会落到 dialog 上 —— 那正是"假提示条"的实测形态）。先点、再看提示条与对话框各自的反应。
+  let prvToastClick = null;
+  if (!prvToast.skipped && prvToast.center) {
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: prvToast.center.x, y: prvToast.center.y });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: prvToast.center.x, y: prvToast.center.y });
+    await new Promise((r) => setTimeout(r, 250));
+    prvToastClick = JSON.parse(
+      (await read(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const dlg = document.querySelector('dialog.dialog[open]');
+        const hit = window.__toastHit;
+        document.getElementById('probe-hit')?.remove();
+        const toast = document.querySelector('#toasts .toast');
+        if (toast) toast.style.pointerEvents = '';
+        const gone = await (async () => { await wait(2900); return document.querySelectorAll('#toasts .toast').length === 0; })();
+        return JSON.stringify({
+          hit,
+          dialogStillOpen: Boolean(dlg),
+          editingBack: Boolean(dlg?.querySelector('.dialog__edit')),
+          gone,
+          parentAfter: document.querySelector('#toasts')?.parentElement?.tagName ?? null,
+        });
+      })()`)) ?? '{}',
+    );
+  }
+  console.log('PRVTOAST', JSON.stringify(prvToast), 'CLICK', JSON.stringify(prvToastClick));
+  {
+    if (prvToast.skipped) auditFindings.push('preview-toast: ' + prvToast.skipped);
+    else {
+      check('对话框开着时的提示条就是全局那条（同一个 #toasts 宿主）', prvToast.dockedInDialog === true, JSON.stringify(prvToast));
+      check(
+        '提示条没有被 backdrop 盖住（真实鼠标点它中心，命中的是它自己）',
+        prvToastClick?.hit === 'toast' && prvToastClick?.dialogStillOpen === true,
+        JSON.stringify(prvToastClick),
+      );
+      check(
+        '提示条浮在页脚之上（不盖住页脚按钮）',
+        prvToast.aboveFooter === true,
+        'toast.bottom=' + String(prvToast.rect.b) + ' foot.top=' + String(prvToast.footTop),
+      );
+      check('提示条 2.6s 后自己收掉', prvToastClick?.gone === true, JSON.stringify(prvToastClick));
+    }
+    // 关框之后宿主必须回到 body：否则下一条**不在对话框里**触发的提示条会被留在（已关闭的）框里
+    // —— 关闭的 `<dialog>` 是 `display:none`，提示条就跟着一起消失了。
+    await read(`document.querySelector('dialog.dialog[open]')?.close(), 'closed'`);
+    await new Promise((r) => setTimeout(r, 500));
+    const hostAfterClose = await read(`document.querySelector('#toasts')?.parentElement?.tagName ?? null`);
+    check('关框后提示条宿主回到 body（后续提示条不会跟着关闭的框一起消失）', hostAfterClose === 'BODY', String(hostAfterClose));
+  }
+
+  // ===== 快捷键（2026-09-22 用户要求"全面评估 V1 全部页面，设计一些合适的快捷键"）=====
+  //
+  // 判据六件事：
+  //   ① `?` 打开帮助浮层，且里面**列全**了目录（列表页 / 预览框 / 编辑态三组）；
+  //   ② `t` 真的切换主题（读 `html[data-theme]`，按下前后必须不同）；
+  //   ③ `r` 真的重发列表请求（读 resource timing 里新增的 `/ui/api/history` 条目）；
+  //   ④ `n` / `p` 真的翻页（分页标签的页码变化，回到第 1 页收尾）；
+  //   ⑤ **输入处让路**：搜索框里按 `r` 不能触发刷新（否则用户打不出这个字母）；
+  //   ⑥ **对话框打开时让路**：帮助浮层开着时按 `r` 也不能刷新。
+  // ⑤⑥ 是本轮设计的两条硬前提 —— 少了它们，"加了快捷键"就是"把页面弄坏"。
+  await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
+  await new Promise((r) => setTimeout(r, 2400));
+  const keyPress = (k, code, vk, modifiers = 0, text = undefined) =>
+    (async () => {
+      await send('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: k,
+        code,
+        windowsVirtualKeyCode: vk,
+        nativeVirtualKeyCode: vk,
+        modifiers,
+        ...(text === undefined ? {} : { text, unmodifiedText: text }),
+      });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers });
+    })();
+  // 「这次按键有没有真的触发列表请求」用**页面内拦 fetch + 时间戳**来量，而不是"总请求数"或
+  // "按钮的进行中态"：
+  //   · 总请求数会被两件事污染 —— 打字引发的防抖搜索、以及后台**轮询**（可见 10s / 隐藏 30s）。
+  //     第一版用计数，390 档上就被一次恰好撞进窗口的轮询判成了"刷新"（实测 4 → 5）。
+  //   · 按钮的 `data-loading` 在本地只存在 ~10ms（刷新太快），按 50ms 轮询抓不到（两档都读到 false）。
+  // 判据因此收成"按键之后 **120ms 内**有没有 `/ui/api/history` 请求"：轮询撞进 120ms 窗口的概率
+  // 约 1%，而"按了键"与"请求发出"在这条路径上只隔一个同步调用 ⇒ 正例必然命中。
+  await read(`(() => {
+    if (window.__reqLog) return 'already';
+    window.__reqLog = [];
+    const original = window.fetch;
+    window.fetch = (...args) => {
+      const url = String(args[0]?.url ?? args[0] ?? '');
+      if (url.includes('/ui/api/history')) window.__reqLog.push(performance.now());
+      return original(...args);
+    };
+    return 'hooked';
+  })()`);
+  // 按键前记账 → 按键 → 等 120ms → 数窗口内的列表请求
+  const requestsAfterKey = async (press) => {
+    const t0 = await read(`performance.now()`);
+    await press();
+    await new Promise((r) => setTimeout(r, 120));
+    return read(`window.__reqLog.filter((t) => t >= ${t0}).length`);
+  };
+  // ① `?` → 帮助浮层（`?` 在所有常见布局上都要 Shift）
+  await keyPress('?', 'Slash', 191, 8, '?');
+  await new Promise((r) => setTimeout(r, 500));
+  const helpState = JSON.parse(
+    (await read(`(() => {
+      const dlg = document.querySelector('dialog.dialog[open]');
+      if (!dlg) return JSON.stringify({ open: false });
+      const labels = [...dlg.querySelectorAll('.shortcuts__item')].map((li) => ({
+        keys: [...li.querySelectorAll('kbd')].map((k) => k.textContent).join('+'),
+        label: li.querySelector('.shortcuts__label')?.textContent ?? '',
+      }));
+      return JSON.stringify({ open: true, title: dlg.querySelector('.dialog__title')?.textContent, groups: [...dlg.querySelectorAll('.shortcuts__title')].map((h) => h.textContent), labels });
+    })()`)) ?? '{}',
+  );
+  // ⑥ 对话框开着时 `r` 必须让路
+  const rInDialog = await requestsAfterKey(() => keyPress('r', 'KeyR', 82, 0, 'r'));
+  await read(`document.querySelector('dialog.dialog[open]')?.close(), 'closed'`);
+  await new Promise((r) => setTimeout(r, 400));
+  // ② `t` 切主题
+  const themeBefore = await read(`document.documentElement.dataset.theme ?? null`);
+  await keyPress('t', 'KeyT', 84, 0, 't');
+  await new Promise((r) => setTimeout(r, 400));
+  const themeAfter = await read(`document.documentElement.dataset.theme ?? null`);
+  await keyPress('t', 'KeyT', 84, 0, 't'); // 收尾：切回去
+  await new Promise((r) => setTimeout(r, 400));
+  const themeRestored = await read(`document.documentElement.dataset.theme ?? null`);
+  // ③ `r` 刷新列表
+  const rHits = await requestsAfterKey(() => keyPress('r', 'KeyR', 82, 0, 'r'));
+  await new Promise((r) => setTimeout(r, 900));
+  // ④ `n` / `p` 翻页（先看第 1 页的页码文本）
+  const pageText = () =>
+    read(`(() => {
+      const el = [...document.querySelectorAll('.pagination *')].find((n) => /第\\s*\\d+\\s*\\/\\s*\\d+\\s*页/.test(n.textContent ?? ''));
+      return el?.textContent?.trim() ?? null;
+    })()`);
+  const pageBefore = await pageText();
+  await keyPress('n', 'KeyN', 78, 0, 'n');
+  await new Promise((r) => setTimeout(r, 900));
+  const pageAfterNext = await pageText();
+  await keyPress('p', 'KeyP', 80, 0, 'p');
+  await new Promise((r) => setTimeout(r, 900));
+  const pageAfterPrev = await pageText();
+  // ⑤ 输入处让路：聚焦搜索框后按 r（这一条只看**非搜索**请求：那一下的搜索请求是打字引发的，不是刷新）
+  await read(`(() => {
+    const box = document.querySelector('.toolbar input[type="search"], .toolbar input[type="text"]');
+    box?.focus();
+    return box ? 'focused' : 'no search box';
+  })()`);
+  const rInInput = await requestsAfterKey(() => keyPress('r', 'KeyR', 82, 0, 'r'));
+  const searchValue = await read(`document.querySelector('.toolbar input[type="search"], .toolbar input[type="text"]')?.value ?? null`);
+  console.log(
+    'KEYS    ',
+    JSON.stringify({ help: helpState.groups ?? null, helpKeys: (helpState.labels ?? []).map((l) => l.keys), pageBefore, pageAfterNext, pageAfterPrev, themeBefore, themeAfter, themeRestored, reqs: { refresh: rHits, inDialog: rInDialog, inInput: rInInput }, searchValue }),
+  );
+  {
+    check('`?` 打开快捷键帮助浮层', helpState.open === true && helpState.title === '键盘快捷键', JSON.stringify(helpState.groups ?? null));
+    check(
+      '帮助浮层列全了三组键（列表页 / 预览框 / 编辑正文）',
+      (helpState.groups ?? []).join(',') === '列表页,预览框,编辑正文',
+      JSON.stringify(helpState.groups ?? null),
+    );
+    const keys = new Set((helpState.labels ?? []).map((l) => l.keys));
+    const wanted = ['/', '?', 'r', 't', 'n', 'p', 'c', 'd', 'e', 'Ctrl+Enter', 'Esc'];
+    check(
+      '帮助浮层里每个键都在（含本轮新增的 r/t/n/p/c/d/e 与编辑态的 Ctrl+Enter）',
+      wanted.every((w) => keys.has(w)),
+      '缺：' + wanted.filter((w) => !keys.has(w)).join(',') + ' 实际=' + [...keys].join(' '),
+    );
+    check('`t` 切换主题', themeBefore !== null && themeAfter !== null && themeBefore !== themeAfter, String(themeBefore) + ' → ' + String(themeAfter));
+    check('再按 `t` 主题切回去（可逆）', themeRestored === themeBefore, String(themeRestored));
+    check('`r` 刷新列表（按键后 120ms 内真的发出列表请求）', rHits >= 1, '窗口内请求数=' + String(rHits));
+    check('`n` 翻到下一页', pageAfterNext !== null && pageAfterNext !== pageBefore, `${pageBefore} → ${pageAfterNext}`);
+    check('`p` 翻回上一页', pageAfterPrev === pageBefore, `${pageAfterNext} → ${pageAfterPrev}`);
+    check('搜索框里按 `r` 不触发刷新（输入处让路）', rInInput === 0 && searchValue === 'r', `窗口内请求数=${String(rInInput)}，输入框值=${String(searchValue)}`);
+    check('对话框打开时按 `r` 不触发刷新（对话框有自己的键）', rInDialog === 0, '窗口内请求数=' + String(rInDialog));
+  }
+
   // ===== 顶栏折叠（2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」）=====
   //
   // 判据四件事，缺一条都不算做到：
