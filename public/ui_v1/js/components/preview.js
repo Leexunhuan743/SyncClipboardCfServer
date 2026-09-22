@@ -225,9 +225,16 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     title.textContent = item.type === 'Text' ? '文本内容' : (item.dataName ?? item.type);
     typeChip.className = `chip ${typeChipClass(item.type)}`;
     typeChipLabel.textContent = typeLabel(item.type);
+    // 深链接会先开壳（那时只知道类型与 hash，见 `main.js` 的 `openDeepLink`）——
+    // 缺字段就**不写**副信息：写「0 个字符」或「undefined」都是假话，而空着只是"还没到"。
     const sizeText =
-      item.type === 'Text' ? `${Number(item.size) || 0} 个字符` : formatSize(item.size);
-    meta.textContent = `${sizeText} · ${formatAbsolute(item.createTime)}`;
+      item.size === undefined
+        ? ''
+        : item.type === 'Text'
+          ? `${Number(item.size) || 0} 个字符`
+          : formatSize(item.size);
+    const timeText = item.createTime ? formatAbsolute(item.createTime) : '';
+    meta.textContent = [sizeText, timeText].filter(Boolean).join(' · ');
   }
 
   function renderView() {
@@ -395,23 +402,29 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     body.replaceChildren();
     footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }));
 
+    // ⚠️ **先 `showModal()`，再画、再定焦点。** `showModal()` 自己会把焦点移到第一个可聚焦元素
+    // （这里是右上角的 ✕），在它**之前**调 `focus()` 等于白调 —— 于是文件头那句"打开后焦点落在
+    // 主操作上"此前只是注释里的愿望（2026-09-22 发布前审核实测：文本与图片预览的初始焦点都是 ✕）。
+    if (!dialog.open) dialog.showModal();
+
     if (loading) {
-      // 先开壳再填内容：长文本要一次额外的往返，这段时间不该是「点了没反应」
+      // 先开壳再填内容：长文本要一次额外的往返，这段时间不该是「点了没反应」。
+      // 两条路都会走到这里：列表里被截断的记录、以及**深链接**（后者此刻连记录都还没有）。
+      // 文案因此必须对两者都成立 —— 不能写"列表里显示的是截断预览"（深链接那条不成立）。
       body.append(
         el('div', { class: 'empty' }, [
           el('p', { class: 'empty__title', text: '正在读取全文…' }),
-          el('p', { class: 'empty__hint', text: '列表里显示的是截断预览，正在取这条记录的完整内容。' }),
+          el('p', { class: 'empty__hint', text: '正在取这条记录的完整内容。' }),
         ]),
       );
-      if (!dialog.open) dialog.showModal();
+      // 加载态**有意**落在 ✕：此刻还没有可做主操作的东西（全文还没到），Enter 关掉它是安全的默认
       closeButton.focus();
       return;
     }
 
     if (item.type === 'Text') {
       renderView();
-      renderViewActions();
-      if (!dialog.open) dialog.showModal();
+      renderViewActions(); // 里面把焦点交给第一个动作（编辑）——必须发生在 showModal 之后
       return;
     }
     if (itemIsImage(item)) {
@@ -434,8 +447,6 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     }
 
     renderViewActions();
-
-    if (!dialog.open) dialog.showModal();
   }
 
   return {

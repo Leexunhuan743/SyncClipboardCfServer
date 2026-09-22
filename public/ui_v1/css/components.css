@@ -1680,12 +1680,27 @@ th[aria-sort="descending"] .th-sort__arrow {
 }
 
 /* ============ 骨架屏（数据未落地时的占位，保留布局不跳）============
- * 由 `js/components/list.js` 画（`renderSkeletonRows`）：行数按当前页大小给，上限 50。 */
+ * 由 `js/components/list.js` 画（`renderSkeletonRows`）：**一个表头占位 + 行数按当前页大小**（上限 50）。
+ * 整套几何必须与真实表格同源，否则骨架就成了 CLS 的来源而不是它的解法：
+ *   · 容器**不留自己的节奏**（`padding: 0; gap: 0`）：真行之间是 1px 分隔线，不是 12px 间隙。
+ *     2026-09-22 实测：此前表格档留着 12px `gap` ⇒ 骨架行距 59px 对真实 47px，逐行偏移（第 5 行差 29px）；
+ *   · 第一行之前必须有**表头那一行**的占位：真列表的行上方有 thead（47px；粗指针下 `.th-sort` 长到 44px ⇒ 61px）。
+ *     缺它时整表在数据落地时下移 31 / 47 / 61px（三档实测），`.skeleton__head` 的高度算式与真表头同源。
+ */
 .skeleton {
-  padding: var(--sp-4);
+  padding: 0;
+  gap: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+}
+
+/* 表头占位：高度 = `.table th` 的盒模型（`padding: 8px` ×2 + 1px 下边框 + 表头里最高的元素
+ * = `.th-sort` 的 `min-height`）。⚠️ 改 `.table th` 的内边距、或改 `.th-sort` 的高度，就要同步改这里。 */
+.skeleton__head {
+  flex: none;
+  height: calc(2 * 8px + 1px + var(--control-h-sm));
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
 }
 
 /* 显式写回 display:none —— 上面那条 `display: flex` 会盖掉 `[hidden]` 的 UA 样式
@@ -1716,10 +1731,21 @@ th[aria-sort="descending"] .th-sort__arrow {
 .skeleton__row {
   flex: none;
   height: 47px;
-  border-radius: var(--r-sm);
+  /* 与真行同形：**方角 + 一条分隔线**（表格档的真行是 `border-bottom: 1px solid var(--border)`）。
+   * 圆角小条 + 12px 间隙那套会让行距变成 59px（2026-09-22 实测），逐行偏移。 */
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
   background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2));
   background-size: 200% 100%;
   animation: sheen var(--dur-skeleton) linear infinite;
+}
+
+/* 粗指针：真表头里 `.th-sort` 长到 `--hit-min`（44）⇒ 表头占位跟着长到 61px（卡片档亦然）。
+ * 与 `.skeleton__row` 的那条粗指针规则同一个理由：两档的盒模型都由令牌决定，占位必须同源。 */
+@media (pointer: coarse) {
+  .skeleton__head {
+    height: calc(2 * 8px + 1px + var(--hit-min));
+  }
 }
 
 @keyframes sheen {
@@ -2055,19 +2081,17 @@ th[aria-sort="descending"] .th-sort__arrow {
    * padding 或 row-gap、改 `.cell-content__*` 的尺寸、或改 `.icon-btn` 的高度，就要同步改
    * 这里（同上面那条注释的约定，见 AGENTS.md §1）。取值全部来自实测，不是估的。
    *
-   * 容器也要一起去掉节奏差：真实卡片之间是 0 间距 + 1px 分隔线，而 `.skeleton` 自己是
-   * `padding: var(--sp-4)` + `gap: var(--sp-3)` —— 只改行高不改它，等于每行仍差 12px
-   * （50 行 600px），骨架整页照样短一截。 */
-  .skeleton {
-    padding: 0;
-    gap: 0;
-  }
-
+   * 容器节奏（`padding: 0; gap: 0`）已在基础规则里归零 —— 这一档只需要改行高与边框
+   * （2026-09-22 起两档共用同一条容器规则，见 `.skeleton` 那条）。 */
   .skeleton__row {
     height: calc(2 * 10px + 1px + var(--sp-1) + 48px + 30px);
     /* 卡片是方角 + 一条分隔线（`tr.row` 的 border-bottom），不是圆角小条 */
     border-radius: 0;
     border-bottom: 1px solid var(--border);
+    /* ⚠️ 这是**基础卡片**的高度。带行内徽标（置顶 / 长文本 / 数据不可用）的行会让
+     * `.cell-content__line` 多折一行 ⇒ 实测 117 → **145px**（390×844 粗指针，探针 `SKELETON`
+     * 的 `realMax`）。骨架画不了"哪一行会长"，取基础值是最接近的近似 —— 差异只在徽标行出现，
+     * 且它落在折线以下的概率与基础行相同（`#results-mount` 的 100vh 预留仍在兜底）。 */
   }
 }
 

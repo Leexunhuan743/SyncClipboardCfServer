@@ -157,11 +157,15 @@ async function copyPlainText(text, label = '内容') {
 // 取不到（网络/401）返回 null，由调用方决定降级路径。
 // `retry`（可选 thunk）：失败时把"重试刚才那一步"放进提示条 —— 调用方知道自己要做的是什么
 // （复制那一条 / 预览那一条），这个函数不知道。
-async function fetchFull(item, retry = null) {
+// `signal`（可选）：预览那条路要能被打断（见 main.js 的 previewGate —— 快速连点两行时，
+// 先点的那次不该用迟到的响应去改屏幕）。
+async function fetchFull(item, retry = null, signal = undefined) {
   if (!item.textTruncated) return item;
   try {
-    return await api.get(item);
+    return await api.get(item, signal);
   } catch (error) {
+    // 被取代的那一次**不是失败**：不弹提示、不重试（调用方另有一道 `isCurrent` 守卫）
+    if (signal?.aborted) return null;
     if (handleAuthError(error)) return null;
     toasts.error(`取全文失败：${error.message}`, retry ? { action: { label: '重试', run: retry } } : {});
     return null;
@@ -356,6 +360,9 @@ const listGate = createLatestGate();
 const statsGate = createLatestGate();
 const overviewGate = createLatestGate();
 const pollGate = createLatestGate();
+// 预览的"取全文"是第五条独立链路：它的竞态与列表无关（快速连点两行的「预览」时，
+// 先点那次的慢响应会把对话框切回上一条）。见 `previewItem` 的说明与 2026-09-22 审核记录。
+const previewGate = createLatestGate();
 
 async function refresh({ silent = false, flash = false, announce = false } = {}) {
   const state = store.get();
@@ -640,7 +647,9 @@ async function deleteItem(item) {
     message: spec.message,
     confirmLabel: spec.confirmLabel,
     // 删除在对话框内完成：请求期间按钮转圈，失败留在原地显示原因（不必重新确认一遍）
-    action: async () => {
+    // action 里的 401 要自己交出去（见 withAuthRedirect 的说明）：框内报"unauthorized"而页面不跳，
+    // 实测就是这个形状。
+    action: withAuthRedirect(async () => {
       await api.patch(item, { isDelete: true });
       const selection = new Map(store.get().selection);
       selection.delete(item.key);
@@ -652,7 +661,7 @@ async function deleteItem(item) {
       // 才 close ⇒ 读起来就是"明明已经关了，过一会儿才动画关闭"）。计数晚 ~200ms 落地没关系，
       // 列表由对话框关闭后的 `refresh({silent:true})` 对账。**这条对下面每一处都成立。**
       void refreshStats();
-    },
+    }),
   });
   if (!ok) return false;
   list.restoreFocus(); // 对话框已关闭：把焦点交给邻居行（触发它的按钮随行一起没了）
@@ -759,7 +768,7 @@ async function runBatch({
     return allApplied;
   }
 
-  const ok = await confirm.ask({ title, message, confirmLabel, action: apply });
+  const ok = await confirm.ask({ title, message, confirmLabel, action: withAuthRedirect(apply) });
   // 无论成败都对账一次：批量是服务端**逐条**判定的，失败时也可能有一部分已经生效，
   // 界面停在旧状态比慢一点更糟。
   await refresh({ silent: true });
@@ -821,7 +830,7 @@ async function purgeItem(item) {
     title: spec.title,
     message: spec.message,
     confirmLabel: spec.confirmLabel,
-    action: async () => {
+    action: withAuthRedirect(async () => {
       const result = await api.batchPurge([item]);
       if (result.failed) {
         // 唯一可能的落空：它已经不在回收站里了（别的标签页清空过、或清理任务硬删了）
@@ -834,7 +843,7 @@ async function purgeItem(item) {
       list.updateSelection(selection);
       list.removeItem(item.key); // 立刻收行，不等下一次整页刷新
       void refreshStats();
-    },
+    }),
   });
   if (!ok) return false;
   list.restoreFocus();
@@ -852,7 +861,7 @@ async function batchPurge() {
     title: spec.title,
     message: spec.message,
     confirmLabel: spec.confirmLabel,
-    action: async (context) => {
+    action: withAuthRedirect(async (context) => {
       const result = await api.batchPurge(chosen, {
         onProgress: (done, total) => context?.setMessage?.(batchProgressText(done, total)),
         signal: context?.signal,
@@ -869,7 +878,7 @@ async function batchPurge() {
       store.set({ selection: new Map() });
       list.updateSelection(new Map());
       void refreshStats();
-    },
+    }),
   });
   await refresh({ silent: true });
   if (!ok) return false;
@@ -953,12 +962,12 @@ async function emptyTrash() {
     title: spec.title,
     message: spec.message,
     confirmLabel: spec.confirmLabel,
-    action: async () => {
+    action: withAuthRedirect(async () => {
       await api.clear('trash');
       store.set({ selection: new Map() });
       list.updateSelection(new Map());
       void refreshStats();
-    },
+    }),
   });
   if (!ok) return false;
   toasts.info('回收站已清空');
@@ -973,13 +982,13 @@ async function clearAll() {
     title: spec.title,
     message: spec.message,
     confirmLabel: spec.confirmLabel,
-    action: async () => {
+    action: withAuthRedirect(async () => {
       const result = await api.clear('all');
       store.set({ selection: new Map() });
       list.updateSelection(new Map());
       void refreshStats();
       toasts.info(`已清空 ${result.deleted} 条记录`);
-    },
+    }),
   });
   if (!ok) return false;
   await refresh({ silent: true });
@@ -994,13 +1003,19 @@ function syncDeepLink(item) {
 
 async function previewItem(item) {
   if (item.type !== 'Text' || !item.textTruncated) {
+    previewGate.begin(); // 让任何在飞的"取全文"作废：屏幕已经被这一次点击接管
     preview.open(item);
     syncDeepLink(item);
     return true;
   }
   // 长文本要一次额外往返：先把壳打开并说明在做什么，避免「点了没反应」
   preview.open(item, { loading: true });
-  const full = await fetchFull(item, () => void previewItem(item));
+  const ticket = previewGate.begin();
+  const full = await fetchFull(item, () => void previewItem(item), ticket.signal);
+  // **先点的那一次不准改屏幕**（2026-09-22 发布前审核实测到的竞态：快速依次点两行的「预览」，
+  // A 的慢响应后到，会把对话框从 B 硬切回 A —— 实测 `#Text-<A 的 hash>`）。
+  // 判据与列表/统计同源（`latest.js`）：最新那次点击胜出；被取代的那次连请求一起 abort。
+  if (!previewGate.isCurrent(ticket)) return false;
   if (!full) {
     preview.close();
     return false;
@@ -1019,13 +1034,27 @@ async function openDeepLink() {
   const match = DEEP_LINK.exec(location.hash);
   if (!match) return;
   const [, type, hash] = match;
+  // **先把壳打开**（2026-09-22 发布前审核：此前是"取回来才弹"，于是慢网络下点一条分享链接
+  // 会有整段时间"什么都没发生"）。此刻只知道类型与 hash，故只画标题行与加载态 ——
+  // `renderHead()` 对缺字段不写假话（见那里的说明）。
+  // 同时让任何在飞的列表预览作废（`previewGate`）：屏幕归这一次深链接。
+  previewGate.begin();
+  preview.open({ type, hash, key: `${type}-${hash}` }, { loading: true });
   try {
     const item = await api.get({ type, hash });
     if (item) await previewItem(item);
   } catch (error) {
     if (handleAuthError(error)) return;
+    preview.close(); // 取不到就得把壳收掉，否则屏幕上留一个"正在读取…"永远转着
     // 记录已被删除或被清理时说清原因，而不是静默什么都不发生
-    if (error.status === 404) toasts.error('链接指向的记录已不存在');
+    if (error.status === 404) {
+      toasts.error('链接指向的记录已不存在');
+      return;
+    }
+    // 其余（网络抖动 / 5xx）也必须有解释：深链接还在 URL 里，重试就是重放它。
+    toasts.error(`打开链接失败：${error.message}`, {
+      action: { label: '重试', run: () => void openDeepLink() },
+    });
   }
 }
 
@@ -1218,6 +1247,23 @@ async function downloadTextItem(item, knownText = undefined) {
   }
 }
 
+// 「action 里的 401 要自己交出去」（2026-09-22 发布前审核 · 第 2 轮实测）：
+// 下面有六个写操作是**由确认框托管**的（`confirm.ask({ action })`），它们的异常会在框里
+// 就地显示 —— 不拦 401 的话用户读到的是一句英文的 `unauthorized`（实测：会话过期时删一条记录，
+// 框里就写着这个词），而真正的去向（回登录页）要等下一次轮询（≤10s）才发生。
+// 包一层即可：跳转已经由 `handleAuthError` 发起，这里只把"接下来会发生什么"翻译成人话
+// （跳转后框会随文档一起消失，但那一瞬间的文案仍要成立）。
+function withAuthRedirect(run) {
+  return async (...args) => {
+    try {
+      return await run(...args);
+    } catch (error) {
+      if (handleAuthError(error)) throw new Error('会话已过期，正在跳转登录页…');
+      throw error;
+    }
+  };
+}
+
 // 编辑预览里的文本 → **新建一条记录**（2026-09-22，ADR D30）。
 //
 // 语义要点（用户的四个决定）：正文一改 hash 就变 ⇒ 这是**另一条记录**，旧的原样留在历史里；
@@ -1240,7 +1286,7 @@ async function createTextRecord(_item, text) {
     syncDeepLink(created);
     return created;
   } catch (error) {
-    if (handleAuthError(error)) throw new Error('会话已过期');
+    if (handleAuthError(error)) throw new Error('会话已过期，正在跳转登录页…');
     throw error instanceof Error ? error : new Error(String(error));
   }
 }

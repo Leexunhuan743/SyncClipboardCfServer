@@ -428,6 +428,16 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
 
   return {
     open(info) {
+      // `open()` 会被**多次**调用（先 `open(cached)` 开壳、数据回来再 `open(fresh)`；「重试」同样再走一遍）。
+      // 「第一次打开」这个判据是给下面定焦点用的：只有它才该决定焦点去哪，
+      // 后续的调用不能把用户已经移开的焦点抢回来。
+      const firstOpen = !dialog.open;
+      // 焦点交给**主操作**的判据（2026-09-22 发布前审核实测踩到）：`open(fresh)` 会把 body 整体
+      // `replaceChildren` —— 上一轮刚聚焦的那个按钮随之被摘掉，浏览器把焦点落回 `<body>`
+      // （实测 `activeElement` 就是 body）。故"已经在框里的焦点"才不动；落回 body 的就算无主。
+      const focusMain = (target) => {
+        if (firstOpen || !dialog.contains(document.activeElement)) target.focus();
+      };
       if (!info) {
         // 首屏就失败时的错误态（2026-09-18 补「重试」）：此前只有一句"暂时取不到"，
         // 而这条路径几乎全是网络/权限类的瞬时故障 —— 让用户关掉再打开一次是没必要的成本。
@@ -464,7 +474,9 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         //   · 没有快照且请求失败 —— 走 `open(null)`（指出「暂时取不到部署信息」），
         //     用户点「重试」会原样再走一遍，于是又是 `open(null)`。
         // 对一个已经打开的 <dialog> 再调 showModal() 会抛 InvalidStateError，故必须判开合状态。
-        if (!dialog.open) dialog.showModal();
+        if (firstOpen) dialog.showModal();
+        // 错误态里的主操作就是「重试」（与成功态落在「复制地址」是同一条判据）
+        focusMain(retry);
         return;
       }
 
@@ -478,6 +490,9 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
       urlInput.id = 'server-url';
       urlInput.addEventListener('focus', () => urlInput.select());
       urlInput.addEventListener('click', () => urlInput.select());
+      // 提出来单独持有：下面要用它做**初始焦点**（这个对话框存在的理由就是"客户端该填哪个地址"，
+      // 键盘用户进来第一件事多半是把地址复制走 —— Enter 直接复制，比落在右上角的 ✕ 有用）。
+      const copyUrl = copyButton(() => info.serverUrl, '服务器地址');
 
       const retention = info.retention ?? {};
       const counts = info.counts ?? {};
@@ -492,7 +507,7 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         // 第一段是**这个对话框存在的理由**（客户端该填哪个地址），故放在最前、不折叠、不缩进
         section('客户端配置', [
           el('label', { class: 'kv__k', for: 'server-url', text: 'SyncClipboard 的「服务器地址」' }),
-          el('div', { class: 'panel__form' }, [urlInput, copyButton(() => info.serverUrl, '服务器地址')]),
+          el('div', { class: 'panel__form' }, [urlInput, copyUrl]),
           el('span', {
             class: 'note',
             text: '账户与密码和服务端一致（即部署时设置的 USERNAME / PASSWORD）。登出只清除本机 Cookie，不会使已泄露的会话令牌失效；要立即撤销，只能改口令。',
@@ -527,7 +542,10 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
       // 请求回来再 `open(fresh)`；从「重试」按钮进来同样再走一遍）—— 第二次起对话框已经开着，
       // 直接 showModal() 会抛 InvalidStateError，被调用方 catch 吞掉后还会把刚画好的数据
       // 换回「暂时取不到部署信息」（重试成功却显示成失败）。
-      if (!dialog.open) dialog.showModal();
+      if (firstOpen) dialog.showModal();
+      // 初始焦点 = 这个对话框的**主操作**（复制服务器地址）。此前落在右上角的 ✕（`showModal()`
+      // 的默认），键盘用户要 Tab 过整个面板才够得到唯一想按的那一枚。
+      focusMain(copyUrl);
     },
   };
 }

@@ -380,12 +380,20 @@ export function createList(actions) {
   // 行数又贴近真实页大小，于是内容落地时折线以上的内容**一点不动**。
   // 反例是 V2 实测过的（A-02）：6 行骨架（384px）对 50 行真实表（3930px），
   // 内容一到，页脚与分页从视口里被整段顶出去 —— CLS 0.90。
+  //
+  // 2026-09-22（发布前审核第 5 轮实测）：上面那句"一点不动"此前**不成立** —— 骨架缺了
+  // **表头那一行**的占位（真列表的第一行上方有 thead），三档实测都差它：表格档 47px、
+  // 卡片档 47px、卡片+粗指针 61px（= `.th-sort` 的 min-height 从 30 涨到 44）。
+  // 于是数据落地时整表**下移** 31 / 47 / 61px，之后每行再按行距差逐行偏移。故这里先放一个
+  // `.skeleton__head`（高度算式与真表头同源，见 components.css）。
   function renderSkeletonRows(pageSize) {
     const requested = Number(pageSize) || DEFAULT_FILTERS.pageSize;
     const rows = Math.min(SKELETON_MAX_ROWS, Math.max(SKELETON_MIN_ROWS, requested));
     // 行数没变就不重建：重建会让 CSS 动画从头播一次，骨架跟着闪一下
-    if (skeleton.childElementCount === rows) return;
+    // （判据只看**行**：表头占位是常驻的那一个，不参与这个比较）
+    if (skeleton.querySelectorAll('.skeleton__row').length === rows) return;
     const fragment = document.createDocumentFragment();
+    fragment.append(el('div', { class: 'skeleton__head' }));
     for (let index = 0; index < rows; index += 1) {
       fragment.append(el('div', { class: 'skeleton__row' }));
     }
