@@ -1179,8 +1179,11 @@ try {
   // 判据用 URL 而不是"数请求"：`setFilters` 里 `syncUrl` 是**同步**执行的，所以只要发出了一次
   // 搜索，`?search=` 会立刻出现在地址栏上 —— URL 是这条链路上最直接的事实源。
   const imeSearch = await read(`(async () => {
-    const input = document.getElementById('search');
-    if (!input) return JSON.stringify({ skipped: 'no search input' });
+    const input = document.querySelector('.toolbar input.input--search');
+    // 取不到就**不是"跳过"而是判据失效**（2026-09-22 修：此前用 getElementById('search')，而搜索框
+    // 根本没有这个 id —— 于是这条 IME 判据一直在空转，"findings=0"里少了一条）。
+    // 选择器改成与工具栏同源的 class（这段在模板串里，注释里不要出现反引号）。
+    if (!input) return JSON.stringify({ skipped: 'no search input（判据失效：选择器与工具栏不同源）' });
     const current = () => new URLSearchParams(location.search).get('search');
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     input.focus();
@@ -2481,7 +2484,7 @@ try {
     const focusKeep = await read(`(async () => {
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       if (!document.querySelector('tbody tr.row')) return JSON.stringify({ skipped: 'no rows' });
-      const search = document.getElementById('search');
+      const search = document.querySelector('.toolbar input.input--search');
       const pick = async () => {
         const box = document.querySelector('tbody tr.row .checkbox');
         if (box && !box.checked) box.click();
