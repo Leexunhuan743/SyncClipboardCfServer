@@ -440,6 +440,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
 
   return {
     open,
-    close: () => dialog.close(),
+    // 程序化关闭也过 `requestClose()`：`#29` 把"保存途中不许关框"写成了硬约束
+    // （那一刻关掉，失败会落在已经关掉的框里、提示条又在模态之下），而两个入口必须同一条规矩
+    // —— 目前唯一的程序化调用方是 `main.js` 取全文失败时收壳（那时不在编辑态，不受影响）。
+    close: () => requestClose(),
   };
 }

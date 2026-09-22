@@ -39,6 +39,10 @@ node test/manual/probe-ui-v1.mjs --write            # 会写：收藏开关来�
 ## 已知边界
 
 - 正文单行截断，全文在预览里看。
+- **预览里的「编辑」保存出来的是新记录，不是改这一条**：文本记录的 `hash = SHA256(utf8(正文))`，
+  正文一改就是另一条记录（ADR D30）。旧的那条仍在历史里，服务端的**当前剪贴板不受影响**
+  （`addRecordDto` 只广播 `RemoteHistoryChanged`）。上限 1 MiB（`ui/routes.ts` 的
+  `UI_TEXT_CREATE_MAX_BYTES` ↔ `js/components/preview.js` 的 `EDIT_MAX_BYTES` 两处同值）。
 - 窄屏（≤560px）下「每页条数」与「刷新」整组贴行尾：放得下就与筛选同一行，放不下整组换行
   （**不再隐藏**，2026-09-18 反转，见 `css/layout.css` 的 ≤560 块与 `docs/ui.md` §9.9）。
 - 没有列显示开关与**多键**排序：类型 / 大小 / 创建 / 修改 / 访问这 5 列都能在表头点着排，

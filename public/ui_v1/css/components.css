@@ -744,7 +744,7 @@ th[aria-sort="descending"] .th-sort__arrow {
     opacity: 0.45;
   }
 
-.th-sort:hover {
+  .th-sort:hover {
     color: var(--ink);
   }
 }
