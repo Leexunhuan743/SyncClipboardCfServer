@@ -12,7 +12,7 @@
 //    而不是先 Tab 过一遍。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
-import { formatAbsolute, formatSize, charCount, typeLabel, typeChipClass } from '../format.js';
+import { formatAbsolute, formatSize, typeLabel, typeChipClass } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 // 数据文件地址只在 `api.dataUrl` 里定义（前缀 + `download=1` 的拼法）：
 // 组件里再抄一遍，就是又一处「改了接口前缀、漏了这个文件」的机会。
@@ -344,18 +344,16 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
       setPending(save, true);
       closeButton.disabled = true; // 在途不许关框：提示条压在这个模态之下，关掉就等于把失败丢在屏幕外
       try {
+        // `onEdit` 保证回传刚创建的那条记录（形状不对时 `api.createText` 已经抛了），
+        // 故这里不写"万一是别的形状"的兼容分支 —— 那样只会把一个猜出来的状态画到屏幕上。
         const created = await onEdit(currentItem, next);
         currentText = next;
         // 对话框**改指向刚创建的那条**：头部（字符数 / 时间）与后续的「编辑」「复制文本」「下载文本」
         // 从此描述的都是屏幕上这段 —— 不改的话会出现"头说旧记录的字符数、正文是新文本"的自相矛盾。
-        if (created) {
-          currentItem = created;
-          renderHead(created);
-        }
-        // 计数口径与服务端的 `dto.text.length` 一致（同一条记录在列表/头部也是这个数，见 renderHead）；
-        // 只有在响应没给 size 时才退回本地 `charCount`（用户眼里的字素簇数）。
-        const size = Number(created?.size);
-        savedNote = textSavedNote(Number.isFinite(size) ? size : charCount(next));
+        currentItem = created;
+        renderHead(created);
+        // 字符数取**服务端的 `size`**：头部、列表讲的是同一条记录的那个数（口径见 `renderHead`）
+        savedNote = textSavedNote(created.size);
         exitEdit();
       } catch (error) {
         // 就地报错（挨着控件、被 `aria-describedby` 关联），**留在编辑态**：用户改的内容还在，可以再存一次。

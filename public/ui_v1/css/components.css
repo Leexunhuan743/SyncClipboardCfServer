@@ -1240,6 +1240,26 @@ th[aria-sort="descending"] .th-sort__arrow {
   box-shadow: var(--shadow-dialog);
   max-width: min(880px, calc(100vw - 2 * var(--sp-5)));
   width: 100%;
+  /* ============ 高度由外壳管，正文是唯一的收缩者（2026-09-22）============
+   * 原生 `<dialog>` 自带 `max-height: calc(100% - 6px - 2em)`（UA 样式表），超出时**它只裁框**，
+   * 里面的内容照旧撑在自己的位置上 —— 实测（390×360 视口）预览页脚 [273,342] 还在视野里，
+   * 而编辑态多一条错误说明时页脚落到 ~381（越出 21px）：保存/取消被推到视口外。
+   * ⇒ 把外壳变成 flex 列，让**正文区**去吸收高度：UA 的上限一旦生效，正文就自动变矮并内部滚动，
+   *   页眉/页脚按 `flex: none` 保住（它们各自只有一行高，被压扁比被推出去更难用）。
+   * 无需自己写 max-height：沿用 UA 那条（它已经考虑了视口与对话框外边距）。 */
+  display: flex;
+  flex-direction: column;
+}
+
+/* ⚠️ **必须把 UA 那条 `dialog:not([open]) { display: none }` 显式写回来。**
+ * 上面那条 `display: flex` 是**作者**规则，会盖掉 UA 样式表：不写回来的话，关掉的对话框
+ * 会以 `display: flex` 留在文档流里（页面底部一个空盒子），而且退出过渡之后再也不会变成
+ * `display: none` —— `preview.js` 等 `display` 变 `none` 才释放正文的那套逻辑因此永远等不到，
+ * 整条记录（含全文）就留在常驻 `<dialog>` 里。2026-09-22 实测：探针的 `PRVCLOSE` 与
+ * `AUDIT`（`preview-close: 关闭后没释放`）当场抓到，改回来即恢复（`after.display === 'none'`）。
+ * 退出动画不受影响：`allow-discrete` 把 `display` 的翻转推迟到过渡结束，正是这套机制在起作用。 */
+.dialog:not([open]) {
+  display: none;
 }
 
 .dialog--narrow {
@@ -1291,6 +1311,17 @@ th[aria-sort="descending"] .th-sort__arrow {
   padding: var(--sp-5);
   max-height: min(64vh, 620px);
   overflow: auto;
+  /* `.dialog` 是 flex 列（见那条规则）：正文吸收高度 —— 视口够高时它是自己的高度
+   * （长文由上面那条 64vh/620px 封顶），视口不够时它缩到剩下多少算多少、内部滚动。
+   * `min-height: 0` 是必需的：flex 项默认 `min-height: auto`，会让它拒绝缩到内容高度以下。 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 页眉与页脚不参与收缩：被压扁的标题/按钮比被推出视口更难用（两者的内容都只有一行高） */
+.dialog__head,
+.dialog__foot {
+  flex: none;
 }
 
 /* 对话框/表单内的就地错误（确认失败、登录失败）：两处形状相同，故只有一份实现——
@@ -1462,31 +1493,25 @@ th[aria-sort="descending"] .th-sort__arrow {
 /* ============ 编辑态（预览框里的「编辑」，2026-09-22 ADR D30）============
  * 两态机：预览 ⇄ 编辑。编辑态把正文区换成等宽 `<textarea>`（与 `.dialog__pre` **同一字体与行高**，
  * 免得进出编辑时字形跳一下），页脚换成「取消 / 保存」。
- * 正文区改成 flex 列：textarea 吃掉剩余高度，就地错误（保存失败）坐在它下面且**不被裁掉**。
- * 高度上限沿用 `.dialog__body` 那一档（64vh/620px）：textarea 自己有 40–64vh 的上下界，
- * 再加出错时那一条说明，框比预览态高约一行；超出**正文区内部滚动**，不会长出无限高度。
- * ⚠️ 实测（390×360 视口，本机 Chromium）：预览态页脚 [273,342] 可见；编辑态页脚 [256,325] 可见；
- * **编辑态 + 错误说明可见**时页脚落到 ~381 —— 比视口矮 20 余 px（`<dialog>` 的 UA `max-height` 把
- * 框裁住、内容却不收缩）。这是**对话框外壳**的问题（三个对话框共用），不在本轮范围内：
- * 彻底的解法是 `.dialog` 自己成为 `flex-direction: column` 的定高盒子、正文区 `flex: 1 1 auto;
- * min-height: 0`，那样任何视口高度都能把页脚留在视野里。此处只如实记下边界：
- * 视口高度 ≥ 420px 时编辑态（含错误）不越界，仓库的探针口径（900 / 844）都有余量。 */
+ * 正文区改成 flex 列：textarea 吃掉剩余高度，就地错误（保存失败）坐在它下面。
+ * 高度**不在这里定**：`.dialog` 是 flex 列、`.dialog__body` 是唯一的收缩者（见它们的规则与注释），
+ * 所以「视口够高 = 40vh 的编辑框」「视口不够 = 正文区内部滚动、页脚仍在」是同一条机制的两端，
+ * 不需要为编辑态再写一个 max-height。 */
 .dialog__body--edit {
   display: flex;
   flex-direction: column;
   padding: 0;
-  max-height: min(64vh, 620px);
-  overflow: auto;
 }
 
 .dialog__edit {
   display: block;
   flex: 1 1 auto;
-  width: 100%;
-  min-height: 40vh;
-  max-height: 64vh;
-  /* 只许纵向拉伸：横向拉伸会让长行断在奇怪的位置，而正文本来就是按窗口宽度折行的 */
-  resize: vertical;
+  /* `height` 是"理想高度"，**不是下限**：`min-height: 0` 让它把空间让出去 ——
+   * 视口够高时它就是 40vh（一个写字的框该有的样子），视口不够时（例如 390×360 的横屏/键盘弹起）
+   * 它先变矮，把位置留给下面那条错误说明与页脚：三件事的优先级是
+   * **页脚（能不能保存）> 错误说明（为什么没保存）> 编辑框有多高**。 */
+  height: 40vh;
+  min-height: 0;
   padding: var(--sp-5);
   border: 0; /* 外层已经是对话框的内框，这里不再画第二层边 */
   background: var(--surface);
@@ -1494,6 +1519,9 @@ th[aria-sort="descending"] .th-sort__arrow {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   line-height: 1.6;
+  /* 关掉文本域自带的拖拽手柄：高度由上面那套（外壳 → 正文 → 这里）决定，
+   * 拖出来的高度只会在不同的视口上表现不一致（而它并不提供任何"看到更多"的能力 —— 里面本来就能滚） */
+  resize: none;
   tab-size: 4;
 }
 

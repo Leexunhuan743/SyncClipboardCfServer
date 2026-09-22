@@ -297,10 +297,22 @@ export const api = {
   // 新建一条**文本**记录（预览框「编辑」保存时用，2026-09-22 ADR D30）。
   // 服务端只认 Text、不带传输数据、`version` 从 0 起 —— 理由写在 `src/ui/routes.ts` 的该端点注释里
   // （一句话：正文一改 hash 就变 ⇒ 这是**另一条记录**，而版本 0 才不会把客户端随后的重传判成冲突）。
-  // **过 `normalizeItem`**（与 `patch` / `get` 同一条边界纪律）：服务端按上游惯例把 `type` 序列化成
-  // 数字，调用方（预览框）要拿它当 UI 条目用 —— 漏了这一步，`type` 就是 `0`，于是
-  // 「文本」那一支全部判错（头部显示成字节数、页脚只剩「下载」）；2026-09-22 自审实测踩到。
-  createText: async (text) => normalizeItem(await request(`${API_BASE}/history`, { method: 'POST', body: { text } })),
+  //
+  // 两道边界处理都在这里做完，调用方拿到的就是能直接用的 UI 条目：
+  //   ① **过 `normalizeItem`**（与 `patch` / `get` 同一条边界纪律）：服务端按上游惯例把 `type`
+  //      序列化成数字，漏了这一步 `type` 就是 `0`，于是「文本」那一支全部判错（头部显示成字节数、
+  //      页脚只剩「下载」）；2026-09-22 自审实测踩到。
+  //   ② 形状不对就抛（与 `request()` 的「成功但读不动」同一条纪律，同一句话）—— 调用方要拿
+  //      `size` 去写"已保存为一条新记录（N 个字符）"，宁可报错也不要画一个猜出来的数字。
+  async createText(text) {
+    const created = normalizeItem(
+      await request(`${API_BASE}/history`, { method: 'POST', body: { text } }),
+    );
+    if (!created || typeof created.size !== 'number') {
+      throw new ApiError(502, '服务器返回了无法读取的数据，请刷新后重试。');
+    }
+    return created;
+  },
 
   // 清空历史：scope='trash' 只清回收站、'all' 清全部。
   // 服务端各用一条批量语句（不是逐条删除），也不逐条广播——见 src/ui/routes.ts 里该路由的注释。

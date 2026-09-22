@@ -1237,7 +1237,7 @@ async function createTextRecord(_item, text) {
     void refreshStats();
     // 深链接跟着**屏幕上这条**走：保存后对话框指向新记录，URL 不跟着换的话，
     // 刷新页面会弹回旧那一条（与 `previewItem` 打开时可分享链接的行为一致）。
-    if (created?.hash) syncDeepLink(created);
+    syncDeepLink(created);
     return created;
   } catch (error) {
     if (handleAuthError(error)) throw new Error('会话已过期');

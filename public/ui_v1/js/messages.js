@@ -143,10 +143,16 @@ export function textSavedNote(chars) {
 
 /**
  * 编辑保存失败时的就地说明（挨着控件、不靠提示条 —— `components.md` 的 error 格）。
+ *
+ * `reason` 是**一句话的片段**：服务端给的是光秃秃的细节（`text_too_large` 或
+ * `1048577 字节，上限 1048576`），而界面自己编的那几条（例如 `api.js` 的「服务器返回了无法读取的数据，
+ * 请刷新后重试。」）**自带句号** —— 不剥掉就会渲染成「…重试。。你改的内容还在这」。
+ * 故这里统一把结尾的句号去掉一个（那些句子在别处要独立成句，不能改成不带句号的写法）。
  * @param {string} reason 服务端/网络给的原因
  */
 export function textSaveFailedText(reason) {
-  return `保存失败：${reason}。你改的内容还在这，可以改完再存一次。`;
+  const detail = String(reason ?? '').replace(/。\s*$/, '');
+  return `保存失败：${detail}。你改的内容还在这，可以改完再存一次。`;
 }
 
 /**
