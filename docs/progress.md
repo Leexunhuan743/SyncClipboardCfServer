@@ -10222,5 +10222,40 @@ PATCH 采纳、批量语义。方法：**先按代码找出可能出竞态的地
 **验证**：`tsc` 0 / eslint 0；22 套件 440 用例全过；V1 探针零 console 错误、零失败请求、
 `AUDIT findings=0`（`SKELETON` 行：表格档 47/47、卡片档与粗指针同高）；浏览器实测见上表。
 
+## 138. 发布前审核 · 第 6–7 轮：文案/文档一致性 与 性能预算（2026-09-22）
+
+### 6) 文案与文档一致性：跨端常量 9 项逐条对账，全绿
+
+| 界面写死的 | 服务端真值 | 结果 |
+|---|---|---|
+| `EDIT_MAX_BYTES = 1024 * 1024` | `UI_TEXT_CREATE_MAX_BYTES = 1024 * 1024` | ✓ |
+| 「不超过 48 字节（约 16 个汉字）」 | `MAX_SEARCH_BYTES = MAX_LIKE_PATTERN_BYTES(50) - 2 = 48`（48/3 = 16 ✓） | ✓ |
+| `PAGE_SIZES` 最大 500 | `UI_MAX_PAGE_SIZE = 500` | ✓ |
+| `RETENTION_MINUTES_MAX = 525_600`（1 年） | 同值 | ✓ |
+| `MAX_SAVED_HISTORY_COUNT_MAX = 1_000_000` | 同值 | ✓ |
+| `DEFAULT_RETENTION_MINUTES = 10_080`（7 天） | `DEFAULT_RETENTION_MINUTES = 10080` | ✓ |
+| `DEFAULT_MAX_HISTORY_COUNT = 1_000` | `DEFAULT_MAX_SAVED_HISTORY_COUNT = 1000` | ✓ |
+| 「30 天内可以从回收站恢复」 | `DELETED_RETENTION_DAYS = 30` | ✓ |
+| 「24 小时后过期」（登录页说明） | `SESSION_TTL_MS = 24h` | ✓ |
+| 活动趋势「近 14 天」 | `ACTIVITY_DAYS = 14`（服务端 days 上限 90，V1 不触碰） | ✓ |
+
+文档侧：现状口径的四份（`README`/`AGENTS`/`design`/`ui.md`）里，本轮改过的三处数字已复测订正（§137 F2）；
+检索出的其余陈旧数字**全部落在历史台账**（`docs/AUDIT-*.md` 与旧 `progress.md` 小节）——
+按 `AGENTS.md` §6 的纪律，那是"版本曲线"，**不改写历史**。
+
+### 7) 性能与资源预算：无红旗
+
+| 项 | 实测 |
+|---|---|
+| 首屏请求数 | **39**（HTML 1 + CSS 5 + JS **23**（含 `theme-init.js`，与 `modulepreload` 闭包一致）+ manifest/品牌图标 2 + API 7 + 缩略图 2），状态只有 200/304 |
+| 磁盘体积（V1 + 共用层，未压缩） | **493 KB**（JS 332 / CSS 128 / HTML 16 / 其它 13）—— 零构建（ADR D12）无压缩产物，链路上再由 Cloudflare 压 |
+| 500 行一页 | DOM **28,216** 节点、堆 **3 MB**、`<img>` 仅 **20**（`loading="lazy"` 真生效，不是 500）、文档高 24,000px |
+| CLS / 静止 | 探针 `cls 0.0056`、`SETTLED runningCount: 0` |
+| 端到端（本轮首次走完前门） | 登出 → 登录页；空提交「请输入用户名和密码。」+ 焦点回用户名；错口令「用户名或密码不正确。」+ `aria-invalid` + `aria-describedby` + 焦点回密码框、留在登录页；对口令经 `?next=` 回 `/ui_v1/`（50 行、`appBooted=1`） |
+
+> 说明：`§11.1` 的 TaskDuration 预算**没法在本次会话里复测**（它要 CDP `Emulation.setCPUThrottlingRate`
+> + `Performance.getMetrics`，`test/manual/` 四个脚本都没实现，文档里已如实标注）。本轮给的是
+> **可观测量**（请求数 / 体积 / DOM / 堆 / CLS / 惰性加载）。
+
 
 
