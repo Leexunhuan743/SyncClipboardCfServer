@@ -99,8 +99,11 @@
    判据是 **22 个套件全过**；`ECONNREFUSED` 一律是"dev server 没起"的环境问题，**不是"可跳过"**。
 4. **文档同步**：§1 那张表逐行过了一遍。
 5. **改前端 ⇒ 用真实浏览器量一次**（DOM 在 ≠ 看得见）：
-   V2 用 `node test/manual/probe.mjs --port <空闲端口> --width 1440 --height 900 --url /ui_v2/app/`，
-   V1 用 `test/manual/probe-ui-v1.mjs`；确认**零 console 错误、零失败请求**。
+   V2 用 `node test/manual/probe.mjs --port <空闲端口> --width 1440 --height 900 --url /ui_v2/app/`
+   **与 `--width 390 --height 844`**（窄屏是**另一套布局**：概览带折两行、趋势图独占一行 ——
+   2026-09-22 实测过一个只在窄屏越预算的首屏 CLS 缺陷，1440 档读数是 0.0026 而 390 档 0.1217），
+   V1 用 `test/manual/probe-ui-v1.mjs`（同样至少覆盖一档宽 + 一档窄，见 `public/ui_v1/README.md`）；
+   确认**零 console 错误、零失败请求**、探针退出码 0。
    预算与判据见 `docs/ui.md` §11。
 
 **写文档的数字口径**：套件数可以写（它可从文件系统数出来，且守卫会盯住）；**用例数不要写进现状文档**
