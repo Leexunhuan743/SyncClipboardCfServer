@@ -69,7 +69,7 @@ flowchart LR
 
 - **版本要求**：官方客户端 **v3.1.1 或更高版本**（协议基准格式要求）。
 - **客户端下载**：前往官方发布页下载：[SyncClipboard Releases](https://github.com/Jeric-X/SyncClipboard/releases)。支持 Windows (WinUI3 / WPF)、Android、macOS 等平台。
-- **服务端版本伪装**：Worker 对 `/api/version` 接口固定返回 `3.2.0`，与官方服务端基准版本一致，避免客户端版本检查拦截。
+- **服务端版本伪装**：Worker 对 `/api/version` 接口固定返回 `3.3.0-beta1`，与官方服务端基准版本一致，避免客户端版本检查拦截。
 
 ## 准备工作
 

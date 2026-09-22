@@ -2,6 +2,12 @@
 
 > **基准**：`C:/Users/leeexx/Documents/NewProject/SyncClipboard` @ `28c7e596`（`fix: 数据储存型服务器上的大文件，
 > 桌面客户端循环反复下载 (#415)`）。本轮未改动上游任何文件。
+>
+> **增补（2026-09-22）**：上游基线已前进到 `984d3463`（`fix: Linux 剪贴板文本无法读取、历史窗口阴影 (#436)`，
+> 区间共 12 笔）。本文件正文写的是**第一轮**（2026-09-15）的对照结果，属历史记录，未逐句重写；
+> 该区间内与本实现有关的四件事已按新基线对齐，逐条见 `protocol.md` §10 的登记行与 `progress.md` §162：
+> 版本取值 `3.3.0-beta1`（#435）、保留期默认 `0` = 不限制（#402/#426）、传输数据 SHA-256（#413）、
+> `POST /api/history` 新建记录的严格校验与文案（#413）。其余变更都在桌面端/构建面（.NET 10、Avalonia 12 等）。
 > **对象**：本仓库（迁移实现）@ 本轮基线 `e86ddef`。
 > **方法**：上游在范围内文件**逐个打开**读取（不是检索式扫读）；HTTP 行为以**上游服务端源码 + 官方客户端
 > 源码**双向核对（`OfficialAdapter` / `WebDavBase` / `OfficialEventDrivenServer` 定义了服务端必须满足的契约）；
@@ -95,7 +101,7 @@
 | 上游 | 迁移对应物 | 结论 |
 |---|---|---|
 | `ProfileDto.cs` | `src/types.ts` + `serialization.ts` | **逐字等价**（`[JsonConverter(JsonStringEnumConverter)]` 对 type、`WhenWritingNull` 只加在 Size、`DataName` 为 null 时保留键） |
-| `SyncClipboardProperty.cs` | `wrangler.toml` 的 `VERSION` | **逐字等价**（2026-09-15 对齐后：上游取自 Shared 程序集的 `AssemblyInformationalVersion` ⇒ 基线实际值的 `3.2.0`，本仓库 `VERSION = "3.2.0"`；见 §4.2 U5） |
+| `SyncClipboardProperty.cs` | `wrangler.toml` 的 `VERSION` | **逐字等价**（2026-09-15 对齐后：上游取自 Shared 程序集的 `AssemblyInformationalVersion` ⇒ 基线实际值的 `3.2.0`，本仓库 `VERSION = "3.2.0"`；**2026-09-22 跟到 `3.3.0-beta1`**——上游 #435 把 `<VersionPrefix>` bump 到 3.3.0、`<VersionSuffix>` 设为 beta1，本仓库同步，见 §4.2 U5 与 `protocol.md` §10） |
 | `Profiles/Profile.cs` | `src/profile.ts` + `src/types.ts` | 等价（`GetWorkingDirName` 分隔符约束、`ParseProfileId`、`Create` 的类型提升） |
 | `Profiles/TextProfile.cs` | `src/profile.ts`（PUT/POST 两条路径分开复刻） | 等价（哈希按文件字节、Size 口径、`NeedsTransferData` 判定） |
 | `Profiles/FileProfile.cs` | `src/hash.ts#fileProfileHash` + `profile.ts` | **逐字节等价** |

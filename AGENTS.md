@@ -140,8 +140,9 @@
 ## 4. 协议兼容红线
 
 - 判定"是否对齐上游"时**直接读本机的上游源码**（`../SyncClipboard`），**不要只信本仓库的注释与文档**。
-  上游基线 `28c7e596` ⇒ `/api/version` 返回 `3.2.0`（版本唯一事实源是上游 `src/Directory.Build.props` 的
-  `<VersionPrefix>`，不是 `Changes.md`）。
+  上游基线 `984d3463` ⇒ `/api/version` 返回 `3.3.0-beta1`（版本唯一事实源是上游 `src/Directory.Build.props` 的
+  `<VersionPrefix>` + `<VersionSuffix>`，不是 `Changes.md`；`3.3.0-beta1` = `<VersionPrefix>3.3.0</VersionPrefix>`
+  + `<VersionSuffix>beta1</VersionSuffix>`）。
 - 官方客户端实际只调用：`/api/version`、`/SyncClipboard.json`、`/file/*`、`PROPFIND`、
   `/api/history`（query / 单条 / data / PATCH / POST）。`/api/history/statistics` 与 `/api/history/clear`
   **客户端不用**（后者只有本站界面用）。

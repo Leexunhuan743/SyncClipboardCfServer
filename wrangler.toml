@@ -36,16 +36,16 @@ new_sqlite_classes = ["SyncClipboardHub"]
 
 # 公开变量
 [vars]
-# /api/version 返回值 = 上游基线（28c7e596）编译后**真实会返回的那个串**：上游
-# `src/Directory.Build.props` 是版本唯一事实源（VersionPrefix=3.2.0 / VersionSuffix 空），
+# /api/version 返回值 = 上游基线（984d3463）编译后**真实会返回的那个串**：上游
+# `src/Directory.Build.props` 是版本唯一事实源（VersionPrefix=3.3.0 / VersionSuffix=beta1），
 # `SyncClipboardProperty.AppVersion` 取程序集 AssemblyInformationalVersion 并截掉 '+' 之后的部分
-# ⇒ 该基线的 /api/version 返回 "3.2.0"。此处**逐字对齐上游**，与本仓库自身的 package.json 版本
+# ⇒ 该基线的 /api/version 返回 "3.3.0-beta1"。此处**逐字对齐上游**，与本仓库自身的 package.json 版本
 # （迁移项目版本号，当前 1.25.2）是两套互不相干的编号，切勿"顺手对齐"。
 # 跟版规则：仅当上游改动版本事实源（bump `<VersionPrefix>` 或换版本来源）时才改这里，
 # 并同步 docs/protocol.md §10 的登记行。
 # 功能上无影响：官方客户端只要求服务端 >= 3.1.1（Env.RequestServerVersion="3.1.1"），
 # 且 AppVersion.TryParse 解析失败时该检查会被静默跳过（OfficialAdapter 里 if 无 else）。
-VERSION = "3.2.0"
+VERSION = "3.3.0-beta1"
 # 历史保留策略（对齐上游 appsettings AppSettings.MaxSavedHistoryCount / HistoryRetentionMinutes）
 # 这两个值可被 GitHub 仓库变量覆盖（同名）：CI 部署时若配置了 MAX_SAVED_HISTORY_COUNT /
 # HISTORY_RETENTION_MINUTES，会以 --var 覆盖此处；不配就用这里的默认值（下游：src/cleanup.ts）。

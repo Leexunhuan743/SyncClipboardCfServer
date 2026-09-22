@@ -1,7 +1,7 @@
 # SyncClipboard CfServer — 协议契约
 
 > 本文件是对上游官方服务器行为**逐条核对源码后**整理的兼容性契约，是开发的唯一权威依据。
-> 上游核对锚点：`github.com/Jeric-X/SyncClipboard`，分支 `master`，提交 `28c7e596`（2026-09-12）。
+> 上游核对锚点：`github.com/Jeric-X/SyncClipboard`，分支 `master`，提交 `984d3463`（2026-09-22）。
 > 若上游行为变更，先更新本文件再改代码。
 > 源码位置标注为 `上游:<文件>:<行>`，便于开发时对照。
 
@@ -502,7 +502,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Group zip 条目名含 `.` 段 | `Path.Combine` + `GetFullPath` 归一化后**接受**（`./a.txt` 落成 `a.txt`，`GroupProfile.cs:619-621`） | **拒绝**（`src/hash.ts:239`：`.`/`..` 段一律拒） | 有意偏离（fail-loud 优于平台相关的归一化）。官方客户端的 zip 用相对路径、无 `.` 段，不可达 |
 | Group zip 的重复条目 | 内容「首次落盘优先」，但 `topLevelFiles`/条目列表**不去重**（`GroupProfile.cs:644-648`）⇒ 重复条目被计入 hash 与 `totalSize` 两次 | 同名条目只取首个，且条目集与顶层条目都**去重**（`src/hash.ts:112-116`、`185-200`） | **有意偏离**：含重复条目的 zip 上两侧 hash 与 size **必然不同**。官方客户端恒不写重复条目，不可达（见 README「已知限制」里那条『畸形 zip 语义差异』） |
 | 落库 hash 的大小写 | 原样存（`Profile.cs:86`、`TextProfile.cs:55`） | 统一 `.toUpperCase()` 落库 | 对外不可见（查询恒大小写不敏感）；避免同内容在不同设备上于 Linux 生成两个 R2 工作目录（上游在大小写敏感文件系统上会双份存储） |
-| `/api/version` 的**取值** | 版本唯一事实源是 `src/Directory.Build.props` 的 `<VersionPrefix>3.2.0</VersionPrefix>`（`<VersionSuffix>` 为空）；`SyncClipboardProperty.AppVersion` 取程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `28c7e596` **返回字符串 `3.2.0`**。（上游 `Changes.md` 顶部已写 `v3.2.1`，但该基线位于 `v3.2.0` 标签之后 14 个提交、版本号尚未 bump——上游是"发版时才 bump"。） | `wrangler.toml` 的 `[vars] VERSION = "3.2.0"`，**逐字对齐** | **本轮对齐**（2026-09-15，此前报 `3.2.1`）。两边响应形状本就一致（纯文本、三段、无引号，见 §3.1）。功能上无任何差别：客户端下限是 `Env.RequestServerVersion = "3.1.1"`，且 `AppVersion.TryParse` 失败时该检查**被静默跳过**（`OfficialAdapter.cs:151-160` 的 `if` 无 `else`）——改的是**自我描述的真实性**。跟版规则与"两套编号互不相干"的说明见 `design.md` §10 |
+| `/api/version` 的**取值** | 版本唯一事实源是 `src/Directory.Build.props` 的 `<VersionPrefix>3.3.0</VersionPrefix>` + `<VersionSuffix>beta1</VersionSuffix>`；`SyncClipboardProperty.AppVersion` 取程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `984d3463` **返回字符串 `3.3.0-beta1`**。（上一轮记录的基线 `28c7e596` 位于 `v3.2.0` 标签之后 14 个提交，当时 `VersionPrefix` 仍写 `3.2.0`、`Suffix` 为空 ⇒ 报 `3.2.0`；上游 #435「升级至 3.3.0-beta1」才把它 bump 上来。） | `wrangler.toml` 的 `[vars] VERSION = "3.3.0-beta1"`，**逐字对齐** | **对齐沿革**：2026-09-15 由 `3.2.1` 改为 `3.2.0`；2026-09-22 跟到 `3.3.0-beta1`。两边响应形状本就一致（纯文本、无引号，见 §3.1）。功能上无任何差别：客户端下限是 `Env.RequestServerVersion = "3.1.1"`，且 `AppVersion.TryParse` 失败时该检查**被静默跳过**（`OfficialAdapter.cs:151-160` 的 `if` 无 `else`）——改的是**自我描述的真实性**。跟版规则与"两套编号互不相干"的说明见 `design.md` §10 |
 | 路径**字面段**的大小写 | ASP.NET Core 路由对字面段**不区分**大小写：`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate` 全部 **200** | **同左**：`src/pathCase.ts` 在入口最前面按**位置**归一**字面段**（取值原样保留） | **本轮对齐（2026-09-15，A/B 实测驱动）**：此前 Hono 精确匹配 ⇒ 上述路径 404/400。归一表只覆盖协议面（三个界面前缀 `/ui`、`/ui_v1`、`/ui_v2` 不在其内——它们**确实**会先进 Worker，但那只是界面开关 `UI_ENABLED` 的需要，与"对齐 ASP.NET 的字面段大小写"无关），且只动字面段：`/file/Statistics` 是**取值**，绝不能被改成 `statistics`。表漏项由 `test/protocol.test.ts` 的守卫（遍历 `app.routes` 断言字面段全覆盖）兜住 |
 | `GET /api/time` 的格式 | `DateTimeOffset.Now` ⇒ **本机偏移**，7 位小数（`"2026-09-15T19:39:00.8230566+08:00"`） | UTC `Z`，3 位小数（`"2026-09-15T11:39:00.982Z"`） | 同一时刻、都是 ISO8601；客户端 `DateTimeOffset` 两种都能解析（实测对照） |
 | `GET /file/{name}` 的历史查找口径 | 只按历史查（暂存文件不算）→ 未命中 **404** | 同左 → **404** | **实测一致**（`PUT /file/x` 后才 `GET` 仍 404，两边相同） |

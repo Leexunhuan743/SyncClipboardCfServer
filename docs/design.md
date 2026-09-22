@@ -41,7 +41,7 @@
 | D4 | 历史记录 + 当前 Profile 存 D1（SQLite），数据文件存 R2 | 强一致、可事务；文件体量走对象存储 | 已定 |
 | D5 | SignalR 兼容层用 Durable Object 持连接 + 广播 | Workers 无状态，连接状态必须落在 DO | 已定 |
 | D6 | negotiate 按上游顺序宣告三种传输（WebSockets → ServerSentEvents → LongPolling） | 与上游一致；WS 被代理/防火墙阻断时客户端可自动降级（原先只宣告 WS 会直接失联）。SSE 走流式响应、长轮询走挂起请求，均在 Durable Object 内实现 | 已定（2026-09-12 修订） |
-| D7 | `/api/version` 返回 `VERSION` 变量（**默认 `"3.2.0"`，逐字对齐上游基线** `Directory.Build.props` 的 `VersionPrefix`；2026-09-15 从 `"3.2.1"` 改回，理由见 `protocol.md` §10 与 `progress.md` §43） | 客户端要求服务端 ≥ 3.1.1；自我描述须与上游一致 | 已定（2026-09-15 修订） |
+| D7 | `/api/version` 返回 `VERSION` 变量（**默认 `"3.3.0-beta1"`，逐字对齐上游基线** `Directory.Build.props` 的 `VersionPrefix` + `VersionSuffix`；2026-09-15 从 `"3.2.1"` 改为 `"3.2.0"`，2026-09-22 随上游 #435 跟到 `3.3.0-beta1`，理由见 `protocol.md` §10 与 `progress.md` §43/§162） | 客户端要求服务端 ≥ 3.1.1；自我描述须与上游一致 | 已定（2026-09-15 修订；2026-09-22 跟版） |
 | D8 | 存储时间用 epoch 毫秒 INTEGER（D1），DTO 边界转 ISO8601 | 排序/比较精确，协议输出为标准 ISO 字符串 | 已定 |
 | D9 | 严格复刻官方行为，不做行为超集 | 兼容性以官方实现为准（如 `GET /file/{name}` 仅按历史查找） | 已定 |
 | D10 | 测试 = 协议级集成测试（`wrangler dev` + 真实 HTTP + `@microsoft/signalr`）+ 真实客户端联调 + **真上游服务端 A/B**（`tools/ab-upstream-probe.ps1`，官方 v3.2.0 发布件逐条对照，退出码只对**未登记差异**报错——2026-09-15 增补） | 与 .NET 客户端同协议的 JS SignalR 客户端可验证握手细节；但**"我们读懂的协议"不等于"上游真的这么做"**——凡属推断的行为都必须有一次对真上游的实测（见 `progress.md` §44） | 已定（2026-09-15 修订） |
@@ -469,10 +469,11 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
 
 ## 10. 版本策略
 
-- `/api/version` 返回 `VERSION` 变量（wrangler.toml `[vars]`，**默认 `"3.2.0"`**）。
+- `/api/version` 返回 `VERSION` 变量（wrangler.toml `[vars]`，**默认 `"3.3.0-beta1"`**）。
   - **该值 = 上游基线编译后真实会返回的串**，不是本仓库的版本号：上游 `src/Directory.Build.props`
-    的 `<VersionPrefix>3.2.0</VersionPrefix>` 是唯一事实源，`SyncClipboardProperty.AppVersion` 取
-    程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分 ⇒ 基线 `28c7e596` 报 `3.2.0`。
+    的 `<VersionPrefix>3.3.0</VersionPrefix>` + `<VersionSuffix>beta1</VersionSuffix>` 是唯一事实源，
+    `SyncClipboardProperty.AppVersion` 取程序集 `AssemblyInformationalVersion` 并截掉 `+` 之后的部分
+    ⇒ 基线 `984d3463` 报 `3.3.0-beta1`（上一轮基线 `28c7e596` 报 `3.2.0`，见 `progress.md` §43 / 本轮记录）。
   - **两套编号互不相干**：`package.json` 的版本（当前 `1.25.2`）是**迁移项目自身**的版本；
     `VERSION` 是**对外协议的自我描述**。不要把两者"对齐"（这是本轮显式决定的坑，见 `progress.md` §43）。
   - **跟版规则**：仅当上游改动版本事实源（bump `<VersionPrefix>` / 换版本来源）才改 `VERSION`，
