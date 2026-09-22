@@ -45,7 +45,7 @@
 | 修缺陷、踩到坑、量出数字 | `docs/progress.md` 追加一节（编号递增 + 日期）；**被修的行为若还有测试断言在钉它，同一次改掉断言**——别让旧断言继续固化已被判定为缺陷的行为 |
 | 在 `docs/progress.md` **追加/改动小节**（`##` 标题）| `docs/progress-index.md` 的目录 —— 它由正文的 `##` 标题生成，`test/docs.test.ts` 有一条守卫**逐条逐字**比对两者（2026-09-22 拆出，见 `progress.md` §151）|
 | 增删**部署开关**（运行期变量，如新的 `AUTH_RATE_LIMIT_*`） | **四处一起改**：`.dev.vars.example`（本地）、`.github/workflows/deploy.yml`（Resolve 步骤的默认值 + `vars:` 名单）、`README.md` 的开关表、`wrangler.toml` 的 `[vars]`（默认值）；`test/docs.test.ts` 的两条清单守卫会红（示例 ↔ CI ↔ README 的名字集合） |
-| 改文档里写死的数字 / 文件名 / 令牌名 | 全文搜一遍再改：同一事实常散在 3~5 处 —— 套件数 **5 处**（就是 `test/docs.test.ts` 的 `CURRENT_STATE_FILES` 那 5 个文件）、`public/` 资源数 **2 处**（都在 `docs/ui.md` §3：总数 + V1 / V2 / 跳转壳 / 站点根分表）、目录树 **3 处**（`docs/design.md` §4、`docs/ui-v2-design.md` §7、`README.md` 的 `public/` 行） |
+| 改文档里写死的数字 / 文件名 / 令牌名 | 全文搜一遍再改：同一事实常散在 3~5 处 —— 套件数 **5 处**（就是 `test/docs.test.ts` 的 `CURRENT_STATE_FILES` 那 5 个文件）、`public/` 资源数 **2 处**（都在 `docs/ui.md` §3：总数 + V1 / V2 / 跳转壳 / 站点根分表）、目录树 **3 处**（`docs/design.md` §4、`docs/ui-v2-design.md` §7、`README.md` 的 `public/` 行）—— 其中**模块级**的增删（`js/` 下加/删文件）自 2026-09-22 起由 `test/docs.test.ts` 一条守卫按**文件系统**对账（§4 的 V1/V2 模块清单与 §7 列出的每个文件），漏改会当场红 |
 
 **「门禁全绿」不等于「文档对了」。** `test/docs.test.ts` 只把 5 个文件当作现状口径校验
 （`README.md` / `AGENTS.md` / `docs/design.md` / `docs/ui.md` / `.github/workflows/deploy.yml`），

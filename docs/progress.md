@@ -10908,3 +10908,62 @@ V1 900 卡片档 findings=0、V2 1440 problems=0，三者零 console 错误、�
 `test/fixes.test.ts` 57 用例、`test/ui.test.ts` 50 用例、`test/ui-logic.test.ts` 全过；随后全量 22 套件复跑。
 新增用例的失败过一次并修掉：`withData - after` 用两位小数口径比较时出现 `1.9999999999999998`
 （4.01 − 2.01 的浮点尾差）⇒ 差值先 `Math.round(x*100)/100` 再比。
+
+## 153. 2026-09-21 那 25 笔的复审与其后的修复轮（2026-09-22）
+
+**范围**：`10004cd..133c278`（25 笔、90 文件、+5438/−1261）—— README 重写、CI 资源自举、
+共用层抽取（D22）、MIME 换 mrmime、悬停浮层（D24/D25）、批量并发/进度/中止（D27/D28）、
+回收站「彻底删除」（D26）、统计口径（D23）、D1 适配器 5→1、探针与守卫。
+
+**独立复核通过**（不引用提交信息）：门禁 tsc/eslint/四个 `node --check`/全量套件 22 套件 449 用例、
+V1 与 V2 两个真实浏览器探针零 console 错误零失败请求；机械对账 —— 四类挂载点三处副本全含 `/ui_shared`
+（守卫按 `public/ui*` 动态发现）、品牌资源唯一一份且 5 处引用无旧路径、`mrmime` 依赖与
+`protocol.md` §10 的两行登记（附件头 / MIME 表与内联策略）齐备、tooltip 的 a11y 前提成立
+（`previewText()` 只 trim 不截断 ⇒ 全文确在 DOM）、计划文档状态诚实（`ui-image-preview-plan.md` 标 `plan`）、
+D1 适配器写明"它不是 D1"（LIKE 上限差异）、README 开关表的**默认值与 `wrangler.toml [vars]` 逐项相同**
+（守卫只钉名字，这条是额外做的值级对账）。
+
+**复审抓到的问题与处置**（全部在本轮修掉）：
+
+1. **昨天新增的选中态交互没有任何覆盖**（中）：`list.js` 的三段用户可见逻辑 —— 选区非空时点行体
+   = 切换该行选中（不开预览）、Shift+点击 = 范围选择、`mousedown` 掐掉 Shift 引发的文字选择 ——
+   此前只有人工验证；探针进选中态走的是**复选框**（`first.click()`），覆盖不到行体这条路。
+   ⇒ 探针新增 `SELMODE` 段（1440 与 900 两档实测）：
+   勾第 0 行 → 点第 1 行**行体**（断言 checked=2 且 `dialogOpen=false`，即**没有**弹预览）→
+   Shift+点第 3 行行体（断言 checked=4，范围与已有选区取并集）→ 补一条 `mousedown` 断言
+   （选中态 Shift+按下行体必须 `defaultPrevented=true`，普通按下必须 `false` —— 后者是"拖动划选文字复制"
+   那条路不能堵）→ 点「取消选择」收尾（断言 checked=0）。六条判据都进 `auditFindings` ⇒ 影响退出码；
+   收尾是必须的（留着选区会让后面测宽度的段落读到吸顶的头栏）。实测输出：
+   `{"afterCheckbox":{"checked":1},"afterRowClick":{"checked":2,"dialogOpen":false},"afterShift":{"checked":4},
+   "mousedown":{"shiftPrevented":true,"plainPrevented":false},"afterClear":{"checked":0}}`，两档同值。
+   ⚠️ 写这段时**又踩了 N-14 形态**：注释里写了一个反引号括起来的标识符 ⇒ 模板字面量被截断，
+   整份探针在 `node --check` 阶段就报 `missing ) after argument list`（`node test/manual/probe-ui-v1.mjs`
+   直接 SyntaxError）。**这正是 DoD 里那道"四个 `.mjs` 都要 `node --check`"的门存在的理由** ——
+   它一条命令就拦下了，而"跑起来才发现"要花一次 57 秒的探针运行。教训与 §105.6 同族：探针正文里
+   不要出现反引号。
+2. **`docs/design.md` §4 的 V2 目录树仍写着 `icons`**（低）：该文件 2026-09-21 已删（移入
+   `ui_shared/js/icons.js`），`ui-v2-design.md` §7 与 §4 的 **V1** 行都改了，只有这一行没改 ——
+   AGENTS §1 那条"目录树 3 处必须一起改"仍只靠记性。⇒ 改行 + **加机械守卫**（见下）。
+3. **`docs/design.md` D21 的状态列写"实现进行中"**（低）：树里零实现（无 `viewerRoute()`/vendor，
+   `public/_headers` 的 CSP 仍是严格那套；放宽只是**已授权**）⇒ 改成"方案已定、实现未开始"。
+4. **`docs/design.md` §9 的孤儿键契约注仍写 `db.listActiveWorkingDirs()`**（低）：那是**今天** D29
+   改名成 `listReferencedWorkingDirs` 时漏的一处（今天的审核只扫了 `src/`+`test/`，没扫 `docs/`）⇒ 改名。
+
+**新增守卫：界面目录树的模块清单按文件系统对账**（`test/docs.test.ts`）。模块清单是**能从文件系统
+推导**的口径（目录里有哪些 `.js`），按该文件开头的判据它就该被守着：
+- `design.md` §4：V1 的 js 清单、V1 的 components 清单、V2 的 js 清单（`ui/*` 通配除外）逐项等于磁盘；
+- `ui-v2-design.md` §7：树里列出的每个 `.js` 都必须真实存在（`(icons.js)` 那种"已移入共用层"的括号
+  条目也算存在 —— 文件确实在 `ui_shared/` 里）。
+失败信息带**差集**（否则 vitest 只显示 `…(17)`，看不出差在哪一项 —— 那个数字是"剩余项数"不是总数）。
+**break→red→restore 已做**：把 `icons` 放回 §4 的 V2 行 ⇒ 红在"树里多 [icons]；磁盘上多 []"，
+还原后 `sha256` 与改动前逐位相同（`cdc29477a524caff`）。
+加这条守卫时自踩两次，都记在注释里免得下次重犯：① 锚点用了 `ui_v1/`，而该串在文档别处还出现 5 次
+⇒ 切片切错位置，断言先红在"没找到三行"上（改用带树前缀的 `├── ui_v1/`）；② `ui/*` 被 `/` 切成了
+`ui` 与 `*`，只过滤 `*` 会留下孤零零的 `ui`（改成切分**之前**整段去掉 `xxx/*`）。
+
+**没改的**：`docs/project-analysis.md`（另一会话的"只写现状"文档）只做了定向 grep，未见明显过时；
+按既有约定不把它当理解输入，也不在本轮改写。窗口内 push 无 run 记录一事按用户指示不追。
+
+**门禁（修复后重跑）**：tsc 0 错；eslint 0 告警；四个 `node --check` 全绿（上面那条反引号事故就是它拦下的）；
+`test/docs.test.ts` 12 用例（含新守卫，break→red→restore 已做）；**全量 22 套件 451 用例全过**；
+V1 探针 1440 与 900（卡片档）各 `findings=0`、V2 探针 `problems=0`，三者零 console 错误、零失败请求。

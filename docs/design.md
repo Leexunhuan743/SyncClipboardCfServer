@@ -62,7 +62,7 @@
 
 | D21 | **文档预览引入 `file-viewer`**（2026-09-21，方案层）：V1 增加「文档预览」这一档 —— 重格式（PDF/Office/压缩包/邮件/音视频）交给第三方只读渲染器，**外壳/判据/文案/状态机仍归我们**；产物以**预构建 vendor 入库**（不改 V1 的零构建定位）；判据只有一处（前端 `viewerRoute()`）；入口是**独立预览页**（列表页首屏不加载第三方资产）；**排除 CAD**（运行时 AGPL-3.0-only：网络条款 + 解读不确定 + 体积最大；取舍记录见该文档 §5 D-1） | 现状只有「文本/位图内联预览」与「其余只下载」两档，docx/xlsx/pdf/zip 只能下载后本机打开；而 221 扩展名/32 管线的成熟只读渲染器已存在且自有源码是 Apache-2.0。**代价照实登记**：预览页需放宽 CSP（`style-src 'unsafe-inline'`、`wasm-unsafe-eval`、`worker-src`、`img-src blob:`、`media-src`）⇒ 等于在同源下执行第三方解析器处理不可信文件，这一步**执行前需单独授权**（备选是独立 hostname 隔离）；`web-full` 实测 236 MB / 2961 文件，故必须窄装配。**轮 4 复审修订**（同行日期文档 §10 末段）：① CSP 放宽的**出口**不是 `_headers` 的按页规则
 （同名字段逗号合并 ⇒ 交集 ⇒ 无效），而是**由 Worker 出预览页的响应**；② `web-full` ＝ `preset-all`，其依赖链含 **AGPL-3.0-only** 的 CAD 运行时
-⇒ 连"用它来量体积"都不该做，改为**离线构建标准档**（`@file-viewer/web` 只有壳，renderer 必须由打包器装配） | **已定**（2026-09-21 含 CSP 放宽授权：仅预览页；实现进行中）—— 机制修正见 [`ui-document-preview.md`](ui-document-preview.md) §5 D-8 |
+⇒ 连"用它来量体积"都不该做，改为**离线构建标准档**（`@file-viewer/web` 只有壳，renderer 必须由打包器装配） | **已定**（2026-09-21 含 CSP 放宽授权：仅预览页；**方案已定、实现未开始** —— 树里暂无 `viewerRoute()`/vendor，`public/_headers` 的 CSP 也仍是严格那套）—— 机制修正见 [`ui-document-preview.md`](ui-document-preview.md) §5 D-8 |
 
 | D22 | **共用层 `public/ui_shared/`**（2026-09-21）：两版之间的共享面**收敛为唯一一层** —— 只放"不随某一版演进"的东西（品牌图标；无版本耦合的纯数据模块如 `icons.js`；将来放双语/翻译资源）。V1 的模块只允许逃到这一层，`/ui_v2/` 依旧禁引；挂 `/ui_shared/`、与其它三个挂载点同受 `UI_ENABLED` 管 | 此前 `favicon.svg`/`favicon-32.png`/`apple-touch-icon.png` 两版各存一份（**逐字节相同**）、`icons.js` 两份（并集关系、仅 `trash` 几何不同）—— 纯重复。**代价照实登记**：红线由"V1 完全自包含"放宽为"V1 只依赖自己 + 共用层"，`ui-guard` 的两条判据与四处文档同步改；**没有**把两版"实现有意不同"的模块（`format`/`dom`/`filters`/`api`/`messages`…）搬进去 —— 那会把"改一版"变成"两版一起变" | 已定（2026-09-21） |
 
@@ -163,7 +163,7 @@ SyncClipboardCfServer/
 │   ├── ui_v2/                  # 开发测试版 V2（挂载 /ui_v2/，应用本体在 /ui_v2/app/；详见 docs/ui-v2-design.md）
 │   │   ├── app/                # 应用本体（index.html / login.html）
 │   │   ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
-│   │   └── js/                 # api / boot / clipboard / dom / filters / focus / format / icons / keys / latest / login / menus / messages / next-target / paths / push / spark / state / theme / theme-init / ui/*
+│   │   └── js/                 # api / boot / clipboard / dom / filters / focus / format / keys / latest / login / menus / messages / next-target / paths / push / spark / state / theme / theme-init / ui/*（图标表在共用层）
 │   └── ui/                     # `/ui/` 的跳转壳：index.html + js/redirect-hash.js（送到 /ui_v1/）
 ├── src/
 │   ├── index.ts                # Worker 入口：Hono 装配、中间件、Hub 转发、Cron
@@ -447,7 +447,7 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
 
 > **孤儿判定的键形式契约（曾因此出一小时清空一次的生产事故）**：
 > 目录名一律用 `{Type}_{hash}/`（**不带 `history/` 前缀**、**带尾斜杠**）这一种形式 ——
-> `R2Storage.listHistoryObjectsByDir()` 的键、`db.listActiveWorkingDirs()` 的产物、以及清理时构造的
+> `R2Storage.listHistoryObjectsByDir()` 的键、`db.listReferencedWorkingDirs()` 的产物、以及清理时构造的
 > 待删目录名（`storage.ts` 的 `workingDirName()`）必须**同构**，否则集合比较恒不命中 →
 > 把所有历史数据目录当孤儿删除。构造完整 R2 key 时才用 `workingDirPrefix()`（= `history/` + 目录名）；
 > 尾斜杠同时是 `deletePrefix` 的正确性所需（`history/File_AB` 会误匹配 `history/File_ABC/…`）。
