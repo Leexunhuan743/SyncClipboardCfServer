@@ -10057,5 +10057,31 @@ V1 探针零 console 错误、零失败请求、`AUDIT findings=0`（`PRVCLOSE.a
 图片记录的预览走 flush 正文（夹具是假 PNG，顺带验到「数据不可用」降级）；
 把取全文打成 500 后 `preview.close()` 仍能收壳（`open: false` + 提示条「取全文失败…重试」）。
 
+## 133. 发布前审核 · 第 1 轮：契约与接线（2026-09-22）
+
+**背景**：用户宣布即将发正式版，要求"对 UI V1 做全面详细的最后审核，每一轮审查一个合理的范围"。
+本轮范围 = **契约与接线**（前端调用 ↔ 服务端路由、请求/响应形状、id 引用、模块图、CSP、
+`_headers`、manifest、死数据）。方法：脚本化对账 + 逐条人工复核，**不靠印象**。
+
+| # | 检查 | 结果 |
+|---|---|---|
+| 1 | 前端调用的 20 条 `/ui/api/*` ↔ 服务端注册 | **0 缺口、0 悬空**（我第一版脚本漏了 `maintenance.ts` 里的 `integrity`/`settings` 与 `itemPath`/`dataUrl` 的拼接 ⇒ 复核后补齐；两边都是 20 条，与 `EXPECTED_API_ROUTES` 一致） |
+| 2 | 请求/响应形状（`POST /ui/api/history`、`PATCH`、三个 batch、`settings`、`integrity`） | 逐字段对上了。其中 **`settings` 的请求是扁平两字段、响应才是 `{retention:{…}}`** —— `docs/ui.md` §5 那一行写的是响应形状、读起来像请求体，已改成两句分明 |
+| 3 | id 引用（HTML `id=` + JS `id:`/`.id=`；消费方含 `getElementById`/`querySelector('#…')`/`aria-labelledby`/`aria-describedby`（三种写法）/`for=`/`href="#…"`） | 生产 33、消费 24，**0 悬空**；两个页面各自 **0 重复 id** |
+| 4 | `public/ui_shared/js/icons.js` | **两个键两版都不用**（`arrowDown` `external`）⇒ 删除（并集政策只保护"某一版在用"的条目；`docs/AUDIT-redundancies.md` D-11 对同一批键写过"不能为了可能用得上留着"）；表头补了**可复核的盘点**（33 键 = 两版都用 23 + 只 V1 用 4 + 只 V2 用 6），并修正 `docs/ui.md` / `docs/ui-v2-design.md` 里写错的键数 |
+| 5 | CSP 面 | HTML 无内联 `style=` ✓、无 `setAttribute('style')` ✓、无 `innerHTML`/`eval`/`document.write` ✓、无内联 `<script>` ✓、10 个 `target="_blank"` 全带 `rel="noreferrer noopener"` ✓（`blob:` 只用于下载的 `createObjectURL`，不受 CSP 约束） |
+| 6 | 死属性 | V1 `index.html` 的 `data-app="history"` **无任何消费者**（`auth.css` 只消费 `"login"`；`src/`、`test/` 零命中）⇒ 删除。V2 的同类两处属**既有审计已登记**、不在本轮范围 |
+| 7 | 模块图 | 无动态 `import()` ✓（故"预载清单 == import 闭包"那条守卫是完备的）；`theme-init.js` 是阻塞式经典脚本 ✓（CSP 才能保持 `script-src 'self'`） |
+| 8 | `public/_headers` | 安全头齐（含 COOP/CORP、`frame-ancestors 'none'`）；四个挂载点的 js/css 各一条 `no-cache`；品牌图标长缓存、manifest/robots 1h ✓ 无缺口 |
+| 9 | `manifest.webmanifest` | `start_url`/`scope`/三张图标路径都指向真实文件 ✓；`theme_color` 与 `background_color` 与 tokens 的 `--accent`/`--bg` 同值（manifest 读不到 CSS 变量，属固有重复） |
+| 10 | 上限与文案一致性 | 完整性清单的服务端 `MISSING_LIMIT = 50` ↔ 界面文案"只列前 50 条" ✓ |
+
+**改动**：`public/ui_shared/js/icons.js`（删 2 键 + 表头盘点）、`public/ui_v1/index.html`（删死属性）、
+`docs/ui.md`（图标键数 + `settings` 行的请求/响应分明）、`docs/ui-v2-design.md`（图标键数）。
+
+**验证**：`tsc` 0 / eslint 0 / `ui-contract`+`ui-guard`+`ui-logic`+`docs` 96 用例全过；
+浏览器实测图标渲染 —— 列表页 313 个 SVG、**0 个退化成兜底问号**、0 个空图标（17 种字形）、
+回收站 125 个、部署信息对话框 4 个 —— 证明没有任何调用点引用被删的两个键。
+
 
 

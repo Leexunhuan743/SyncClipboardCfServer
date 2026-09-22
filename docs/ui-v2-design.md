@@ -312,7 +312,7 @@ public/
 │                              ↑ 根路径**不放** index.html —— 它要留给 PROPFIND，见 wrangler.toml 的注释
 ├── ui_shared/                 **V1/V2 唯一的共享面**（2026-09-21 新增；挂 `/ui_shared/`，同受 UI_ENABLED 管）
 │   ├── brand/                 品牌图标：favicon.svg / favicon-32.png / apple-touch-icon.png（两版此前各存一份）
-│   └── js/icons.js            共用图标表（两版并集：V2 的 32 键 + V1 独有的 push / connecting）
+│   └── js/icons.js            共用图标表（两版并集，33 键：两版都用 23 + 只 V1 用 4 + 只 V2 用 6）
 │                              ↑ 允许放什么、判据与守卫见 docs/ui.md §3.4 —— 它不随某一版演进
 ├── ui_v2/                     V2（**开发测试版**；默认界面是 V1 `ui_v1/`，见 docs/ui.md §3）
 │   ├── manifest.webmanifest   PWA manifest（`start_url` = `/ui_v2/app/`；图标指向共用层）
