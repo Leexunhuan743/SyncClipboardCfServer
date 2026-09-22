@@ -315,11 +315,17 @@
 }
 
 /* 数字还没到时的小骨架条。
- * 它占的宽度刻意接近真实数字（4–5 个字符），这样数据落地时概览带不会横向跳动。 */
+ * 它占的宽度刻意接近真实数字（4–5 个字符），这样数据落地时概览带不会横向跳动。
+ *
+ * ⚠️ **高度必须等于真实值那一行的行盒**（`font-size × line-height`，与 `.overview__value`
+ * 同一个来源）：2026-09-22 实测 —— 原先的 `0.7em`（12px）比真实值（17 × 1.05 = 17.85px）矮 6px，
+ * 于是数据落地时**每一格长高 6px**、把下面的 omnibox 与看板整体推下去（390 档首屏 CLS 因此
+ * 0.1217，越过探针 0.1 的预算；1440 档看不出来，因为概览带在视口里的占比小得多）。
+ * 与 `.skeleton__row` / `.ghost` 同一条纪律：占位与真实必须同高，否则占位自己就是 CLS 的来源。 */
 .overview__ghost {
   display: block;
   width: 3.5ch;
-  height: 0.7em;
+  height: calc(1em * var(--lh-display)); /* `em` = 继承自 `.overview__value` 的 `--fs-title` */
   border-radius: var(--r-xs);
   background: var(--surface-3);
   animation: breathe 1.5s var(--ease-in-out) infinite;
@@ -747,6 +753,11 @@
     display: block; /* 窄屏反而**留**趋势图：它一行就够，比数字更省地方 */
     flex: 1 1 100%;
     order: 10;
+    /* ⚠️ 预留高度 = 图的真实高度（`overview.js` 的 `renderSpark(activity, { width: 132, height: 26 })`）。
+     * 这一档是**唯一**显示趋势图的地方，而它此前是"没数据 0px、有数据 26px" ⇒ 数据一落地整条
+     * 概览带长高 26px，把 omnibox 与看板推下去（2026-09-22 实测：390 档首屏 CLS 0.1217 的
+     * 第二条来源；第一条是 `.overview__ghost` 的 6px）。与那条同一条纪律：占位与真实同高。 */
+    min-height: 26px;
   }
 
   .overview__spacer {

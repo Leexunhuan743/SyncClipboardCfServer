@@ -349,6 +349,29 @@ try {
       return out;
     })(),
     pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    // 概览带的值占位与真实值的高度（2026-09-22 补）。
+    // 为什么必须在这里量：占位与真实不同高时，数据落地会把**下面的内容**推下去 —— 而那件事
+    // 只在"概览带占视口比例大"的窄屏才越过 CLS 预算（390 档 0.1217 vs 1440 档 0.0026），
+    // 所以 CLS 那条判据抓不到它在宽屏的表现，这条按几何直接钉。
+    // 占位高度靠**克隆一个 .overview__value 再塞一个 .overview__ghost** 量：直接把 ghost 挂到
+    // body 上会继承 body 的字号（16px）而不是 --fs-title（17px），量出来的不是它的真实高度。
+    // （本段在模板字符串里，注释中不能出现反引号。）
+    overviewGhostH: (() => {
+      const value = document.querySelector('.overview__value');
+      if (!value || !value.parentElement) return null;
+      const clone = value.cloneNode(false);
+      const probe = document.createElement('span');
+      probe.className = 'overview__ghost';
+      clone.append(probe);
+      value.parentElement.append(clone);
+      const h = Math.round(probe.getBoundingClientRect().height * 100) / 100;
+      clone.remove();
+      return h;
+    })(),
+    overviewValueH: (() => {
+      const value = document.querySelector('.overview__value');
+      return value ? Math.round(value.getBoundingClientRect().height * 100) / 100 : null;
+    })(),
     // 横向溢出的**肇事者**：上面那个标量只说「有没有溢出」，定位还得逐元素量右边缘；
     // 而 html/body 的 overflow-x: clip（base-v2.css:17/32）只影响绘制与滚动、**不改变布局盒**，
     // 所以 getBoundingClientRect 即使在被 clip 掩着时也看得见肇事者 —— 这正是 V1 探针一直有、
@@ -545,6 +568,19 @@ try {
     S.ghostWrap.between === (S.cardMode ? 8 : 0),
     '两行之间 ' + String(S.ghostWrap.between) + 'px（期望 ' + String(S.cardMode ? 8 : 0) +
       '）；卡片档=' + String(S.cardMode) + '；gap=' + String(S.ghostWrap.gap),
+  );
+
+  // 概览带的值占位必须与真实值**同一个行盒** —— 与上面两条骨架判据同源（占位 ≠ 真实 ⇒ 推挤）。
+  // 2026-09-22 实测（390×844）：ghost 是 `0.7em`（12px）而真实值是 `17 × 1.05 = 17.85px`，
+  // 数据落地时每格长高 6px、概览带整体高 32px，把 omnibox 与看板推下去 ⇒ 首屏 CLS **0.1217**
+  // （越过 0.1 预算）。1440 档量到 0.0026 —— 所以 CLS 那条判据**抓不到**它在宽屏的形态，
+  // 这条按几何直接钉，四个组合里都该绿。容差 0.5px：两边同源，但行盒可能被取整。
+  check(
+    '概览带的值占位与真实值同高（数据落地不再推挤下面的内容）',
+    S.overviewGhostH !== null &&
+      S.overviewValueH !== null &&
+      Math.abs(S.overviewGhostH - S.overviewValueH) <= 0.5,
+    '占位 ' + String(S.overviewGhostH) + ' vs 真实 ' + String(S.overviewValueH),
   );
 
   // 抽屉
