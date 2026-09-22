@@ -279,8 +279,15 @@ export function toUiListItem(entity: HistoryRecordEntity): UiHistoryListItem {
   };
 }
 
-function toItem(row: DbRow): UiHistoryListItem {
-  return toUiListItem(rowToEntity(row));
+function toItem(row: DbRow & { TextFullLength?: number }): UiHistoryListItem {
+  const item = toUiListItem(rowToEntity(row));
+  return {
+    ...item,
+    text: truncateText(item.text, UI_LIST_TEXT_LIMIT),
+    // 截断发生在 SQL 层（substr），这里按完整长度列判定「原文是否超限」，
+    // 不能用截断后的 item.text.length（那会把超长正文误判成没截断）
+    textTruncated: (row.TextFullLength ?? item.text.length) > UI_LIST_TEXT_LIMIT,
+  };
 }
 
 export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<UiHistoryPage> {
@@ -303,13 +310,22 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
     ...(q.sort === 'id' ? [] : [`ID ${direction}`]),
   ].join(', ');
 
+  // **不拉整列 Text**：界面每页最多 500 行，而单条正文可达 D1 的 2MB 上限 —— `SELECT *`
+  // 在「大文本记录 + 大页」下会把数百 MB 读进 isolate（真 OOM 面）。
+  // 界面只显示前 500 字符（`UI_LIST_TEXT_LIMIT`），`substr(Text, 1, 501)` 取回即截断，
+  // 另取 `length(Text)` 用于「原文是否超限」的判定（见 toItem）。
+  // 注意占位符编号：`substr` 的 `?` 在 where 参数**之后**（`limitIdx` 起始），
+  // 且 `?${limitIdx + 2}` 是 OFFSET —— 绑定时按 (…where, 501, pageSize, offset) 顺序展开。
   const rows = await db
     .prepare(
-      `SELECT * FROM HistoryRecords WHERE ${clause} ` +
-        `ORDER BY ${orderBy} LIMIT ?${limitIdx} OFFSET ?${limitIdx + 1}`,
+      `SELECT Id, UserId, Type, substr(Text, 1, ?${limitIdx}) AS Text, Size, TransferDataFile, FilePaths, Hash,
+              CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted,
+              length(Text) AS TextFullLength
+       FROM HistoryRecords WHERE ${clause} ` +
+        `ORDER BY ${orderBy} LIMIT ?${limitIdx + 1} OFFSET ?${limitIdx + 2}`,
     )
-    .bind(...params, q.pageSize, offset)
-    .all<DbRow>();
+    .bind(...params, UI_LIST_TEXT_LIMIT + 1, q.pageSize, offset)
+    .all<DbRow & { TextFullLength?: number }>();
 
   return { total, page: q.page, pageSize: q.pageSize, items: (rows.results ?? []).map(toItem) };
 }

@@ -23,6 +23,7 @@ import { broadcast } from '../hub';
 import { applyHistoryUpdate, clearAllHistory } from '../historyOps';
 import { parseBoundary, parseMultipart, MultipartResult } from '../multipart';
 import { drainRequestBody } from '../auth';
+import { maxRequestBodyBytes, readBodyCapped } from '../requestLimits';
 
 const UNPROCESSABLE_ENTITY = 422;
 
@@ -54,6 +55,12 @@ function readDeclaredTransferDataHash(c: FormRequest): string | null {
     .split(',')
     .map((p) => p.trim())
     .filter((p) => p !== '');
+  // 两条 400 的分支顺序：上游 `GetDeclaredTransferDataHash` 先判 `values.Count != 1` → exactly-one，
+  // 再由 `NormalizeSHA256(values[0]) ?? throw` → cannot be empty。本实现先按 `,` 切分再去掉空段，
+  // 空串/纯空白会退化成 0 段 ⇒ 必须先判空值才能给出与上游相同的文案（两侧文案集合一致）。
+  if (parts.length === 0) {
+    throw new BadRequestError(`${TRANSFER_DATA_HASH_HEADER} cannot be empty`);
+  }
   if (parts.length !== 1) {
     throw new BadRequestError(`${TRANSFER_DATA_HASH_HEADER} must contain exactly one value`);
   }
@@ -164,10 +171,18 @@ function parseIncomingForm(form: MultipartResult): IncomingRecord {
     // （即便列声明 NOT NULL）（F9）
     return Number.isSafeInteger(n) ? n : 0;
   };
+  const text = formGet(form, 'text') ?? '';
+  // D1 单行上限 2MB：超大的内联文本会让 INSERT 以 D1 错误失败（500，不可诊断）。
+  // 上游无此约束（SQLite 单值上限 ~1GB），但官方客户端的内联文本恒 ≤10KB
+  // （TextProfile.TRANSFER_DATA_THRESHOLD），本站界面编辑器上限也是 1MiB —— 协议侧按
+  // 同一量级拦，超限 400。数据大的文本走 data 部分（不受此限）。
+  if (new TextEncoder().encode(text).byteLength > 1024 * 1024) {
+    throw new BadRequestError('Inline text exceeds the 1 MiB limit');
+  }
   return {
     hash,
     type,
-    text: formGet(form, 'text') ?? '',
+    text,
     size: toLong(formGet(form, 'size')),
     createTime: parseDateOrNow(formGet(form, 'createTime')),
     lastModified: parseDateOrNow(formGet(form, 'lastModified')),
@@ -216,13 +231,22 @@ interface FormRequest {
   };
 }
 
-// 解析表单请求体；失败时返回可直接回给客户端的 Response（400/415）
-async function parseFormBody(c: FormRequest, allowUrlEncoded: boolean): Promise<MultipartResult | Response> {
+// 解析表单请求体；失败时返回可直接回给客户端的 Response（400/413/415）
+async function parseFormBody(
+  c: FormRequest,
+  allowUrlEncoded: boolean,
+  limit: number,
+): Promise<MultipartResult | Response> {
   const contentType = c.req.header('content-type') ?? '';
   const type = mediaType(contentType);
 
   if (allowUrlEncoded && type === 'application/x-www-form-urlencoded') {
-    return urlEncodedResult(new URLSearchParams(await c.req.text()));
+    const body = await readBodyCapped(c.req.raw, limit);
+    if (body === null) {
+      await drainRequestBody(c.req.raw);
+      return new Response('Payload Too Large', { status: 413 });
+    }
+    return urlEncodedResult(new URLSearchParams(new TextDecoder().decode(body)));
   }
   if (!allowUrlEncoded && type !== 'multipart/form-data') {
     // 提前返回前先排空请求体：否则本 isolate 的后续请求会以 503 结束（见 src/auth.ts 同名说明）
@@ -236,7 +260,12 @@ async function parseFormBody(c: FormRequest, allowUrlEncoded: boolean): Promise<
     return new Response('Invalid or missing multipart/form-data boundary', { status: 400 });
   }
   try {
-    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    // 整包读取同样走 capped：F9 预检只信 content-length，chunked 请求会绕过它
+    const bytes = await readBodyCapped(c.req.raw, limit);
+    if (bytes === null) {
+      await drainRequestBody(c.req.raw);
+      return new Response('Payload Too Large', { status: 413 });
+    }
     return parseMultipart(bytes, boundary);
   } catch (err) {
     console.log(`[HISTORY] multipart parse failed: ${(err as Error).message}`);
@@ -287,8 +316,8 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     // 库里的坏行（hash 含路径分隔符，只能带外写入）：`storage` 层的 key 构造会断言抛错 ⇒ 500。
     // 这种记录声称有数据但**取不到**（本实现的 key 规则构造不出它）⇒ 422 + `history_data_invalid`
     // —— 上游 3.3.0（#413）把「记录有数据但数据不可用」从 404 改成 422（ProblemDetails
-    // `History transfer data is invalid` / `code: history_data_invalid`），本实现沿用
-    // `problemDetails`（纯文本体，状态码一致；「错误响应体」的差异已登记在 protocol.md §10）。
+    // `History transfer data is invalid` / `code: history_data_invalid`），本实现同状态码、同形的
+    // ProblemDetails JSON（见 docs/protocol.md §10 的传输数据 SHA-256 行）。
     if (!isValidProfileHash(rec.hash)) {
       return problemDetails('Stored transfer data is invalid and cannot be regenerated.');
     }
@@ -326,7 +355,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   app.post('/api/history/query', async (c) => {
     const { db } = stores(c);
     // 上游此端点只有 [FromForm]：multipart 与 urlencoded 都接受
-    const parsed = await parseFormBody(c, true);
+    const parsed = await parseFormBody(c, true, maxRequestBodyBytes(c.env));
     if (parsed instanceof Response) return parsed;
     let q: HistoryQueryDto;
     try {
@@ -352,7 +381,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   app.post('/api/history', async (c) => {
     const { db, storage } = stores(c);
     // 上游此端点有显式 [Consumes("multipart/form-data")]：非 multipart 一律 415
-    const parsed = await parseFormBody(c, false);
+    const parsed = await parseFormBody(c, false, maxRequestBodyBytes(c.env));
     if (parsed instanceof Response) return parsed;
 
     let incoming: IncomingRecord;
@@ -420,7 +449,12 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let dto;
     try {
-      dto = parseHistoryRecordUpdateDto(await c.req.text());
+      const body = await readBodyCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (body === null) {
+        await drainRequestBody(c.req.raw);
+        return new Response('Payload Too Large', { status: 413 });
+      }
+      dto = parseHistoryRecordUpdateDto(new TextDecoder().decode(body));
     } catch {
       return c.text('Bad Request', 400);
     }

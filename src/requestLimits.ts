@@ -1,6 +1,7 @@
 // 请求体上限（F9）。单独成模块的原因：Worker 入口模块（src/index.ts）的**额外导出**会被运行时
 // 当成 handler map 校验（`Incorrect type for map entry ...: the provided value is not of type
 // 'function or ExportedHandler'`，wrangler dev 直接起不来），故入口只能导出 default 与 DO 类。
+import { drainRequestBody } from './auth';
 
 // 整包读入内存的写端点（PUT /SyncClipboard.json、POST /api/history、PATCH /api/history/*）的体量上限。
 // 默认 **48 MiB**（2026-09-15 定稿：先由 32 提到 64，再按"并发余量"回落到 48）。依据与推导见
@@ -71,4 +72,37 @@ export function isLoopbackHost(host: string): boolean {
 
 export function isLoopbackRequest(request: Request): boolean {
   return isLoopbackHost(new URL(request.url).hostname);
+}
+
+// 整包读取请求体并**强制**体量上限。为什么必须存在：入口的 F9 预检只信 `content-length`，
+// chunked / HTTP/2 无长度头的请求会整条绕过它，而平台允许的请求体（Free/Pro 100 MiB）远超
+// isolate 128 MiB —— 一个不带长度头的 100MB body 就能把整个 isolate 打爆，连累并发中的其它请求
+// 一起 503。所有「整包读入内存」的读取点都必须走这里：边读边计数，超限立即中断（调用方回 413）。
+export async function readBodyCapped(raw: Request, limit: number): Promise<Uint8Array | null> {
+  const declared = Number(raw.headers.get('content-length') ?? '0');
+  if (Number.isFinite(declared) && declared > limit) {
+    await drainRequestBody(raw);
+    return null;
+  }
+  const reader = raw.body?.getReader();
+  if (reader === undefined) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
 }

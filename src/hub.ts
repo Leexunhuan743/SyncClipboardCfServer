@@ -2,7 +2,7 @@
 import { Bindings } from './env';
 import { INT32_MIN, INT32_MAX } from './types';
 
-export const HUB_INSTANCE = 'hub';
+const HUB_INSTANCE = 'hub';
 export const HUB_PATH = '/SyncClipboardHub';
 // token 登记路径（DO 侧同此常量）
 export const REGISTER_TOKEN_PATH = '/register-token';
@@ -35,20 +35,13 @@ export function hubStub(env: Bindings): DurableObjectStub {
 }
 
 // 写操作后广播（上游 _hubContext.Clients.All.RemoteProfileChanged / RemoteHistoryChanged）。
-// 广播失败不影响主响应（上游 hub 异常被吞）。
-export async function broadcast(
+// 广播失败不影响主响应（上游 hub 异常被吞）。单条写 = 批量为 1 的广播（同一实现，见 broadcastMany）。
+export function broadcast(
   env: Bindings,
   target: 'RemoteProfileChanged' | 'RemoteHistoryChanged',
   payload: unknown,
 ): Promise<void> {
-  try {
-    await hubStub(env).fetch('https://hub/broadcast', {
-      method: 'POST',
-      body: JSON.stringify({ target, payload }),
-    });
-  } catch {
-    /* 忽略广播失败 */
-  }
+  return broadcastMany(env, target, [payload]);
 }
 
 // 批量写用：**一次子请求**投递整批消息（2026-09-22，ADR D33）。

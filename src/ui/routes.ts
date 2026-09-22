@@ -18,6 +18,7 @@ import { applyHistoryUpdate, clearAllHistory, purgeTrash } from '../historyOps';
 import { broadcastMany } from '../hub';
 import { entityToDtoWire } from '../serialization';
 import { addRecordDto } from '../profile';
+import { maxRequestBodyBytes, readBodyCapped } from '../requestLimits';
 import { textProfileHash } from '../hash';
 import { broadcast } from '../hub';
 import { ProfileType } from '../types';
@@ -184,11 +185,15 @@ interface UiCredentials {
   password: string;
 }
 
-async function readCredentials(req: { json(): Promise<unknown> }): Promise<UiCredentials | null> {
+async function readCredentials(raw: Request, limit: number): Promise<UiCredentials | null> {
   try {
-    const body = (await req.json()) as Record<string, unknown>;
-    if (typeof body?.username !== 'string' || typeof body?.password !== 'string') return null;
-    return { username: body.username, password: body.password };
+    // 与入口的 login 解析同纪律：整包读取过体量上限（login 免认证，chunked 大 body 会绕过
+    // content-length 预检）
+    const body = await readBodyCapped(raw, limit);
+    if (body === null) return null;
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+    if (typeof parsed?.username !== 'string' || typeof parsed.password !== 'string') return null;
+    return { username: parsed.username, password: parsed.password };
   } catch {
     return null;
   }
@@ -269,7 +274,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       await drainRequestBody(c.req.raw);
       return Response.json({ error: 'server_not_configured' }, { status: 500 });
     }
-    const credentials = await readCredentials(c.req);
+    const credentials = await readCredentials(c.req.raw, maxRequestBodyBytes(c.env));
     if (!credentials) {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
@@ -881,7 +886,8 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     for (const entry of raw.items) {
       const item = (entry ?? {}) as { type?: unknown; hash?: unknown };
       const type = typeof item.type === 'string' ? parseProfileType(item.type) : undefined;
-      if (type === undefined || typeof item.hash !== 'string' || item.hash === '') {
+      // hash 与写路径同一判据（含路径分隔符的一律拒）：读路径不收合法进不了写路径的形态
+      if (type === undefined || typeof item.hash !== 'string' || !isValidProfileHash(item.hash)) {
         return Response.json({ error: 'invalid_item' }, { status: 400 });
       }
       items.push({ type, hash: item.hash });
@@ -907,7 +913,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // 在三个挂载点上决定"404"或"转静态资源"，界面路径根本不会进到本文件。留着是因为它们定义的是
   // "界面命名空间的兜底"这件事本身，不依赖入口那一段的写法（改名／挪动入口顺序时它们是最后一道网）。
   app.all('/ui/api/*', (c) => Response.json({ error: 'not_found' }, { status: 404 }));
-  app.all('/ui/*', (c) => notFoundPage(c.env));
+  app.all('/ui/*', () => notFoundPage());
   app.get('/ui', (c) => c.redirect('/ui/', 302));
 
   return app;

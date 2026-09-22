@@ -23,7 +23,7 @@ import { Bindings } from '../env';
 import { isAuthConfigured } from '../auth';
 
 export const SESSION_COOKIE = 'sb_ui_session';
-export const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h（与 clipserver 的 SESSION_EXPIRE_HOURS 一致）
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h（与 clipserver 的 SESSION_EXPIRE_HOURS 一致）
 
 // HKDF 上下文：同一份 PASSWORD 在不同用途上派生出不同密钥
 const HKDF_SALT = 'syncclipboard-cf-server';
@@ -87,7 +87,7 @@ async function deriveKey(password: string): Promise<CryptoKey> {
 // 边界（很重要）：只导出**纯原语**。**不要**导出 `issueSession` 这类带 `isAuthConfigured`
 // 守卫、或直接读 `env.PASSWORD` 的高层函数——未配置 env 时测试就造不出攻击令牌，
 // 那条用例会从"fail-closed 生效"退化成"令牌本来就无效"（判别力被削弱）。
-export async function deriveSessionKey(password: string): Promise<CryptoKey> {
+async function deriveSessionKey(password: string): Promise<CryptoKey> {
   return deriveKey(password);
 }
 

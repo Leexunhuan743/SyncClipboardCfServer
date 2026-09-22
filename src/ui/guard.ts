@@ -10,7 +10,7 @@ import { isAuthConfigured, checkBasicAuth, drainRequestBody } from '../auth';
 import { readSession, UiSession } from './session';
 import type { Context, Next } from 'hono';
 
-export function uiUnauthorized(): Response {
+function uiUnauthorized(): Response {
   return Response.json({ error: 'unauthorized' }, { status: 401 });
 }
 

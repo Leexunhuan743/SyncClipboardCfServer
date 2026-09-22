@@ -521,6 +521,7 @@ export class SyncClipboardHub {
 
   // DO alarm：发心跳、清理死连接并安排下一轮（DO 空闲时定时器冻结，alarm 由平台保证触发）
   async alarm(): Promise<void> {
+    this.heartbeatScheduled = false; // 本轮 alarm 已触发，允许下一轮排程
     this.sendPings();
     this.closeIdleClients();
     this.scheduleHeartbeat();
@@ -530,10 +531,20 @@ export class SyncClipboardHub {
     return this.wsClients.size + this.sseClients.size + this.lpClients.size;
   }
 
+  /** 心跳 alarm 是否已在路上（本 DO 单实例 ⇒ 内存标志足够，无需读存储）。
+   *  为什么必须防重排：直接 `setAlarm(now+15s)` 会覆盖已有 alarm，而连接建立/关闭
+   *  （8 个调用点）都会调 scheduleHeartbeat —— 若连接事件来得比 15s 更勤，心跳将
+   *  **永远不触发**，WebSocket/SSE 客户端在 30s ServerTimeout 处被自己判超时并反复重连。
+   *  平台保证 alarm 触发后清除，因此「已排程」⇒ 本轮心跳已在路上。 */
+  private heartbeatScheduled = false;
+
   private scheduleHeartbeat(): void {
     if (this.clientCount() === 0) {
+      this.heartbeatScheduled = false;
       return;
     }
+    if (this.heartbeatScheduled) return;
+    this.heartbeatScheduled = true;
     void this.state.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
   }
 

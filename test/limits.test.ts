@@ -215,8 +215,8 @@ describe('F9 · Group zip 解压封顶', () => {
   it('压缩比超限（16MiB 零字节 → ~16KB）在解压中途中止，且未写入任何对象', async () => {
     const bomb = zipSync({ 'bomb.bin': new Uint8Array(16 * 1024 * 1024) });
     expect(bomb.length).toBeLessThan(8 * 1024 * 1024); // 放大 1000 倍量级的"成本在哈希校验前"
-    expect(() => parseGroupZip(bomb)).toThrow(InvalidGroupDataError);
-    expect(() => parseGroupZip(bomb)).toThrow(
+    await expect(parseGroupZip(bomb)).rejects.toBeInstanceOf(InvalidGroupDataError);
+    await expect(parseGroupZip(bomb)).rejects.toThrow(
       new RegExp(`exceeds the ${GROUP_ZIP_MAX_COMPRESSION_RATIO}:1 compression ratio`),
     );
 
@@ -233,7 +233,7 @@ describe('F9 · Group zip 解压封顶', () => {
     const bomb = zipSync(entries, { level: 1 });
     expect(bomb.length).toBeLessThan(1024 * 1024); // 上传体量很小
     expect(GROUP_ZIP_MAX_TOTAL_BYTES).toBe(64 * 1024 * 1024);
-    expect(() => parseGroupZip(bomb)).toThrow(new RegExp(`expands beyond ${GROUP_ZIP_MAX_TOTAL_BYTES} bytes`));
+    await expect(parseGroupZip(bomb)).rejects.toThrow(new RegExp(`expands beyond ${GROUP_ZIP_MAX_TOTAL_BYTES} bytes`));
 
     const storage = new RecordingStorage();
     await expect(
@@ -242,23 +242,23 @@ describe('F9 · Group zip 解压封顶', () => {
     expect(storage.writes).toHaveLength(0);
   });
 
-  it('条目数超上限（1001）中止；1000 条仍可通过', () => {
+  it('条目数超上限（1001）中止；1000 条仍可通过', async () => {
     const make = (count: number): Uint8Array => {
       const entries: Record<string, Uint8Array> = {};
       for (let i = 0; i < count; i++) entries[`f${i}.txt`] = strToU8('x');
       return zipSync(entries);
     };
-    expect(() => parseGroupZip(make(GROUP_ZIP_MAX_ENTRIES + 1))).toThrow(
+    await expect(parseGroupZip(make(GROUP_ZIP_MAX_ENTRIES + 1))).rejects.toThrow(
       new RegExp(`more than ${GROUP_ZIP_MAX_ENTRIES} entries`),
     );
-    const atLimit = parseGroupZip(make(GROUP_ZIP_MAX_ENTRIES));
+    const atLimit = await parseGroupZip(make(GROUP_ZIP_MAX_ENTRIES));
     expect(atLimit.entries.filter((e) => !e.isDir)).toHaveLength(GROUP_ZIP_MAX_ENTRIES);
     expect(atLimit.totalSize).toBe(GROUP_ZIP_MAX_ENTRIES);
   });
 
-  it('非 zip → InvalidGroupDataError（既有语义不变）', () => {
-    expect(() => parseGroupZip(new Uint8Array(0))).toThrow(InvalidGroupDataError);
-    expect(() => parseGroupZip(new Uint8Array(200))).toThrow(/not a zip archive/);
+  it('非 zip → InvalidGroupDataError（既有语义不变）', async () => {
+    await expect(parseGroupZip(new Uint8Array(0))).rejects.toThrow(InvalidGroupDataError);
+    await expect(parseGroupZip(new Uint8Array(200))).rejects.toThrow(/not a zip archive/);
   });
 
   it('超限 zip 在两条上传路径上都被映射为客户端错误（PUT→BadRequestError 400 / POST→ProfileDataInvalidError 422），且不写入任何对象', async () => {
@@ -293,9 +293,9 @@ describe('F9 · Group zip 解压封顶', () => {
       },
       { level: 9 },
     );
-    const { entries, topLevel, totalSize } = parseGroupZip(zip);
+    const { entries, topLevel, totalSize } = await parseGroupZip(zip);
     expect([...topLevel].sort()).toEqual(['a.txt', 'dir', 'empty.txt']);
-    expect(entries.find((e) => e.name === 'empty.txt')?.content?.length).toBe(0); // 0 字节条目走零长度分支
+    expect(entries.find((e) => e.name === 'empty.txt')?.contentLength).toBe(0); // 0 字节条目走零长度分支
     expect(totalSize).toBe(6);
     const expectedHash = await groupHashFromEntries(entries);
 
@@ -380,25 +380,25 @@ describe('F9 · 传输数据上限按「暂存对象实际大小」判定（不�
 });
 
 describe('F9 · 解压预算随请求体收缩（body 与解压内容之和受 isolate 预算约束）', () => {
-  // 背景：`parseGroupZip` 期间 zip 的**压缩体一直存活**（`contents` 与 `zipBytes` 同时占内存），
-  // 所以「请求体上限」与「解压上限」不能各自贴顶：80 MiB body + 64 MiB 解压 = 144 MiB > 128 MiB isolate，
-  // 那会在解压**中途** OOM，而不是被干净地 413/拒绝。
+  // 背景：`parseGroupZip` 期间 zip 的**压缩体一直存活**，且峰值不是「body + 解压」而是
+  // 「body + 2×解压」（fflate 解压缓冲按 2 倍增长、ondata 交付再复制一份），所以预算按 2 分摊：
+  // 80 MiB body + 64 MiB 解压 = 144 MiB > 128 MiB isolate，那会在解压**中途** OOM。
   const fake = (length: number) => ({ length }) as unknown as Uint8Array;
 
-  it('小请求体 → 仍是完整 64 MiB 解压上限（常规使用不受影响）', () => {
-    expect(groupZipDecompressionCap(fake(0))).toBe(GROUP_ZIP_MAX_TOTAL_BYTES);
-    expect(groupZipDecompressionCap(fake(20 * 1024 * 1024))).toBe(GROUP_ZIP_MAX_TOTAL_BYTES);
-    expect(groupZipDecompressionCap(fake(32 * 1024 * 1024))).toBe(GROUP_ZIP_MAX_TOTAL_BYTES);
+  it('小请求体 → 解压预算 = (96 MiB − body) / 2（常规使用不受影响）', () => {
+    const cap = (ISOLATE_TRANSFER_BUDGET_BYTES - 0) / 2;
+    expect(groupZipDecompressionCap(fake(0))).toBe(cap);
+    expect(groupZipDecompressionCap(fake(20 * 1024 * 1024))).toBe(cap - 10 * 1024 * 1024);
   });
 
   it('大请求体 → 解压预算按剩余预算收缩', () => {
-    // 64 MiB body（当前默认上限）⇒ 还剩 32 MiB
+    // 48 MiB body（当前默认上限）⇒ 还剩 48 MiB ⇒ ÷2 = 24 MiB
     expect(groupZipDecompressionCap(fake(MAX_REQUEST_BODY_BYTES))).toBe(
-      ISOLATE_TRANSFER_BUDGET_BYTES - MAX_REQUEST_BODY_BYTES,
+      (ISOLATE_TRANSFER_BUDGET_BYTES - MAX_REQUEST_BODY_BYTES) / 2,
     );
-    // 80 MiB body（上限）⇒ 还剩 16 MiB
+    // 64 MiB body（上限）⇒ 还剩 32 MiB ⇒ ÷2 = 16 MiB
     expect(groupZipDecompressionCap(fake(MAX_REQUEST_BODY_BYTES_CEILING))).toBe(
-      ISOLATE_TRANSFER_BUDGET_BYTES - MAX_REQUEST_BODY_BYTES_CEILING,
+      (ISOLATE_TRANSFER_BUDGET_BYTES - MAX_REQUEST_BODY_BYTES_CEILING) / 2,
     );
     // 极端：body 已占满预算 ⇒ 保留 1 MiB 下限（不出现"预算 0 ⇒ 任何 zip 都报错"的难查形态）
     expect(groupZipDecompressionCap(fake(ISOLATE_TRANSFER_BUDGET_BYTES))).toBe(1024 * 1024);
@@ -413,7 +413,9 @@ describe('F9 · 解压预算随请求体收缩（body 与解压内容之和受 i
       MAX_REQUEST_BODY_BYTES_FLOOR,
     ]) {
       const cap = groupZipDecompressionCap(fake(body));
-      expect(body + cap, `body=${body} + cap=${cap}`).toBeLessThanOrEqual(ISOLATE_TRANSFER_BUDGET_BYTES);
+      expect(body + 2 * cap, `body=${body} + 2×cap=${cap}`).toBeLessThanOrEqual(
+        ISOLATE_TRANSFER_BUDGET_BYTES,
+      );
     }
     // 上限本身也不能贴到 isolate：要按"预算 + 运行时余量"来定，而不是按平台 100MB 来定
     expect(MAX_REQUEST_BODY_BYTES_CEILING).toBeLessThanOrEqual(ISOLATE_TRANSFER_BUDGET_BYTES);
@@ -421,11 +423,11 @@ describe('F9 · 解压预算随请求体收缩（body 与解压内容之和受 i
     expect(MAX_REQUEST_BODY_BYTES_FLOOR).toBeLessThanOrEqual(MAX_REQUEST_BODY_BYTES);
   });
 
-  it('行为：同一份 zip 在动态收缩后的预算下被拒绝（错误信息带上实际生效的数）', () => {
+  it('行为：同一份 zip 在动态收缩后的预算下被拒绝（错误信息带上实际生效的数）', async () => {
     // 4 MiB 解压内容：默认 64 MiB 上限下通过；预算收到 1 MiB 时中止
     const zip = zipSync({ 'big.bin': new Uint8Array(4 * 1024 * 1024) }, { level: 9 });
-    expect(() => parseGroupZip(zip)).not.toThrow();
-    expect(() => parseGroupZip(zip, 1024 * 1024)).toThrow(/expands beyond 1048576 bytes/);
+    await expect(parseGroupZip(zip)).resolves.not.toThrow();
+    await expect(parseGroupZip(zip, 1024 * 1024)).rejects.toThrow(/expands beyond 1048576 bytes/);
   });
 });
 
@@ -475,7 +477,7 @@ describe('F9 · 解压管线 golden：group hash 与改前逐位一致', () => {
 
   it('全部夹具 hash/totalSize 与改前实现一致', async () => {
     for (const c of CASES) {
-      const { entries, totalSize } = parseGroupZip(c.zip);
+      const { entries, totalSize } = await parseGroupZip(c.zip);
       expect(totalSize, c.name).toBe(c.totalSize);
       expect(await groupHashFromEntries(entries), c.name).toBe(c.hash);
     }

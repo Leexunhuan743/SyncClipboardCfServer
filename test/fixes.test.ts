@@ -9,7 +9,7 @@ import { createSqliteD1, readSchemaSql, type SqliteD1 } from './support/d1-sqlit
 
 import { parseMultipart } from '../src/multipart';
 import { parseProfileDto, parseHistoryRecordUpdateDto, profileDtoToJson } from '../src/serialization';
-import { parseGroupZip, textProfileHash } from '../src/hash';
+import { parseGroupZip, sha256Hex, textProfileHash } from '../src/hash';
 import { addRecordDto, entityToProfileDto, putSyncProfile, ProfileDataInvalidError, IncomingRecord } from '../src/profile';
 import { HistoryDb } from '../src/db';
 import { ProfileType } from '../src/types';
@@ -164,27 +164,28 @@ describe('F14 · multipart 区分「无 data 部分」与「0 字节 data 部分
 
 // ============================================================ F12 / hash
 describe('F12 · Group zip 畸形条目语义', () => {
-  it('同名重复条目按上游「首次写入优先」取首个内容（旧实现取后者）', () => {
+  it('同名重复条目按上游「首次写入优先」取首个内容（旧实现取后者）', async () => {
     const dupZip = buildZipWithDuplicateNames('dup.txt', [strToU8('AAA'), strToU8('BBB')]);
-    const { entries, totalSize } = parseGroupZip(dupZip);
+    const { entries, totalSize } = await parseGroupZip(dupZip);
     const files = entries.filter((e) => !e.isDir);
     expect(files.length).toBe(1);
-    expect(new TextDecoder().decode(files[0]!.content)).toBe('AAA');
+    // 内容字节不保留：校验改为内容哈希（SHA-256('AAA')）
+    expect(files[0]!.contentHash).toBe(await sha256Hex(strToU8('AAA')));
     expect(totalSize).toBe(3);
     // 非重复的普通 zip 不受影响
-    expect(parseGroupZip(zipSync({ 'ok.txt': strToU8('AAA') } as never)).totalSize).toBe(3);
+    expect((await parseGroupZip(zipSync({ 'ok.txt': strToU8('AAA') } as never))).totalSize).toBe(3);
   });
 
-  it('多尾斜杠目录条目按 TrimEnd 全部裁剪判定顶层（不再只裁一个）', () => {
+  it('多尾斜杠目录条目按 TrimEnd 全部裁剪判定顶层（不再只裁一个）', async () => {
     const zip = zipSync({ 'a//': new Uint8Array(0), 'a//b.txt': strToU8('x') } as never);
-    const { topLevel } = parseGroupZip(zip);
+    const { topLevel } = await parseGroupZip(zip);
     // 'a//' → TrimEnd 后为 'a' → 判为顶层（旧实现 slice(0,-1) 得 'a/' 仍含 '/'，判为非顶层）
     expect(topLevel).toContain('a');
   });
 
-  it('totalSize 为解压后条目长度之和，而非 zip 体积', () => {
+  it('totalSize 为解压后条目长度之和，而非 zip 体积', async () => {
     const zip = zipSync({ 'f.txt': strToU8('0123456789') } as never);
-    const { totalSize } = parseGroupZip(zip);
+    const { totalSize } = await parseGroupZip(zip);
     expect(totalSize).toBe(10);
     expect(totalSize).not.toBe(zip.length);
   });

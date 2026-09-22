@@ -15,7 +15,7 @@ import { notFoundPage } from './ui/notFound';
 import { forwardToHub, negotiateResponse, HUB_PATH } from './hub';
 import { SyncClipboardHub } from './durable/SyncClipboardHub';
 import { runCleanup } from './cleanup';
-import { maxRequestBodyBytes, isLoopbackHost } from './requestLimits';
+import { maxRequestBodyBytes, isLoopbackHost, readBodyCapped } from './requestLimits';
 import { normalizeProtocolPath } from './pathCase';
 import { isUiEnabled, uiDisabledResponse } from './uiEnabled';
 
@@ -84,7 +84,7 @@ app.use('*', async (c, next) => {
   const path = normalizePath(c.req.path);
   const limited =
     (c.req.method === 'PUT' && (path === '/SyncClipboard.json' || path.startsWith('/file/'))) ||
-    (c.req.method === 'POST' && (path === '/api/history' || path === '/ui/api/login')) ||
+    (c.req.method === 'POST' && (path === '/api/history' || path === '/api/history/query' || path === '/ui/api/login')) ||
     (c.req.method === 'PATCH' && path.startsWith('/api/history/'));
   if (!limited) return next();
   const declared = Number(c.req.header('content-length') ?? '0');
@@ -140,7 +140,13 @@ app.use('/ui/api/*', async (c, next) => {
   let username: string | null = null;
   if (isLogin) {
     try {
-      username = readUsername(await c.req.raw.clone().json());
+      // 整包读取也要过体量上限：login 是**免认证**端点，chunked 大 body 会在限速判定前
+      // 先整包缓冲（F9 预检只信 content-length）⇒ 用 capped 读取兜住。
+      // ⚠️ 必须读**克隆**：原始 body 还要给路由的 readCredentials 用（读两次 = 第二次空体）。
+      const body = await readBodyCapped(c.req.raw.clone(), maxRequestBodyBytes(c.env));
+      if (body !== null) {
+        username = readUsername(JSON.parse(new TextDecoder().decode(body)));
+      }
     } catch {
       /* 非 JSON 或空体：只用 IP 维度 */
     }
@@ -153,7 +159,10 @@ app.use('/ui/api/*', async (c, next) => {
   await next();
   if (c.res.status === 401) {
     noteAuthFailure(c.env, c.req.raw, username, c.executionCtx);
-  } else if (c.res.ok) {
+  } else if (isLogin && c.res.ok) {
+    // 只在**登录成功**时清零计数：若对任意 200 都清零，攻击者给公开端点（/ui/api/session、
+    // /ui/api/logout）随手挂一个假 `Authorization` 头即可把 IP 维度的失败计数清零，
+    // 限速的防爆破就白做了（实测：session 不看 Basic 头、恒回 200）。
     noteAuthSuccess(c.env, c.req.raw, username, c.executionCtx);
   }
 });
@@ -255,7 +264,7 @@ export default {
       // 三面共用这条链是因为它们的形状完全相同 —— 都没有自己的服务端路由。
       const asset = await env.ASSETS.fetch(request);
       if (asset.status !== 404) return asset;
-      return notFoundPage(env);
+      return notFoundPage();
     }
 
     if (isUiApi && !isUiEnabled(env)) {

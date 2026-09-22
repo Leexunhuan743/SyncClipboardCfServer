@@ -300,7 +300,7 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     const { zipSync, strToU8 } = await import('fflate');
     const { parseGroupZip, groupHashFromEntries } = await import('../src/hash');
     const zip = zipSync({ 'a.txt': strToU8(`aaa-${RUN}`), 'b.txt': strToU8(`bbb-${RUN}`) });
-    const { entries } = parseGroupZip(zip);
+    const { entries } = await parseGroupZip(zip);
     const hash = await groupHashFromEntries(entries);
 
     // 1) 首次上传（含 data）

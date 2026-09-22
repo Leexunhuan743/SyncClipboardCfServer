@@ -50,6 +50,7 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
   const parts: MultipartPart[] = [];
 
   let pos = 0;
+  let closed = false;
   // 起始：--boundary\r\n
   const firstDelim = findSubarray(bytes, delimBytes, 0);
   if (firstDelim < 0) {
@@ -89,9 +90,15 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
 
     // 结束符 --boundary-- 或下一个部分
     if (bytes[pos] === 0x2d && bytes[pos + 1] === 0x2d) {
+      closed = true;
       break;
     }
     pos = skipCrlf(bytes, pos);
+  }
+  // 体以 `--boundary` 结尾（缺闭合 `--`）说明请求被截断。此前这种体被当成解析成功，
+  // 于是"半截上传"会静默入库成一条记录；上游的 MultipartReader 在流未闭合时抛错 → 400。
+  if (!closed) {
+    throw new Error('Invalid multipart: missing closing boundary');
   }
 
   // 文本字段按需解码（文件部分不解码，避免大文件内存翻倍）

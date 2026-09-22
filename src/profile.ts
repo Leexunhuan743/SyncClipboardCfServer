@@ -171,7 +171,7 @@ export async function validateAndPersistData(
 
   if (type === ProfileType.Group) {
     // 解压预算随请求体收缩：压缩体在解压期间一直存活，两者之和必须留在 isolate 预算内
-    const { entries, topLevel, totalSize } = parseGroupZip(content, groupZipDecompressionCap(content));
+    const { entries, topLevel, totalSize } = await parseGroupZip(content, groupZipDecompressionCap(content));
     if (topLevel.length === 0) {
       throw new ProfileDataInvalidError('Group transfer data contains no entries.');
     }
@@ -215,6 +215,12 @@ export function entityToProfileDto(e: HistoryRecordEntity): ProfileDto {
   if (e.transferDataFile !== '') {
     dto.hasData = true;
     dto.dataName = basename(e.transferDataFile);
+    // 上游 3.3.0：`TransferDataHash = _hasTransferData ? TransferDataHash : null`（有数据就带）。
+    // 只在**合法**时回带：空串/非法值（迁移前入库的旧记录）省略，客户端据此跳过校验
+    // （与 GET /data 回带头的同一判据，见 src/routes/history.ts）。
+    if (/^[0-9a-fA-F]{64}$/.test(e.transferDataHash ?? '')) {
+      dto.transferDataHash = e.transferDataHash!.toUpperCase();
+    }
   }
   return dto;
 }
@@ -414,7 +420,9 @@ export async function addRecordDto(
   content: Uint8Array | null,
   notify: NotifyHandlers,
   /** 请求头 `X-SyncClipboard-Transfer-Data-Hash` 的声明值（已归一化、大写；null = 客户端未声明）。
-   *  上游 3.3.0 #413：声明值与文件实际 SHA-256 不符 ⇒ 拒绝（本实现沿用该路径既有映射：422）。 */
+   *  上游 3.3.0 #413：声明值与文件实际 SHA-256 不符 ⇒ 422（上游把 `InvalidDataException` 包成
+   *  `HistoryTransferDataException` → ProblemDetails 422，见 `HistoryService.cs:449/457-461`；
+   *  本实现同状态码、同形错误体）。 */
   declaredTransferDataHash: string | null = null,
 ): Promise<HistoryRecordDto> {
   const existing = await db.getByTypeAndHash(incoming.type, incoming.hash);
@@ -432,7 +440,7 @@ export async function addRecordDto(
           await db.updateEntity(existing);
         }
       } else {
-        await ensureExistingRecordData(db, storage, existing); // 失败 → BadRequestError（400）
+        await ensureExistingRecordData(storage, existing); // 失败 → BadRequestError（400）
       }
     }
 
@@ -491,7 +499,7 @@ export async function addRecordDto(
     entity.filePaths = persisted.filePaths;
   }
 
-  if (content === null && !(await isLocalDataValidStrict(storage, entity))) {
+  if (content === null && !(await isLocalDataValidStrict(entity))) {
     // 上游 3.3.0 #413 把新建记录的无 data 分支从 `IsLocalDataValid(true)` 收紧为
     // `IsLocalDataValid(false)`，文案也从 `Needs tranfer data.` 换成这条（见 AddNewRecordDto）。
     // 收紧的语义：Text 记录的内联全文哈希必须等于声明 Hash；File/Image/Group 没有数据文件 ⇒ 一律拒绝。
@@ -631,7 +639,7 @@ async function validateAndPersistWithName(
       throw new ProfileDataInvalidError('File is not a zip archive');
     }
     // 解压预算随请求体收缩：压缩体在解压期间一直存活，两者之和必须留在 isolate 预算内
-    const { entries, topLevel, totalSize } = parseGroupZip(content, groupZipDecompressionCap(content));
+    const { entries, topLevel, totalSize } = await parseGroupZip(content, groupZipDecompressionCap(content));
     if (topLevel.length === 0) {
       throw new ProfileDataInvalidError('Group transfer data contains no entries.');
     }
@@ -658,7 +666,6 @@ async function validateAndPersistWithName(
 
 // IsLocalDataValid(true) 快速校验（上游 quick 语义）
 async function isLocalDataValid(
-  db: HistoryDb,
   storage: R2Storage,
   entity: HistoryRecordEntity,
 ): Promise<boolean> {
@@ -681,10 +688,7 @@ async function isLocalDataValid(
 // 严格校验（上游 `IsLocalDataValid(quick: false)`，仅服务于「POST 新建记录、无 data」这一处）。
 // 语义按上游 3.3.0：Text = 内联全文哈希必须等于声明 Hash；File/Image/Group 没有可用的本地数据
 // （新建记录此时还没有数据文件）⇒ false。
-async function isLocalDataValidStrict(
-  _storage: R2Storage,
-  entity: HistoryRecordEntity,
-): Promise<boolean> {
+async function isLocalDataValidStrict(entity: HistoryRecordEntity): Promise<boolean> {
   if (entity.type !== ProfileType.Text) return false;
   // 上游 `IsInMemoryTextValid`：`Hash is not null && !SHA256Same(...)` 才判失败 ⇒ **空 hash 视为有效**
   // （服务端会为它计算哈希，见 F11；这也正是 PUT {"size":5} 这类"无 hash 的 inline Text"能落库的前提）。
@@ -702,11 +706,10 @@ async function isInlineDataValid(dto: ProfileDto): Promise<boolean> {
 
 // 已删除记录的本地数据校验（上游 EnsureExistingRecordData）
 async function ensureExistingRecordData(
-  db: HistoryDb,
   storage: R2Storage,
   existing: HistoryRecordEntity,
 ): Promise<void> {
-  if (!(await isLocalDataValid(db, storage, existing))) {
+  if (!(await isLocalDataValid(storage, existing))) {
     throw new BadRequestError('Needs tranfer data.'); // `tranfer` = 上游拼写，理由见 addRecordDto 里那条注释
   }
 }

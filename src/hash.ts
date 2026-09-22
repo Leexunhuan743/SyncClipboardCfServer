@@ -44,7 +44,11 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
 export interface GroupEntrySpec {
   name: string; // EntryName：相对 zip 根，目录以 '/' 结尾
   isDir: boolean;
-  content?: Uint8Array; // 目录无内容
+  /** 文件条目的内容哈希（SHA-256 大写 hex）与长度 —— **不保留内容字节本身**。
+   *  群组哈希只需 `F|name|len|hash\0` 行，把内容留在内存会让单次解压的峰值内存
+   *  变成「body + 2~3×解压总量」（isolate 128MiB 下 20MiB 的 zip 就能撞穿）。 */
+  contentHash?: string;
+  contentLength?: number;
 }
 
 // 条目 → 行（UTF-8）：
@@ -56,19 +60,15 @@ export async function groupHashFromEntries(entries: GroupEntrySpec[]): Promise<s
     .map((e) => ({ e, key: enc.encode(e.name) }))
     .sort((a, b) => compareBytes(a.key, b.key));
 
-  const chunks: Uint8Array[] = [];
   const parts: string[] = [];
   for (const { e } of ordered) {
     if (e.isDir) {
       parts.push(`D|${e.name}\0`);
     } else {
-      const contentHash = await sha256Hex(e.content!);
-      parts.push(`F|${e.name}|${e.content!.length}|${contentHash.toUpperCase()}\0`);
+      parts.push(`F|${e.name}|${e.contentLength}|${e.contentHash?.toUpperCase() ?? ''}\0`);
     }
   }
-  for (const p of parts) {
-    chunks.push(enc.encode(p));
-  }
+  const chunks = parts.map((p) => enc.encode(p));
   const total = chunks.reduce((n, c) => n + c.length, 0);
   const joined = new Uint8Array(total);
   let offset = 0;
@@ -86,6 +86,13 @@ export const GROUP_ZIP_MAX_TOTAL_BYTES = 64 * 1024 * 1024; // 解压后内容总
 export const GROUP_ZIP_MAX_ENTRIES = 1000; // 条目数上限（含目录条目与重复条目）
 export const GROUP_ZIP_MAX_COMPRESSION_RATIO = 100; // 单条目 解压后/压缩 字节比上限
 export const GROUP_ZIP_MIN_RATIO_CHECK_BYTES = 8 * 1024 * 1024; // 比值守卫的体积下限（以下不判比值）
+// 单条目解压上限：fflate 的解压缓冲按 2 倍增长、ondata 交付再复制一份（每份各 ≤ 条目大小），
+// 一个超大单条目才是峰值内存的支配项，总量上限管不住它。24 MiB × 3 ≈ 72 MiB，
+// 加上请求体（默认 48 MiB 上限）仍落在 isolate 128 MiB 内。
+export const GROUP_ZIP_MAX_ENTRY_BYTES = 24 * 1024 * 1024;
+
+// SHA-256("")（空文件条目的内容哈希；大写 hex）
+const EMPTY_SHA256 = 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855';
 
 // 从 zip 字节解析条目集合并计算哈希（服务端校验路径，等价"解压后遍历文件系统"）
 // - 目录条目：显式（name 以 '/' 结尾）+ 从文件路径推导的隐式父目录（C# 解压会创建目录并计入）
@@ -99,21 +106,24 @@ export const GROUP_ZIP_MIN_RATIO_CHECK_BYTES = 8 * 1024 * 1024; // 比值守卫�
 //   `groupZipDecompressionCap(zipBytes)`，把两者之和压在 ISOLATE_TRANSFER_BUDGET_BYTES 内。
 export function groupZipDecompressionCap(zipBytes: Uint8Array): number {
   const remaining = ISOLATE_TRANSFER_BUDGET_BYTES - zipBytes.length;
-  // 下限 1 MiB：理论上不会走到（请求体可调到的**上**上限 64 MiB < 预算 96 MiB ⇒ 余量恒 ≥ 32 MiB），留下它只为
-  // 防止将来有人把上限调到预算之上时出现"预算为 0 ⇒ 任何 zip 都报错"这种难查的形态。
-  return Math.max(1 * 1024 * 1024, Math.min(GROUP_ZIP_MAX_TOTAL_BYTES, remaining));
+  // 峰值不是「body + 解压」而是「body + 2×解压」：全部条目内容被 `contents` 留存一份，
+  // fflate 的 ondata 交付与 concatChunks 又各复制一份（单大条目时 ≈ 2 倍）⇒ 预算按 2 分摊。
+  // 下限 1 MiB：理论上不会走到（请求体可调到的**上**上限 64 MiB < 预算 96 MiB ⇒ 余量恒 ≥ 32 MiB），
+  // 留下它只为防止将来有人把上限调到预算之上时出现"预算为 0 ⇒ 任何 zip 都报错"这种难查的形态。
+  return Math.max(1 * 1024 * 1024, Math.min(GROUP_ZIP_MAX_TOTAL_BYTES, remaining / 2));
 }
 
-export function parseGroupZip(
+export async function parseGroupZip(
   zipBytes: Uint8Array,
   maxTotalBytes: number = GROUP_ZIP_MAX_TOTAL_BYTES,
-): { entries: GroupEntrySpec[]; topLevel: string[]; totalSize: number } {
+): Promise<{ entries: GroupEntrySpec[]; topLevel: string[]; totalSize: number }> {
   // 流式解压不读中央目录，合法性（EOCD 存在）由本函数先判，保持「不是 zip → 抛错」的既有语义
   if (!hasEndOfCentralDirectory(zipBytes)) {
     throw new InvalidGroupDataError('Transfer data is not a zip archive');
   }
 
-  const contents = new Map<string, Uint8Array>();
+  const entryHashes = new Map<string, { hash: string; length: number }>();
+  const hashPromises: Promise<void>[] = [];
   const names: string[] = [];
   const seenNames = new Set<string>();
   let entryCount = 0;
@@ -141,6 +151,14 @@ export function parseGroupZip(
         if (decompressedBytes > maxTotalBytes) {
           throw new InvalidGroupDataError(`Transfer data expands beyond ${maxTotalBytes} bytes`);
         }
+        // 单条目上限：fflate 的解压缓冲会按 2 倍增长、ondata 交付又复制一份 ——
+        // 一个超大单条目（而非总量）才是峰值内存的支配项；总量上限管不住它。
+        // 24 MiB × 3 ≈ 72 MiB + body ≤ 96 MiB 预算（见 groupZipDecompressionCap 的注释）。
+        if (size > GROUP_ZIP_MAX_ENTRY_BYTES) {
+          throw new InvalidGroupDataError(
+            `Transfer data entry exceeds the ${GROUP_ZIP_MAX_ENTRY_BYTES} byte limit: ${file.name}`,
+          );
+        }
         // 压缩尺寸未知（流式写入的条目）时只能靠总量上限兜底。
         // 体积下限：小文件的比值天然偏高（1KB 文本压到 10 字节 = 100:1 属正常），
         // 只有「解压后 > 8MiB 且比值超限」才判为放大，避免误伤合法小条目。
@@ -156,13 +174,25 @@ export function parseGroupZip(
         chunks.push(chunk);
       }
       if (final) {
-        contents.set(file.name, concatChunks(chunks));
+        if (size === 0) {
+          entryHashes.set(file.name, { hash: EMPTY_SHA256, length: 0 });
+        } else {
+          const bytes = concatChunks(chunks);
+          // ⚠️ 内容字节用后即弃：只留 32 字节哈希 —— 见 GroupEntrySpec 的注释。
+          // ondata 是同步回调，哈希只能异步算：把 promise 收集起来，push 完统一 await。
+          hashPromises.push(
+            sha256Hex(bytes).then((hash) => {
+              entryHashes.set(file.name, { hash, length: size });
+            }),
+          );
+        }
       }
     };
     file.start();
   });
   unzip.register(UnzipInflate);
   unzip.push(zipBytes, true);
+  await Promise.all(hashPromises);
 
   if (names.length === 0) {
     return { entries: [], topLevel: [], totalSize: 0 };
@@ -180,12 +210,12 @@ export function parseGroupZip(
     }
     // 文件条目：校验路径合法（无 .. 段、不以 / 开头、非绝对路径）
     assertSafeEntryName(rawName);
-    const content = contents.get(rawName);
-    if (!content) {
+    const meta = entryHashes.get(rawName);
+    if (!meta) {
       // 条目数据流未正常结束（截断/畸形 zip）——不接受半个条目
       throw new InvalidGroupDataError(`Transfer data is invalid with entry: ${rawName}`);
     }
-    fileEntries.push({ name: rawName, isDir: false, content });
+    fileEntries.push({ name: rawName, isDir: false, contentHash: meta.hash, contentLength: meta.length });
     // 推导隐式父目录（逐级；C# 解压会创建目录并在哈希重算时计入）
     const segments = rawName.split('/');
     segments.pop(); // 去掉文件名
@@ -200,7 +230,7 @@ export function parseGroupZip(
   const entries = [...dirEntries, ...fileEntries];
 
   // 解压后条目总字节数（上游 GroupProfile 的 Size = totalSize = 各条目长度之和，非 zip 体积）
-  const totalSize = fileEntries.reduce((n, e) => n + e.content!.length, 0);
+  const totalSize = fileEntries.reduce((n, e) => n + (e.contentLength ?? 0), 0);
 
   // 顶层条目：TrimEnd('/') 后不含 '/'（上游 entry.FullName.TrimEnd('/')，裁掉**全部**尾斜杠）
   const topLevel = new Set<string>();
