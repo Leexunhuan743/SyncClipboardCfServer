@@ -427,7 +427,7 @@ try {
   expect('选中态落到行上', batch.rowSelected === true, '行没有 data-selected');
   await shoot('11-state-batchbar');
 
-  // 回收站视图下「删除」应禁用、「恢复」应可用（视图决定可用性）
+  // 回收站视图下「移动到回收站」应禁用、「恢复」应可用（视图决定可用性）
   await evaluate(`document.querySelector('[data-action="trash"]').click()`);
   await wait(1800);
   const trashBatch = await evaluate(`(() => {
@@ -661,12 +661,12 @@ try {
     );
   }
 
-  // ── 7. 删除确认框（不真的删：只打开再取消） ────────────────────
+  // ── 7. 移动到回收站的确认框（不真的动：只打开再取消） ────────────────────
   const confirmState = await evaluate(`(async () => {
     const row = document.querySelector('.item');
     row.querySelector('.icon-btn[data-icon="dots"]').click();
     await new Promise((r) => setTimeout(r, 300));
-    const del = [...document.querySelectorAll('.menu__item')].find((b) => b.textContent.includes('删除'));
+    const del = [...document.querySelectorAll('.menu__item')].find((b) => b.textContent.includes('移动到回收站'));
     del.click();
     await new Promise((r) => setTimeout(r, 600));
     const dlg = [...document.querySelectorAll('dialog.dialog')].find((d) => d.open);
@@ -678,18 +678,18 @@ try {
       buttons: buttons.map((b) => ({ label: b.textContent.trim(), cls: b.className })),
       focusInside: dlg ? dlg.contains(document.activeElement) : null,
     };
-    // 取消（点第一个按钮）——不执行删除
+    // 取消（点第一个按钮）——不执行移动
     buttons[0]?.click();
     await new Promise((r) => setTimeout(r, 400));
     result.stillOpen = [...document.querySelectorAll('dialog.dialog')].some((d) => d.open);
     return result;
   })()`);
   record('confirm', confirmState);
-  expect('确认框打开', confirmState.open === true, '菜单里的删除没有打开确认框');
+  expect('确认框打开', confirmState.open === true, '菜单里的「移动到回收站」没有打开确认框');
   expect(
-    '确认框必须说清"删的是哪一条 + 后果"',
+    '确认框必须说清"动的是哪一条 + 后果"',
     typeof confirmState.message === 'string' &&
-      confirmState.message.includes('将删除') &&
+      confirmState.message.includes('移动到回收站') &&
       confirmState.message.includes('所有同步设备'),
     `正文是「${confirmState.message}」`,
   );

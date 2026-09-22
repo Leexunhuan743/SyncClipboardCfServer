@@ -161,10 +161,13 @@ export function createConfirm() {
   document.body.append(dialog);
 
   return {
-    // `destructive`：目前四个调用方都是销毁性动作（删除 / 清空回收站 / 清空全部），默认的
-    // 填色红是对的；把它做成参数是为了下一处 —— 若将来给"恢复 12 条"这类可逆动作也加一句确认，
+    // `destructive`：目前四个调用方都是销毁性动作（移动到回收站 / 彻底删除 / 清空回收站 / 清空全部），
+    // 默认的填色红是对的；把它做成参数是为了下一处 —— 若将来给"恢复 12 条"这类可逆动作也加一句确认，
     // 复制粘贴这一行会得到一个红得像删除的按钮，而那正是"同一档强度"要求避免的事。
-    ask({ title: heading, message: body, confirmLabel = '删除', action: onConfirm = null, destructive = true }) {
+    // 缺省 `confirmLabel` 是「确认」而不是某个动作名：**动作名必须由调用方给**（都给了，来自
+    // `messages.js`），写死一个动作名会让"忘了传"的那一处显示成一个错的动词（2026-09-22 前写的是
+    // 「删除」，而那时唯一没传的地方就会读成一次不可撤销的删除）。
+    ask({ title: heading, message: body, confirmLabel = '确认', action: onConfirm = null, destructive = true }) {
       title.textContent = heading;
       message.textContent = body;
       okLabel.textContent = confirmLabel;

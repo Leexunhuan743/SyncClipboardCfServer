@@ -134,6 +134,24 @@ describe('文档口径与仓库实际一致', () => {
     const missing = SUITE_NAMES.filter((name) => !listed.includes(name));
     expect(missing, `design.md 套件清单缺少：${missing.join(' / ')}`).toEqual([]);
   });
+
+  // 2026-09-22（`progress.md` §151）：目录拆成独立的 `docs/progress-index.md`。
+  // 它必须与正文**逐条逐字一致** —— 目录是**能从文件系统推导**的口径（`progress.md` 的 `##` 标题），
+  // 按本文件开头的判据（"凡能从文件系统推导出来的口径，就不该靠人记"）它就该被守着。
+  // 此前内嵌目录停在 §102 而正文已到 §150，两次都只在 `progress.md` 里记一句"留待单独一轮"。
+  // 判据是**列表的每一行**（`- 编号. 标题`）与正文标题逐条相等：数量与文本一起比，
+  // 少了/多了/改了标题都会红。`目录` 那一节自身不进目录（否则目录会列出自己）。
+  it('docs/progress-index.md 覆盖 progress.md 的全部小节（编号与标题逐字一致）', () => {
+    const heads = [...read('docs/progress.md').matchAll(/^## (.+)$/gm)]
+      .map((m) => m[1]!.trim())
+      .filter((heading) => heading !== '目录');
+    expect(heads.length, '正文小节数不该为 0（守卫可能失效）').toBeGreaterThan(0);
+    const listed = [...read('docs/progress-index.md').matchAll(/^- (.+)$/gm)].map((m) => m[1]!.trim());
+    expect(
+      listed,
+      'docs/progress-index.md 与 progress.md 的 `##` 标题不一致（新增/改动小节后重跑目录：见 progress.md §151）',
+    ).toEqual(heads);
+  });
 });
 
 // ===== 代码规模统计 =====

@@ -76,6 +76,11 @@ const preview = createPreview({
   onDownloadText: downloadTextItem,
   // 预览框里的「编辑」：保存 = 新建一条文本记录（语义见 createTextRecord 的注释）
   onEdit: createTextRecord,
+  // 预览框页脚最左的「移动到回收站」：与行内槽 4 是**同一个动作、同一个确认框、同一条写路径**
+  // （`deleteItem`），只是做成之后要把框收掉 —— 见 `deleteFromPreview`。
+  onDelete: deleteFromPreview,
+  // 同一个位置的另一档：回收站里的记录给「彻底删除」（`purgeItem`，与行内槽 4 同一个动作）。
+  onPurge: purgeFromPreview,
   // 预览打开时把这一条写进 URL 的 hash（链接可分享），关闭时清掉——
   // 否则刷新页面会突然弹出上一次看过的记录。`#Text-<hash>` 也是深链接的入口（见 openDeepLink）。
   onClose: () => {
@@ -187,7 +192,7 @@ function setFilters(patch, { push = false, scroll = false } = {}) {
   // 类型计数与视图同源：回收站与活跃列表是**两套**计数，切视图时必须重取，
   // 否则分段控件显示的是另一套（列表头「回收站 · 共 938 条」、控件仍写「全部 1009」）。
   const viewChanged = Boolean(next.deleted) !== Boolean(state.filters.deleted);
-  // 成员资格变了就清选择集（F3）：残留的旧快照会让"删除选中"落到当前筛选看不见的行上。
+  // 成员资格变了就清选择集（F3）：残留的旧快照会让"移动到回收站"落到当前筛选看不见的行上。
   // 进出回收站原有的一处（onToggleDeleted）由这里一并覆盖。
   if (MEMBERSHIP_KEYS.some((key) => patch[key] !== undefined)) {
     store.set({ selection: new Map() });
@@ -279,7 +284,7 @@ const actions = {
   onBatchRestore: batchRestore,
   onBatchCopy: batchCopy,
   // 批量取消（2026-09-22）：选择条那枚按钮在途时变成「中止」⇒ 点它走这里。
-  // 钩子为空（对话框驱动的删除 / 彻底删除）时它什么也不做 —— 那两枚按钮不带 `cancellable`，
+  // 钩子为空（对话框驱动的「移动到回收站」/「彻底删除」）时它什么也不做 —— 那两枚按钮不带 `cancellable`，
   // 根本不会显示「中止」。
   onBatchCancel: () => batchAbort?.(),
   onPurge: purgeItem,
@@ -645,15 +650,17 @@ async function toggleFlag(item, field, value) {
 
 async function deleteItem(item) {
   // 文案口径与实现逐条对齐，且由 `messages.js` 单点承载（V1 自己那份，可与 V2 的对等守卫比对）：
-  // 2026-09-22（ADR D29）起**删除不再销毁数据** —— 记录（连同数据文件）在回收站留 30 天、期间可恢复；
+  // 2026-09-22（ADR D29）起**软删不再销毁数据** —— 记录（连同数据文件）在回收站留 30 天、期间可恢复；
   // 想立刻清掉字节要用回收站里的「彻底删除」。此前那句"带数据文件 → 立即清除、不可恢复"
   // 描述的是上游语义，已经不成立，别再写回去。
+  // ⚠️ 这个动作的名字是**「移动到回收站」**（2026-09-22 用户定案）：界面里「删除」只指不可撤销
+  // 的那一档（彻底删除 / 清空回收站 / 清空全部历史），措辞由 `messages.js` 单点给出。
   const spec = deleteConfirmSpec(item);
   const ok = await confirm.ask({
     title: spec.title,
     message: spec.message,
     confirmLabel: spec.confirmLabel,
-    // 删除在对话框内完成：请求期间按钮转圈，失败留在原地显示原因（不必重新确认一遍）
+    // 写请求在对话框内完成：请求期间按钮转圈，失败留在原地显示原因（不必重新确认一遍）
     // action 里的 401 要自己交出去（见 withAuthRedirect 的说明）：框内报"unauthorized"而页面不跳，
     // 实测就是这个形状。
     action: withAuthRedirect(async () => {
@@ -672,9 +679,29 @@ async function deleteItem(item) {
   });
   if (!ok) return false;
   list.restoreFocus(); // 对话框已关闭：把焦点交给邻居行（触发它的按钮随行一起没了）
-  toasts.info('已删除');
+  toasts.info('已移动到回收站');
   await refresh({ silent: true }); // 补齐本页缺的那一条并对账其余行
   return true;
+}
+
+// 预览框页脚那枚「移动到回收站」（2026-09-22）：与行内槽 4 **同一个 action**（同一个确认框、
+// 同一条写路径、同一句文案），差别只有一处 —— 做成之后要把预览框收掉。
+// 为什么必须收：那条记录已经不在活跃列表里了，框继续开着会让用户以为还能对它做点什么
+// （而屏幕上这条其实已经在回收站，页脚那几枚"复制/下载/编辑"针对的是一份已经离开当前视图的记录）。
+// 失败**不关框**：`deleteItem` 在失败时返回 false（原因由提示条给出），用户留在原处可以再试。
+async function deleteFromPreview(item) {
+  const ok = await deleteItem(item);
+  if (ok) preview.close();
+  return ok;
+}
+
+// 同一个位置的另一档（2026-09-22）：**回收站里**的记录，页脚最左换成「彻底删除」——
+// 与行内槽 4 同一个 action（`purgeItem`：同一个确认框、同一条 `batch-purge` 写路径）。
+// 同样在做成之后收框：那条记录连元数据行都没了，框再开着就是在展示一个不存在的记录。
+async function purgeFromPreview(item) {
+  const ok = await purgeItem(item);
+  if (ok) preview.close();
+  return ok;
 }
 
 // 恢复：回收站里唯一的写操作。服务端只对「已删除且数据文件名为空」的记录放开（db.ts 的守卫），
@@ -694,7 +721,7 @@ async function restoreItem(item) {
   } catch (error) {
     if (handleAuthError(error)) return false;
     if (error.status === 404) {
-      toasts.error('这条记录已经不在服务器上了（可能已被「彻底删除」或由清理任务删除）');
+      toasts.error('这条记录已经不在服务器上了（可能已被「彻底删除」或由清理任务彻底清除）');
       return false;
     }
     if (error.status === 409) {
@@ -712,9 +739,11 @@ async function restoreItem(item) {
 // 四个批量动作（收藏 / 置顶 / 删除 / 恢复）共用这一条骨架：一次请求 → 就地更新界面。
 // 差别只在"要不要先问一句"与"成功后怎么收行"，故不各写一遍请求与失败处理。
 //
-// 2026-09-18：**只有销毁性的两个（删除、清空回收站）过确认框**。收藏/置顶/恢复是可逆的
+// 2026-09-18：**只有销毁性的两个（移动到回收站、彻底删除选中）过确认框**。收藏/置顶/恢复是可逆的
 // 低风险动作，让用户为"收藏这 12 条"再确认一次是纯多出来的一步（评审结论）；
-// 而删除要付出的代价必须当面说清，那条摩擦保留。
+// 而移动到回收站要付出的代价（这条会从所有同步设备上消失）必须当面说清，那条摩擦保留。
+// （「清空回收站」也过确认框，但它不走这条骨架 —— 它清的是整个回收站、与选择集无关，
+//   入口是结果区头栏那枚常驻按钮，见 `list.js` 的 headEmptyTrash 与下面的 `emptyTrash`。）
 // ⚠️ 那句话在 2026-09-22（ADR D29）之后变了：删除（软删）**不再**销毁数据 —— 记录连同数据文件
 // 在回收站留 30 天、期间可恢复；代价改成"这条会从所有同步设备上消失，30 天后才彻底清除"。
 // （`messages.js` 的 `deleteConfirmSpec` 是唯一的口径来源，别在这里另写一份。）
@@ -723,7 +752,7 @@ async function restoreItem(item) {
 // 与确认框里的中止同一条语义（`components/confirm.js` 的「取消 → 中止」是同一手法的先例）：
 //   · 写批量（收藏 / 置顶 / 恢复）—— 片与片之间停，在途那一片跑完 ⇒ 能如实报"停之前生效了多少"；
 //   · 批量复制 —— 是读，连在途请求一起掐断（`api.batchMeta` 把 signal 交给 `request`）。
-// 对话框驱动的那些（删除选中 / 彻底删除）**不走这里**：它们的中止键在框里。
+// 对话框驱动的那些（移动到回收站 / 彻底删除）**不走这里**：它们的中止键在框里。
 let batchAbort = null;
 async function runBatch({
   update,
@@ -863,7 +892,7 @@ async function purgeItem(item) {
       if (result.failed) {
         // 唯一可能的落空：它已经不在回收站里了（别的标签页清空过、或清理任务硬删了）
         await refresh({ silent: true });
-        throw new Error('这条记录已经不在回收站里了（可能已被清空或由清理任务删除），列表已刷新。');
+        throw new Error('这条记录已经不在回收站里了（可能已被清空或由清理任务彻底清除），列表已刷新。');
       }
       const selection = new Map(store.get().selection);
       selection.delete(item.key);
@@ -994,7 +1023,7 @@ async function batchDelete() {
       for (const item of items) list.removeItem(item.key);
     },
   });
-  if (ok) toasts.info(`已删除 ${chosen.length} 条`);
+  if (ok) toasts.info(`已移动到回收站 ${chosen.length} 条`);
   return ok;
 }
 

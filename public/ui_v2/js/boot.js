@@ -1046,9 +1046,9 @@ function boot() {
       void refreshOverview();
       const failed = Number(outcome?.failed) || 0;
       if (failed > 0) {
-        toasts.info(`已删除 ${outcome.updated} 条，${failed} 条未生效（可能已被别处改过）`);
+        toasts.info(`已移动到回收站 ${outcome.updated} 条，${failed} 条未生效（可能已被别处改过）`);
       } else {
-        toasts.ok(`已删除 ${items.length} 条`);
+        toasts.ok(`已移动到回收站 ${items.length} 条`);
       }
       return true;
     }

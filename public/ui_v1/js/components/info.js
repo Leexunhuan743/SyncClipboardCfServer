@@ -78,7 +78,7 @@ function renderIntegrity(output, result) {
       text:
         `发现 ${result.missingCount} 条记录的数据文件已不在存储里` +
         `${result.missingTruncated ? '（下面只列前 50 条）' : ''}：` +
-        '这些记录预览/下载时会显示「数据不可用」，可以搜索后删除。',
+        '这些记录预览/下载时会显示「数据不可用」，可以搜索后移动到回收站。',
     }),
     el('ul', { class: 'panel__list' }, items),
   );
@@ -141,7 +141,7 @@ export function retentionText(retention) {
       : maxCount === 0
         ? '条数裁剪已关闭'
         : `上限 ${maxCount} 条`;
-  return `${timePart} · ${countPart}；已删除的记录再保留 30 天后彻底清除`;
+  return `${timePart} · ${countPart}；回收站里的记录再保留 30 天后彻底清除`;
 }
 
 /**
@@ -362,8 +362,12 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
       // 不必关掉对话框再打开来确认。
       kvList([summaryRow]),
       el('div', { class: 'panel__form' }, [
-        el('label', { class: 'field-inline' }, [el('span', { class: 'kv__k', text: '保留分钟' }), minutes]),
-        el('label', { class: 'field-inline' }, [el('span', { class: 'kv__k', text: '条数上限' }), maxCount]),
+        // 两个字段**竖排**（2026-09-22 用户要求："现在两个是横排改成竖排"）：此前它们与保存键
+        // 挤成一行三列（窄屏再各自折行），"哪个值属于哪个标签"要靠位置去猜；竖排之后一列读下来。
+        el('div', { class: 'field-stack' }, [
+          el('label', { class: 'field-inline' }, [el('span', { class: 'kv__k', text: '保留分钟' }), minutes]),
+          el('label', { class: 'field-inline' }, [el('span', { class: 'kv__k', text: '条数上限' }), maxCount]),
+        ]),
         save,
       ]),
       el('span', {
@@ -420,7 +424,7 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
     return section('危险操作', [
       el('span', {
         class: 'note',
-        text: '清空全部历史会删除所有记录（活跃 + 回收站）及其数据文件，无法恢复。只想清回收站时，进回收站视图用选择条上的按钮。',
+        text: '清空全部历史会删除所有记录（活跃 + 回收站）及其数据文件，无法恢复。只想清回收站时，进回收站视图点结果区头栏的「清空回收站」。',
       }),
       el('div', { class: 'panel__actions' }, [button]),
     ]);
@@ -525,7 +529,7 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         section('存储', [
           kvList([
             kvRow('数据体积', `${fileSizeMB} MB`),
-            kvRow('记录条数', `总计 ${counts.total ?? 0} 条 · 活跃 ${counts.active ?? 0} 条 · 已删除 ${counts.deleted ?? 0} 条`),
+            kvRow('记录条数', `总计 ${counts.total ?? 0} 条 · 活跃 ${counts.active ?? 0} 条 · 回收站 ${counts.deleted ?? 0} 条`),
             kvRow(
               '按类型',
               `文本 ${byType.Text ?? 0} · 图片 ${byType.Image ?? 0} · 文件 ${byType.File ?? 0} · 组合 ${byType.Group ?? 0}`,

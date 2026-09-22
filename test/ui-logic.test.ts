@@ -342,7 +342,10 @@ describe('messages · 用户文案对齐服务端语义', () => {
     expect(withData.message).toContain('数据文件同样保留');
     expect(withData.message, '不得再说"不可恢复"').not.toContain('不可恢复');
     expect(withData.message).toContain('photo.png');
-    expect(withData.confirmLabel).toBe('删除');
+    // 确认键必须把"去哪"说出来（软删 = 移动到回收站），与不可逆那一档（「彻底删除」）分得开。
+    // **不钉具体字面**：这一条断言的是"名字里带得回哪去"，改文案（例如"移到回收站"）不该让它红。
+    expect(withData.confirmLabel).toContain('回收站');
+    expect(withData.confirmLabel).not.toContain('彻底');
 
     const inline = deleteConfirmSpec({ type: 'Text', text: 'a'.repeat(80), hasData: false });
     expect(inline.message).toContain('30 天内可以从回收站恢复');
@@ -360,11 +363,14 @@ describe('messages · 用户文案对齐服务端语义', () => {
     expect(deleteConfirmSpec({ type: 'Text', text: '  hello world  ', hasData: false }).message).toContain('「hello world…」');
   });
 
-  it('批量删除：标题带条数，正文说明 30 天内可恢复', () => {
+  it('批量软删：标题带条数，正文说明 30 天内可恢复', () => {
     const spec = batchDeleteConfirmSpec(7);
-    expect(spec.title).toBe('删除选中的 7 条记录？');
+    expect(spec.title).toContain('7 条');
+    expect(spec.title).toContain('回收站');
     expect(spec.message).toContain('30 天内可以从回收站恢复');
-    expect(spec.confirmLabel).toBe('删除 7 条');
+    // 确认键必须带上条数（用户要能看出这一次会动多少条），且不得读成不可逆那一档
+    expect(spec.confirmLabel).toContain('7 条');
+    expect(spec.confirmLabel).not.toContain('彻底');
   });
 
   it('清空历史的两种作用域：回收站不含"当前剪贴板"，全部历史要说明它不受影响', () => {
@@ -470,17 +476,17 @@ describe('menus · 菜单项构造（判据是产品决定，不是实现细节�
   const labelOf = (items: MenuItem[]): string[] =>
     items.filter((i: MenuItem) => !i.separator).map((i: MenuItem) => i.label!);
 
-  it('活跃的文本记录：预览 + 复制内容 + 置顶 + 分隔线 + 删除', () => {
+  it('活跃的文本记录：预览 + 复制内容 + 置顶 + 分隔线 + 移动到回收站', () => {
     const items = rowMenuItems({ type: 'Text', text: 'hi', starred: false, pinned: false }, handlers) as MenuItem[];
-    expect(labelOf(items)).toEqual(['预览', '复制内容', '置顶', '删除']);
+    expect(labelOf(items)).toEqual(['预览', '复制内容', '置顶', '移动到回收站']);
     expect(items.some((i: MenuItem) => i.separator)).toBe(true);
-    // 删除永远在最后、且带 danger 语气（与"取消/确认"的视觉分级对应）
-    expect(items.at(-1)).toMatchObject({ label: '删除', tone: 'danger', icon: 'trash' });
+    // 软删永远在最后、且带 danger 语气（与"取消/确认"的视觉分级对应）
+    expect(items.at(-1)).toMatchObject({ label: '移动到回收站', tone: 'danger', icon: 'trash' });
   });
 
   it('非文本记录给"下载"而不是"复制内容"', () => {
     const items = rowMenuItems({ type: 'Image', dataName: 'a.png', hasData: true }, handlers) as MenuItem[];
-    expect(labelOf(items)).toEqual(['预览', '下载', '置顶', '删除']);
+    expect(labelOf(items)).toEqual(['预览', '下载', '置顶', '移动到回收站']);
   });
 
   it('已置顶 → "取消置顶"（文案随状态描述**下一个**动作）', () => {

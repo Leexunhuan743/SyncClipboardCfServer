@@ -487,12 +487,29 @@
    * 选中后操作条自然高 45px（36px 按钮 + 8px 上下留白 + 1px 底边），42px 的头放不下，
    * 于是「勾选几行」的瞬间整条头部（连同下面的表）被推下去 3px —— 用户正盯着「共 N 条记录」
    * 那行字，看得一清二楚。固定 45px 后两态同高、零跳变。 */
-  min-height: 45px;
+  min-height: var(--results-head-h);
   transition: background-color var(--dur-fast) var(--ease-standard);
 }
 
-.results__head:has(.results__selection:not([hidden])) {
+/* 头栏在**选中态**换底色 —— 否则「整条变成了按钮条」这件事只能靠逐字读文案才发现。
+ * 判据是 `.results__selection-count`（「已选 N 条」）**在不在**，而不是"那条带子可不可见"：
+ * 2026-09-22 起带子在回收站视图里**没有选中时也显示**（只装常驻的「清空回收站」），
+ * 用 `:not([hidden])` 会让回收站的头栏常驻着"选中态"的底色 —— 那是一句谎话。 */
+.results__head:has(.results__selection-count) {
   background: var(--accent-soft);
+}
+
+/* **选中态下头栏跟着滚**（2026-09-22 用户要求：多选之后那排批量动作在滚动长列表时也要看得见，
+ * 与表头一样钉在顶栏下方）。判据与底色高亮同一条 —— 「已选 N 条」在不在：
+ *   · 未选中时头栏只是计数与「清除筛选」，不值得常占 45px，照旧随页面滚走；
+ *   · 选中时它是一条**操作条**，滚走就等于"选了 50 条之后按钮找不到了"。
+ * 底色（`--accent-soft`）本来就是不透明的，吸顶不会透出下面的行。
+ * ⚠️ 表头的吸顶偏移必须跟着让一格（`components.css` 的 `.table th` 那条 `@media` 规则），
+ * 否则两者会叠在一起。`z-index: 9` 低于表头的 10，且两者不重叠（偏移已经让开）。 */
+.results__head:has(.results__selection-count) {
+  position: sticky;
+  top: var(--header-h);
+  z-index: 9;
 }
 
 .results__count {
@@ -637,9 +654,13 @@
     display: none;
   }
 
-  /* 批量操作条的动作按钮（复制选中 / 收藏 / 置顶 / 删除选中，及回收站里的恢复 / 清空）同样
-   * 只留图标 —— 它们都有 svg 图标 + `aria-label`（list.js 的 batchButton），藏字后名字不丢；
-   * `:has(svg)` 恰好把这些与「取消选择」分开（后者没有图标，文字是它唯一的表达）。 */
+  /* 批量操作条的动作按钮（复制选中 / 收藏 / 置顶 / 移动到回收站，及回收站里的恢复 / 彻底删除）
+   * 同样只留图标 —— 它们都有 svg 图标 + `aria-label`（list.js 的 batchButton），藏字后名字不丢；
+   * `:has(svg)` 恰好把这些与「取消选择」分开（后者没有图标，文字是它唯一的表达）。
+   * **常驻的「清空回收站」也在这条规则里**（2026-09-22 起它就住在这条带子里、紧挨「取消选择」）：
+   * 它与「回收站 · 共 N 条」「清除筛选」同屏时，三件在 360px 下合计约 369px —— 放不下就会压
+   * `.results__count` 的文本折行、把 45px 的头栏顶高（本仓库明令避免的跳变）；收成图标后约 294px。
+   * 它有 trash 图标与 `aria-label`，故与批量按钮同款处置。 */
   .results__selection .btn:has(svg) .btn__label {
     display: none;
   }

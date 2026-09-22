@@ -105,7 +105,13 @@ function buildActions(item, actions) {
   // 会连数据一起回来（服务端那条上游守卫已经去掉），故这里没有"不可恢复"这一档。
   if (item.isDeleted) {
     // 回收站同样用四个槽位：**恢复**固定在槽 1（与活跃视图的"预览"同位），
-    // **彻底删除**固定在槽 4（与活跃视图的"删除"同位）—— 两个动作都保住肌肉记忆。
+    // **彻底删除**固定在槽 4（与活跃视图的"移动到回收站"同位）—— 两个动作都保住肌肉记忆。
+    // **预览**（2026-09-22 用户要求：「放在删除和撤回之间」）落在**槽 2**，即紧挨「恢复」的右边：
+    // 两个非销毁性动作相邻，与槽 4 那个不可撤销的之间留一整格 —— 与"触屏上下载紧挨删除"
+    // 的教训同一条判据（§3.3 #17②：常用的无害动作不该贴着危险动作）。
+    // 为什么不放槽 1（活跃视图里「预览」所在的那一列）：槽 1 在这个视图里已经是「恢复」，
+    // 而那是本视图的**主操作**（2026-09-21 定案，§3.3 #27）—— 把它挤走等于把"进回收站
+    // 第一件事"换位，代价大于"预览列位跨视图不一致"。
     // 恢复**不再按 `hasData` 禁用**（2026-09-22，ADR D29）：改成真回收站之后，软删不再清数据，
     // 带数据文件的记录恢复时会连数据一起回来（这条此前是上游语义：软删即毁数据 ⇒ 恢复必失败）。
     return el('div', { class: 'row-actions' }, [
@@ -117,7 +123,13 @@ function buildActions(item, actions) {
         successLabel: '已恢复',
         title: '恢复到历史记录（含数据文件）',
       }),
-      actionSlot(null),
+      // 与活跃视图同一个动作、同一个名字、同一份实现（`main.js` 的 previewItem：长文本先取全文）
+      actionButton({
+        action: 'preview',
+        label: '预览',
+        icon: 'eye',
+        run: () => actions.onPreview(item),
+      }),
       actionSlot(null),
       // 彻底删除：不可恢复，故同样过确认框（main.js 的 purgeItem）。服务端把"只删已删除的行"
       // 写在 SQL 里，活跃记录走不到这条路径。
@@ -131,7 +143,7 @@ function buildActions(item, actions) {
     ]);
   }
 
-  // ===== 四个**固定槽位**：预览 / 复制 / 下载 / 删除（2026-09-18）=====
+  // ===== 四个**固定槽位**：预览 / 复制 / 下载 / 移动到回收站（2026-09-18；槽 4 于 2026-09-22 改名）=====
   // 此前动作是按类型追加的（文本 3 个、图片 4 个），又整体右对齐 —— 于是"下载在哪一列"
   // 逐行不同：鼠标沿行间下移时按钮在跳，每次都要重新找。现在槽位恒定，该类记录没有的
   // 动作放一个等宽占位（`.row-actions__slot`：span，不进可访问性树、不可聚焦）。
@@ -191,9 +203,13 @@ function buildActions(item, actions) {
           title: item.hasData ? '下载' : '数据不可用，无法下载',
         });
 
+  // 行内槽 4：**移动到回收站**（软删，30 天内可恢复）。
+  // ⚠️ 名字里**不许出现"删除"二字**（2026-09-22 用户定案）：同一个界面里「删除」只指那件不可撤销的
+  // 事（回收站的「彻底删除」/「清空回收站」/「清空全部历史」）。这个按钮是图标按钮，`label` 同时
+  // 是 `aria-label` 与 `title`（见 actionButton）—— 它就是鼠标悬停时唯一能看到的那句话。
   const remove = actionButton({
     action: 'delete',
-    label: '删除',
+    label: '移动到回收站',
     icon: 'trash',
     run: () => actions.onDelete(item),
   });
@@ -226,6 +242,43 @@ export function createList(actions) {
       onclick: () => actions.onClearFilters(),
     },
     [svg(iconPaths('close'), { size: 16 }), el('span', { class: 'btn__label', text: '清除筛选' })],
+  );
+  // 回收站视图的**常驻**出口（2026-09-22 用户定案）。它清的是**整个回收站**，与选择集无关，
+  // 因此**不随选中出现/消失**：它住在结果区头栏那条操作带（`.results__selection`）里、
+  // 紧挨「取消选择」的**左边**（用户指定），而那条带子在回收站视图里**没有选中时也显示**
+  // （只放这一枚，见 renderHead）。两种状态下位置恒定：
+  //   选中 `[已选 N 条][恢复选中][彻底删除选中][清空回收站][取消选择]`
+  //   未选中 `[清空回收站]`
+  // 旧形态是那条带子里的一枚批量按钮（`batchButton('delete', …)`）：带子只在勾中至少一行时渲染，
+  // 于是"想清空整罐得先勾一条"，读起来还像"对选中项动手" —— 而它实际执行的是
+  // `api.clear('trash')`（全库已删记录，见 main.js 的 `emptyTrash`）。
+  // 颜色/形状全部来自 `.btn` 基类 + 销毁性那一档（`btn--danger-solid`，与「彻底删除选中」、
+  // 确认框的确认键同款，见 components.css 的说明）。
+  const headEmptyTrash = el(
+    'button',
+    {
+      class: 'btn btn--danger-solid',
+      type: 'button',
+      hidden: true,
+      // 窄屏（≤560px）下文字被 CSS 收成图标（layout.css 的 `.results__selection .btn:has(svg)`，
+      // 与批量按钮同一条规则），而这枚图标是 `aria-hidden`（dom.js 的 svg），
+      // 故 `aria-label` 是它唯一的名字 —— 与 batchButton 里那句同源。
+      'aria-label': '清空回收站',
+      // 与批量按钮同一条重入守卫：`setPending` 只加 `pointer-events: none`（挡鼠标），
+      // 键盘 Enter 照样会派发 click —— 连按两次会让 `confirm.ask` 的 `showModal()` 在
+      // 已打开的 dialog 上抛 InvalidStateError（confirm.js 的 okButton 有同一道守卫）。
+      onclick: async (event) => {
+        const button = event.currentTarget;
+        if (isPending(button)) return;
+        setPending(button, true);
+        try {
+          await actions.onEmptyTrash();
+        } finally {
+          setPending(button, false);
+        }
+      },
+    },
+    [svg(iconPaths('trash'), { size: 16 }), el('span', { class: 'btn__label', text: '清空回收站' })],
   );
   const headSelection = el('div', { class: 'results__selection', hidden: true });
   const head = el('div', { class: 'results__head' }, [headInfo, headClear, headSelection]);
@@ -289,7 +342,7 @@ export function createList(actions) {
       }
       const next = rows[targetIndex];
       // 定位"同一个控件"：动作按钮按 data-action 找。**四个槽位是固定的**
-      // （预览 / 复制 / 下载 / 删除，见 `buildActions`），回收站行则是"恢复"固定在槽 1
+      // （预览 / 复制 / 下载 / 移动到回收站，见 `buildActions`），回收站行则是"恢复"固定在槽 1
       // 另加三个等宽占位 —— 所以同一动作在每行的位次一致，跨行找得到。
       // （这里此前写的是"文本行是 预览/复制/删除，图片行还多一个下载"，那是固定槽位之前的行为。）
       // 找不到就退回该行的第一个控件。
@@ -429,7 +482,7 @@ export function createList(actions) {
         ? `没有匹配「${search}」的记录。可以换个关键词，或清除筛选条件。`
         : '当前筛选条件下没有记录。可以清除筛选条件查看全部。'
       : recycle
-        ? '删除的记录（连同数据文件）会在这里保留 30 天，期间可以恢复；30 天后自动彻底清除，也可以现在就用「彻底删除」立刻清掉。'
+        ? '移动到回收站的记录（连同数据文件）会在这里保留 30 天，期间可以恢复；30 天后自动彻底清除，也可以现在就用「彻底删除」立刻清掉。'
         : '在任意设备上复制内容后，SyncClipboard 客户端会把它同步到这台服务器，记录会出现在这里。';
     const buttons = [];
     if (filtered || recycle) {
@@ -460,7 +513,7 @@ export function createList(actions) {
     ];
   }
 
-  // 回收站视图：行内动作换成「恢复」，选择列照常渲染（批量恢复 / 清空回收站都要用它）
+  // 回收站视图：行内动作换成「恢复」，选择列照常渲染（批量恢复 / 彻底删除选中都要用它）
   let recycleMode = false;
   // 最近一次 `update()` 收到的 filters：`removeItem()` 收掉本页最后一行时也要用它（空态文案由
   // 「是否处于筛选态」决定）。此前这份判断只在 `update()` 里内联算过一次，收行那条出口就漏了。
@@ -483,7 +536,7 @@ export function createList(actions) {
     );
   }
 
-  // 复选框（含 Shift 范围选择）。回收站里同样需要它：批量恢复与清空回收站都以选择集为入口。
+  // 复选框（含 Shift 范围选择）。回收站里同样需要它：批量恢复与「彻底删除选中」都以选择集为入口。
   //
   // 入参是那一行的**可变引用**（`rowRefs` 里那个），不是构建时的 `item`：行内开关（收藏/置顶）
   // 成功后就地改的是 `ref.item`，而这个闭包如果一直抓着旧对象，之后勾选这一行就会把**旧快照**
@@ -496,7 +549,7 @@ export function createList(actions) {
       'aria-label': `选择 ${item.type} ${item.hash.slice(0, 8)}`,
     });
     checkbox.checked = selection.has(item.key);
-    // Shift+点击选择整段（起点是上一次点的那个复选框）：批量删除一条条勾是纯体力活。
+    // Shift+点击选择整段（起点是上一次点的那个复选框）：批量软删一条条勾是纯体力活。
     // 必须挂在 click（而不是 change）上：preventDefault 能挡住原生行为，change 就不会触发。
     checkbox.addEventListener('click', (event) => {
       if (event.shiftKey && anchorIndex !== null && anchorIndex !== index) {
@@ -681,10 +734,21 @@ export function createList(actions) {
     return row;
   }
 
-  function renderHead({ total, filtered, selection: selected, loading = false }) {
+  function renderHead({ total, filtered, selection: selected, deletedCount = null, loading = false }) {
     const hasSelection = selected.size > 0;
+    // 回收站视图的常驻出口（见 headEmptyTrash 的构造处）：判据是"回收站里到底有没有东西"，
+    // 两条证据取并集：
+    //   · `deletedCount` —— 统计里的**全库**已删计数（`src/db.ts` 的 statistics 不带视图条件，
+    //     因此与这份统计是为哪个视图取的无关）。它不看当前筛选 ⇒ 回收站里套一个 0 命中的类型
+    //     筛选/搜索时（`total` 为 0）仍然给真值，这正是不能只看 total 的理由；
+    //   · `total` —— 当前视图的条数，兜住统计还没落地（`stats === null`）的那一段：
+    //     至少列表里看得见已删记录时，出口必须在。
+    // 两者都为零才是真的没东西可清（空回收站那屏已有「回收站是空的」+ 说明 + 返回入口）。
+    const showResident = recycleMode && ((deletedCount ?? 0) > 0 || total > 0);
+    headEmptyTrash.hidden = !showResident;
     headInfo.hidden = hasSelection;
-    headSelection.hidden = !hasSelection;
+    // 操作带在**没有选中时也显示**（回收站视图且确实有东西可清）：那一刻它只装常驻那枚。
+    headSelection.hidden = !hasSelection && !showResident;
     if (!hasSelection) {
       // 「共 0 条记录」在首屏是一句**假话**（还没到 ≠ 一条都没有），故加载态单独一档。
       // 文案与 V2 的 board.js 同形（那边是「… 正在加载」）。
@@ -697,6 +761,8 @@ export function createList(actions) {
             : `共 ${total} 条记录`;
       // 有筛选时才给"一键复位"；选中态那一行已被批量按钮占满，故那时也收起
       headClear.hidden = !filtered;
+      // 无选中：带子里只有常驻那枚（没有计数、没有「取消选择」—— 它们只在真的选中时才有意义）
+      headSelection.replaceChildren(...(showResident ? [headEmptyTrash] : []));
       return;
     }
     headClear.hidden = true;
@@ -708,7 +774,7 @@ export function createList(actions) {
     const batchButton = (action, label, icon, handler, { cancellable = false } = {}) => {
       // 留一个标签引用：在途时它要被换成「中止」（见下面 onclick）
       const labelEl = el('span', { class: 'btn__label', text: label });
-      // 销毁性动作（删除选中 / 清空回收站）用**填色红**，与"取消选择"等中性按钮分开。
+      // 销毁性动作（移动到回收站 / 彻底删除选中）用**填色红**，与"取消选择"等中性按钮分开。
       // 2026-09-18 统一：此前 V1 有两档危险样式（描边红 `--danger` 与填色红 `--danger-solid`），
       // 同一个动作在"选择条"里是描边、在它弹出的确认框里是填色，看起来像两个不同的动作；
       // V2 本来就只有一档（填色），现在 V1 也是。
@@ -727,7 +793,7 @@ export function createList(actions) {
           //
           // 2026-09-22（批量取消）：`cancellable` 的按钮在途时**同一个键换一副面孔** ——
           // 转圈让位给「中止」、指针事件保留（CSS 的 `[data-cancel]`），点它就请求停下。
-          // 只有"能停"的动作带这个标记：对话框驱动的删除 / 彻底删除，中止键在框里。
+          // 只有"能停"的动作带这个标记：对话框驱动的「移动到回收站」/「彻底删除」，中止键在框里。
           onclick: async (event) => {
             const button = event.currentTarget;
             if (isPending(button)) {
@@ -761,7 +827,9 @@ export function createList(actions) {
           batchButton('restore', '恢复选中', 'undo', () => actions.onBatchRestore(), { cancellable: true }),
           // 中间这一枚就是"移除少量/中量"的出口：没有它，想永久删掉几条只能整罐倒（清空回收站）。
           batchButton('purge', '彻底删除选中', 'trash', () => actions.onBatchPurge()),
-          batchButton('delete', '清空回收站', 'trash', () => actions.onEmptyTrash()),
+          // 「清空回收站」**不在这里**（2026-09-22 挪走）：它清的是整个回收站、与选择集无关，
+          // 住在这条只随选中出现的带子里会让"先勾一条才能清空整罐"成为唯一路径，
+          // 而且读起来像对选中项动手。现在是头栏里常驻的那一枚（headEmptyTrash）。
         ]
       : [
           // 复制在最前：它是这个页面最高频的动作（与工具栏把搜索放最前是同一条理由）。
@@ -780,14 +848,19 @@ export function createList(actions) {
             () => actions.onBatchFlag('pin'),
             { cancellable: true },
           ),
-          batchButton('delete', '删除选中', 'trash', () => actions.onBatchDelete()),
+          batchButton('delete', '移动到回收站', 'trash', () => actions.onBatchDelete()),
         ];
 
     headSelection.replaceChildren(
       // `role="status"`：计数随选区实时变化，读屏需要这个实时区域播报（V2 的 batchbar 同款判据）；
-      // class 供 CSS 给「不收缩 + 不换行」（见 layout.css 的 .results__selection）。
+      // class 供 CSS 给「不收缩 + 不换行」（见 layout.css 的 .results__selection），
+      // 同时是"这条带子此刻处于**选中态**"的判据（CSS 的底色高亮用它，见 layout.css）。
       el('span', { class: 'results__selection-count', role: 'status', text: `已选 ${selected.size} 条` }),
       ...buttons,
+      // 常驻那枚在**「取消选择」的左边**（用户 2026-09-22 指定）—— 与批量动作同排，
+      // 但它是"整个回收站"的动作、不是选择集动作，故与「取消选择」这枚收尾键相邻而不混进
+      // `buttons` 里（那一段的顺序/数量随视图变）。
+      ...(showResident ? [headEmptyTrash] : []),
       el('button', { class: 'btn btn--quiet', type: 'button', onclick: () => actions.onClearSelection() }, [
         el('span', { class: 'btn__label', text: '取消选择' }),
       ]),
@@ -842,6 +915,9 @@ export function createList(actions) {
       const { items, total, filters, flashKeys } = state;
       selection = state.selection;
       recycleMode = Boolean(filters.deleted);
+      // 头栏常驻出口的一条证据（见 renderHead）：`deletedCount` 是**全表**聚合，
+      // 与这份统计是为哪个视图取的无关；`stats` 还没落地时给 null，由 renderHead 回落去用 total。
+      const deletedCount = state.stats ? (state.stats.deletedCount ?? 0) : null;
 
       // 「还没到」与「真的没有」是两件事（2026-09-18 修）。
       // 此前没有这一档：`items.length === 0` 同时充当这两个含义，于是从 boot 到首屏那次
@@ -854,7 +930,7 @@ export function createList(actions) {
       if (state.loading && items.length === 0) {
         renderSkeletonRows(filters.pageSize);
         setView('loading');
-        lastHead = { total: 0, filtered: false, loading: true };
+        lastHead = { total: 0, filtered: false, loading: true, deletedCount };
         renderHead({ ...lastHead, selection });
         return;
       }
@@ -922,7 +998,7 @@ export function createList(actions) {
           ?.setAttribute('aria-sort', isActive ? (filters.order === 'asc' ? 'ascending' : 'descending') : 'none');
       }
 
-      lastHead = { total, filtered, loading: false };
+      lastHead = { total, filtered, loading: false, deletedCount };
       renderHead({ ...lastHead, selection });
     },
 
@@ -938,6 +1014,10 @@ export function createList(actions) {
       // 故这里既不给数字也不给替代文案 —— 说明由错误态正文单独承担。
       headInfo.textContent = '';
       headClear.hidden = true;
+      // 常驻出口同样收起：这一档下"回收站里有没有东西"是**未知**的（列表没取到），
+      // 而错误态正文已经承担了说明与重试（与 headClear 同一判据：失败路径不留动作）。
+      headEmptyTrash.hidden = true;
+      headSelection.hidden = true;
       const parts = [
         svg(iconPaths('warning'), { size: 32, class: 'empty__icon' }),
         el('p', { class: 'empty__title', text: '加载失败' }),

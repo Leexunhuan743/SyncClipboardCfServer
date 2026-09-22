@@ -42,7 +42,7 @@ export function createBatchbar({ onClose, onAction }) {
     { name: 'pin', label: '置顶', icon: 'pin' },
     { name: 'download', label: '下载', icon: 'download' },
     { name: 'restore', label: '恢复', icon: 'undo' },
-    { name: 'delete', label: '删除', icon: 'trash', tone: 'danger' },
+    { name: 'delete', label: '移动到回收站', icon: 'trash', tone: 'danger' },
   ];
 
   const buttons = new Map();

@@ -8,6 +8,7 @@
  *   4. 成功对勾弹入 —— 原地成功态（复制/下载/删除等动作做成）
  *   5. 星标弹出     —— 收藏状态改变
  *   6. 浮层进出     —— 对话框与提示条，用原生 <dialog> + @starting-style
+ *   7. 选中操作条出现 —— 从「没有选中」到「有选中」那一次（结果区头栏那条批量操作带）
  * 不做：滚动淡入（B2）、统一上浮（B1）、页面级入场动画（B4）、装饰性循环动效。
  *
  * ⚠️ 这一族里**曾经**还有第 7 条「视图过渡 —— 翻页/改筛选后的结果区替换（见 js/dom.js）」：
@@ -51,6 +52,29 @@
   from {
     opacity: 0;
     transform: translateY(6px);
+  }
+}
+
+/* ============ 选中操作条出现（selection-in）============
+ * 2026-09-22 用户要求：「选中之后出现 复制选中 / 收藏 / 置顶 / 移动到回收站 / 取消选择 这一行
+ * 加入一个出现的动画」。
+ *
+ * **触发条件 = 它从 `hidden` 变成可见**：容器（`.results__selection`）本身不会被重建 ——
+ * `renderHead()` 只 `replaceChildren()` 它的子节点 —— 所以"再选一行""切换筛选""翻页"都不会重放，
+ * 只有"从没有选中到有选中"这一次会播（`display: none` 期间动画不跑，一显示就从头跑）。
+ * 带子高度固定 45px（`--results-head-h`），动效只碰 `opacity` 与 `translate`：
+ * 不动布局、不推挤表头，也不影响它自己的吸顶。
+ * 只做 4px 上浮（比浮层的 8px 小一半）：它是**就地换掉那行计数**，不是从别处飞进来。
+ * 关掉动效（reduced-motion）时它照旧直接出现 —— 信息一个不少（本文件的准入规则）。 */
+@media (prefers-reduced-motion: no-preference) {
+  .results__selection:not([hidden]) {
+    animation: selection-in var(--dur-fast) var(--ease-out-expo);
+  }
+}
+@keyframes selection-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
   }
 }
 

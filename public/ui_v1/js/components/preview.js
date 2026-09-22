@@ -8,8 +8,9 @@
 //    <img> 加载失败必须变成可读的「数据不可用」，而不是一个裂图图标。
 // 3. 点背景关闭：原生 <dialog> 默认不这么做，而这是用户对「浮层」最普遍的一次尝试。
 //    （确认对话框不在此列——销毁性操作不给「点外面就当我没说」的出口。）
-// 4. 打开后焦点落在**主操作**上：键盘用户按 Enter 就该完成这屏最想做的事（复制/下载），
-//    而不是先 Tab 过一遍。
+// 4. 打开后焦点落在**正文框**上（`.dialog__body` 带 `tabindex="-1"`，2026-09-22 用户要求）：
+//    滚轮与键盘（↑↓ / PageUp·Down / Space）立刻能滚这段内容。**不是**"落在第一个按钮上" ——
+//    页脚最左那枚是销毁性的（「移动到回收站」/「彻底删除」），而按钮位置本身还会随记录类型变。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatAbsolute, formatSize, typeLabel, typeChipClass } from '../format.js';
@@ -26,14 +27,18 @@ import { editTooLargeText, textSavedNote, textSaveFailedText } from '../messages
 // 前端拦在按钮上（超了直接禁用 + 说明），服务端那一条是纵深防御。改一处就要改另一处。
 const EDIT_MAX_BYTES = 1024 * 1024;
 
-export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onEdit, onClose }) {
+export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onEdit, onDelete, onPurge, onClose }) {
   const title = el('h2', { class: 'dialog__title', id: 'preview-title' });
   const meta = el('span', { class: 'dialog__meta' });
   // 类型徽标也放进标题行：同一句「内容」在不同类型下是完全不同的东西
   // （文本能复制、图片能存图、文件只能下载），徽标让"我现在看的是什么"不必靠猜测。
   const typeChipLabel = el('span');
   const typeChip = el('span', { class: 'chip' }, [el('span', { class: 'chip__dot' }), typeChipLabel]);
-  const body = el('div', { class: 'dialog__body' });
+  // `tabindex="-1"`：正文框是**可聚焦的滚动容器**（2026-09-22 用户要求）—— 打开预览/退出编辑后
+  // 焦点落在它上面，于是鼠标滚轮与键盘（↑↓ / PageUp·Down / Space）都能直接滚正文，
+  // 不必先去够滚动条。`-1` 只给**程序化**聚焦，不进 Tab 顺序（Tab 仍然先到页脚那几个按钮），
+  // 这与 WAI-ARIA 对"可滚动区域应可聚焦"的建议同向。
+  const body = el('div', { class: 'dialog__body', tabindex: '-1' });
   const footer = el('div', { class: 'dialog__foot' });
   // 编辑保存失败的就地错误盒（挂在 textarea 下面，`role="alert"` —— 与确认框、登录页同一套
   // `.alert--error`；`components.md` 的 error 格要求"信息挨着控件、被 `aria-describedby` 关联、
@@ -51,6 +56,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   const requestClose = () => {
     if (saving) return;
     dialog.close();
+    hideSavedToast();
   };
   const closeButton = el(
     'button',
@@ -63,6 +69,48 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     [svg(iconPaths('close'))],
   );
 
+  // 「已保存为新记录…」的反馈：**弹出一条提示**（用户 2026-09-22："想要的是 弹出的一个提示 就像点击
+  // 复制最近一条之后弹出来的那样"），用的是同一个 `.toast` 构件与同一套进出动画（`motion.css` 的
+  // `toast-in`/`toast-out`），2.6s 后自己收掉（与 `createToasts` 的默认时长同值）。
+  //
+  // ⚠️ **为什么不用全局的 `#toasts`**（那是"复制最近一条"用的那条通道）：模态 `<dialog>` 进的是
+  // **top layer**，而 `#toasts` 是 body 下的普通节点 ⇒ 模态开着时它被盖住。实测（本轮复核过三条路）：
+  //   · 往 `#toasts` 塞一条，`elementFromPoint` 拿到的是 **dialog / 它的 backdrop**（ADR D30 早记过这条）；
+  //   · 把 `#toasts` 改成 `popover="manual"`：已显示的 popover 再 `showPopover()` 是 no-op、**不会升层**；
+  //   · `hidePopover(); showPopover()` 也不行 —— 后来打开的模态仍在它上面（实测命中 dialog）。
+  // 于是把这条提示挂在**对话框自己的槽位**里（正文区与页脚之间，`flex: none` 恒在视野内）：
+  // 视觉与全局提示条逐字相同，位置也恒可见。
+  // `role="status"`：它不在 `#toasts`（那个宿主已是 `aria-live="polite"`）里，所以**由它自己播报** ——
+  // 这正是"宿主已宣布时不要再嵌一个实时区域"那条纪律的反面情形（见 `toast.js` 的说明）。
+  const savedToast = el('div', { class: 'toast dialog__toast', role: 'status', hidden: true });
+  let savedToastTimer = 0;
+  let savedToastLeaveTimer = 0;
+
+  function hideSavedToast() {
+    clearTimeout(savedToastTimer);
+    clearTimeout(savedToastLeaveTimer);
+    savedToastTimer = 0;
+    savedToastLeaveTimer = 0;
+    savedToast.hidden = true;
+    savedToast.removeAttribute('data-leaving');
+  }
+
+  function showSavedToast(message) {
+    clearTimeout(savedToastTimer);
+    clearTimeout(savedToastLeaveTimer);
+    savedToast.textContent = message;
+    savedToast.hidden = false;
+    savedToast.removeAttribute('data-leaving'); // 连着保存两次时：撤销上一次的离场动画，重新计时
+    // 时长与 `toast.js` 的默认停留一致（2.6s）；离场动画跑完（`--dur-fast` = 200ms）再真正隐藏
+    savedToastTimer = setTimeout(() => {
+      savedToast.setAttribute('data-leaving', 'true');
+      savedToastLeaveTimer = setTimeout(() => {
+        savedToast.hidden = true;
+        savedToast.removeAttribute('data-leaving');
+      }, 200);
+    }, 2600);
+  }
+
   const dialog = el(
     'dialog',
     { class: 'dialog', 'aria-labelledby': 'preview-title' },
@@ -74,6 +122,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         closeButton,
       ]),
       body,
+      savedToast,
       footer,
     ],
   );
@@ -81,6 +130,27 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) requestClose();
   });
+
+  // 滚轮落在**页眉 / 页脚**上时转给正文（2026-09-22 用户实测报的）：
+  // 用户点完「编辑」（或「预览」）之后指针还停在那个按钮上，那一刻滚轮本该滚正文，但页脚自己不可滚、
+  // 模态又把背后页面压着 —— 观感就是"滚不动"。判据只有一条：**指针不在正文区**才接管；
+  // 落在正文上时一律让浏览器自己处理（编辑态里正文就是 `<textarea>`，它自己会滚）。
+  // 不拦的情况：当前滚动容器没有可滚内容（短文本）——那时连 `preventDefault` 都不做，
+  // 免得把"本来就无处可滚"变成一次被吞掉的滚轮。
+  dialog.addEventListener(
+    'wheel',
+    (event) => {
+      if (event.target instanceof Element && event.target.closest('.dialog__body') !== null) return;
+      const target = scrollTarget();
+      if (target === null || target.scrollHeight <= target.clientHeight + 1) return;
+      // `deltaMode`：0 = 像素（触控板/多数鼠标）、1 = 行、2 = 页。不换算的话行模式下
+      // 一次滚轮只走 3px，读起来还是"滚不动"。
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? target.clientHeight : 1;
+      target.scrollTop += event.deltaY * unit;
+      event.preventDefault();
+    },
+    { passive: false },
+  );
   // Esc：**编辑态下只退出编辑、不关对话框**（2026-09-22，ADR D30 的 Q4）—— 一段几千字的编辑
   // 不该被一个 Esc 丢掉。`cancel` 是可取消事件，`preventDefault()` 就能拦住 UA 的关框行为
   // （与 `confirm.js` 在途挡 Esc 是同一个手法）；非编辑态保持原样（Esc 关框）。
@@ -134,11 +204,11 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 对话框里的操作按钮：与行内按钮同一套反馈（进行中 → 结果留在按钮上）。
   // `disabled` / `title` 与 `list.js` 的同类按钮同义：**禁用必须带原因**（title 是"为什么点不动"
   // 唯一的传达通道，见 components.css 里 `.btn[disabled]` 的注释）。
-  function actionButton({ icon, label, run, successLabel, disabled = false, title: titleText = null }) {
+  function actionButton({ icon, label, run, successLabel, disabled = false, title: titleText = null, className = 'btn' }) {
     const button = el(
       'button',
       {
-        class: 'btn',
+        class: className,
         type: 'button',
         disabled,
         title: titleText,
@@ -205,9 +275,15 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 屏幕上这段正文。它是**编辑保存后就地替换**的那份，也是复制/下载的唯一来源 ——
   // 这样"屏幕上是什么、复制/下载就是什么"，不会出现"刚存完却复制到旧文本"的坑。
   let currentText = '';
-  let savedNote = null; // 保存成功后的就地说明（下次 open 清掉）
   let editing = false;
   let saving = false; // 保存请求在途：挡住关框（见 requestClose）
+
+  // 当前"该被滚动的那个元素"：编辑态是 `<textarea>`（正文框里只有它，正文框自己不滚），
+  // 其余是正文框本身。给滚轮转发用（见 dialog 的 `wheel` 监听）。
+  function scrollTarget() {
+    if (editing) return body.querySelector('.dialog__edit') ?? body;
+    return body;
+  }
 
   // 头部（标题 / 类型徽标 / 「N 个字符 · 时间」）的**唯一绘制点**：`open()` 与"保存成功后改指向新记录"
   // 两处调它，别在别处散写 `title` / `meta`。
@@ -239,17 +315,35 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
 
   function renderView() {
     body.className = 'dialog__body';
-    const children = [];
-    if (savedNote !== null) children.push(el('p', { class: 'dialog__note', text: savedNote }));
-    children.push(renderText(currentText));
-    body.replaceChildren(...children);
+    body.replaceChildren(renderText(currentText));
   }
 
   function renderViewActions() {
     const item = currentItem;
     const primary = [];
+    // 页脚最左那枚是**销毁性的视图级动作**（2026-09-22 用户指定：位置就是原来「编辑」占的最左处，
+    // 钉在页脚左缘）：活跃记录给「移动到回收站」（30 天内可恢复），回收站里的记录给「彻底删除」
+    // （不可撤销）—— 后者与行内槽 4 是同一个动作、同一句确认文案（`purgeConfirmSpec`）。
+    // 两档都在同一位置：切换视图不会让"最左那枚"变成另一个动词而位置不变，读起来是一致的。
+    const destructive =
+      item.isDeleted === true
+        ? actionButton({
+            icon: 'trash',
+            label: '彻底删除',
+            className: 'btn btn--danger-solid',
+            run: () => onPurge(item),
+            title: '彻底删除这条记录（不可撤销，数据文件一并清除）',
+          })
+        : actionButton({
+            icon: 'trash',
+            label: '移动到回收站',
+            className: 'btn btn--danger-solid',
+            run: () => onDelete(item),
+            title: '移动到回收站（30 天内可以从回收站恢复）',
+          });
     if (item.type === 'Text') {
-      // 编辑（2026-09-22，ADR D30）：放在最左（用户指定），右侧是既有的复制/下载。
+      // 编辑（2026-09-22，ADR D30）：它原本在最左；2026-09-22 起「移动到回收站」占了最左那一位，
+      // 编辑退到第二位（用户指定：位置就是原来「编辑」占的最左处）。右侧是既有的复制/下载。
       // 正文过大时**禁用并说明原因**（1 MiB 上限，与服务端 `UI_TEXT_CREATE_MAX_BYTES` 一致）——
       // 在 textarea 里放几十 MB 会把页面卡死，那时唯一可行的路径是「下载文本」。
       const tooLarge = new TextEncoder().encode(currentText).length > EDIT_MAX_BYTES;
@@ -306,12 +400,69 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         }),
       );
     }
-    footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }), ...primary);
-    const first = footer.querySelector('.btn');
-    (first ?? closeButton).focus();
+    // 组装顺序 = 视觉顺序（用户 2026-09-22 用截图定的形）：**视图级那枚销毁性动作钉在页脚最左边缘**，
+    // 其余动作仍靠右 —— `[移动到回收站|彻底删除] [spacer] [编辑] [复制文本] [下载文本]`。
+    // 判据是 spacer 的位置：`.dialog__foot-spacer` 是 `flex: 1 1 auto`（components.css），
+    // 它把**排在它后面**的东西推到右边 ⇒ 把销毁性那枚放在 spacer 之前，它就贴在左缘。
+    footer.replaceChildren(destructive, el('span', { class: 'dialog__foot-spacer' }), ...primary);
+    // 初始焦点落在**正文框**上（2026-09-22 用户要求）：滚轮与键盘立刻能滚这段内容。
+    // 此前它落在页脚第一枚动作上（那还是"编辑"时留下的巧合），而正文框当时根本不可聚焦 ——
+    // 鼠标停在正文上滚是能滚的，但键盘没有任何落点。
+    // `preventScroll`：聚焦本身不该让浏览器把对话框滚进视口（那是打开动作的事，不是焦点的事）。
+    body.focus({ preventScroll: true });
+  }
+
+  // ===== 编辑框的高度：与正文区**同一套规则**（用户 2026-09-22 两问）=====
+  //
+  //   · 「编辑页面和预览页面为什么高度不同差别那么大 为什么不复用一下」——此前是两套规则：
+  //     正文区 = 内容高度、封顶 `min(64vh, 620px)`；编辑框 = 写死 `40vh`（ADR D31 的"理想高度"）。
+  //     实测 11 000 字符记录（1440×900）：正文区 576px ⇒ 编辑框 360px，对话框 724 → 508px。
+  //   · 「短文本上编辑的时候可以随着文字的输入高度升高」——所以高度还得跟着内容长。
+  //
+  // 于是：**进编辑时取正文区此刻的高度**（`previewBodyHeight`，短文本就是内容高度 ⇒ 两态同高），
+  // 之后每次输入重算、封顶与正文区同一个值（长文本两态同高，都在上限）。
+  // ⚠️ 顶到上限后**不再量**：`style.height='auto'` + 读 `scrollHeight` 每按键一次的代价实测
+  // 200 字符 0.1ms / 20 000 字符 ~2ms / **500 000 字符 ~60ms**（那就是按键卡顿）。
+  // 顶到上限时高度已经定了（内部滚动接管），故用"上次设的高度是否已达上限"当判据 —— 不去读布局。
+  // 顶到上限后的短路有个副作用（删短了不缩），**由 scheduleRefit 补上**：停止输入 200ms 后重量一次。
+  let editorAtCap = false;
+  // 顶到上限之后的**重量定时器**：见 scheduleRefit
+  let refitTimer = 0;
+
+  function editorCap() {
+    // 与 `.dialog__body` 的 `max-height: min(64vh, 620px)` 同一个值（改一处要改两处）
+    return Math.min(Math.round(window.innerHeight * 0.64), 620);
+  }
+
+  function fitEditor(area, cap) {
+    if (editorAtCap) return;
+    area.style.height = 'auto';
+    const next = Math.min(area.scrollHeight, cap);
+    area.style.height = `${next}px`;
+    editorAtCap = next >= cap;
+  }
+
+  // 顶到上限之后再重量一次（**延后到停止输入之后**）：`editorAtCap` 的短路是为了不每次按键都付排版钱
+  // （实测 500 KB ≈ 60ms/次），但它会让"把长文删短到能放下"时框不肯缩回去 —— 用户 2026-09-22 明确否掉
+  // 了这个代价（"如果是长文本删减文字，框高不会对应减小，这种问题你居然没有考虑到"）。
+  // 于是：删到能放下时，停止输入 200ms 后重量一次并缩回去；连打时这个定时器被反复重置，不会触发。
+  function scheduleRefit(area, cap) {
+    clearTimeout(refitTimer);
+    refitTimer = setTimeout(() => {
+      refitTimer = 0;
+      if (!editing || !area.isConnected) return;
+      editorAtCap = false; // 允许重量（若内容仍然超出上限，fitEditor 会再次把它设回上限）
+      fitEditor(area, cap);
+    }, 200);
   }
 
   function enterEdit() {
+    // 初始高度 = **正文区此刻的高度**（两态同高，见上面那一段）；正文区已经在滚动（内容比它高）
+    // 说明是长文本 ⇒ 直接取上限，既与正文区同高、又不必为量它的内容付一次排版（实测 1 MB ≈ 87ms）。
+    const cap = editorCap();
+    const previewBodyHeight = Math.round(body.getBoundingClientRect().height);
+    const previewScrollable = body.scrollHeight > body.clientHeight + 1;
+    editorAtCap = previewScrollable;
     editing = true;
     const area = el('textarea', {
       class: 'dialog__edit',
@@ -321,6 +472,10 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
       // 无错时是 `hidden`，故不会有空描述被念出来）。
       'aria-label': '编辑这段文本',
       'aria-describedby': 'preview-edit-error',
+      // `style` 必须是**对象**：`el()` 走 `Object.assign(node.style, value)`，传字符串会去设
+      // `style[0]`/`style[1]`…（CSSStyleDeclaration 的索引属性只读）⇒ 严格模式下直接抛
+      // `TypeError: Failed to set an indexed property`，整段 `enterEdit()` 就此中断（实测踩到过）。
+      style: { height: `${previewScrollable ? cap : previewBodyHeight}px` },
     });
     area.value = currentText;
     body.className = 'dialog__body dialog__body--edit';
@@ -360,7 +515,8 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         currentItem = created;
         renderHead(created);
         // 字符数取**服务端的 `size`**：头部、列表讲的是同一条记录的那个数（口径见 `renderHead`）
-        savedNote = textSavedNote(created.size);
+        // 反馈走**弹出的提示**（用户要求：像「复制最近一条」那样），2.6s 后自己收掉
+        showSavedToast(textSavedNote(created.size));
         exitEdit();
       } catch (error) {
         // 就地报错（挨着控件、被 `aria-describedby` 关联），**留在编辑态**：用户改的内容还在，可以再存一次。
@@ -379,13 +535,42 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     footer.replaceChildren(el('span', { class: 'dialog__foot-spacer' }), cancel, save);
 
     if (!dialog.open) dialog.showModal();
-    area.focus();
-    // 光标落到末尾：改一段已有文本，接着写比全选更常见
-    area.setSelectionRange(area.value.length, area.value.length);
+    // **焦点立刻给，但"光标落到末尾"放到第一帧画完之后**（2026-09-22 用户实测："编辑打开之后
+    // 需要等待一下，长文本明显"）。实测这条链上唯一贵的是"把光标滚进视口"：
+    //   `textarea.focus()` 1 MB = 144ms / 500 KB = 83ms / 100 KB = 12.6ms（本机无节流；6× 节流下是秒级），
+    //   而 `focus({ preventScroll: true })` 三个量级都是 **0ms** —— 它逼浏览器为定位光标把整段文本
+    //   排版一次。同步付这笔钱会把"画编辑框"推迟到它之后 ⇒ 用户看到的是"点了编辑、等一会才出现"。
+    // 于是：先 `preventScroll` 聚焦（免费，键盘立刻可用），再在下一帧把光标放到末尾并滚到末尾。
+    area.focus({ preventScroll: true });
+    // 用户**动过光标/打过字**的旗子：延迟那一步绝不能抢他已经放好的光标。
+    // ⚠️ 判据不能用"selection 是不是 0/0"：聚焦一个从未聚焦过的 textarea，浏览器**默认就把光标放在
+    // 末尾**（实测 `selSync = [10240, 10240]`）—— 用它当判据会让延迟那一步永远被跳过，
+    // 于是"光标在末尾、视口却停在开头"（打字会突然跳到底部）。
+    let caretTouched = false;
+    const markTouched = () => {
+      caretTouched = true;
+      // 随输入长高；已经顶到上限时不再每次按键都量（那是 60ms/次的排版），改为**停止输入后**重量一次
+      // —— 于是"删短了"也能缩回去（见 scheduleRefit）。
+      if (editorAtCap) scheduleRefit(area, cap);
+      else fitEditor(area, cap);
+    };
+    area.addEventListener('input', markTouched);
+    area.addEventListener('keydown', markTouched);
+    area.addEventListener('mousedown', markTouched);
+    requestAnimationFrame(() => {
+      // 再等一个宏任务：rAF 回调跑在**绘制之前**，直接在里面做这笔重活等于把它挪回关键路径。
+      setTimeout(() => {
+        if (!editing || !area.isConnected || caretTouched) return; // 退出编辑 / 关框 / 用户已动过
+        area.setSelectionRange(area.value.length, area.value.length); // 光标落在末尾（原有行为）
+        area.scrollTop = area.scrollHeight; // 与光标位置一致：打开就停在结尾
+      }, 0);
+    });
   }
 
   function exitEdit() {
     editing = false;
+    clearTimeout(refitTimer); // 离开编辑态：不再有"停止输入后重量"这回事（定时器会改一个已被移除的节点）
+    refitTimer = 0;
     editError.hidden = true;
     editError.textContent = '';
     renderView();
@@ -395,7 +580,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   function open(item, { text = null, loading = false } = {}) {
     currentItem = item;
     currentText = text ?? item.text ?? '';
-    savedNote = null;
+    hideSavedToast(); // 打开一条新记录：上一条留下的「已保存为新记录…」提示立刻收掉（图片/不支持档也走这里）
     editing = false;
     renderHead(item);
     body.className = 'dialog__body';
@@ -417,14 +602,19 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
           el('p', { class: 'empty__hint', text: '正在取这条记录的完整内容。' }),
         ]),
       );
-      // 加载态**有意**落在 ✕：此刻还没有可做主操作的东西（全文还没到），Enter 关掉它是安全的默认
-      closeButton.focus();
+      // 加载态也把焦点交给**正文框**（2026-09-22 用户实测报的"焦点好像要等一会才对"）：
+      // 此前这里落在 ✕ 上，等全文到了再跳到正文框 —— 用户看到的是"焦点过一会儿才到位"。
+      // 现在从第一帧起就在正文框上（里面是「正在读取全文…」那段占位），全文到达后**不动焦点**
+      // （`renderViewActions()` 再 focus 一次同一个节点，无观感差异）。
+      // 短文本（不需要额外往返）走的是下面那条路，同样落在正文框。
+      body.focus({ preventScroll: true });
       return;
     }
 
     if (item.type === 'Text') {
       renderView();
-      renderViewActions(); // 里面把焦点交给第一个动作（编辑）——必须发生在 showModal 之后
+      renderViewActions(); // 里面把焦点交给正文框（可滚动）——必须发生在 showModal 之后
+      body.scrollTop = 0; // 每次打开都从正文开头看起（正文框是常驻节点，上一条记录的滚动位置会留着）
       return;
     }
     if (itemIsImage(item)) {
@@ -447,6 +637,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     }
 
     renderViewActions();
+    body.scrollTop = 0; // 同上：图片/不支持档也从头看起（滚动位置是常驻节点的残留状态）
   }
 
   return {

@@ -222,7 +222,7 @@ export function createDialog(spec) {
  */
 export function createConfirm() {
   let action = null;
-  let confirmLabel = '确认删除';
+  let confirmLabel = '确认';
   // 「有请求在飞」的旗子：`setPending(confirm, true)` 只 disable 了**确认键**，
   // 而 ✕ / 取消 / Esc 三条路都还能把对话框关掉（见 `foot` 里的说明）。
   let busy = false;
@@ -285,7 +285,7 @@ export function createConfirm() {
       if (dialog.node.open) return false;
       const head = dialog.node.querySelector('.dialog__title');
       if (head) head.textContent = spec.title;
-      confirmLabel = spec.confirmLabel ?? '确认删除';
+      confirmLabel = spec.confirmLabel ?? '确认';
 
       action = spec.action ?? null;
       // 说明文字作为 `content` **交给 open()**，而不是先 append 进 body ——

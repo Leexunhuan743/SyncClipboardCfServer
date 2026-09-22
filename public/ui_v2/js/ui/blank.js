@@ -18,7 +18,7 @@ const COPY = {
   trash: {
     icon: 'check',
     title: '回收站是空的',
-    text: '删除的记录会在这里保留 30 天，之后由清理任务彻底删除。带数据文件的记录在删除时就已经清掉数据了。',
+    text: '移动到回收站的记录（连同数据文件）会在这里保留 30 天，期间可以恢复；30 天后由清理任务彻底删除。',
     actions: [{ key: 'back', label: '返回历史记录', primary: true }],
   },
   empty: {

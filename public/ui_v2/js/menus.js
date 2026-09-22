@@ -40,7 +40,7 @@ export function rowMenuItems(item, handlers) {
 
   items.push({ separator: true });
   items.push({
-    label: item.isDeleted ? '彻底删除' : '删除',
+    label: item.isDeleted ? '彻底删除' : '移动到回收站',
     icon: 'trash',
     tone: 'danger',
     run: () => handlers.onDelete(item),

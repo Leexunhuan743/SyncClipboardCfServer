@@ -81,7 +81,7 @@ export function createToolbar({
       class: 'segmented__item',
       type: 'button',
       'aria-pressed': 'false',
-      title: '回收站：已删除的记录（30 天后彻底清除）',
+      title: '回收站：移动到这里的记录（30 天后彻底清除）',
       onclick: () => onToggleDeleted(),
     },
     [svg(iconPaths('trash'), { size: 14 }), el('span', { text: '回收站' })],
