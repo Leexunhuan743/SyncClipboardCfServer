@@ -51,6 +51,29 @@ export async function broadcast(
   }
 }
 
+// 批量写用：**一次子请求**投递整批消息（2026-09-22，ADR D33）。
+//
+// 为什么不是 N 次 `broadcast`：批量写一次可达 100 条（`BATCH_UPDATE_MAX_ITEMS`），逐条广播
+// 就是 100 次 DO 子请求 —— 而免费档「内部服务子请求」上限是 **1000 次/调用**，一次 1000 条的
+// 批量删除逐条广播正好触顶（这也是 `clear` 当初"不逐条广播"的同一个理由，见 `docs/backend-gaps.md` §3.5）。
+// 合并后：消息**内容与顺序不变**（DO 侧逐条入队），客户端收到的东西与逐条广播时一模一样 ——
+// 唯一的变化是 100 次子请求变成 1 次，以及客户端**整批同时**收到（而不是边写边收）。
+export async function broadcastMany(
+  env: Bindings,
+  target: 'RemoteProfileChanged' | 'RemoteHistoryChanged',
+  payloads: unknown[],
+): Promise<void> {
+  if (payloads.length === 0) return; // 空批不打扰 DO
+  try {
+    await hubStub(env).fetch('https://hub/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({ target, payloads }),
+    });
+  } catch {
+    /* 忽略广播失败（与 broadcast 同一条纪律：推送丢一条不该影响写操作的响应） */
+  }
+}
+
 // 把 WebSocket 升级请求转发给 DO（index.ts 外层 fetch 使用）
 export function forwardToHub(env: Bindings, request: Request): Promise<Response> {
   return hubStub(env).fetch(request);

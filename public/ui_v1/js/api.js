@@ -341,12 +341,17 @@ export const api = {
   // 批量取记录（含**完整正文**）：列表里的正文被服务端截断到 500 字符，
   // 「选中多条 → 一起复制」必须拿全文，而逐条走单条端点是 O(N) 次请求。
   // 服务端单次上限 100 条（`BATCH_META_MAX_ITEMS`），超出部分在这里分片串行。
-  async batchMeta(items) {
+  // **可中止**（2026-09-22，批量取消）：`signal` 既当片与片之间的停止旗子，也直接交给 `request`
+  // —— 这是**读**，掐断在途请求是安全的（读没有副作用，停了就是"没读到"；而写批量
+  // `batchUpdate` / `batchPurge` 有意**不**掐断在途那一片，因为它们必须能如实报出"停之前生效了多少"）。
+  async batchMeta(items, { signal } = {}) {
     const CHUNK = 100;
     const out = [];
     for (let i = 0; i < items.length; i += CHUNK) {
+      if (signal?.aborted) return out;
       const raw = await request(`${API_BASE}/history/batch-meta`, {
         method: 'POST',
+        signal,
         body: {
           items: items.slice(i, i + CHUNK).map((item) => ({ type: item.type, hash: item.hash })),
         },

@@ -405,6 +405,13 @@ Worker
       两者用 `error.name` 区分 —— 这一条别合并成"都是异常"）。
     · 只覆盖**分片发送**的批量（收藏/置顶/删除/恢复/彻底删除）。单条动作与「清空回收站」是单次请求，
       快到不值得中止，不接这条。
+    · **没有对话框的那几个，中止键在选择条上**（2026-09-22，ADR D34）：那枚按钮在途时变成「中止」
+      —— 同一个键换一副面孔，与框里的「取消 → 中止」是同一条先例（CSS 的 `[data-cancel]` 保留指针
+      事件、去掉转圈、窄屏也显示「中止」文字，`aria-label` 同步换成「中止」）。带这个标记的是
+      复制选中 / 收藏 / 置顶 / 恢复；对话框驱动的删除 / 彻底删除**不带**（它们的中止键在框里）。
+    · **读与写的停法不同**（同 ADR D34）：批量复制是**读** ⇒ 连在途请求一起掐断（`api.batchMeta`
+      把 `signal` 交给 `request`），且**全文没取齐就不动剪贴板** ⇒ 中止的语义只有一句「什么都没写」；
+      写批量一律**按批停**（在途那一片跑完）—— 服务端可能已经应用了一部分，界面必须能如实报数。
     判据：`confirm.js` 的 busy 分支 + `api.js` 的 `isAbortError`/`aborted` + `main.js` 的 aborted 分支 +
     `messages.js` 的 `batchAbortedText`（两版逐字一致）。
 
@@ -527,7 +534,7 @@ Worker
 | GET | `/ui/api/history/:type/:hash/data` | 数据文件；`?download=1` 走附件。**支持 Range**（单区间 206 + `content-range` + `accept-ranges`；后缀区间 `bytes=-n`；不可满足 → 416 + `bytes */size`；多段 → 按 200 全量回退；协议侧的 `/file/{name}` 与 `/api/history/{id}/data` **有意忽略 Range**，见 F29b） | 404 `not_found` / 404 `data_missing` |
 | PATCH | `/ui/api/history/:type/:hash` | 收藏 / 置顶 / 删除（复用 `applyHistoryUpdate`）；也承接「触碰访问时间」的 `{lastAccessed, lastModified, version}`（ADR D32：回显后两者 ⇒ 落库只改 `lastAccessed`） | 400/404/409 |
 | POST | `/ui/api/history` | **新建一条文本记录**（预览框「编辑」保存时用，ADR D30）：`{text}` → 落库并**回读**该条，回 `toUiItem(entity)`（与 PATCH 同形，前端复用同一个归一化函数）。**只认 Text** —— File/Image/Group 没有"编辑正文"这回事。走协议 `POST /api/history` 的同一条写路径 `addRecordDto`，因此只广播 `RemoteHistoryChanged`、**不碰当前剪贴板**（没有设备会被迫换剪贴板）；`version` 取 **0**（客户端重传同文本时 `shouldUpdate` 的 `newVersion >= oldVersion` 才成立，写 1 会让随后的重传被判冲突）；正文上限 **1 MiB**（`UI_TEXT_CREATE_MAX_BYTES`，前端在按钮上先拦，超限时「编辑」是 disabled + 说明，这条是纵深防御）；**只接受 `application/json`** | 400 `text_required` / 400 `text_too_large` / 400 `invalid_request` / 415 |
-| POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（**单次 ≤100 条**，逐条走同一条写路径；**有界并发 10**（2026-09-21：串行是瓶颈——生产实测 100 条删除 66s，并发后 ~5s；总量子请求不变、仍在 1000 上限内）；更多由界面按 100 分片串行发）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
+| POST | `/ui/api/history/batch-update` | 批量写：`{items, update:{starred?\|pinned?\|isDelete?}}`（**单次 ≤100 条**，逐条走同一条写路径；**有界并发 10**（2026-09-21：串行是瓶颈——生产实测 100 条删除 66s，并发后 ~5s；总量子请求不变、仍在 1000 上限内）；**广播合并成一次**（2026-09-22，ADR D33：整批跑完一次 `broadcastMany`，消息内容与顺序不变，100 条从 100 次 DO 子请求降到 1 次）；更多由界面按 100 分片串行发）；**只接受 `application/json`**（原 `batch-delete`，泛化后改名） | 400 / 415（内容类型不是 JSON，审计残余 G3） |
 | POST | `/ui/api/history/batch-meta` | 批量取记录（**含完整正文**）：`{items:[{type,hash}]}`（**单次 ≤100 条**，超出由界面分片串行发）→ `{items:[完整 HistoryRecordDto]}`。用于「选中多条 → 一起复制/下载」——列表里的正文被服务端截断到 500 字符，而逐条走单条端点是 O(N) 次请求；**只接受 `application/json`**（与 batch-update / clear 同一条纵深防御） | 400 / 415 |
 | POST | `/ui/api/history/batch-purge` | 回收站的**彻底删除**：`{items:[{type,hash}]}`（**单次 ≤100 条**）→ `{purged, failed}`。**本地纯硬删**：只删 `IsDeleted != 0` 的行（判据写在 SQL 里 ⇒ 活跃记录删不掉、不许绕过回收站）；**不广播**（理由同 clear 的三条）、**每条顺带清掉它的数据目录**（+1 次 R2 列举）—— 2026-09-22（ADR D29）起回收站里是真数据，彻底删除的语义就是立刻连字节一起没。上游没有这个能力（它的硬删是 30 天定时任务），属本站自己的面，`docs/protocol.md` §10 无需登记 | 400 / 415 |
 | POST | `/ui/api/history/clear` | 清空历史：`{scope:'trash'\|'all'}`。trash = 只删已删除行并返回计数（不物化整批行）；all = 与协议 `DELETE /api/history/clear` **共用** `historyOps.clearAllHistory`（先删行，再按 `clearAll` 返回的**实体集合**删工作目录——最坏漏删孤儿目录，不会误删并发写入的新记录）。**不逐条广播**（上游的广播触发点清单里没有 clear，见 §6 的说明；跨标签页收敛靠 `/ui/api/poll` 的计数变化） | 400 / 415 |

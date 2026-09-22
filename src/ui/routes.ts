@@ -15,6 +15,8 @@ import { issueSession, clearSession } from './session';
 import { uiAuthMiddleware, authenticateUi } from './guard';
 import { parseProfileType, parseHistoryRecordUpdateDto, historySizeMB } from '../serialization';
 import { applyHistoryUpdate, clearAllHistory, purgeTrash } from '../historyOps';
+import { broadcastMany } from '../hub';
+import { entityToDtoWire } from '../serialization';
 import { addRecordDto } from '../profile';
 import { textProfileHash } from '../hash';
 import { broadcast } from '../hub';
@@ -608,23 +610,34 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     // 2026-09-21：**预读去掉了** —— 版本与单调时间戳现在由 `updateHistory` 内部那一次读算
     // （见 db.ts 的注释）。原理由「去掉预读会让未来时间戳的记录伪冲突」已经由缺省值
     // `max(now, 已有+1)` 承担，故删除是纯收益：每条记录少 1 次 D1 子请求（100 条 = 100 次）。
+    //
+    // 2026-09-22（ADR D33，用户定案）：**广播也合并成一次** —— `deferBroadcast` 让每条只写库、
+    // 把待广播的载荷带回主线程，整批跑完后一次 `broadcastMany` 投出去（100 条从 100 次 DO
+    // 子请求降到 1 次；消息内容与顺序不变，客户端收到的东西与逐条广播时一模一样）。
     const outcomes = await mapLimit(items, BATCH_UPDATE_CONCURRENCY, async (rawItem) => {
       const entry = rawItem as { type?: unknown; hash?: unknown };
       const ids =
         typeof entry?.type === 'string' && typeof entry?.hash === 'string'
           ? parsePathIds(entry.type, entry.hash)
           : null;
-      if (!ids) return 'invalid';
-      const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, fields);
-      return result.kind === 'updated' ? null : `${entry.type}-${entry.hash}`;
+      if (!ids) return { failed: 'invalid' };
+      const result = await applyHistoryUpdate(c.env, ids.type!, ids.hash, fields, {
+        deferBroadcast: true,
+      });
+      return result.kind === 'updated'
+        ? { payload: entityToDtoWire(result.entity) }
+        : { failed: `${entry.type}-${entry.hash}` };
     });
-    let updated = 0;
+    const payloads: unknown[] = [];
     const failed: string[] = [];
     for (const outcome of outcomes) {
-      if (outcome === null) updated++;
-      else failed.push(outcome);
+      if ('payload' in outcome) payloads.push(outcome.payload);
+      else failed.push(outcome.failed);
     }
-    return Response.json({ updated, failed: failed.length });
+    // 一次子请求广播整批（顺序与逐条一致：`mapLimit` 保序返回，这里也保序收集）。
+    // 与单条写同一条纪律：**在响应返回前 await 完成**，否则推送会非确定性丢失（F6）。
+    await broadcastMany(c.env, 'RemoteHistoryChanged', payloads);
+    return Response.json({ updated: payloads.length, failed: failed.length });
   });
 
   // POST /ui/api/history/batch-purge —— 回收站的「彻底删除」：**本地硬删行**，不是协议面。

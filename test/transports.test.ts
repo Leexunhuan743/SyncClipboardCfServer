@@ -6,7 +6,7 @@
 //   ServerSentEvents  —— 新增：EventSource 流式接收 + POST 上报
 //   LongPolling       —— 新增：GET 取消息（挂起/超时）、POST 上报、DELETE 关闭
 // 每个传输都验证：握手成功、能收到广播、连接可保持（心跳生效）。
-import { describe, expect, it, beforeAll } from 'vitest';
+import { describe, expect, it, beforeAll, vi } from 'vitest';
 import * as signalR from '@microsoft/signalr';
 import { createHash } from 'node:crypto';
 import { assertWritableTarget } from './support/target-guard';
@@ -83,6 +83,61 @@ async function expectBroadcastOverTransport(transportName: string, transport: si
 
   await connection.stop();
 }
+
+// 批量写把逐条广播**合并成一次** DO 子请求（2026-09-22，ADR D33）。合并唯一允许的后果是
+// "少 N-1 次子请求" —— 客户端收到的东西必须与逐条广播时**一模一样**（每条记录一条消息）。
+// 这条用例钉的正是这个不变量，且走的是真实链路：真实连接 + 真实 `/ui/api/history/batch-update`。
+describe('批量写的合并广播（ADR D33）', () => {
+  it('一次 batch-update 改 3 条 ⇒ 连接上出现 3 条独立 RemoteHistoryChanged', async () => {
+    const options: HubOptionsWithWebSocket = {
+      headers: { Authorization: AUTH },
+      transport: signalR.HttpTransportType.LongPolling,
+      WebSocket,
+    };
+    const connection = new signalR.HubConnectionBuilder()
+      .withUrl(`${BASE}/SyncClipboardHub`, options)
+      .build();
+    const histories: unknown[] = [];
+    connection.on('RemoteHistoryChanged', (dto) => histories.push(dto));
+    await connection.start();
+
+    const stamp = Date.now();
+    const hashes: string[] = [];
+    for (const i of [1, 2, 3]) hashes.push(await putProfile(`batch-broadcast-${stamp}-${i}`));
+
+    // 先等 PUT 自己那三条广播到齐，再清空计数 —— 否则"到了"的可能仍是 PUT 发的那条（假通过）。
+    // `vi.waitFor` 而不是手写 `setTimeout` 轮询：这里等的是**网络到达**（真实集成链路），
+    // 用假计时器推不动它，而 `vi.waitFor` 会按真实时间重试、超时即失败并指出是哪一条没到。
+    await vi.waitFor(
+      () => {
+        const got = new Set(histories.filter(hasHash).map((h) => h.hash));
+        for (const hash of hashes) expect(got.has(hash), `PUT 的广播 ${hash.slice(0, 8)}`).toBe(true);
+      },
+      { timeout: 15_000, interval: 250 },
+    );
+    histories.length = 0;
+
+    const res = await fetch(`${BASE}/ui/api/history/batch-update`, {
+      method: 'POST',
+      headers: { Authorization: AUTH, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: hashes.map((hash) => ({ type: 'Text', hash })),
+        update: { starred: true },
+      }),
+    });
+    expect(res.status, '批量写必须成功').toBe(200);
+    expect((await res.json()) as { updated: number }).toMatchObject({ updated: 3 });
+
+    await vi.waitFor(
+      () => {
+        const got = new Set(histories.filter(hasHash).map((h) => h.hash));
+        for (const hash of hashes) expect(got.has(hash), `合并广播漏了 ${hash.slice(0, 8)}`).toBe(true);
+      },
+      { timeout: 15_000, interval: 250 },
+    );
+    await connection.stop();
+  });
+});
 
 beforeAll(async () => {
   const res = await fetch(`${BASE}/`, { headers: { Authorization: AUTH } });

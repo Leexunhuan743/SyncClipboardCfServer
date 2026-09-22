@@ -705,12 +705,14 @@ export function createList(actions) {
     // 固定写「收藏」会让用户对着已收藏的记录点一个看起来没反应的按钮（服务端确实写了一次，
     // 状态却不变）——这类「点了没反应」正是要避免的。
     const chosen = [...selected.values()];
-    const batchButton = (action, label, icon, handler) =>
+    const batchButton = (action, label, icon, handler, { cancellable = false } = {}) => {
+      // 留一个标签引用：在途时它要被换成「中止」（见下面 onclick）
+      const labelEl = el('span', { class: 'btn__label', text: label });
       // 销毁性动作（删除选中 / 清空回收站）用**填色红**，与"取消选择"等中性按钮分开。
       // 2026-09-18 统一：此前 V1 有两档危险样式（描边红 `--danger` 与填色红 `--danger-solid`），
       // 同一个动作在"选择条"里是描边、在它弹出的确认框里是填色，看起来像两个不同的动作；
       // V2 本来就只有一档（填色），现在 V1 也是。
-      el(
+      return el(
         'button',
         {
           class: action === 'delete' ? 'btn btn--danger-solid' : 'btn',
@@ -722,42 +724,61 @@ export function createList(actions) {
           // 进行中态 + 重入守卫（2026-09-18）：批量复制可能发 N 个分片请求（每片 100 条），
           // 批量写也要逐条走服务端 —— 没有 pending 态的按钮在这几秒里读起来就是"点了没反应"。
           // `isPending` 那道守卫与确认框同一个理由：`pointer-events: none` 只挡鼠标、挡不住键盘 Enter。
+          //
+          // 2026-09-22（批量取消）：`cancellable` 的按钮在途时**同一个键换一副面孔** ——
+          // 转圈让位给「中止」、指针事件保留（CSS 的 `[data-cancel]`），点它就请求停下。
+          // 只有"能停"的动作带这个标记：对话框驱动的删除 / 彻底删除，中止键在框里。
           onclick: async (event) => {
             const button = event.currentTarget;
-            if (isPending(button)) return;
+            if (isPending(button)) {
+              // 在途：这一击的语义是「中止」（没带标记时什么也不做 —— 见上面的说明）
+              if (button.dataset.cancel === 'true') actions.onBatchCancel?.();
+              return;
+            }
             setPending(button, true);
+            if (cancellable) {
+              button.dataset.cancel = 'true';
+              labelEl.textContent = '中止';
+              button.setAttribute('aria-label', '中止');
+            }
             try {
               await handler();
             } finally {
               // 批量成功后选择集被清空、这条按钮随之被移除：对已 detach 的节点收尾是无害的
+              delete button.dataset.cancel;
+              labelEl.textContent = label;
+              button.setAttribute('aria-label', label);
               setPending(button, false);
             }
           },
         },
-        [svg(iconPaths(icon), { size: 16 }), el('span', { class: 'btn__label', text: label })],
+        [svg(iconPaths(icon), { size: 16 }), labelEl],
       );
+    };
 
     const buttons = recycleMode
       ? [
-          batchButton('restore', '恢复选中', 'undo', () => actions.onBatchRestore()),
+          batchButton('restore', '恢复选中', 'undo', () => actions.onBatchRestore(), { cancellable: true }),
           // 中间这一枚就是"移除少量/中量"的出口：没有它，想永久删掉几条只能整罐倒（清空回收站）。
           batchButton('purge', '彻底删除选中', 'trash', () => actions.onBatchPurge()),
           batchButton('delete', '清空回收站', 'trash', () => actions.onEmptyTrash()),
         ]
       : [
           // 复制在最前：它是这个页面最高频的动作（与工具栏把搜索放最前是同一条理由）。
-          batchButton('copy', '复制选中', 'copy', () => actions.onBatchCopy()),
+          batchButton('copy', '复制选中', 'copy', () => actions.onBatchCopy(), { cancellable: true }),
           batchButton(
             'star',
             chosen.every((item) => item.starred) ? '取消收藏' : '收藏',
             'star',
             () => actions.onBatchFlag('star'),
+            { cancellable: true },
           ),
           batchButton(
             'pin',
             chosen.every((item) => item.pinned) ? '取消置顶' : '置顶',
             'pin',
             () => actions.onBatchFlag('pin'),
+            { cancellable: true },
           ),
           batchButton('delete', '删除选中', 'trash', () => actions.onBatchDelete()),
         ];

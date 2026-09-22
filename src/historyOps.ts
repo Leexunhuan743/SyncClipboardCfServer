@@ -51,6 +51,10 @@ export async function applyHistoryUpdate(
   type: ProfileType,
   hash: string,
   dto: HistoryRecordUpdateDto,
+  // `deferBroadcast`（2026-09-22，ADR D33）：**批量写**用。逐条广播 = 每条 1 次 DO 子请求，
+  // 批量路径改为"收集载荷、最后 `broadcastMany` 投一次" ⇒ 100 条从 100 次降到 1 次。
+  // 单条调用点一律不传（保持原样：写完立刻广播，且在响应返回前 await 完成）。
+  { deferBroadcast = false }: { deferBroadcast?: boolean } = {},
 ): Promise<HistoryUpdateResult> {
   const db = new HistoryDb(env.DB);
   const result = await db.updateHistory(type, hash, dto);
@@ -59,7 +63,8 @@ export async function applyHistoryUpdate(
 
   // 与 PUT /SyncClipboard.json、POST /api/history 一致：广播在响应返回前 await 完成。
   // 裸调用是 floating promise，Workers 不保证响应后继续执行，推送会非确定性丢失（F6）。
-  await broadcast(env, 'RemoteHistoryChanged', entityToDtoWire(result.entity));
+  // 批量路径（`deferBroadcast`）由调用方在整批跑完后**同样 await** 一次合并广播 —— 纪律不变。
+  if (!deferBroadcast) await broadcast(env, 'RemoteHistoryChanged', entityToDtoWire(result.entity));
   // **软删不再清数据目录**（2026-09-22，ADR D29）：回收站要能真的把记录（连同它的图片/文件）
   // 拿回来，所以数据留到"真的没了"那一刻 —— 30 天硬删（`cleanup.ts` 的 hardDelete 阶段，
   // 它本来就带批次清扫）或用户点「彻底删除」（`/ui/api/history/batch-purge`）时清。

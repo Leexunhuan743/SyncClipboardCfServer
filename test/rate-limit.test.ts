@@ -625,6 +625,29 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
     expect((await hub.fetch(hubClientRequest('lp-big'))).status).toBe(204);
   });
 
+  it('一次请求投递整批（ADR D33）：消息仍**逐条**入队，内容与顺序不变', async () => {
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+    expect((await hub.fetch(hubClientRequest('lp-batch'))).status).toBe(200);
+
+    // 批量写的广播形态：一次子请求带多个载荷（100 条批量写从 100 次 DO 调用降到 1 次）。
+    // 这里钉的是**合并不许改变消息**：三条独立消息、按序到达，而不是一条把三个拼起来。
+    const res = await hub.fetch(
+      new Request('https://hub/broadcast', {
+        method: 'POST',
+        headers: { authorization: basic(USER, PASS) },
+        body: JSON.stringify({ target: 'RemoteHistoryChanged', payloads: ['b1', 'b2', 'b3'] }),
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    const body = await (await hub.fetch(hubClientRequest('lp-batch'))).text();
+    expect(body.match(/RemoteHistoryChanged/g)?.length, '三条独立消息').toBe(3);
+    const positions = ['b1', 'b2', 'b3'].map((m) => body.indexOf(m));
+    expect(positions.every((i) => i >= 0), '三个载荷都在').toBe(true);
+    expect(positions, '按入参顺序').toEqual([...positions].sort((a, b) => a - b));
+  });
+
   it('未超限的消息仍按原语义整批取回', async () => {
     const { env } = createEnv();
     const hub = new SyncClipboardHub(createDoState(), env);

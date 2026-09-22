@@ -138,9 +138,19 @@ export class SyncClipboardHub {
 
     // 广播入口（Worker 写操作后调用；上游 _hubContext.Clients.All 等价）
     if (url.pathname === BROADCAST_PATH && request.method === 'POST') {
-      const { target, payload } = (await request.json()) as { target: string; payload: unknown };
-      console.log(`[DO] broadcast ${target}, clients=${this.clientCount()}`);
-      this.broadcast(target, payload);
+      // 两种形态（2026-09-22，ADR D33）：
+      //   · `{target, payload}`   —— 单条写（PUT / POST / PATCH）
+      //   · `{target, payloads}`  —— **批量写**：一次子请求投递整批。消息仍然**逐条**入队，
+      //     顺序与内容与"逐条广播 N 次"完全一致；省掉的只是 N-1 次 DO 子请求
+      //     （免费档「内部服务子请求」上限 1000/次调用，批量删除 1000 条逐条广播就正好触顶）。
+      const { target, payload, payloads } = (await request.json()) as {
+        target: string;
+        payload?: unknown;
+        payloads?: unknown[];
+      };
+      const batch = Array.isArray(payloads) ? payloads : [payload];
+      console.log(`[DO] broadcast ${target} ×${batch.length}, clients=${this.clientCount()}`);
+      for (const item of batch) this.broadcast(target, item);
       return new Response(null, { status: 200 });
     }
 

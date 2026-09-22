@@ -147,6 +147,27 @@
   animation: spin 620ms linear infinite;
 }
 
+/* 在途且**可中止**的批量按钮（2026-09-22，批量取消）：同一个键换一副面孔 ——
+ * 转圈让位给「中止」文字，指针事件**保留**（这正是它和普通 pending 的唯一区别：
+ * 普通 pending 是 `pointer-events: none`，因为它此刻不接受任何输入）。
+ * 与确认框「取消 → 中止」同一条先例（`js/components/confirm.js`）。 */
+.btn[data-loading="true"][data-cancel="true"] {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.btn[data-loading="true"][data-cancel="true"]::after {
+  content: none; /* 不要转圈：这一刻它不是一个"等待中的按钮"，而是一个"可以按的停止键" */
+}
+.btn[data-loading="true"][data-cancel="true"] .btn__label {
+  visibility: visible;
+}
+/* 窄屏下批量按钮只留图标（layout.css 的 `display: none`），但**在途可中止**时例外：
+ * 「中止」是这一击此刻唯一的意思，藏掉它就只剩一个图标，用户看不出按下去会发生什么。
+ * 多带一个 `[data-loading]` 是为了压过 layout.css 里那条 `:has(svg)` 的权重。 */
+.results__selection .btn[data-loading="true"][data-cancel="true"] .btn__label {
+  display: inline;
+}
+
 /* 成功态：结果留在用户按下的那个控件上（配合 toast.js 的 flashSuccess） */
 .btn[data-state="ok"] {
   --btn-bg: var(--accent-soft);

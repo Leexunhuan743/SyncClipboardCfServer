@@ -278,6 +278,10 @@ const actions = {
   onBatchFlag: batchFlag,
   onBatchRestore: batchRestore,
   onBatchCopy: batchCopy,
+  // 批量取消（2026-09-22）：选择条那枚按钮在途时变成「中止」⇒ 点它走这里。
+  // 钩子为空（对话框驱动的删除 / 彻底删除）时它什么也不做 —— 那两枚按钮不带 `cancellable`，
+  // 根本不会显示「中止」。
+  onBatchCancel: () => batchAbort?.(),
   onPurge: purgeItem,
   onBatchPurge: batchPurge,
   onEmptyTrash: emptyTrash,
@@ -714,6 +718,13 @@ async function restoreItem(item) {
 // ⚠️ 那句话在 2026-09-22（ADR D29）之后变了：删除（软删）**不再**销毁数据 —— 记录连同数据文件
 // 在回收站留 30 天、期间可恢复；代价改成"这条会从所有同步设备上消失，30 天后才彻底清除"。
 // （`messages.js` 的 `deleteConfirmSpec` 是唯一的口径来源，别在这里另写一份。）
+//
+// 批量取消（2026-09-22，用户定案）：**选择条上那枚按钮在途时变成「中止」**，点击它调用这里的钩子。
+// 与确认框里的中止同一条语义（`components/confirm.js` 的「取消 → 中止」是同一手法的先例）：
+//   · 写批量（收藏 / 置顶 / 恢复）—— 片与片之间停，在途那一片跑完 ⇒ 能如实报"停之前生效了多少"；
+//   · 批量复制 —— 是读，连在途请求一起掐断（`api.batchMeta` 把 signal 交给 `request`）。
+// 对话框驱动的那些（删除选中 / 彻底删除）**不走这里**：它们的中止键在框里。
+let batchAbort = null;
 async function runBatch({
   update,
   title,
@@ -736,9 +747,14 @@ async function runBatch({
     });
     // 用户在途按了「中止」：已发出去的那一批跑完了、后面的没发。这不是失败，如实报"停下之前
     // 生效了多少"，界面对账一次即可（服务端的每一批都是原子的，不会有半条）。
+    // 说在哪里由**有没有对话框**决定（与下面 `failed` 那条同一条规矩）：销毁性动作在框里说
+    // （用户按下的地方，`throw` 让确认框渲染），其余走提示条。
     if (result.aborted) {
       await refresh({ silent: true });
-      throw new Error(batchAbortedText(result.updated));
+      const text = batchAbortedText(result.updated);
+      if (destructive) throw new Error(text);
+      toasts.info(text);
+      return false;
     }
     // 服务端是**逐条**判定的：落空通常只是少数几条（被别的设备改过、或已经不在服务器上了），
     // 而其余几十条已经生效。故先把界面拉回事实，再如实报出条数 —— 原文案「有 N 条未生效，
@@ -759,15 +775,21 @@ async function runBatch({
   };
 
   if (!destructive) {
+    // 无对话框的那三个（收藏 / 置顶 / 恢复）也要能停：控制器挂在模块级钩子上，
+    // 选择条那枚按钮在途时变成「中止」就调它（见 `batchAbort` 的说明）。
+    const controller = new AbortController();
+    batchAbort = () => controller.abort();
     let allApplied = false;
     try {
-      allApplied = (await apply()) !== false;
+      allApplied = (await apply({ signal: controller.signal })) !== false;
     } catch (error) {
       if (handleAuthError(error)) return false;
-      // 这里只剩**请求本身**失败（部分未生效那条路已在 apply 内用提示条报过）
+      // 这里只剩**请求本身**失败（部分未生效与中止两条路已在 apply 内报过）
       toasts.error(`批量操作失败：${error.message}`);
       await refresh({ silent: true });
       return false;
+    } finally {
+      batchAbort = null;
     }
     await refresh({ silent: true });
     list.restoreFocus();
@@ -901,14 +923,30 @@ async function batchCopy() {
   const chosen = [...store.get().selection.values()];
   if (chosen.length === 0) return false;
 
+  // 可中止（2026-09-22）：全文要按 100 条分片取，几千条时这是几十秒的事。
+  // 全文**没取齐就不动剪贴板**（下面那次 writeText 在最后），所以中止的语义很干净：
+  // 「什么都没写」。这也是它敢把 signal 直接交给 `request`（掐断在途请求）的原因 —— 读没有副作用。
+  const controller = new AbortController();
+  batchAbort = () => controller.abort();
   let full;
   try {
-    full = await api.batchMeta(chosen);
+    full = await api.batchMeta(chosen, { signal: controller.signal });
   } catch (error) {
+    if (controller.signal.aborted) {
+      toasts.info('已中止，未写入剪贴板');
+      return false;
+    }
     if (handleAuthError(error)) return false;
     toasts.error(`取全文失败：${error.message}`, {
       action: { label: '重试', run: () => void batchCopy() },
     });
+    return false;
+  } finally {
+    batchAbort = null;
+  }
+  if (controller.signal.aborted) {
+    // 片与片之间停下的那条路（在途请求没被掐断，是循环自己看到旗子退出的）
+    toasts.info('已中止，未写入剪贴板');
     return false;
   }
 
