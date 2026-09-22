@@ -441,3 +441,50 @@ describe('部署开关清单：.dev.vars.example / deploy.yml / README 三处一
     ).toEqual([]);
   });
 });
+
+// ===== 部署链守卫：列迁移脚本与步骤顺序（2026-09-22 发布审计新增）=====
+// 迁移是「推送即部署」链路上唯一会先于新代码跑的东西：schema.sql 的 CREATE IF NOT EXISTS
+// 对老库不生效，新代码的 INSERT/UPDATE 写 TransferDataHash 列 ⇒ 列不存在则部署后每次写库失败，
+// 而只读冒烟（statistics=COUNT(*)）根本发现不了。以下两条把「手检」变成常驻判据。
+
+describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
+  it('parseD1Output 处理 wrangler 的横幅前缀 / 空输出 / 正常 JSON 三形态', async () => {
+    // tools/ 不在 tsconfig include，也没有 .d.ts —— 静态导入即报 TS7016，故用 ts-expect-error
+    // @ts-expect-error —— 无 migrate-d1.mjs 的声明文件
+    const mod = await import('../tools/migrate-d1.mjs');
+    // --remote 会在 JSON 前打印 `🌀 Executing …`（直接 JSON.parse 会抛 → 挡住部署）
+    const banner =
+      '🌀 Executing on remote database syncclipboard (a1b2c3)\n' +
+      '[{"results":[{"name":"ID"},{"name":"TransferDataHash"}],"success":true}]';
+    expect([...mod.parseD1Output(banner)]).toEqual(['ID', 'TransferDataHash']);
+    // 正常形态（多页结构）
+    expect([
+      ...mod.parseD1Output('[{"results":[{"name":"A"}],"success":true},{"results":[{"name":"B"}],"success":true}]'),
+    ]).toEqual(['A', 'B']);
+    // 空输出：解析失败必须抛（脚本据此非零退出）
+    expect(() => mod.parseD1Output('no json')).toThrow();
+  });
+
+  it('deploy.yml 的迁移步骤存在、先于 Deploy Worker，且与 schema 步骤同库寻址', () => {
+    const yml = read('.github/workflows/deploy.yml');
+    const stepIdx = (name: string) => yml.indexOf(`- name: ${name}`);
+    const applyIdx = stepIdx('Apply D1 schema (idempotent)');
+    const migrateIdx = stepIdx('Migrate D1 (idempotent)');
+    const deployIdx = stepIdx('Deploy Worker');
+    expect(applyIdx, '缺少 Apply D1 schema 步骤').toBeGreaterThan(-1);
+    expect(migrateIdx, '缺少 Migrate D1 步骤').toBeGreaterThan(applyIdx);
+    expect(deployIdx, 'Deploy Worker 步骤缺失').toBeGreaterThan(migrateIdx);
+    // 三处必须按 **binding 名** `DB` 寻址：按库名 `syncclipboard` 会与注入的 database_id 解耦
+    const d1ExecLines = yml
+      .split('\n')
+      .filter((l) => l.includes('wrangler d1 execute'))
+      .filter((l) => !l.trim().startsWith('#')); // 跳过注释（如「参数本身就是 name or binding」的说明）
+    expect(d1ExecLines.length).toBeGreaterThanOrEqual(2);
+    for (const line of d1ExecLines) {
+      expect(line, `d1 execute 必须用 binding 名 DB：${line.trim()}`).toMatch(/d1 execute DB\b/);
+      expect(line).not.toMatch(/d1 execute syncclipboard\b/);
+    }
+    const script = read('tools/migrate-d1.mjs');
+    expect(script).toContain("const DB = 'DB'");
+  });
+});

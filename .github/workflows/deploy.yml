@@ -37,6 +37,7 @@ on:
       - 'public/**'              # Web 界面（静态资源，随部署上线）
       - 'test/**'                # 测试套件 + 文档口径守卫
       - 'schema.sql'             # D1 表结构（部署时执行）
+      - 'tools/**'               # 部署脚本（migrate-d1.mjs 在 Deploy 前执行）
       - 'wrangler.toml'          # 部署配置（绑定、[assets]、[triggers]、[vars]）
       - 'package.json'
       - 'package-lock.json'
@@ -85,8 +86,8 @@ jobs:
           set -euo pipefail
           # 本地凭据文件（wrangler dev 读取）；仅存在于 CI 容器内，不涉及线上资源
           printf 'USERNAME=%s\nPASSWORD=%s\n' "$SYNC_USER" "$SYNC_PASS" > .dev.vars
-          # 初始化本地 D1（幂等：schema.sql 用 CREATE IF NOT EXISTS）
-          npx wrangler d1 execute syncclipboard --local --file=./schema.sql
+          # 初始化本地 D1（幂等：schema.sql 用 CREATE IF NOT EXISTS）；按 binding 名寻址，与线上同一规则
+          npx wrangler d1 execute DB --local --file=./schema.sql
           # 后台启动，等到端口就绪后再跑测试
           # --test-scheduled：让 cleanup 套件能经 GET /__scheduled 触发真实 Cron 处理器
           npx wrangler dev --local --test-scheduled --port 8787 --ip 127.0.0.1 > /tmp/wrangler-dev.log 2>&1 &
@@ -250,7 +251,9 @@ jobs:
         run: npm ci
 
       - name: Apply D1 schema (idempotent)
-        run: npx wrangler d1 execute syncclipboard --remote --file=./schema.sql
+        # 按 **binding 名** `DB` 寻址：与 Worker 绑定、Migrate 步骤、`database_id` 注入三处同库
+        # （按库名 `syncclipboard` 寻址会与钉住的 database_id 解耦，迁移可能落在另一个同名库上）。
+        run: npx wrangler d1 execute DB --remote --file=./schema.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -480,7 +483,7 @@ jobs:
               fail=1
             fi
           else
-            echo "::notice::未配置 USERNAME/PASSWORD secrets，跳过三条已认证断言（版本比对 / statistics / SyncClipboard.json）。按 README「方式 A」凭据只存在于 Cloudflare，这是预期状态；要启用它们，把两个值配成仓库 secrets 即可。"
+            echo "::warning::未配置 USERNAME/PASSWORD secrets，跳过三条已认证断言（版本比对 / statistics / SyncClipboard.json）。坏部署（如 D1 缺列）在方式 A 下冒烟仍会全绿 —— 按 README「方式 A」凭据只存在于 Cloudflare，这是预期状态；要启用完整验证面，把两个值配成仓库 secrets 即可。"
           fi
 
           # ⑤ 界面可达性：按 UI_ENABLED 的实际生效值断言（无副作用，只是 GET）
