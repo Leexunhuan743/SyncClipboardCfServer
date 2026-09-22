@@ -29,7 +29,12 @@ function describeTarget(item) {
   if (item.type === 'Text') {
     // 按**字符**截而不是码元（2026-09-18 修）：`slice(0, 40)` 落在代理对中间时会留下半个
     // 字符，确认框里渲染成 `�`。这一整段在两版之间逐字一致（见文件头的对等守卫）。
-    const text = truncateText(item.text ?? '', 40);
+    // 先 `trim()` 再判空：**空文本与"只含空白"的文本在确认框里必须看得出来** ——
+    // 直接把原串嵌进引号会渲染成「「   …」」，用户根本不知道自己要删的是哪一条
+    // （列表里同一个位置写的是「（空文本）」，`format.js` 的 `previewText` 做的正是这个 trim）。
+    // 2026-09-22 发布前审核第 8 轮实测：一个纯空白记录（12 个空格/制表/换行）的确认框就是这样。
+    const text = truncateText(item.text ?? '', 40).trim();
+    if (text === '') return '「（空文本）」';
     return `「${text}…」`;
   }
   return `「${item.dataName ?? typeLabel(item.type)}」`;

@@ -348,6 +348,16 @@ describe('messages · 用户文案对齐服务端语义', () => {
     expect(inline.message).toContain('30 天内可以从回收站恢复');
     // 长正文只取开头（按**字符**截，不切坏代理对），避免把一行对话框撑成正文
     expect(inline.message).toContain(`「${'a'.repeat(40)}…」`);
+
+    // 空文本 / 只含空白：确认框里必须**看得出来**（2026-09-22 审核第 8 轮）。
+    // 此前直接嵌原串 ⇒ 渲染成「「   …」」，用户不知道要删的是哪一条。
+    for (const text of ['', '   \t \n \r\n  ']) {
+      const spec = deleteConfirmSpec({ type: 'Text', text, hasData: false });
+      expect(spec.message, `text=${JSON.stringify(text)}`).toContain('「（空文本）」');
+      expect(spec.message, '不得留下空引号').not.toContain('「…」');
+    }
+    // 前后空白不算内容的一部分（与列表里的 `previewText` 同一个 trim 口径）
+    expect(deleteConfirmSpec({ type: 'Text', text: '  hello world  ', hasData: false }).message).toContain('「hello world…」');
   });
 
   it('批量删除：标题带条数，正文说明 30 天内可恢复', () => {
