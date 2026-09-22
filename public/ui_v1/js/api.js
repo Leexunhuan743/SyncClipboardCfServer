@@ -394,7 +394,12 @@ export function itemPath(item) {
 
 // 会话过期时统一回登录页（保留当前位置，登录后跳回）
 export function redirectToLogin() {
-  const next = encodeURIComponent(`${location.pathname}${location.search}`);
+  // `next` **必须带上 hash**：`#Text-<hash>` 就是深链接（把一条记录分享给别人的正路），
+  // 丢掉它意味着"别人分享给你的那条记录，登录之后就找不到了"。
+  // 2026-09-22 发布前审核第 12 轮实测：未登录打开深链接 ⇒ `next` 只有路径 ⇒ 登录后落在普通列表。
+  // `next-target.js` 的 `resolveNext()` 本来就保留 hash（返回 `pathname + search + hash`），
+  // 故这条链只要这里带上就通了。
+  const next = encodeURIComponent(`${location.pathname}${location.search}${location.hash}`);
   location.replace(`${PAGE_BASE}/login.html?next=${next}`);
 }
 
