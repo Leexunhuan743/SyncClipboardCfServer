@@ -135,19 +135,26 @@ export const SETTINGS_META_KEYS = {
 
 const SETTINGS_META_KEY_LIST: string[] = Object.values(SETTINGS_META_KEYS);
 
-// env 未提供时的内置默认（与 wrangler.toml [vars] 的取值一致：7 天 / 1000 条）。
+// env 未提供时的内置默认（与 wrangler.toml [vars] 的取值一致：0 = 不限制保留时长 / 1000 条）。
+// ⚠️ 保留期这一项 2026-09-22 由 10080（7 天）改成 **0**：对齐上游 3.3.0 的
+// `AppSettings.HistoryRetentionMinutes` 默认值（上游 #402/#426 把它改成了「0 = 不限制」，
+// 只有条数上限兜底）。改动带出两个连带面，见 `RetentionSource` 与 `DISABLED_KEY` 的注释。
 // **不出现在 API 响应里**：接口报的是「配置值」，把引擎默认回填成配置值会让「未设置」这个状态消失。
-const DEFAULT_RETENTION_MINUTES = 10080;
+const DEFAULT_RETENTION_MINUTES = 0;
 const DEFAULT_MAX_SAVED_HISTORY_COUNT = 1000;
+
+/** 生效值来自哪里。三档按**实际出处**取，消费者的用途都是"把这个 0 归给谁"（见 `disabledReason`）。 */
+export type RetentionSource = 'meta' | 'env' | 'default';
 
 export interface RetentionSettings {
   /** 生效的保留期（分钟）。0 = 关闭该阶段；null = 未配置（Meta 与 env 都没给）。 */
   retentionMinutes: number | null;
   /** 生效的条数上限。0 = 关闭该阶段；null = 未配置。 */
   maxSavedHistoryCount: number | null;
-  /** 生效值来自哪里：`meta` = 存在 Meta 覆盖（值非法时视为不存在），`env` = 否则 */
-  retentionSource: 'env' | 'meta';
-  maxCountSource: 'env' | 'meta';
+  /** 生效值来自哪里：`meta` = 存在 Meta 覆盖（值非法时视为不存在）、`env` = 否则部署变量给了合法值、
+   *  `default` = 两处都没有（含变量存在但值非法）⇒ 生效的是内置默认 */
+  retentionSource: RetentionSource;
+  maxCountSource: RetentionSource;
 }
 
 // 解析单个配置值：合法 = 非负安全整数（**0 合法**），非法/缺失 = null（未配置）。
@@ -168,11 +175,20 @@ export async function readRetentionSettings(db: HistoryDb, env: Bindings): Promi
     retentionMinutes: parseSettingValue(meta.get(SETTINGS_META_KEYS.retentionMinutes)),
     maxSavedHistoryCount: parseSettingValue(meta.get(SETTINGS_META_KEYS.maxSavedHistoryCount)),
   };
+  const fromEnv = {
+    retentionMinutes: parseSettingValue(env.HISTORY_RETENTION_MINUTES),
+    maxSavedHistoryCount: parseSettingValue(env.MAX_SAVED_HISTORY_COUNT),
+  };
+  // 来源按**生效值的实际出处**取，三档缺一不可：内置默认自 2026-09-22 起是 0（关闭保留期），
+  // 「两处都没设」这一态因此**真的会**关掉一个阶段 —— 只报 `env` 会把维护者指向一个根本没配的变量
+  // （见 `disabledReason` 的注释与 `docs/ui.md` 的保留策略小节）。
+  const sourceOf = (metaValue: number | null, envValue: number | null): RetentionSource =>
+    metaValue !== null ? 'meta' : envValue !== null ? 'env' : 'default';
   return {
-    retentionMinutes: fromMeta.retentionMinutes ?? parseSettingValue(env.HISTORY_RETENTION_MINUTES),
-    maxSavedHistoryCount: fromMeta.maxSavedHistoryCount ?? parseSettingValue(env.MAX_SAVED_HISTORY_COUNT),
-    retentionSource: fromMeta.retentionMinutes === null ? 'env' : 'meta',
-    maxCountSource: fromMeta.maxSavedHistoryCount === null ? 'env' : 'meta',
+    retentionMinutes: fromMeta.retentionMinutes ?? fromEnv.retentionMinutes,
+    maxSavedHistoryCount: fromMeta.maxSavedHistoryCount ?? fromEnv.maxSavedHistoryCount,
+    retentionSource: sourceOf(fromMeta.retentionMinutes, fromEnv.retentionMinutes),
+    maxCountSource: sourceOf(fromMeta.maxSavedHistoryCount, fromEnv.maxSavedHistoryCount),
   };
 }
 
@@ -530,10 +546,18 @@ function runPhase(
 }
 
 // 关闭成因里那个「旋钮」的键名：按生效值的**实际来源**取 —— Meta 覆盖用 SETTINGS_META_KEYS 里那个键
-// （界面 `PUT /ui/api/settings` 写下的正是它），env 回落用部署变量名。
+// （界面 `PUT /ui/api/settings` 写下的正是它），env 回落用部署变量名，内置默认用它自己的常量名。
 const DISABLED_KEY = {
-  retention: { meta: SETTINGS_META_KEYS.retentionMinutes, env: 'HISTORY_RETENTION_MINUTES' },
-  trim: { meta: SETTINGS_META_KEYS.maxSavedHistoryCount, env: 'MAX_SAVED_HISTORY_COUNT' },
+  retention: {
+    meta: SETTINGS_META_KEYS.retentionMinutes,
+    env: 'HISTORY_RETENTION_MINUTES',
+    default: 'DEFAULT_RETENTION_MINUTES',
+  },
+  trim: {
+    meta: SETTINGS_META_KEYS.maxSavedHistoryCount,
+    env: 'MAX_SAVED_HISTORY_COUNT',
+    default: 'DEFAULT_MAX_SAVED_HISTORY_COUNT',
+  },
 } as const;
 
 /**
@@ -541,10 +565,12 @@ const DISABLED_KEY = {
  * 关闭时返回写进 `reason=` 的成因串。
  *
  * ⚠️ 成因里的键名必须按**生效值的实际来源**取：生效值来自 `readRetentionSettings`（Meta 覆盖优先、
- * env 只是回落），所以那个 0 **通常来自界面**（`PUT /ui/api/settings` 写下的 Meta 覆盖）—— 恒写 env
- * 变量名会把维护者指向一个**不是来源**的旋钮（实测：界面把保留期填成 0 之后，日志正是
+ * env 只是回落、都没有才是内置默认），所以那个 0 **通常来自界面**（`PUT /ui/api/settings` 写下的 Meta 覆盖）
+ * —— 恒写 env 变量名会把维护者指向一个**不是来源**的旋钮（实测：界面把保留期填成 0 之后，日志正是
  * `reason=HISTORY_RETENTION_MINUTES=0`，而那一刻部署变量仍是 10080）。
- * 第三种来源（内置默认 10080 / 1000）不可能是 0 ⇒ `reason` 只有「Meta 键」与「env 变量名」两种形态。
+ * 三种形态：`settings:retentionMinutes=0` / `HISTORY_RETENTION_MINUTES=0` / `DEFAULT_RETENTION_MINUTES=0`。
+ * 第三种自 2026-09-22 起**可达**：保留期的内置默认就是 0（对齐上游 3.3.0「默认不限制」），
+ * 于是「两处都没配」的部署每轮都会关掉 retention 阶段并如实把它归给内置默认。
  */
 function disabledReason(
   phase: CleanupPhase,
@@ -590,12 +616,14 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
     } catch (err) {
       recordFailure(run.failures, 'meta', err);
       // 读 Meta 失败 ⇒ 按「没有 Meta 覆盖」处理、整份回落 env（与 readRetentionSettings 的「无覆盖」
-      // 分支同义），故两个来源都记 'env'；取值仍用 parseNonNegativeInt，与改动前逐位相同。
+      // 分支同义），取值仍用 parseNonNegativeInt，与改动前逐位相同。
+      // 来源则要看 env 是否**真的**给了合法值：没给 ⇒ `'default'`（那一刻生效的是内置默认），
+      // 否则会把内置默认造成的关闭归给一个根本没配的变量（与 readRetentionSettings 的三档判据同源）。
       settings = {
         retentionMinutes: parseNonNegativeInt(env.HISTORY_RETENTION_MINUTES, DEFAULT_RETENTION_MINUTES),
         maxSavedHistoryCount: parseNonNegativeInt(env.MAX_SAVED_HISTORY_COUNT, DEFAULT_MAX_SAVED_HISTORY_COUNT),
-        retentionSource: 'env',
-        maxCountSource: 'env',
+        retentionSource: parseSettingValue(env.HISTORY_RETENTION_MINUTES) === null ? 'default' : 'env',
+        maxCountSource: parseSettingValue(env.MAX_SAVED_HISTORY_COUNT) === null ? 'default' : 'env',
       };
     }
     const retentionMinutes = settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES;

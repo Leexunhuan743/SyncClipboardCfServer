@@ -49,8 +49,10 @@ VERSION = "3.3.0-beta1"
 # 历史保留策略（对齐上游 appsettings AppSettings.MaxSavedHistoryCount / HistoryRetentionMinutes）
 # 这两个值可被 GitHub 仓库变量覆盖（同名）：CI 部署时若配置了 MAX_SAVED_HISTORY_COUNT /
 # HISTORY_RETENTION_MINUTES，会以 --var 覆盖此处；不配就用这里的默认值（下游：src/cleanup.ts）。
+# ⚠️ 保留期的上游语义是「**0 = 不限制**」（上游 #402/#426 把默认值从 10080 改成 0，见 Changes.md 的
+# 「服务器」段），故这里默认 0 = 默认不做按时间的清理，只由条数上限兜底。
 MAX_SAVED_HISTORY_COUNT = "1000"
-HISTORY_RETENTION_MINUTES = "10080"
+HISTORY_RETENTION_MINUTES = "0"
 # Web 界面开关（默认开）。GitHub 仓库变量 UI_ENABLED=false 可关掉整个界面：四个挂载点
 # （/ui、/ui_v1、/ui_v2、/ui_shared 及各自的 /*，含静态资源）与 /ui/api/* 一律 404，
 # 根路径对浏览器也不再跳转；协议面（/api/*、/SyncClipboard.json、/file/*、Hub）完全不受影响。

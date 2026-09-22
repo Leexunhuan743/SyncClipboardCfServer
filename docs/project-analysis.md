@@ -373,9 +373,9 @@ flowchart TD
 
 ### 8.1 双层配置系统
 1. **静态/部署环境变量（`wrangler.toml` 与 GitHub Variables）**：
-   - `VERSION`：服务版本号，固定对齐上游报 `"3.2.0"`；
-   - `MAX_SAVED_HISTORY_COUNT`：历史条数硬上限（默认 1000）；
-   - `HISTORY_RETENTION_MINUTES`：保留时长（默认 10080 分钟 = 7 天）；
+   - `VERSION`：服务版本号，固定对齐上游报 `"3.3.0-beta1"`；
+   - `MAX_SAVED_HISTORY_COUNT`：历史条数硬上限（默认 1000；0 = 不限制条数）；
+   - `HISTORY_RETENTION_MINUTES`：保留时长（**默认 0 = 不限制**，对齐上游 3.3.0；填正数如 10080 = 7 天才按时间清理）；
    - `MAX_REQUEST_BODY_BYTES`：单请求体上限（默认 48 MiB，允许调至 64 MiB）；
    - `UI_ENABLED`：Web 界面总熔断开关（默认 `"true"`）；
    - `ENFORCE_STRONG_CREDENTIALS`：弱口令硬阻断开关（**未设置 = 仅打告警日志**；设 `"true"` 时命中文档化默认口令或长度不足 8 的请求一律 500）；

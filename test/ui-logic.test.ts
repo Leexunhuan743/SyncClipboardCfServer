@@ -568,26 +568,28 @@ describe('部署信息 · 保留策略的人话口径（V1 `info.js`）', () => 
     expect(off).not.toContain('未设置');
   });
 
-  it('null = 没显式配置，生效值是内置默认（7 天 / 1000 条），不是「不限」也不是「按部署环境变量」', () => {
+  it('null = 没显式配置，生效值是内置默认（不限制保留时长 / 1000 条），不是「0 天」也不是「按部署环境变量」', () => {
+    // 2026-09-22 起内置默认保留期 = 0（对齐上游 3.3.0）⇒ "未设置"要说成"不限制"，
+    // 不能写成「保留 0 天」（读起来像什么都不留）也不能说成"按部署环境变量"（指向不存在的配置项）。
     const both = summary(null, null);
     expect(both).toContain('未设置');
-    expect(both).toContain('7 天');
+    expect(both).toContain('不限制保留时长');
     expect(both).toContain('1000 条');
+    expect(both).not.toContain('7 天');
 
     // 只有一项是 null 时，另一项照常显示，且这一项说清回落值
     const mixed = summary(null, 5000);
-    expect(mixed).toContain('内置默认 7 天');
+    expect(mixed).toContain('不限制保留时长');
     expect(mixed).toContain('上限 5000 条');
-    expect(mixed).not.toContain('不限');
 
     const note = retentionEffectiveText({ retentionMinutes: null, maxSavedHistoryCount: 500 });
-    expect(note).toContain('10080 分钟（内置默认）');
+    expect(note).toContain('不限制（内置默认 0）');
     expect(note).toContain('来源：内置默认');
-    expect(note).not.toContain('不限');
+    expect(note).not.toContain('0 分钟');
     expect(note).not.toContain('按部署环境变量');
   });
 
-  it('来源与生效值一致：meta = 此处的设置、env = 部署环境变量', () => {
+  it('来源与生效值一致：meta = 此处的设置、env = 部署环境变量、default = 内置默认', () => {
     const note = retentionEffectiveText({
       retentionMinutes: 1440,
       maxSavedHistoryCount: 1000,
@@ -597,6 +599,17 @@ describe('部署信息 · 保留策略的人话口径（V1 `info.js`）', () => 
     expect(note).toContain('保留 1440 分钟');
     expect(note).toContain('此处的设置');
     expect(note).toContain('部署环境变量');
+
+    // 'default' 档（2026-09-22 起随内置默认=0 一起可达）：必须显示「内置默认」而不是「部署环境变量」
+    // —— 后者会让用户去找一个并不存在的配置项。
+    const fromDefault = retentionEffectiveText({
+      retentionMinutes: null,
+      maxSavedHistoryCount: null,
+      retentionSource: 'default',
+      maxCountSource: 'default',
+    });
+    expect(fromDefault).toContain('内置默认');
+    expect(fromDefault).not.toContain('部署环境变量');
   });
 });
 

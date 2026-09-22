@@ -97,8 +97,14 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
   it('Cron 确实执行了保留期清理（否则「数据存活」断言是空转的）', { timeout: 60_000 }, async (ctx) => {
     if (!cronAvailable) return ctx.skip();
 
-    // 造一条**超过保留期**的记录（HISTORY_RETENTION_MINUTES 默认 10080 = 7 天）：
+    // 前提必须是**自足的**：env 的保留期自 2026-09-22 起是 0 = 不限制（wrangler.toml 对齐上游 3.3.0），
+    // 不写覆盖就跑这条，保留期阶段什么都不做 ⇒ "Cron 未执行保留期清理"（2026-09-22 实测踩到）。
+    // 这里显式写一条**很小的 Meta 覆盖**（保留 10 分钟）+ 压住 trim（1,000,000），
+    // 让"删掉这条 8 天前的记录"这件事**只能**来自保留期阶段；`afterAll` 会清掉这两个覆盖键。
     // POST 允许显式设定 lastModified/lastAccessed，故可构造过期条件
+    const pin = await putSettings({ retentionMinutes: 10, maxSavedHistoryCount: 1_000_000 });
+    expect(pin.status, '压住 trim + 开保留期覆盖失败').toBe(200);
+
     const name = `cron-ret-${RUN}.bin`;
     const content = Buffer.from(`retention-${RUN}`);
     const hash = fileHash(name, content);
@@ -131,6 +137,11 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
     // 关键：Cron 必须把这条过期记录软删 —— 证明 scheduled handler 真的跑了
     const after = (await (await req(`/api/history/File-${hash}`)).json()) as { isDeleted: boolean };
     expect(after.isDeleted, 'Cron 未执行保留期清理').toBe(true);
+
+    // 自清：把本用例写的覆盖键清掉 —— 否则后面「保留策略在线可调」里"未提供的字段 = env"的断言
+    // 会读到本用例留下的 Meta 覆盖而误红（两个 describe 的用例交错执行，afterAll 只跑在最后）。
+    const clean = await putSettings({ retentionMinutes: null, maxSavedHistoryCount: null });
+    expect(clean.status, '清理本用例的覆盖键失败').toBe(200);
   });
 
   it('Cron 不得删除活跃记录的数据（生产事故的回归守卫）', { timeout: 60_000 }, async (ctx) => {
@@ -232,7 +243,11 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
     await connection.start();
 
     try {
-      // 过期记录（8 天前）→ Cron 会软删并广播
+      // 过期记录（8 天前）→ Cron 会软删并广播。前提必须自足（env 保留期 = 0 = 不限制）：
+      // 显式写保留 10 分钟的覆盖 + 压住 trim，让这条记录的软删**只能**来自保留期阶段；
+      // 用例末尾自清（后面的用例假设"未提供的字段 = env"）。
+      const pin = await putSettings({ retentionMinutes: 10, maxSavedHistoryCount: 1_000_000 });
+      expect(pin.status, '开保留期覆盖 + 压 trim 失败').toBe(200);
       const name = `cron-bc-${RUN}.bin`;
       const content = Buffer.from(`broadcast-${RUN}`);
       const hash = fileHash(name, content);
@@ -276,6 +291,8 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
       expect(matched(), 'Cron 软删后未广播 RemoteHistoryChanged').toBe(true);
     } finally {
       await connection.stop();
+      // 自清本用例的覆盖键（理由见用例开头注释；afterAll 也会再清一次，这里双保险）
+      await putSettings({ retentionMinutes: null, maxSavedHistoryCount: null }).catch(() => {});
     }
   });
 });
@@ -327,8 +344,9 @@ async function readSettingsBody(res: Response): Promise<SettingsRetention> {
   return raw.retention;
 }
 
-// 造一条**超过 env 保留期**的记录（8 天前；env 的 HISTORY_RETENTION_MINUTES=10080=7 天，
-// 与本文件既有用例同一前提），返回它的 hash。POST /api/history 允许显式给出时间戳，故可构造过期条件。
+// 造一条**8 天前**的记录（时间戳对保留期/裁剪判定都构成"过期候选"；env 的保留期现在是 0 = 不限制，
+// 但 trim 的排序口径 MAX(LastModified, LastAccessed) 同样吃它），返回它的 hash。
+// POST /api/history 允许显式给出时间戳，故可构造过期条件。
 async function createExpiredRecord(label: string): Promise<string> {
   const name = `${label}-${RUN}.bin`;
   const content = Buffer.from(`${label}-${RUN}`);
@@ -412,24 +430,26 @@ describe('保留策略在线可调（GET/PUT /ui/api/settings 与 Cron 的联动
     expect(await triggerCron(), '触发 /__scheduled 失败').toBeLessThan(400);
     expect(await isDeleted(hash), 'Meta 覆盖未生效：记录按 env 的 7 天被软删').toBe(false);
 
-    // 清除保留期覆盖（条数上限仍压着）→ 记录在下一次 Cron 里被**保留期阶段**删掉
-    // （trim 不是来源，故这一条断言能证明「回落 env」真的回到了 10080 分钟）
+    // 清除保留期覆盖（条数上限仍压着）→ 回落 env。**env 的保留期自 2026-09-22 起是 0 = 不限制**
+    // （wrangler.toml 默认值已对齐上游 3.3.0）⇒ 清除后**没有**任何按时间的清理会删这条 8 天前的记录：
+    // 这里断言的是"回落真的到了 env（且值 = 0）"，而不是"清除后记录被删"（那是 env=10080 时代的旧前提）。
+    // 「保留期阶段确实能删过期记录」的证明在 `cleanup-budget.test.ts`（真实 runCleanup，可精确摆布 env）。
     const cleared = await putSettings({ retentionMinutes: null });
     expect(cleared.status).toBe(200);
     const fallback = await readSettingsBody(cleared);
     expect(fallback.retentionSource).toBe('env');
-    expect(fallback.retentionMinutes, 'env 回落值与本套件「env = 7 天」的前提一致').toBe(10080);
+    expect(fallback.retentionMinutes, 'env 回落值应与 wrangler.toml 的默认一致（0 = 不限制）').toBe(0);
     expect(fallback.maxCountSource, '清除一个字段时另一个被连带清除了').toBe('meta');
 
     expect(await triggerCron()).toBeLessThan(400);
-    expect(await isDeleted(hash), '清除覆盖后未回落 env：过期记录仍未被软删').toBe(true);
+    expect(await isDeleted(hash), 'env 保留期 = 0 ⇒ 不应被按时间软删（清除覆盖回到"不限制"）').toBe(false);
   });
 
   it('覆盖值 0 = 关闭该阶段，绝不被当成非法值回落默认（回归守卫）', { timeout: 90_000 }, async (ctx) => {
     if (!cronAvailable) return ctx.skip();
 
-    // 0 是**合法**覆盖值（关闭保留期清理）。若实现把它当非法值回落默认 10080，
-    // 这条 8 天前的记录会被软删 —— 用户的「别清理」会静默变成「按默认清理」。
+    // 0 是**合法**覆盖值（关闭保留期清理）。若实现把它当非法值回落默认（现为 0 = 不限制，
+    // 曾是 10080 = 7 天），这条 8 天前的记录会被软删 —— 用户的「别清理」会静默变成「按默认清理」。
     // 同时压住 trim（同上一条的理由），使唯一的删除来源只剩保留期阶段。
     const applied = await putSettings({ retentionMinutes: 0, maxSavedHistoryCount: 1_000_000 });
     expect(applied.status).toBe(200);

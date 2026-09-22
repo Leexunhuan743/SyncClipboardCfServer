@@ -156,6 +156,9 @@ services.Configure<KestrelServerOptions>(options => options.Limits.MaxRequestBod
 **位置**：`src/SyncClipboard.Server.Core/Services/History/HistoryService.cs:516-530`（`RemoveOutOfDateDeletedRecords`）、`:538-564`（`RemoveOutOfRetentionRecords`）、`HistoryCleaner.cs:28-64`（两个循环 + `Task.Delay(10min/12h)`）
 
 **现状**：`IsDeleted=1` 只是软删；30 天后由清理任务硬删；`ClearAllAsync` 是"全清"而非"单条彻底清除"。默认保留期 `HistoryRetentionMinutes=10080`（7 天）、条数上限 1000（`appsettings.json`）。
+> **2026-09-22 增补**：上游 3.3.0（#402/#426）把 `HistoryRetentionMinutes` 默认值改成 **`0` = 不限制** ——
+> 「保留期内的明文仍在库」的实际窗口从 7 天变成**默认无上限**（只有条数上限 1000 兜底）。
+> cfserver 已随该口径同步（`src/cleanup.ts` 的内置默认、`wrangler.toml`、README 开关表）。
 
 **建议**：在 UI/API 增加"彻底删除此条（不可恢复）"入口（D1 行 + 数据文件双清），或把"删除"在 UI 上明确标注为"标记删除，30 天后清除"。
 
@@ -396,6 +399,9 @@ await _dbContext.HistoryRecords.AddAsync(entity, token);   // ← 无 DB 层唯�
 ## Issue 15 · 已删记录的本地数据在 30 天后被"只删行不删文件"，而负责删文件的那个 Job **通常抢不到**（客户端）
 
 **严重度**：Medium-High（`EnableSyncHistory = true` 时敏感内容在盘上至少多留 7 天；关掉清理后可能永久遗留）
+> **2026-09-22 增补**：上游 3.3.0 把服务端保留期默认改成 `0` = 不限制（#402/#426），但**客户端**这条
+> `RemoveSoftDeletedOutOfDateRecords` 的周期与"至少多留 7 天"的窗口**未变**（它管的是客户端本地盘）；
+> 服务端默认不再按时间清理后，"关掉清理后可能永久遗留"从"用户主动关"变成"上游默认"。
 **位置**：`src/SyncClipboard.Core/Utilities/History/HistoryManager.cs:408-424`（`RemoveSoftDeletedOutOfDateRecords`）、
 `:453-466`（`CleanupExpiredHistory` 的分派）、`:426-451`（`ClearDeletedHistoryData`，**会**删目录的那个）、
 `:88-105`（`DeleteWorkingDirAsync`）、`:492-541`（`CleanupOrphanedHistoryFolders`）；

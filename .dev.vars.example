@@ -27,8 +27,8 @@ PASSWORD=admin
 # ENFORCE_STRONG_CREDENTIALS=true
 
 # 历史记录保留策略（覆盖 wrangler.toml 中的默认配置）：
-# MAX_SAVED_HISTORY_COUNT=1000          # 保留条数上限（默认 1000 条）
-# HISTORY_RETENTION_MINUTES=10080       # 保留时长，单位分钟（默认 10080 分钟 = 7 天）
+# MAX_SAVED_HISTORY_COUNT=1000          # 保留条数上限（默认 1000 条；0 = 不限制条数）
+# HISTORY_RETENTION_MINUTES=0           # 保留时长，单位分钟（0 = 不限制，默认 0；对齐上游 3.3.0）
 
 # 单请求体大小上限（默认 50331648 = 48 MiB；允许范围 262144..67108864 = 256 KiB..64 MiB）
 # MAX_REQUEST_BODY_BYTES=50331648

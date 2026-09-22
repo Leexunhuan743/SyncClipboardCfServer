@@ -436,8 +436,8 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
 
 - 触发：`wrangler.toml [triggers] crons = ["7,27,47 * * * *"]`（CF 侧统一**每 20 分钟**一次批量执行；
   上游是"10min / 12h / 12h"三个独立后台任务，本实现合成一条 Cron）
-- 配置：`MAX_SAVED_HISTORY_COUNT`（默认 1000）、`HISTORY_RETENTION_MINUTES`（默认 10080 = 7 天）
-- 保留规则：过期的**未收藏/未置顶/未删除**记录才删；条数裁剪按 `MAX(LastModified, LastAccessed)` 升序软删最旧的，收藏/置顶豁免
+- 配置：`MAX_SAVED_HISTORY_COUNT`（默认 1000）、`HISTORY_RETENTION_MINUTES`（**默认 0 = 不限制**，对齐上游 3.3.0 的 `AppSettings.HistoryRetentionMinutes`；见 §9 的保留规则）
+- 保留规则：过期的**未收藏/未置顶/未删除**记录才删 —— 但保留期**默认不限制**（0），所以默认只有条数裁剪（1000 条）在按时间之外兜底；条数裁剪按 `MAX(LastModified, LastAccessed)` 升序软删最旧的，收藏/置顶豁免
 - 每次删除同步清理 R2 工作目录，并广播 `RemoteHistoryChanged`（与上游逐条通知一致）
 - 吞吐与批次（2026-09-15 起）：软删单批 **500 条**（对齐上游 `HistoryManagerHelper.BatchSize`）；
   目录清扫改为"每轮一次列举 + 每批一次批量删"，于是**每条记录只花 1 次子请求**（广播；硬删 0 次），
@@ -571,7 +571,8 @@ SortByLastAccessed / Before·After / ModifiedAfter 及组合）。客户端历�
 | `LastModified` | **过去**值 | 它不参与排序，却决定清理能力：未来值会让 `softDeleteExpiredRecords`（`< cutoff`）与 `hardDeleteOldDeletedRecords`（`< now-30d`）永不命中；**且 afterAll 也删不掉** —— `ShouldUpdate` 在时间差 > 5 分钟时要求 `newLastModified >= oldLastModified`，用 now 收尾会被判 409 |
 
 > 其它早期黑盒套件（`protocol`、`fix-regressions`）也会写记录，但它们用的是「当前时间」时间戳，
-> 会被保留期（7 天）与条数裁剪自然回收，属有界残留。
+> 会被条数裁剪（默认 1000 条）自然回收 —— 注意保留期默认自 2026-09-22 起是 **0 = 不限制**
+> （对齐上游 3.3.0），不再参与按时间回收，属有界残留的口径从「保留期（7 天）+ 条数裁剪」收窄成「条数裁剪」。
 
 **目标守卫（防误指线上）**：七个写库套件在文件顶层调用
 `assertWritableTarget(BASE)`（`test/support/target-guard.ts`）—— `BASE` 非本机

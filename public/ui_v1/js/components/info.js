@@ -24,8 +24,12 @@ const MAX_SAVED_HISTORY_COUNT_MAX = 1_000_000;
 // `retentionMinutes: null`，而 null 的语义是"没显式配置"、不是"不限" —— 那一刻真正生效的
 // 就是这两个内置默认（cleanup 的 `settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES`）。把
 // null 说成"不限"或"按部署环境变量"，等于让用户去找一个并不存在的配置项。
-const DEFAULT_RETENTION_MINUTES = 10_080; // 7 天
+const DEFAULT_RETENTION_MINUTES = 0; // 0 = 不限制（对齐上游 3.3.0 的默认值，见 src/cleanup.ts）
 const DEFAULT_MAX_HISTORY_COUNT = 1_000;
+
+// 内置默认保留期的人话 —— 表单说明与汇总行共用一处，免得 0 被两处各自插值成「保留 0 天」。
+const DEFAULT_TIME_TEXT =
+  DEFAULT_RETENTION_MINUTES === 0 ? '不限制保留时长' : `保留 ${DEFAULT_RETENTION_MINUTES / 1440} 天`;
 
 // 一行「标签 : 值」。标签列定宽、值列吃掉其余宽度 —— 多行并排时标签列彼此对齐，
 // 读起来是一张表；旧版是"小标题一行 + 正文一行"堆叠，十来个字段就堆成一堵墙
@@ -125,16 +129,12 @@ export function retentionText(retention) {
   const minutes = retention?.retentionMinutes ?? null;
   const maxCount = retention?.maxSavedHistoryCount ?? null;
   if (minutes === null && maxCount === null) {
-    // 「未设置」不是「不清理」：cleanup 会用内置默认（7 天 / 1000 条）照常跑，说成「不生效」是错的
-    return (
-      `未设置（按内置默认清理：保留 ${DEFAULT_RETENTION_MINUTES / 1440} 天、` +
-      `最多 ${DEFAULT_MAX_HISTORY_COUNT} 条）`
-    );
+    // 「未设置」不是「不清理」的旧口径：现在内置默认就是"保留期不限制、条数 1000 兜底"，
+    // 说成「不生效」是错的（条数那一档照常跑）。
+    return `未设置（按内置默认：${DEFAULT_TIME_TEXT}、最多 ${DEFAULT_MAX_HISTORY_COUNT} 条）`;
   }
   const timePart =
-    minutes === null
-      ? `保留期未设置（按内置默认 ${DEFAULT_RETENTION_MINUTES / 1440} 天）`
-      : retentionDuration(minutes);
+    minutes === null ? `保留期未设置（按内置默认：${DEFAULT_TIME_TEXT}）` : retentionDuration(minutes);
   const countPart =
     maxCount === null
       ? `条数未设置（按内置默认 ${DEFAULT_MAX_HISTORY_COUNT} 条）`
@@ -152,16 +152,25 @@ export function retentionText(retention) {
 export function retentionEffectiveText(retention) {
   const minutes = retention?.retentionMinutes ?? null;
   const maxCount = retention?.maxSavedHistoryCount ?? null;
+  // `raw === null` ⇒ 生效的是**内置默认**：保留期那一档的默认值是 0（不限制），不能说成「0 分钟」。
   const value = (raw, fallback, unit) =>
-    raw === null ? `${fallback} ${unit}（内置默认）` : raw === 0 ? `已关闭（0）` : `${raw} ${unit}`;
-  const source = (raw) =>
-    raw === null ? '内置默认' : retention?.retentionSource === 'meta' ? '此处的设置' : '部署环境变量';
-  const sourceOfCount = (raw) =>
-    raw === null ? '内置默认' : retention?.maxCountSource === 'meta' ? '此处的设置' : '部署环境变量';
+    raw === null
+      ? fallback === 0
+        ? '不限制（内置默认 0）'
+        : `${fallback} ${unit}（内置默认）`
+      : raw === 0
+        ? `已关闭（0）`
+        : `${raw} ${unit}`;
+  const source = (raw, sourceName) =>
+    raw === null || sourceName === 'default'
+      ? '内置默认'
+      : sourceName === 'meta'
+        ? '此处的设置'
+        : '部署环境变量';
   return (
     `当前生效：保留 ${value(minutes, DEFAULT_RETENTION_MINUTES, '分钟')}、` +
     `上限 ${value(maxCount, DEFAULT_MAX_HISTORY_COUNT, '条')}` +
-    `（来源：${source(minutes)} / ${sourceOfCount(maxCount)}）`
+    `（来源：${source(minutes, retention?.retentionSource)} / ${source(maxCount, retention?.maxCountSource)}）`
   );
 }
 
@@ -378,8 +387,8 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         // 就等于这个承诺不存在。文案与 V2 那版提示（`ui_v2/js/ui/drawer.js` 的「最多条数」行）
         // 说的是同一件事，两版都别只改一处。
         text:
-          '留空 = 回落到部署时的环境变量（两边都没有时用内置默认：保留 ' +
-          `${DEFAULT_RETENTION_MINUTES / 1440} 天、最多 ${DEFAULT_MAX_HISTORY_COUNT} 条）；` +
+          '留空 = 回落到部署时的环境变量（两边都没有时用内置默认：' +
+          `${DEFAULT_TIME_TEXT}、最多 ${DEFAULT_MAX_HISTORY_COUNT} 条）；` +
           '0 = 关闭对应阶段。收藏与置顶的记录不受这两项清理影响。' +
           '改动立即对下一轮清理生效。' +
           `可填范围：保留分钟 0–${RETENTION_MINUTES_MAX}（1 年）、条数 0–${MAX_SAVED_HISTORY_COUNT_MAX}。`,

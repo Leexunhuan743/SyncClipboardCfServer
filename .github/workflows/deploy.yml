@@ -315,9 +315,11 @@ jobs:
           resolve_bool UI_ENABLED "${IN_UI_ENABLED}" true
           # 弱凭据硬失败默认**关**：线上当前用的就是文档化默认口令，置 true 会 fail-closed 直接切断同步
           resolve_bool ENFORCE_STRONG_CREDENTIALS "${IN_ENFORCE_STRONG_CREDENTIALS}" false
-          # 历史保留策略：与 wrangler.toml 的默认一致（1000 条 / 7 天）
-          resolve_int MAX_SAVED_HISTORY_COUNT "${IN_MAX_SAVED_HISTORY_COUNT}" 1000 1 1000000
-          resolve_int HISTORY_RETENTION_MINUTES "${IN_HISTORY_RETENTION_MINUTES}" 10080 1 5256000
+          # 历史保留策略：与 wrangler.toml 的默认一致（1000 条 / 0 = 不限制保留时长，对齐上游 3.3.0）
+          # 下限**必须是 0**：两项的上游语义都是「0 = 不限制」，而 `resolve_int` 对越界值是硬失败（exit 1）
+          # ⇒ 下界写 1 会让「把保留期设成 0（关闭按时间清理）」这个合法配置直接把部署打红。
+          resolve_int MAX_SAVED_HISTORY_COUNT "${IN_MAX_SAVED_HISTORY_COUNT}" 1000 0 1000000
+          resolve_int HISTORY_RETENTION_MINUTES "${IN_HISTORY_RETENTION_MINUTES}" 0 0 5256000
           # 请求体上限：默认 48MiB，允许 256KiB..64MiB（默认值贴着"实际会发生的大小"取，才留得住并发余量：
           # isolate 128MiB 被并发共享，默认 64 时两个大上传重叠就顶格；上限 64 离平台 100MiB 留 36MiB）
           resolve_int MAX_REQUEST_BODY_BYTES "${IN_MAX_REQUEST_BODY_BYTES}" 50331648 262144 67108864

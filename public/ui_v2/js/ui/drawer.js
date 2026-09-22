@@ -431,12 +431,15 @@ export function createDrawer(handlers) {
     retentionKnown = true;
 
     // 非整天数要如实报出：否则输入框是空的，用户会以为"没设置过"，而实际是他设过的值 —— 只是这一栏按天填不下它。
+    // 来源三档都要有说法：'default'（内置默认）时保留期是 0 = 不限制，不能说成"来自部署环境变量"。
     const oddNote =
       oddMinutes === null
         ? null
         : isMeta
           ? `当前保留期是 ${oddMinutes} 分钟（此处设置的旧值，不是整天数）；这一栏留空 = 保持它不变，要清除请填 0 或整天数`
-          : `当前保留期是 ${oddMinutes} 分钟（来自部署环境变量，不是整天数）；这一栏留空不影响它`;
+          : retention.retentionSource === 'default'
+            ? `当前保留期是 ${oddMinutes} 分钟（内置默认；默认 0 = 不限制），这一栏留空不影响它`
+            : `当前保留期是 ${oddMinutes} 分钟（来自部署环境变量，不是整天数）；这一栏留空不影响它`;
     const sourceText = [
       `保留期来源：${sourceLabel(retention.retentionSource)}`,
       `条数上限来源：${sourceLabel(retention.maxCountSource)}`,
@@ -603,6 +606,9 @@ function fact(key, value, tone) {
 }
 
 function sourceLabel(source) {
-  return source === 'meta' ? '此处设置' : '部署环境变量';
+  // 三档（meta / env / default）与 `src/cleanup.ts` 的 RetentionSource 同源；'default' = 内置默认
+  //（保留期那一档的默认是 0 = 不限制，见下）—— 少了这一档会把「内置默认」显示成「部署环境变量」，
+  // 等于让用户去找一个并不存在的配置项。
+  return source === 'meta' ? '此处设置' : source === 'default' ? '内置默认' : '部署环境变量';
 }
 

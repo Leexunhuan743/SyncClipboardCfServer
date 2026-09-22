@@ -451,9 +451,10 @@ describe('F11 · 清理任务的子请求预算', () => {
 // 为什么这组住在本文件：本文件是仓库里唯一用**真实 runCleanup + 真库**跑清理、并把 console 抓下来的
 // 地方（`test/cleanup.test.ts` 那条路要 dev server + `--test-scheduled`，没法精确摆布 env 与 Meta）。
 //
-// 生效值的来源有三态（Meta 覆盖 / 部署变量 / 内置默认，见 src/cleanup.ts 的 readRetentionSettings），
-// 但 `reason=` 只在「阶段被显式关闭（生效值 = 0）」时出现，而**内置默认（10080 / 1000）不可能是 0**
-// ⇒ 这条日志只有前两态。前两个用例按这两态各钉一条，第三个用例把「第三态不可能产出 reason=」反证掉。
+// 生效值的来源有三态（Meta 覆盖 / 部署变量 / 内置默认，见 src/cleanup.ts 的 readRetentionSettings）。
+// `reason=` 只在「阶段被显式关闭（生效值 = 0）」时出现。内置默认**自 2026-09-22 起保留期就是 0**
+// （对齐上游 3.3.0「默认不限制」）⇒ **第三态也会产出 reason=`DEFAULT_RETENTION_MINUTES=0`**；
+// 条数那一档的默认仍是 1000，故 trim 的第三态仍不可能产出 reason=。三个用例各钉一态。
 describe('关闭成因的措辞（reason= 指的必须是真正的来源）', () => {
   // 直接写 Meta 表 = PUT /ui/api/settings 的落库效果（键名取自同一个常量，免得测试自造一个键名，
   // 那样即使实现和接口一起漂走也会"通过"）
@@ -502,7 +503,10 @@ describe('关闭成因的措辞（reason= 指的必须是真正的来源）', ()
     expect(lineOf(logs.lines, 'retention')).not.toContain('reason=');
   });
 
-  it('Meta 与部署变量都没设 ⇒ 走内置默认，两个阶段都不会被判为关闭（故 reason= 只有两态）', async () => {
+  it('Meta 与部署变量都没设 ⇒ 保留期走内置默认 0，reason 必须指向常量名（第三态）', async () => {
+    // 2026-09-22 起内置默认保留期 = 0（对齐上游 3.3.0）：这一态**会**关掉 retention 阶段，
+    // 而它的成因既不是 Meta 键也不是 env 变量名 —— 是 `DEFAULT_RETENTION_MINUTES`。
+    // 若实现把它说成 `HISTORY_RETENTION_MINUTES=0`，维护者会去找一个根本没配的变量。
     const f = fixture({ expired: 0, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: MAX_COUNT });
     const env = f.env as unknown as Record<string, unknown>;
     delete env.HISTORY_RETENTION_MINUTES;
@@ -511,10 +515,11 @@ describe('关闭成因的措辞（reason= 指的必须是真正的来源）', ()
 
     await cronRun(f);
 
-    for (const phase of ['retention', 'trim']) {
-      const line = lineOf(logs.lines, phase);
-      expect(line, `${phase} 被当成关闭了（内置默认不可能是 0）`).toContain('status=done');
-      expect(line, `${phase} 不该有 reason=`).not.toContain('reason=');
-    }
+    // retention：内置默认 0 ⇒ **disabled**，reason 指向常量名
+    expect(lineOf(logs.lines, 'retention')).toContain('status=disabled');
+    expect(reasonOf(logs.lines, 'retention')).toBe('DEFAULT_RETENTION_MINUTES=0');
+    // trim：内置默认仍是 1000 ⇒ 不关闭、不带 reason=
+    expect(lineOf(logs.lines, 'trim')).toContain('status=done');
+    expect(lineOf(logs.lines, 'trim')).not.toContain('reason=');
   });
 });
