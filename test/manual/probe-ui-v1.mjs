@@ -1026,6 +1026,81 @@ try {
   })()`);
   console.log('SELECTION', selectionFlow);
 
+  // 选中态的两条**行体**交互（2026-09-21 用户定；2026-09-22 审核补这一段）：
+  //   ① 选区非空时**点行体 = 切换该行选中**（不再打开预览）；
+  //   ② **Shift+点击 = 范围选择**（锚点与复选框共用 `anchorIndex`，范围与已有选区取并集）。
+  // 为什么必须有它：这两条此前只有人工验证，而它们**没有任何报错出口** —— 坏了的表现是
+  // "点了没反应"或"预览弹出来了"，两种都不会让别的测量变红（上面 SELECTION 那段走的是复选框，
+  // 覆盖不到行体这条路）。判据进 auditFindings ⇒ 影响退出码。
+  const selectModes = await read(`(async () => {
+    // 前面几段可能留下文字选区或开着的对话框：行体点击在"正在划选文字"时会**有意**不动作，
+    // 而模态框会挡住点击 —— 先归零，这一段测的才是它自己那两条语义。
+    window.getSelection()?.removeAllRanges();
+    document.querySelector('dialog[open]')?.close();
+    const rows = [...document.querySelectorAll('.table tr.row')];
+    if (rows.length < 4) return JSON.stringify({ skipped: 'not enough rows' });
+    const bodyOf = (row) => row.querySelector('.cell-content__text') ?? row.querySelector('.cell-content') ?? row;
+    const checked = () => rows.filter((r) => r.querySelector('input.checkbox')?.checked).length;
+    const countText = () => (document.querySelector('.results__selection-count')?.textContent ?? '').trim();
+    const wait = () => new Promise((r) => setTimeout(r, 120));
+    const click = (node, shift = false) => node.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: shift }));
+
+    rows[0].querySelector('input.checkbox').click(); // 复选框那条路（锚点也落在这里）
+    await wait();
+    const afterCheckbox = { checked: checked(), count: countText() };
+
+    click(bodyOf(rows[1])); // ① 选区非空 ⇒ 切换第 1 行选中，且**不开**预览
+    await wait();
+    const afterRowClick = { checked: checked(), count: countText(), dialogOpen: !!document.querySelector('dialog[open]') };
+
+    click(bodyOf(rows[3]), true); // ② Shift+点 ⇒ 锚点(1)..3 全选，并集后应为 4
+    await wait();
+    const afterShift = { checked: checked(), count: countText() };
+
+    // ③ mousedown 上的掐断（只在"选中态 + Shift + 落在行体"时）：原生 Shift+click 会扩展**文字选择**
+    //    （从上次锚点开始划一段），所以那一下必须被 preventDefault；而**普通**按下要放行 ——
+    //    用户拖动划选文字复制那条路不能堵。这两条都是可确定断言的（读 defaultPrevented）。
+    const downEvent = (shift) =>
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true, shiftKey: shift });
+    const shiftDown = downEvent(true);
+    bodyOf(rows[1]).dispatchEvent(shiftDown);
+    const plainDown = downEvent(false);
+    bodyOf(rows[1]).dispatchEvent(plainDown);
+    const mousedown = { shiftPrevented: shiftDown.defaultPrevented, plainPrevented: plainDown.defaultPrevented };
+
+    const clear = [...document.querySelectorAll('.results__selection button')].find((b) => b.textContent.includes('取消选择'));
+    clear?.click();
+    await wait();
+    const afterClear = { checked: checked(), count: countText() };
+    return JSON.stringify({ rows: rows.length, afterCheckbox, afterRowClick, afterShift, mousedown, afterClear });
+  })()`);
+  console.log('SELMODE ', selectModes);
+  {
+    const s = JSON.parse(selectModes);
+    if (s.skipped) console.log('SELMODE  skipped:', s.skipped);
+    else {
+      if (s.afterCheckbox.checked !== 1) auditFindings.push('select: 复选框没有选中一行（checked=' + s.afterCheckbox.checked + '）');
+      if (s.afterRowClick.checked !== 2) {
+        auditFindings.push('select: 选区非空时点行体没有切换该行选中（checked=' + s.afterRowClick.checked + '）');
+      }
+      if (s.afterRowClick.dialogOpen) {
+        auditFindings.push('select: 选区非空时点行体把预览打开了（应当只切换选中）');
+      }
+      if (s.afterShift.checked !== 4) {
+        auditFindings.push('select: Shift+点击没有范围选中（期望 4 行，checked=' + s.afterShift.checked + '）');
+      }
+      if (!s.mousedown.shiftPrevented) {
+        auditFindings.push('select: 选中态 Shift+按下行体没有被 preventDefault（原生会扩展文字选择）');
+      }
+      if (s.mousedown.plainPrevented) {
+        auditFindings.push('select: 普通按下行体被 preventDefault 了（拖动划选文字复制那条路被堵）');
+      }
+      if (s.afterClear.checked !== 0) {
+        auditFindings.push('select: 「取消选择」没有清空选区（checked=' + s.afterClear.checked + '）');
+      }
+    }
+  }
+
   // 行间方向键：焦点放在第 1 行的「预览」上，按 ↓ 后应当落在第 2 行的**同一个**控件上。
   // 这条检查存在的理由：方向键是**纯增量**（Tab 顺序一个不动），它最容易在重构行结构时
   // 被顺手弄坏 —— 坏了不会有任何报错，只是键盘用户按了没反应。

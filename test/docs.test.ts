@@ -154,6 +154,87 @@ describe('文档口径与仓库实际一致', () => {
   });
 });
 
+// ===== 界面目录树的模块清单：按**文件系统**对账 =====
+//
+// 由来（2026-09-22 审核）：`AGENTS.md` §1 说"改 `public/` 下任何文件要同步三处目录树"，但那条规则
+// 一直只靠记性 —— 2026-09-21 的共用层抽取（ADR D22）删掉了 `public/ui_v2/js/icons.js`，
+// `ui-v2-design.md` §7 与 `design.md` §4 的 **V1** 行都改了，**只有 §4 的 V2 行没改**（还写着 `icons`）。
+// 模块清单是**能从文件系统推导**的口径（目录里有哪些 `.js`），按本文件开头的判据它就该被守着。
+describe('界面目录树与文件系统一致（design.md §4 / ui-v2-design.md §7）', () => {
+  // 仓库里的文件是 **CRLF** ⇒ 任何"按行/按行首匹配"的抽取都要先归一（同本文件上面那条守卫的坑）
+  const readNorm = (relative: string): string => read(relative).replace(/\r\n/g, '\n');
+  const jsNames = (relative: string): string[] =>
+    readdirSync(join(ROOT, relative))
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => name.slice(0, -3))
+      .sort();
+
+  /** 取树行 `#` 之后的模块清单（去掉"（图标表在共用层）"这类说明，`ui/*` 通配不算模块名） */
+  function modulesOf(line: string | undefined, label: string): string[] {
+    const after = line?.split('#')[1];
+    expect(after, `没抽到 ${label} 的模块清单（树的行格式变了？守卫可能失效）`).toBeTruthy();
+    return (after ?? '')
+      .replace(/（[^）]*）/g, '')
+      // `ui/*` 这类子目录通配必须在**切分之前**整段去掉：按 `/` 切完再过滤 `*` 会留下孤零零的 `ui`
+      // （2026-09-22 加这条守卫时正是这么错的 —— 断言报"树里有 `ui`、实际没有"）。
+      .replace(/[\w.-]+\/\*/g, '')
+      .split('/')
+      .map((part) => part.trim())
+      .filter((part) => part !== '')
+      .sort();
+  }
+
+  /** 两侧不一致时把差集写进失败信息 —— 否则 vitest 只显示"…(17)"，看不出差在哪一项 */
+  function expectSameModules(label: string, tree: string[], disk: string[]): void {
+    const onlyTree = tree.filter((name) => !disk.includes(name));
+    const onlyDisk = disk.filter((name) => !tree.includes(name));
+    expect(tree, `${label}：树里多 [${onlyTree.join(', ')}]；磁盘上多 [${onlyDisk.join(', ')}]`).toEqual(disk);
+  }
+
+  it('design.md §4：V1 / V2 的 js 与 V1 的 components 清单逐项等于实际文件', () => {
+    const lines = readNorm('docs/design.md').split('\n');
+    // 锚点必须带树的前缀（`│   ├── `）：`ui_v1/` 这个串在文档别处还出现 5 次（ADR 表、§3 等），
+    // 用宽锚点会把切片切错位置 —— 2026-09-22 加这条守卫时正是这么错的（断言先红在"没找到三行"上）。
+    const at = (needle: string): number => lines.findIndex((line) => line.includes(needle));
+    const v1 = at('├── ui_v1/');
+    const shared = at('├── ui_shared/');
+    const v2 = at('├── ui_v2/');
+    expect(v1 > 0 && shared > v1 && v2 > shared, '树里没找到 ui_v1 / ui_shared / ui_v2 三行').toBe(true);
+
+    const v1Js = lines.slice(v1, shared).find((line) => line.includes('└── js/'));
+    const v1Components = lines.slice(v1, shared).find((line) => line.includes('└── components/'));
+    const v2Js = lines.slice(v2).find((line) => line.includes('└── js/'));
+
+    expectSameModules('design.md §4 的 V1 js 清单', modulesOf(v1Js, 'V1 js'), jsNames('public/ui_v1/js'));
+    expectSameModules(
+      'design.md §4 的 V1 components 清单',
+      modulesOf(v1Components, 'V1 components'),
+      jsNames('public/ui_v1/js/components'),
+    );
+    // V2 的 `ui/*` 是子目录通配（那 16 个模块在 ui-v2-design.md §7 里逐个列着），不参与这一比
+    expectSameModules('design.md §4 的 V2 js 清单', modulesOf(v2Js, 'V2 js'), jsNames('public/ui_v2/js'));
+  });
+
+  it('ui-v2-design.md §7：树里列出的每个 .js 都真实存在（"已移入共用层"那种括号条目也算存在）', () => {
+    const listed = [...readNorm('docs/ui-v2-design.md').matchAll(/^[│ ]*[├└]── \(?([\w.-]+\.js)\)?/gm)].map(
+      (match) => match[1]!,
+    );
+    expect(listed.length, '没抽到 §7 的 .js 条目（守卫可能失效）').toBeGreaterThan(10);
+    const actual = [
+      'public/ui_v1/js',
+      'public/ui_v1/js/components',
+      'public/ui_v2/js',
+      'public/ui_v2/js/ui',
+      'public/ui_shared/js',
+      'public/ui/js',
+    ].flatMap((dir) => jsNames(dir).map((name) => `${name}.js`));
+    expect(
+      listed.filter((name) => !actual.includes(name)),
+      'ui-v2-design.md §7 列了不存在的文件（删/移文件时漏改这处目录树）',
+    ).toEqual([]);
+  });
+});
+
 // ===== 代码规模统计 =====
 //
 // 口径（与 docs/progress.md §1.1 的记录一致）：
