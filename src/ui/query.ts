@@ -476,8 +476,8 @@ export const BATCH_META_MAX_ITEMS = 100;
  * 列表里的正文被截断到 500 字符（`UI_LIST_TEXT_LIMIT`），而逐条走单条端点是 O(N) 次请求
  * （`docs/backend-gaps.md` §2.8 记的口径）。
  *
- * 实现是**一条** `IN` 查询而不是 N 条：每次 D1 往返都计入平台的子请求配额，
- * 100 条逐条查就是 100 次 —— 那正是这个端点存在的理由。
+ * 实现是 `IN` 查询而不是 N 条：每次 D1 往返都计入平台的子请求配额，100 条逐条查就是 100 次
+ * —— 那正是这个端点存在的理由。**但要分片**（见下）。
  */
 export async function readBatchMeta(
   db: D1Database,
@@ -485,22 +485,34 @@ export async function readBatchMeta(
 ): Promise<HistoryRecordEntity[]> {
   if (items.length === 0) return [];
 
-  // 只对 hash 做一次 IN，type 在应用层过滤：`(type, hash)` 元组 IN 要拼两倍的参数列表，
+  // 只对 hash 做 IN，type 在应用层过滤：`(type, hash)` 元组 IN 要拼两倍的参数列表，
   // 而这里的候选集本来就极小（≤100 条记录、去重后更少），多筛一次是免费的。
   // 库里存的是大写（`docs/protocol.md` §10：落库 hash 统一 `.toUpperCase()`），而调用方可能发小写 ——
   // 故先把参数统一成大写：否则小写入参在**这一步**就被 `Hash IN (…)` 的等值比较滤掉，
   // 下面那句「大小写不敏感」的过滤根本没机会生效。
   const hashes = [...new Set(items.map((i) => i.hash.toUpperCase()))];
-  const placeholders = hashes.map((_, i) => `?${i + 2}`).join(',');
-  const res = await db
-    .prepare(`SELECT * FROM HistoryRecords WHERE UserId = ?1 AND Hash IN (${placeholders})`)
-    .bind(USER_ID, ...hashes)
-    .all<DbRow>();
 
+  // ⚠️ **D1 单条语句最多 100 个绑定参数**（平台硬限制；本地 dev 与线上同一条）。
+  // 这条查询的参数数 = `1`（UserId）+ hash 数 ⇒ **最多只能带 99 个 hash**，而本端点的入参上限
+  // 是 100 条（`BATCH_META_MAX_ITEMS`）—— 于是"正好 100 条"这一档**必然** 500：
+  //   2026-09-22 发布前审核第 13 轮实测：`batch-meta` 50 条 → 200、100 条 → 500，
+  //   服务端报 `D1_ERROR: variable number must be between ?1 and ?100`（见 progress.md §142）。
+  // 分片取 50（1 + 50 = 51，留一半余量）：既守住上限，又保住"几次查询而不是 N 次"的本意
+  // （100 条 = 2 次查询，不是 100 次）。
+  const HASH_CHUNK = 50;
   const wanted = new Set(items.map((i) => `${i.type}\u0000${i.hash.toUpperCase()}`));
-  return (res.results ?? [])
-    .map(rowToEntity)
-    // 哈希比较**大小写不敏感**（与 `getByTypeAndHash` 的 `LOWER(Hash) = LOWER(?3)` 同义）：
-    // 上面预取时已把入参统一为大写，这里再按大写比对，兜住 `entity.hash` 的大小写差异。
-    .filter((entity) => wanted.has(`${entity.type}\u0000${entity.hash.toUpperCase()}`));
+  const out: HistoryRecordEntity[] = [];
+  for (let i = 0; i < hashes.length; i += HASH_CHUNK) {
+    const chunk = hashes.slice(i, i + HASH_CHUNK);
+    const placeholders = chunk.map((_, index) => `?${index + 2}`).join(',');
+    const res = await db
+      .prepare(`SELECT * FROM HistoryRecords WHERE UserId = ?1 AND Hash IN (${placeholders})`)
+      .bind(USER_ID, ...chunk)
+      .all<DbRow>();
+    out.push(...(res.results ?? []).map(rowToEntity));
+  }
+
+  // 哈希比较**大小写不敏感**（与 `getByTypeAndHash` 的 `LOWER(Hash) = LOWER(?3)` 同义）：
+  // 上面预取时已把入参统一为大写，这里再按大写比对，兜住 `entity.hash` 的大小写差异。
+  return out.filter((entity) => wanted.has(`${entity.type}\u0000${entity.hash.toUpperCase()}`));
 }

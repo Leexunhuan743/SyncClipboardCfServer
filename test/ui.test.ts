@@ -1054,6 +1054,44 @@ describe('UI API 数据端点 Range（206 / 416 / 回退 200）', () => {
   });
 });
 
+// `batch-meta` 的**入参上限**档（2026-09-22 发布前审核第 13 轮实测到的缺陷）。
+//
+// 该端点单次 ≤100 条，而实现是 `UserId = ?1 AND Hash IN (?2…)` ⇒ 绑定参数数 = 1 + 条数；
+// **D1 单条语句最多 100 个绑定参数**，于是"正好 100 条"这一档必然 500
+// （2026-09-22 服务端原话：`D1_ERROR: variable number must be between ?1 and ?100`）。
+// 它此前**没有任何用例覆盖**（只有 `ui-guard` 的路由清单提到过这个端点），
+// 于是"选满一页（100 行）→ 复制选中"这条最高频的批量读路径一直坏在最后一档。
+describe('UI API · batch-meta 的入参上限（100 条 = D1 的参数上限边界）', () => {
+  it('100 条（= BATCH_META_MAX_ITEMS）必须 200 且一条不少，101 条要 400', async () => {
+    const texts = Array.from({ length: 100 }, (_, i) => `${MARK}-batchmeta-${i}`);
+    const hashes: string[] = [];
+    for (const text of texts) hashes.push(await putText(text)); // 登记 ⇒ afterAll 回收
+
+    const res = await req('/ui/api/history/batch-meta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: hashes.map((hash) => ({ type: 'Text', hash })) }),
+    });
+    expect(res.status, '100 条是端点声明的上限，必须成功（此前是 D1 参数超限的 500）').toBe(200);
+    const body = (await res.json()) as { items: { hash: string; text: string }[] };
+    expect(body.items.length, '100 条必须一条不少地回来').toBe(100);
+    // 内容也要对（不能只回个空数组就算过）：抽查首尾
+    const byHash = new Map(body.items.map((entry) => [entry.hash, entry.text]));
+    expect(byHash.get(hashes[0]!), '首条正文').toBe(texts[0]);
+    expect(byHash.get(hashes[99]!), '末条正文').toBe(texts[99]);
+
+    // 上限本身仍是 100：101 条要 400（而不是 500）——把边界钉成一条**两边都成立**的断言
+    const over = await req('/ui/api/history/batch-meta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: Array.from({ length: 101 }, (_, i) => ({ type: 'Text', hash: i.toString(16).padStart(64, '0') })),
+      }),
+    });
+    expect(over.status, '101 条要 400').toBe(400);
+  });
+});
+
 // 收尾：本套件会写目标库，必须自己清理干净（即使用例中途失败 —— 记录可能已处于
 // 星标/非星标、已删/未删任一状态，用官方 PATCH isDelete 走与 UI 相同的写路径，
 // 与 UI 实现缺陷解耦）。清单来自 putText 的登记，故 beforeAll 建的每条都在这里回收。
