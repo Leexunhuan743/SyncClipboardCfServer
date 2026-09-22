@@ -427,11 +427,15 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 里那一支就是按这个判据分的，两边必须一致）。这条错误属于**搜索框**：此刻列表里留着的是
     // 上一次查询的结果，用户的眼睛在搜索框上，错误就该说在它下面（`components.md` §2 的 error 格）。
     const searchFieldError = error.status === 400 && store.get().filters.search !== '';
+    // 「该不该给重试」的判据只有一处（两条失败路径共用）：**重试必然再失败的不给** ——
+    // 400（输入问题：搜索词过长 / 筛选值非法）与 429（限速窗口没过，默认封锁 15 分钟；
+    // 文案里已经写着"请在 N 秒/分钟后重试"）。2026-09-22 发布前审核第 9 轮实测：
+    // 429 此前两条路径都给了一个必然失败的「重试」。
+    const retryable = error.status !== 400 && error.status !== 429;
     if (store.get().items.length === 0) {
       // 首屏失败：给出可操作的错误态，而不是把骨架屏永远留在那里。
-      // 结果区这时本来就是空的、整块都是错误面，够显眼 —— 不再往工具栏里重复说一遍同一句话；
-      // 但**不留「重试」**：输入问题重试必然再失败（提示条那条路径一直就是这么判的）。
-      list.showError(message, searchFieldError ? null : () => refresh());
+      // 结果区这时本来就是空的、整块都是错误面，够显眼 —— 不再往工具栏里重复说一遍同一句话。
+      list.showError(message, retryable ? () => refresh() : null);
       // 分页那一格也要跟着落到失败档 —— 失败路径不整块 `render()`（理由见上面的 store 说明），
       // 少了这一句它会**永远**停在加载档写下的「正在加载…」，与正下方的「加载失败」互相矛盾。
       renderPagination();
@@ -440,8 +444,7 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     } else {
       // 已经有内容时保留旧数据 + 一条提示。带上「重试」：网络抖动这类瞬时故障占多数，
       // 而重试的成本正好是刚刚失败的那一次列表请求 —— 此前只能让用户自己再点一次刷新。
-      // 400（搜索词过长 / 筛选值非法）不给重试：那是输入问题，重试必然再失败。
-      toasts.error(message, error.status === 400 ? {} : { action: { label: '重试', run: () => void refresh() } });
+      toasts.error(message, retryable ? { action: { label: '重试', run: () => void refresh() } } : {});
     }
   } finally {
     // 已被取代时不要清 busy：那面“正在取”的旗子归更新的那次请求管
@@ -707,7 +710,10 @@ async function restoreItem(item) {
 //
 // 2026-09-18：**只有销毁性的两个（删除、清空回收站）过确认框**。收藏/置顶/恢复是可逆的
 // 低风险动作，让用户为"收藏这 12 条"再确认一次是纯多出来的一步（评审结论）；
-// 而删除要付出的代价（数据文件立即清除）必须当面说清，那条摩擦保留。
+// 而删除要付出的代价必须当面说清，那条摩擦保留。
+// ⚠️ 那句话在 2026-09-22（ADR D29）之后变了：删除（软删）**不再**销毁数据 —— 记录连同数据文件
+// 在回收站留 30 天、期间可恢复；代价改成"这条会从所有同步设备上消失，30 天后才彻底清除"。
+// （`messages.js` 的 `deleteConfirmSpec` 是唯一的口径来源，别在这里另写一份。）
 async function runBatch({
   update,
   title,
