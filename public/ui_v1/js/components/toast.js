@@ -26,17 +26,39 @@ export function createToasts(container) {
   // 唯一"既看得见、又点得动"的落点是把宿主**临时搬进**最上层那个对话框：在 top layer 之内它照样是
   // 同一个组件、同一套样式与同一条 `aria-live`。位置由 CSS 钉在页脚**之上**（`.dialog__foot > .toasts`），
   // 故它不参与对话框的列布局、也不盖住页脚按钮。
+  //
+  // ⚠️ **"最上层"必须按 `showModal()` 的先后取，不能按文档序**（2026-09-23 实测修）：
+  // `document.querySelectorAll('dialog[open]')` 给的是**文档序**，而四个对话框是模块求值时
+  // 按创建顺序（confirm → preview → info → help）append 进 body 的，于是"预览开着、确认框开在
+  // 它上面"这一档里，文档序在后的那个反而是**下面**的那个（实测：`open[len-1]` 是预览，
+  // 而该点命中的是确认框）⇒ 提示条会落进被压住的框里。这里用打开栈记录真实顺序。
+  const openStack = [];
+  // `toggle` 在 `<dialog>` 打开/关闭时触发，且**不冒泡** ⇒ 只能挂在捕获阶段。
+  // 挂在打开时机上还顺带堵住了另一个洞：此前只在 `show()` 里停靠，于是"提示条**先**显示、
+  // 对话框**后**打开"这一档里宿主留在 body —— 用户看得见那条提示、却点不动它，而且点下去
+  // 命中 backdrop 会把对话框关掉（2026-09-23 实测：真实鼠标点「重试」位置 ⇒ `dlgOpen=false`）。
+  document.addEventListener(
+    'toggle',
+    (event) => {
+      const node = event.target;
+      if (!(node instanceof HTMLDialogElement)) return;
+      const at = openStack.indexOf(node);
+      if (at >= 0) openStack.splice(at, 1);
+      if (node.open) openStack.push(node);
+      dockHost();
+    },
+    true,
+  );
+
   function dockHost() {
-    const open = document.querySelectorAll('dialog[open]');
-    const top = open.length > 0 ? open[open.length - 1] : null;
+    const top = openStack.length > 0 ? openStack[openStack.length - 1] : null;
     if (top === null) {
       if (container.parentElement !== document.body) document.body.append(container);
       return;
     }
-    if (container.closest('dialog') === top) return; // 已经停在这个框里
-    (top.querySelector('.dialog__foot') ?? top).append(container);
-    // 框关了就把宿主放回 body：剩下的提示条继续显示（宿主是 `position: fixed`，视觉落点不变）。
-    top.addEventListener('close', () => document.body.append(container), { once: true });
+    const host = top.querySelector('.dialog__foot') ?? top;
+    if (container.parentElement === host) return; // 已经停在这里
+    host.append(container);
   }
 
   function show(message, { error = false, duration = 2600, action = null } = {}) {
