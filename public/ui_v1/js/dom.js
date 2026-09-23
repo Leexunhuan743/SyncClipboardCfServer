@@ -57,6 +57,27 @@ export function svg(pathData, { size = 16, class: classNames = '' } = {}) {
 }
 
 /**
+ * 焦点在一个**真的能输入文字**的控件里吗（复选框 / 单选框 / 按钮型 `input` / `select` 之外的都算）。
+ *
+ * 为什么需要它、以及它和"输入处"的区别（2026-09-23 实测补）：
+ * 列表级的快捷键（`/ ? r t n p Esc`）此前一律按 `tagName` 让路（`INPUT`/`TEXTAREA`/`SELECT`），
+ * 而**复选框也是 `INPUT`** —— 而"用键盘选中一行"必然把焦点留在复选框上（方向键导航也落在它上面）
+ * ⇒ 那一刻 `t`/`?`/`n`/`p`/`r` **全部静默失效**（实测：焦点在行内复选框时按 `t` 主题不变、
+ * 按 `n` 不翻页；换到行内按钮上同一按键立刻生效）。复选框接收不了文字，没有"抢键"这回事。
+ * V2 的 `keys.js` 早就把这条判据分成了两份（`isTypingTarget` / `isTextInput`，见其文件头第 2 条），
+ * 本函数是 V1 这一份 —— 两版实现有意不同，语义一致。
+ */
+export function isTextEntry(node) {
+  if (node instanceof HTMLTextAreaElement) return true;
+  if (node instanceof HTMLSelectElement) return true;
+  if (node instanceof HTMLInputElement) {
+    // `select` 的字母键是**选项跳转**，属于控件自己的行为 ⇒ 让路；复选框/单选框/按钮型不是。
+    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file'].includes(node.type);
+  }
+  return node?.isContentEditable === true;
+}
+
+/**
  * 尾沿去抖。返回的函数上带 `cancel()`：**调用方在"立刻结算"的那条路径上必须用它**，
  * 否则已经排期的那一次还会在窗口末尾再跑一遍。
  *

@@ -10,7 +10,7 @@ import { createStore } from './store.js';
 import { filtersFromUrl, filtersToApi, syncUrl, DEFAULT_FILTERS } from './filters.js';
 import { writeText, writeImage, itemIsImage } from './clipboard.js';
 import { typeLabel, downloadNameForText, safeFileName, charCount } from './format.js';
-import { debounce } from './dom.js';
+import { debounce, isTextEntry } from './dom.js';
 import { createLatestGate } from './latest.js';
 import { createPushChannel } from './signalr.js';
 // 文案（删除/批量删除/清空/列表错误/剪贴板失败）在 V1 自己的 `./messages.js` 里：
@@ -343,6 +343,9 @@ const toolbar = createToolbar({
   onSearch: actions.onSearch,
   onPageSize: actions.onPageSize,
   onRefresh: actions.onRefresh,
+  // `help` 在下面才建（它要读这份快捷键表）：闭包在**点击时**才求值，故这里没有 TDZ 问题
+  // —— 但顺序仍是硬约束，别把这一行挪到 `let help` 之前去"顺手提前"（见那段注释）。
+  onHelp: () => help.open(),
 });
 const list = createList(actions);
 const pagination = createPagination({ onPage: actions.onPage });
@@ -1582,6 +1585,10 @@ function listShortcuts() {
   const pages = Math.max(1, Math.ceil((state.total ?? 0) / state.filters.pageSize));
   const goto = (page) => {
     if (page < 1 || page > pages || page === state.filters.page) return;
+    // 先把焦点交给分页条上对应的那枚按钮（= 鼠标点它的等价动作），再翻页：翻页会重建整张表，
+    // 焦点若正落在表里的控件上就会随节点一起丢掉（实测：按 `n` 后 `activeElement` 是 `<body>`，
+    // 此后方向键与行内动作键全部失灵）。分页条是常驻节点，落在那儿是稳的。
+    pagination.focusStep(page - state.filters.page);
     actions.onPage(page);
   };
   return [
@@ -1591,6 +1598,28 @@ function listShortcuts() {
     { keys: ['t'], label: '切换深色 / 浅色主题', run: () => toggleTheme() },
     { keys: ['n'], label: '下一页', run: () => goto(state.filters.page + 1) },
     { keys: ['p'], label: '上一页', run: () => goto(state.filters.page - 1) },
+    // `b` = 把焦点送到**选中操作条**（批量动作的入口）。为什么需要它：那条带子在 DOM 里位于
+    // 表格**之前**，从列表深处的某一行只能用 Shift+Tab 一站一站往回退（1440 档实测：第 6 行的
+    // 复选框到带子第一枚按钮 **41 站**）⇒ 批量动作对键盘用户事实上不可达。
+    // 它是**导航键**（只移动焦点，不执行动作），故与 `↑↓`/`Home`·`End`/`Tab`/`Shift+方向键`
+    // 同属"帮助浮层里列、不要求按钮上写键"的那一类；可见等价物就是带子上那几枚按钮本身。
+    { keys: ['b'], label: '跳到选中操作条（批量动作）', run: () => list.focusSelectionBar() },
+    // `f` / `h` = 两个**视图**开关（收藏筛选 / 回收站），对应工具栏上那两枚 chip。
+    // 为什么值得有键：它们是"看哪一批记录"的开关，从列表深处够工具栏和够选择条是同一类问题
+    // （chip 在表格之前）。与 `s` 的区别要在文案里说清：`s` 是**行**的收藏开关（选中的那一条），
+    // `f` 是**视图**（只看已收藏的），两者对应的按钮也不同（行尾图标 vs 工具栏 chip）。
+    { keys: ['f'], label: '只看收藏（再按一次回全部）', run: () => actions.onToggleStarred() },
+    { keys: ['h'], label: '回收站视图（再按一次回历史记录）', run: () => actions.onToggleDeleted() },
+    // `Esc` = 清空选择（逐级退出，与 V2 的 `keys.js` 同一条取向）。可见等价物就是选择条上的
+    // 「取消选择」；没有选中时它什么都不做（表里**常驻**这一条，否则帮助浮层里的清单会随
+    // 选择集有无而变 —— 帮助是在启动期按这份表渲染的）。
+    {
+      keys: ['Esc'],
+      label: '清空选择（有选中时）',
+      run: () => {
+        if (store.get().selection.size > 0) actions.onClearSelection();
+      },
+    },
   ];
 }
 
@@ -1606,15 +1635,15 @@ function installShortcuts() {
     // 带修饰键的一律让路（本组没有组合键；`Ctrl/⌘+Enter` 属于编辑框，见 preview.js）；
     // 输入处（含 IME 组字）让路；对话框打开时由对话框自己处理（见 preview.js 的派发）。
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
-    const target = event.target;
-    if (
-      target instanceof HTMLElement &&
-      (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-    ) {
-      return;
-    }
+    // 「输入处」的判据是 `isTextEntry`（**真的能输入文字**的控件），不是 `tagName`（2026-09-23 修）：
+    // 复选框也是 `INPUT`，而键盘选行/方向键导航的落点就是它 —— 按 tagName 让路会让 `t`/`?`/`n`/`p`/`r`
+    // 在那一刻全部静默失效（实测）。理由与两版的分工见 `dom.js` 的 `isTextEntry`。
+    if (isTextEntry(event.target)) return;
     if (document.querySelector('dialog[open]')) return;
-    const hit = listShortcuts().find((s) => s.keys.length === 1 && s.keys[0] === event.key);
+    // 表里的键名用**人读的形状**（`Esc`，与 `PREVIEW_SHORTCUTS` / `EDIT_SHORTCUTS` 同一口径），
+    // 而 `event.key` 给的是 `Escape` —— 只在这一处归一，免得帮助浮层里出现一个叫 "Escape" 的键帽。
+    const key = event.key === 'Escape' ? 'Esc' : event.key;
+    const hit = listShortcuts().find((s) => s.keys.length === 1 && s.keys[0] === key);
     if (!hit) return;
     event.preventDefault();
     hit.run();

@@ -10,12 +10,18 @@ import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { PAGE_SIZES, toDateInput, fromDateInput } from '../filters.js';
 import { setPending, isPending } from './toast.js';
 
+// 类型 chip 的**图标 + 文字 + 计数**三件都留（2026-09-23 用户两句话定形："全部|文本|图片|文件|组合
+// 不需要折叠文字" + "保留图标"）：文字是这一屏主筛选的名字，图标让"哪一枚是哪个类型"更快被扫到，
+// 计数是"有几条"的唯一可见来源。
+// 窄屏那一行放不下时**换行**（见 layout.css 的 ≤560px 块）—— 不是折字、不是裁掉、也不是横向滚动：
+// 裁掉最后一枚「组合」正是用户截图里看到的形态。
+// 折叠只落在两枚**视图** chip（收藏 / 回收站）上：它们的图标（star / trash）已经说明了一切。
 const TYPE_OPTIONS = [
-  ['All', '全部'],
-  ['Text', '文本'],
-  ['Image', '图片'],
-  ['File', '文件'],
-  ['Group', '组合'],
+  ['All', '全部', 'inbox'],
+  ['Text', '文本', 'text'],
+  ['Image', '图片', 'image'],
+  ['File', '文件', 'file'],
+  ['Group', '组合', 'group'],
 ];
 
 const RANGE_OPTIONS = [
@@ -34,12 +40,14 @@ export function createToolbar({
   onSearch,
   onPageSize,
   onRefresh,
+  onHelp,
 }) {
   const typeButtons = new Map();
   const counts = new Map();
 
   const segmented = el('div', { class: 'segmented', role: 'group', 'aria-label': '按类型筛选' });
-  for (const [value, label] of TYPE_OPTIONS) {
+  const typeLabels = new Map();
+  for (const [value, label, icon] of TYPE_OPTIONS) {
     const count = el('span', { class: 'segmented__count' });
     const button = el(
       'button',
@@ -49,10 +57,11 @@ export function createToolbar({
         'aria-pressed': 'false',
         onclick: () => onTypes(value),
       },
-      [el('span', { text: label }), count],
+      [svg(iconPaths(icon), { size: 14 }), el('span', { text: label }), count],
     );
     typeButtons.set(value, button);
     counts.set(value, count);
+    typeLabels.set(value, label);
     segmented.append(button);
   }
 
@@ -62,12 +71,21 @@ export function createToolbar({
       class: 'segmented__item',
       type: 'button',
       'aria-pressed': 'false',
+      // `title` 此前没有（靠图标 + 「收藏」二字）：2026-09-23 补上，因为 `f` 这个键需要
+      // "按钮上写着键"这条发现通道；顺带把与行内那枚收藏开关的区别说清楚 —— 同一段注释上面
+      // 说过"区别由位置与形状承担"，而 hover 提示是第三条、更直白的通道。
+      title: '只看收藏的记录（f）',
+      'aria-keyshortcuts': 'f',
       onclick: () => onToggleStarred(),
     },
     // 文案 `收藏`（2026-09-18 用户要求：此前是"仅收藏"）。这一条同时把两版对齐 ——
     // V2 的那枚 chip 一直写的就是 `收藏`（`public/ui_v2/js/ui/filters.js`），而同一个词在行内
     // 开关上是"把这一条加进收藏"、在这里是"只看已收藏的"，两者的区别由**位置与形状**承担
     // （筛选区里的一枚 chip vs 行尾的图标按钮），不必靠"仅"字来区分。
+    // ⚠️ 文字**不再**在窄屏收起（2026-09-23 用户看图后否掉）：那一行是
+    // `[左对齐的视图组][spacer 吃掉剩余宽度][右对齐的分页组]`，收起文字腾出的宽度**全部**被
+    // spacer 吸收 ⇒ 行中间出现一个大洞（用户："为什么收藏和回收站 收起文字之后间隔变得那么的大"）。
+    // 那一行本来就放得下三件，没有必须让位的东西。
     [svg(iconPaths('star'), { size: 14 }), el('span', { text: '收藏' })],
   );
 
@@ -81,7 +99,8 @@ export function createToolbar({
       class: 'segmented__item',
       type: 'button',
       'aria-pressed': 'false',
-      title: '回收站：移动到这里的记录（30 天后彻底清除）',
+      title: '回收站：移动到这里的记录（30 天后彻底清除）（h）',
+      'aria-keyshortcuts': 'h',
       onclick: () => onToggleDeleted(),
     },
     [svg(iconPaths('trash'), { size: 14 }), el('span', { text: '回收站' })],
@@ -240,6 +259,22 @@ export function createToolbar({
     hidden: true,
   });
 
+  // 快捷键帮助的**可见入口**（2026-09-23 补）。`?` 是这个页面唯一的"只有键、没有按钮"的动作
+  // —— 而快捷键列表存在的理由恰恰是"让不知道自己能按什么的人发现它们"：一个只能靠 `?` 打开的
+  // 列表，只有已经知道 `?` 的人看得见（触屏用户更是永远看不到）。故在刷新旁边放一枚同尺寸的
+  // `icon-btn`（`?` 用文本，不新增图标 —— 共用层的图标表是两版并集，加一个键要连带改文档与计数）。
+  const helpButton = el(
+    'button',
+    {
+      class: 'icon-btn',
+      type: 'button',
+      'aria-label': '键盘快捷键',
+      title: '键盘快捷键（?）',
+      onclick: () => onHelp(),
+    },
+    [el('span', { text: '?' })],
+  );
+
   const node = el('div', { class: 'toolbar' }, [
     // 顺序 = 主次（2026-09-17 重排）：搜索在最前且可伸展，因为它是这个页面最高频的动作；
     // 旧版把它夹在「50 条/页」「刷新」之间，8 个控件同权，用户得先找到它。
@@ -261,6 +296,7 @@ export function createToolbar({
     el('div', { class: 'toolbar__group toolbar__group--pager' }, [
       pageSizeSelect,
       refreshButton,
+      helpButton,
     ]),
     // 日期行单独占一行（CSS 里 flex-basis: 100%）：塞进上面那组会把整条工具栏挤成三行，
     // 中间那行还会只剩一个被压扁的 spacer。
@@ -308,16 +344,23 @@ export function createToolbar({
       segmented.dataset.stale = stale ? 'true' : 'false';
       for (const [value, button] of typeButtons) {
         button.setAttribute('aria-pressed', String(filters.types === value));
-        if (stale) continue;
+        // 名字与数字**同源**写在这里：窄屏文字被折叠后，`aria-label` 是读屏用户拿到"文本 631"的
+        // 唯一通道；计数未知（stale）时**不写数字** —— 那会让读屏念出另一个视图的数字。
+        const label = typeLabels.get(value) ?? value;
+        if (stale) {
+          button.setAttribute('aria-label', label);
+          continue;
+        }
         const count = counts.get(value);
         if (!count) continue;
+        let n;
         if (value === 'All') {
-          const total = Object.values(byType).reduce((sum, n) => sum + (n ?? 0), 0);
-          count.textContent = total > 0 ? String(total) : '';
+          n = Object.values(byType).reduce((sum, v) => sum + (v ?? 0), 0);
         } else {
-          const n = byType[value] ?? 0;
-          count.textContent = n > 0 ? String(n) : '';
+          n = byType[value] ?? 0;
         }
+        count.textContent = n > 0 ? String(n) : '';
+        button.setAttribute('aria-label', n > 0 ? `${label} ${n}` : label);
       }
       starredButton.setAttribute('aria-pressed', String(filters.starred));
       recycleButton.setAttribute('aria-pressed', String(filters.deleted));

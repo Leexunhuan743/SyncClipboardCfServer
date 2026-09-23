@@ -118,6 +118,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   dialog.addEventListener(
     'wheel',
     (event) => {
+      // `Ctrl`+滚轮 = 浏览器缩放（触控板的捏合也走这里）：绝不能吞掉（2026-09-23 实测：
+      // 正文可滚时这一笔的 `defaultPrevented` 是 true ⇒ 预览框开着时页面缩放失效）。
+      if (event.ctrlKey) return;
       if (event.target instanceof Element && event.target.closest('.dialog__body') !== null) return;
       const target = scrollTarget();
       if (target === null || target.scrollHeight <= target.clientHeight + 1) return;
@@ -153,15 +156,18 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 而不是另写一套动作 —— 按钮那侧已经带着"无数据时隐藏、超限时禁用并说明原因、在途时挡重复点击"
   // 这些判据，抄一份必然会分叉。`e` 因此在文本过大时自然变成"按了没反应"（按钮是 disabled 的，
   // 而它的 hover 提示写着为什么）。
+  // 映射靠 `data-action`（不是显示文案 —— 措辞一改，按文案找按钮的写法会静默失效）。
+  // 一个键可能有多个候选：文本行是「复制文本」（`copy`），图片行是「复制图片」（`copy-image`），
+  // 与行内那套（`list.js` 的 `ROW_SHORTCUTS`）同一手法。
   // 列表页那条派发器见到 `dialog[open]` 会退出（见 main.js 的 installShortcuts），两边不重叠。
   dialog.addEventListener('keydown', (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
     if (editing) return; // 编辑态只有保存/取消两个键（见上面的 Ctrl+Enter 与 `cancel` 分支）
-    const label = { c: '复制', d: '下载', e: '编辑' }[event.key];
-    if (label === undefined) return;
-    const button = [...footer.querySelectorAll('button')].find((b) =>
-      (b.textContent ?? '').trim().startsWith(label),
-    );
+    const candidates = { c: ['copy', 'copy-image'], d: ['download'], e: ['edit'] }[event.key];
+    if (candidates === undefined) return;
+    const button = candidates
+      .map((action) => footer.querySelector(`[data-action="${action}"]`))
+      .find((candidate) => candidate instanceof HTMLButtonElement);
     if (!button || button.disabled || isPending(button)) return;
     event.preventDefault();
     button.click();
@@ -227,12 +233,16 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 对话框里的操作按钮：与行内按钮同一套反馈（进行中 → 结果留在按钮上）。
   // `disabled` / `title` 与 `list.js` 的同类按钮同义：**禁用必须带原因**（title 是"为什么点不动"
   // 唯一的传达通道，见 components.css 里 `.btn[disabled]` 的注释）。
-  function actionButton({ icon, label, run, successLabel, disabled = false, title: titleText = null, className = 'btn' }) {
+  function actionButton({ icon, label, run, successLabel, disabled = false, title: titleText = null, className = 'btn', action = null }) {
     const button = el(
       'button',
       {
         class: className,
         type: 'button',
+        // `data-action`：**键 → 按钮**的映射靠它（`c`/`d`/`e` 那一段派发），而不是靠显示文案 ——
+        // 文案是可以随时改的（2026-09-23 修：此前用 `textContent.startsWith('下载')` 找按钮，
+        // 改一次措辞就会让键静默失效，而行内那套（`list.js`）一直用的是 `data-action`）。
+        'data-action': action,
         disabled,
         title: titleText,
         onclick: async () => {
@@ -356,6 +366,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         ? actionButton({
             icon: 'trash',
             label: '彻底删除',
+            action: 'purge',
             className: 'btn btn--danger-solid',
             run: () => onPurge(item),
             title: '彻底删除这条记录（不可撤销，数据文件一并清除）',
@@ -363,6 +374,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         : actionButton({
             icon: 'trash',
             label: '移动到回收站',
+            action: 'delete',
             className: 'btn btn--danger-solid',
             run: () => onDelete(item),
             title: '移动到回收站（30 天内可以从回收站恢复）',
@@ -377,6 +389,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         actionButton({
           icon: 'edit',
           label: '编辑',
+          action: 'edit',
           disabled: tooLarge,
           title: tooLarge
             ? editTooLargeText(formatSize(EDIT_MAX_BYTES))
@@ -391,6 +404,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
           // 与行内动作同一个名字（动作标签一律"动词 + 对象"，见 list.js 的说明）。
           // 预览里显示的本来就是全文，故"全文"两字不承担信息。
           label: '复制文本',
+          action: 'copy',
           run: () => onCopy(item, currentText),
           successLabel: '已复制',
           title: '复制这段文本（c）',
@@ -403,6 +417,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         actionButton({
           icon: 'download',
           label: item.hasData ? '下载' : '下载文本',
+          action: 'download',
           run: () => onDownloadText(item, currentText),
           successLabel: '已下载',
           title: `${item.hasData ? '下载这条记录的数据文件' : '把这段正文存成 .txt'}（d）`,
@@ -414,6 +429,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
           actionButton({
             icon: 'copy',
             label: '复制图片',
+            action: 'copy-image',
             run: () => onCopyImage(item),
             successLabel: '已复制',
             title: '复制这张图片（c）',
@@ -424,6 +440,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         actionButton({
           icon: 'download',
           label: '下载',
+          action: 'download',
           run: () => onDownload(item),
           successLabel: '已下载',
           title: '下载这条记录（d）',

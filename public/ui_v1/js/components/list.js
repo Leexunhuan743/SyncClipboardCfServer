@@ -538,6 +538,8 @@ export function createList(actions) {
   let selection = new Set();
   // 范围选择的锚点（Shift+点击的起点）
   let anchorIndex = null;
+  // 上一份列表的**首行 key**：用来判断"这还是不是同一份列表"（见 update 里那段）。
+  let lastFirstKey = null;
   // 收行后焦点该落到哪里：removeItem 记下（哪个操作、第几行），调用方在**对话框关闭之后**
   // 调 restoreFocus() 落地——模态期间文档是 inert 的，那时候 focus() 会被忽略。
   let pendingFocus = null;
@@ -985,6 +987,14 @@ export function createList(actions) {
 
     update(state) {
       const { items, total, filters, flashKeys } = state;
+      // 锚点只在**同一份列表**里有意义（2026-09-23 实测补）：翻页/改筛选/换排序之后，那一行
+      // 多半已经不在页内，而 `anchorIndex` 是个**下标** —— 拿它去切当前页的 `items` 会选中一片
+      // 与用户锚点无关的行（实测：第 1 页锚第 6 行 → 翻到第 2 页按 `Shift+↓`×2，选中的是
+      // 页内第 4–6 行，而不是第 2–4 行）。判据用**首行 key**：轮询刷新只要成员没变就不误伤，
+      // 而选择集变化走的是 `updateSelection`、不经过这里。
+      const firstKey = items[0]?.key ?? null;
+      if (firstKey !== lastFirstKey) anchorIndex = null;
+      lastFirstKey = firstKey;
       selection = state.selection;
       recycleMode = Boolean(filters.deleted);
       // 头栏常驻出口的一条证据（见 renderHead）：`deletedCount` 是**全表**聚合，
@@ -1200,6 +1210,27 @@ export function createList(actions) {
       // 展开 `lastHead` 而不是逐个字段抄：头栏的口径（总数/是否筛选中/是否加载中）只该有
       // `lastHead` 一个来源，逐个抄会在下次给头栏加字段时漏一处。
       renderHead({ ...lastHead, selection });
+    },
+
+    // 键盘从列表深处够到**批量动作**的入口（2026-09-23 补）。
+    //
+    // 为什么需要它：选中操作条在 DOM 里位于**表格之前**（它占的就是头栏那条带子的位置），
+    // 而从列表深处的某一行往回走只能用 Shift+Tab 一站一站退 —— 1440 档实测：第 6 行的复选框
+    // 到带子第一枚按钮 **41 站**（一页 50 行、每行 7 个可聚焦控件），于是"勾了几条之后要批量处理"
+    // 这件事对键盘用户事实上不可达。`b` 键把焦点直接送过来（表在 `main.js` 的 `listShortcuts`）。
+    //
+    // 落点**不停在销毁性那枚上**（与 `preview.js` 的初始焦点同一条取向：多按一次 Enter 不该删东西）：
+    // 选中态下带子里的第一枚是「复制选中」（活跃视图）或「恢复选中」（回收站视图），都安全；
+    // 整条带子里只剩销毁性按钮时退到最后一枚（那是「取消选择」）。
+    // 没有选中时不接管 —— `b` 的语义就是"跳到选中操作条"。
+    focusSelectionBar() {
+      if (selection.size === 0 || headSelection.hidden) return false;
+      const buttons = [...headSelection.querySelectorAll('button')].filter((b) => !b.disabled);
+      const target =
+        buttons.find((b) => !b.classList.contains('btn--danger-solid')) ?? buttons[buttons.length - 1];
+      if (!target) return false;
+      target.focus();
+      return true;
     },
 
     // 把焦点交回结果区（调用方在确认对话框**关闭之后**调用）。

@@ -710,6 +710,18 @@ html[data-header="hidden"] {
     display: none;
   }
 
+  /* 工具栏那排 chip：**这一行不折叠任何文字**（2026-09-23 四句话定形的结论，见 §3.3 #23）——
+   * 类型五枚保留 图标 + 文字 + 计数；两枚视图 chip（收藏 / 回收站）也保留文字。
+   * 这里只做两件事：放不下时**换行**、以及收一点内边距让每行多塞得下一枚。 */
+  .toolbar .segmented {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+
+  .toolbar .segmented__item {
+    padding-inline: var(--sp-2);
+  }
+
   .status {
     /* 宽度自动：图标 + 「部署信息」四个字，写死 30px 会挤到边缘 */
     width: auto;

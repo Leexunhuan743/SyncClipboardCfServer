@@ -66,6 +66,18 @@ export function createPagination({ onPage }) {
 
   return {
     el: node,
+    /**
+     * 把焦点交给「上一页 / 下一页」里对应方向的那一枚（`direction > 0` = 下一页）。
+     *
+     * 键盘翻页（`n` / `p`）用它（2026-09-23）：翻页会**重建整张表**，而那一刻焦点多半正落在
+     * 某一行里的控件上 ⇒ 节点被替换掉、焦点掉回 `<body>`，此后方向键与行内动作键全部失灵
+     * （实测：按 `n` 之后 `document.activeElement` 是 `BODY`、`?page=2` 已生效）。
+     * 分页条是常驻节点、且这两枚按钮本来就是"翻页"这个动作在界面上的落点 ⇒ 焦点停在那里
+     * 既是鼠标点它的等价物，也让用户 Tab 回表里只需要几站。
+     */
+    focusStep(direction) {
+      (direction > 0 ? next : prev).focus();
+    },
     update({ page, pageSize, total, loading = false, error = false }) {
       currentPage = page;
       totalPages = Math.max(1, Math.ceil(total / pageSize));
