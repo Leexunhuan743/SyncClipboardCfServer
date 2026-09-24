@@ -153,7 +153,7 @@ flowchart LR
 ### 方式二：GitHub Actions 自动部署
 
 1. **Fork 本仓库**到你自己的 GitHub 账号。
-2. 手动建资源 **（普通用户略过）**
+2. **（普通用户略过）** 手动建资源：
    CI 会在部署前**按库名**创建/复用 D1 数据库 `syncclipboard` 与 R2 存储桶 `syncclipboard`
    —— 你**不需要**事先在 Cloudflare 上创建它们，也**不需要**把任何 `database_id` 填进 `wrangler.toml`
    （仓库里那份 `database_id` 是**全零占位值**，部署时由 CI 在 runner 内注入真实 id、不回写仓库）。
@@ -169,7 +169,7 @@ flowchart LR
      - `Account` - `R2: Edit`
    - `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账户 ID。可在 Cloudflare 控制台 Workers 页面右**侧栏/地址栏**复制，是一长串字符。
    - `USERNAME` / `PASSWORD`：可选。自定义的同步用户名和密码。不填也可以通过命令行手动设置。
-4. **配置 GitHub Variables（部署开关）**（建议默认）：
+4. **配置 GitHub Variables**（建议默认）：
    在同页面的 `Variables` 选项卡中，可按需添加以下仓库变量（不填则使用默认值）：
 
    | 变量名 | 默认值 | 作用说明 |
