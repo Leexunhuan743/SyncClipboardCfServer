@@ -13,6 +13,14 @@ dev.vars
 # 审计工作区（含本地绝对路径与调查报告），仅本地保留
 .audits/
 
+# dogfood 走查的输出（报告 + 截图 + 录像）：与 `.shots/` 同一条理由 —— 证据工件不进仓库，
+# 引用它的 `docs/progress.md` 会写明"仅本机保留"。
+dogfood-output/
+
+# 一次性审计/验证会话的提示词与报告（OMP 等）：含本机绝对路径与运行日志，同样仅本地保留。
+# 引用处（`docs/progress.md` §171）写明的也是"本地工件、不在仓库里"。
+/ui-v1-release-*.md
+
 # 视觉回归截图输出（test/manual/shoot.mjs）
 .shots/
 # 同一用途的带后缀目录（`.shots-v1-final` 这类按轮次命名的工作目录）：
