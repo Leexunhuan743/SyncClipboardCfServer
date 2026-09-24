@@ -103,7 +103,7 @@ flowchart LR
 
 1. **克隆项目并安装依赖**：
    ```bash
-   git clone https://github.com/leeexx/SyncClipboardCfServer.git
+   git clone https://github.com/Leexunhuan743/SyncClipboardCfServer.git
    cd SyncClipboardCfServer
    npm install
    ```
