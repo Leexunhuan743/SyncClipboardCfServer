@@ -15,7 +15,7 @@ import { setPending, isPending } from './toast.js';
 // 计数是"有几条"的唯一可见来源。
 // 窄屏那一行放不下时**换行**（见 layout.css 的 ≤560px 块）—— 不是折字、不是裁掉、也不是横向滚动：
 // 裁掉最后一枚「组合」正是用户截图里看到的形态。
-// 折叠只落在两枚**视图** chip（收藏 / 回收站）上：它们的图标（star / trash）已经说明了一切。
+// 两枚**视图** chip（收藏 / 回收站）也保留文字：折字后多出的空间只会被同一行的 spacer 吃掉。
 const TYPE_OPTIONS = [
   ['All', '全部', 'inbox'],
   ['Text', '文本', 'text'],

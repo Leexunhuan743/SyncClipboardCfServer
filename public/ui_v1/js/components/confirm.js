@@ -24,6 +24,8 @@ export function createConfirm() {
   // 注意中止的语义是"**这批做完就停**"—— 服务端一次请求内部不会被打断（见 api.js 的分片循环），
   // 所以不会留下半条记录；已生效的条数由调用方如实报出。
   let controller = null;
+  // 只有按分片执行、且确实读取 signal 的动作才提供「中止」。单次写请求发出后无法撤回。
+  let cancellable = false;
 
   const title = el('h2', { class: 'dialog__title', id: 'confirm-title' });
   const message = el('p', { id: 'confirm-message' });
@@ -64,7 +66,7 @@ export function createConfirm() {
         }
         // 只**请求**中止：真正停下来发生在片与片之间（api.js 的分片循环里），
         // 所以这里立刻禁用自己，避免连点造成二次 abort。
-        if (controller && !controller.signal.aborted) {
+        if (cancellable && controller && !controller.signal.aborted) {
           controller.abort();
           cancelButton.disabled = true;
           cancelLabel.textContent = '正在中止…';
@@ -114,11 +116,10 @@ export function createConfirm() {
     errorBox.hidden = true;
     setPending(okButton, true);
     busy = true;
-    // 在途期间：✕ 与 Esc 依旧挡住（F2——关掉对话框会让调用方把"已成功"读成"用户取消"），
-    // 但「取消」变成可用的「中止」：长批量（300 条 = 3 批）必须留一条停下来的路。
+    // 在途期间 ✕ 与 Esc 一律挡住；只有支持分片中止的长批量才开放中止键。
     closeButton.disabled = true;
-    cancelButton.disabled = false;
-    cancelLabel.textContent = '中止';
+    cancelButton.disabled = !cancellable;
+    cancelLabel.textContent = cancellable ? '中止' : '取消';
     controller = new AbortController();
     try {
       // `action` 收到一个上下文：`setMessage(text)` 把进度写进正文，`signal` 用于中止
@@ -167,12 +168,20 @@ export function createConfirm() {
     // 缺省 `confirmLabel` 是「确认」而不是某个动作名：**动作名必须由调用方给**（都给了，来自
     // `messages.js`），写死一个动作名会让"忘了传"的那一处显示成一个错的动词（2026-09-22 前写的是
     // 「删除」，而那时唯一没传的地方就会读成一次不可撤销的删除）。
-    ask({ title: heading, message: body, confirmLabel = '确认', action: onConfirm = null, destructive = true }) {
+    ask({
+      title: heading,
+      message: body,
+      confirmLabel = '确认',
+      action: onConfirm = null,
+      destructive = true,
+      cancellable: canAbort = false,
+    }) {
       title.textContent = heading;
       message.textContent = body;
       okLabel.textContent = confirmLabel;
       okButton.className = destructive ? 'btn btn--danger-solid' : 'btn btn--primary';
       action = onConfirm;
+      cancellable = canAbort;
       return new Promise((resolve) => {
         resolveCurrent = resolve;
         dialog.showModal();

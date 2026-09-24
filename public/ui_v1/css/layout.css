@@ -488,16 +488,30 @@ html[data-header="hidden"] {
   transition: opacity var(--dur-fast) var(--ease-standard);
   /* 翻页/改筛选后把结果区滚回视野时，别让它钻到吸顶的表头底下（用生效高度：折叠时顶栏不占位） */
   scroll-margin-top: calc(var(--header-h-effective) + var(--sp-3));
+}
 
 /* 行内控件同理（2026-09-22 实测补）：用 Tab / 方向键把焦点送到某一行时，浏览器的滚动是**最小**的
  * —— 目标在视口上缘外 6px 时它停在 top=0，而那之上有吸顶链（头栏 + 表头）：实测底边 92（折叠）/
  * 148（展开）⇒ 焦点环整个被压住，键盘用户"按了没反应"。
  * ⚠️ 余量必须按**展开态**取常数（`--header-h`，而不是 `--header-h-effective`）：向上聚焦引发的
  * 滚动会把顶栏**带回来**（滚回顶部附近就展开），吸顶链随之从 92 长到 148 —— 实测按折叠态算余量
- * （0+100）时，元素停在 100、而顶栏已经展开到 148，照样被挡。用 `--header-h` 两种情形都够。 */
+ * （0+100）时，元素停在 100、而顶栏已经展开到 148，照样被挡。用 `--header-h` 两种情形都够。
+ *
+ * ⚠️ **粗指针下这条 `+100px` 不够**（2026-09-23 实测：1024×768 + `--coarse`）：吸顶链里的表头
+ * 高 `2*8px + 1px + 控制高`，而控制高在粗指针下从 `--control-h-sm`(30) 变成 `--hit-min`(44)
+ * ⇒ 链底 148 → **162px**，写死的 156 只给到 156，焦点环被压住 6px（探针的 OCCLUSION 行判红：
+ * `after >= stickyBottom`，读到 top=156 / 底边=162）。这一档按链的实际组成给足：
+ * `--header-h`(56) + `--results-head-h`(45) + 表头(17) + `--hit-min`(44) + 4px 余量 = 166px。 */
 .table .row :is(button, input) {
   scroll-margin-top: calc(var(--header-h) + 100px);
 }
+
+@media (pointer: coarse) {
+  .table .row :is(button, input) {
+    scroll-margin-top: calc(
+      var(--header-h) + var(--results-head-h) + 17px + var(--hit-min) + var(--sp-1)
+    );
+  }
 }
 
 /* 加载中：整块轻微降低对比，不做位移（位移会让表格看起来在跳） */

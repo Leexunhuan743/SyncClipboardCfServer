@@ -28,6 +28,8 @@ import { retentionText, retentionEffectiveText } from '../public/ui_v1/js/compon
 // `<type>-<hash8>.txt`；而名字来自客户端的 `dataName`（不可信）—— 这条判据只能在单测里逐值钉住。
 // @ts-expect-error TS7016：同上
 import { downloadNameForText, safeFileName, truncateText as truncateTextV1, charCount as charCountV1 } from '../public/ui_v1/js/format.js';
+// @ts-expect-error TS7016：V1 的 URL 搜索词会回显到输入框，截断也要按用户可见字符计算
+import { filtersFromUrl as filtersFromUrlV1 } from '../public/ui_v1/js/filters.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const DAY = 86_400_000;
@@ -67,6 +69,11 @@ describe('filters · 时间范围的边界', () => {
 });
 
 describe('filters · URL 往返', () => {
+  it('V1 URL 搜索词的 200 字符上限不会切坏边界上的 emoji', () => {
+    const search = `${'a'.repeat(199)}\u{1F600}extra`;
+    expect(filtersFromUrlV1(`?search=${encodeURIComponent(search)}`).search).toBe(`${'a'.repeat(199)}\u{1F600}`);
+  });
+
   it('筛选进 URL 再解析回来是同一个状态（可分享、可后退、刷新不丢）', () => {
     const state = {
       ...DEFAULT_FILTERS,

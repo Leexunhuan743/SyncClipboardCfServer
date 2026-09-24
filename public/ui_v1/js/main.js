@@ -83,9 +83,12 @@ const preview = createPreview({
   onDelete: deleteFromPreview,
   // 同一个位置的另一档：回收站里的记录给「彻底删除」（`purgeItem`，与行内槽 4 同一个动作）。
   onPurge: purgeFromPreview,
+  onDismiss: () => previewGate.begin(),
   // 预览打开时把这一条写进 URL 的 hash（链接可分享），关闭时清掉——
   // 否则刷新页面会突然弹出上一次看过的记录。`#Text-<hash>` 也是深链接的入口（见 openDeepLink）。
   onClose: () => {
+    // 若旧 close 事件在下一条预览已打开后才到，它不能清掉新预览的请求与链接。
+    if (preview.isOpen()) return;
     if (DEEP_LINK.test(location.hash)) {
       history.replaceState(null, '', `${location.pathname}${location.search}`);
     }
@@ -108,10 +111,14 @@ const info = createInfo({
 // 它**不替代**轮询——降级路径必须一直在（见 POLL_INTERVAL_WATCHDOG 的说明）。
 const pushChannel = createPushChannel({
   acquireTicket: async () => (await api.hubTicket()).path,
-  // 收到任何广播都走与轮询完全相同的那一次刷新：增量对账（哪一行变了、要不要补行）只有一份实现。
-  // **必须去抖**：批量操作是**逐条广播**的（删 200 条 = 200 次广播），不合并的话一次批量写会让
-  // 界面连打两百次列表请求。300ms 的尾沿足够把一串广播收敛成一次刷新，人眼也看不出差别。
-  onSignal: debounce(() => void refresh({ silent: true, flash: true }), 300),
+  // 收到广播后与轮询共用列表对账；同时重取统计与趋势，免得列表变了、卡片还在旧数字。
+  // 批量广播已按批合并，300ms 去抖吸收连续批次与其它设备的密集通知。
+  onSignal: debounce(() => {
+    void refresh({ silent: true, flash: true });
+    // 远端新增/删除会改变统计与趋势；只刷新列表会让同屏卡片停在旧数字。
+    void refreshStats();
+    void refreshActivity();
+  }, 300),
   onState: () => {
     // 顶栏那枚状态点直接读 pushChannel.state，故状态一变就重画一次表头
     syncHeader();
@@ -130,11 +137,15 @@ let lastChangeMs = null;
 // 页面会一直显示旧数据，用户以为「服务器上没有新内容」。这条横幅只在恢复前可见，
 // 成功的那次请求把它收掉（比一闪而过的 toast 更合适：它描述的是一个持续状态）。
 const notice = document.getElementById('notice');
+const staleSources = new Set();
 
-function setStale(stale) {
+function setStale(source, stale) {
+  if (stale) staleSources.add(source);
+  else staleSources.delete(source);
   if (!notice) return;
-  notice.hidden = !stale;
-  notice.textContent = stale ? '与服务器暂时失去联系，页面上的内容可能不是最新的；恢复后会自动刷新。' : '';
+  const showing = staleSources.size > 0;
+  notice.hidden = !showing;
+  notice.textContent = showing ? '与服务器暂时失去联系，页面上的内容可能不是最新的；恢复后会自动刷新。' : '';
 }
 
 /**
@@ -153,6 +164,12 @@ function serverUnreachable(error) {
 
 // ===== 剪贴板 =====
 // 写入机制（含安全上下文与降级）都在 js/clipboard.js；这里只决定「失败时怎么呈现」。
+// 字符数只用于瞬时提示；大文本走 Intl.Segmenter 全文扫描会阻塞主线程，省略数字即可。
+const NOTICE_COUNT_LIMIT = 20_000;
+function noticeCharCount(text) {
+  return text.length <= NOTICE_COUNT_LIMIT ? charCount(text) : null;
+}
+
 async function copyPlainText(text, label = '内容') {
   const ok = await writeText(text);
   if (ok) toasts.info(`已复制${label}`);
@@ -187,24 +204,30 @@ async function fetchFull(item, retry = null, signal = undefined) {
 // `Text LIKE ? ESCAPE '\'`（`src/ui/query.ts`：UI 面转义、协议面不转义），被它滤掉的行
 // 看不见、却仍留在选择集里 ⇒ 与 F3 同型。
 const MEMBERSHIP_KEYS = ['types', 'starred', 'deleted', 'range', 'after', 'before', 'search'];
+const RESULT_KEYS = Object.keys(DEFAULT_FILTERS);
+let loadedFilters = null;
 
-function setFilters(patch, { push = false, scroll = false } = {}) {
+function sameResultQuery(left, right) {
+  return left !== null && RESULT_KEYS.every((key) => left[key] === right[key]);
+}
+
+// ADR D38：显式筛选与浏览器历史共用这条状态转移，避免后退时留下当前视图看不到的选择。
+function applyFilters(next, { push = false, scroll = false, fromHistory = false } = {}) {
   const state = store.get();
-  const next = { ...state.filters, ...patch };
   // 类型计数与视图同源：回收站与活跃列表是**两套**计数，切视图时必须重取，
   // 否则分段控件显示的是另一套（列表头「回收站 · 共 938 条」、控件仍写「全部 1009」）。
   const viewChanged = Boolean(next.deleted) !== Boolean(state.filters.deleted);
   // 成员资格变了就清选择集（F3）：残留的旧快照会让"移动到回收站"落到当前筛选看不见的行上。
   // 进出回收站原有的一处（onToggleDeleted）由这里一并覆盖。
-  if (MEMBERSHIP_KEYS.some((key) => patch[key] !== undefined)) {
+  if (MEMBERSHIP_KEYS.some((key) => next[key] !== state.filters[key])) {
     store.set({ selection: new Map() });
     list.updateSelection(store.get().selection);
   }
-  store.set({ filters: next });
-  syncUrl(next, { push });
+  store.set({ filters: next, error: null, loading: state.items.length === 0 });
+  if (!fromHistory) syncUrl(next, { push });
   // 立刻把**筛选控件**画成新状态，不等响应：store 不触发绘制，而 render() 只在 refresh() 落地后跑 ——
   // 于是从点击到响应这段时间里，被点的那一段控件毫无变化（真实网络上就是几百毫秒的「点下去没反应」，
-  // 响应一到整块换掉，读起来正是卡顿）。列表本身仍是旧行 + `data-busy` 变淡，等响应回来再对账。
+  // 响应一到整块换掉，读起来正是卡顿）。旧行会变淡；新查询在途时它们同时 inert（D38）。
   render();
   // 结果区在首屏之外（用户滚下去看过）时，换页/改筛选要把它带回视野，
   // 否则「点了下一页」只换了脚下看不见的内容。
@@ -212,6 +235,10 @@ function setFilters(patch, { push = false, scroll = false } = {}) {
     if (scroll) scrollToResults();
   });
   if (viewChanged) void refreshStats();
+}
+
+function setFilters(patch, options = {}) {
+  applyFilters({ ...store.get().filters, ...patch }, options);
 }
 
 function scrollToResults() {
@@ -369,8 +396,9 @@ function syncHeader() {
     version: state.version,
     theme: state.theme,
     pushState: pushChannel.state,
-    // 「复制最近一条」在没有记录时隐藏：那时它没有任何可做的事（不是"禁用"，是不存在）
-    canCopyLatest: state.total > 0,
+    // 这个动作跨当前筛选/回收站视图，故按全库的活跃记录数判可用。
+    // 首屏统计尚未到达时暂用列表条数，统计落地后立即重画。
+    canCopyLatest: (state.stats?.activeCount ?? (state.filters.deleted ? 0 : state.total)) > 0,
   });
 }
 
@@ -402,12 +430,13 @@ function render() {
 }
 
 // ===== 数据 =====
-// 四个独立的守卫：列表、统计、概览快照、变更信号各自「最新请求胜出」——它们互相之间没有依赖，
+// 独立守卫：列表、统计、概览快照、变更信号、活动趋势与预览各自「最新请求胜出」——它们互相之间没有依赖，
 // 共用一个守卫会让统计请求把列表请求 abort 掉（那是两件不同的事）。
 const listGate = createLatestGate();
 const statsGate = createLatestGate();
 const overviewGate = createLatestGate();
 const pollGate = createLatestGate();
+const activityGate = createLatestGate();
 // 预览的"取全文"是第五条独立链路：它的竞态与列表无关（快速连点两行的「预览」时，
 // 先点那次的慢响应会把对话框切回上一条）。见 `previewItem` 的说明与 2026-09-22 审核记录。
 const previewGate = createLatestGate();
@@ -420,10 +449,13 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
   // 取数期间列表画什么，取决于"手上有没有旧内容"：
   //   · 有 → 旧行原样留着 + 整块降对比（`data-busy`）。背景刷新（轮询/推送）也走这条；
   //   · 没有 → 骨架（由 list 的 loading 档画）。这一档此前缺失，见 store 里 loading 的说明。
-  // `silent`（轮询 / 推送广播 / popstate）**不动** loading：那种刷新是"背景里补一下"，
+  // `silent`（轮询 / 推送广播）**不动** loading：那种刷新是"背景里补一下"，
   // 把用户正在看的内容换成骨架是倒退；它只负责把新数据对账进去。
   if (!silent) store.set({ loading: true });
-  if (!silent && state.items.length > 0) list.el.setAttribute('data-busy', 'true');
+  if (!silent && state.items.length > 0) {
+    list.el.setAttribute('data-busy', 'true');
+    list.setQueryPending(!sameResultQuery(loadedFilters, state.filters));
+  }
 
   try {
     const page = await api.list(filtersToApi(state.filters), ticket.signal);
@@ -440,7 +472,7 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
       setFilters({ page: lastPage }, { push: false });
       return;
     }
-    setStale(false);
+    setStale('list', false);
     const flashKeys = flash
       ? new Set(page.items.filter((item) => !previousKeys.has(item.key)).map((item) => item.key))
       : new Set();
@@ -451,7 +483,14 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // 过渡本身就要 ~60ms 主线程（布局与样式各上百毫秒级——它要对 `.results` 整块做快照，
     // 成本随页大小上升），换来的只是一个数据表上的交叉淡入；而列表现在是一帧落地，
     // 本就没有「换面」需要掩饰。跨文档过渡（登录页 → 列表页）保留，那条由 CSS 声明、不走这里。
-    store.set({ items: page.items, total: page.total, flashKeys, loading: false, error: null });
+    loadedFilters = { ...state.filters };
+    // 选区跨页保留，但当前页里仍被选中的记录要采纳服务端新元数据：
+    // 否则其他设备改了收藏/置顶后，选择条仍按旧快照计算批量动作方向。
+    const selection = new Map(store.get().selection);
+    for (const item of page.items) {
+      if (selection.has(item.key)) selection.set(item.key, item);
+    }
+    store.set({ items: page.items, total: page.total, selection, flashKeys, loading: false, error: null });
     // 取到数据了 ⇒ 上一次那条"搜索词过长"不再成立（用户可能刚好删掉了几个字）。
     // 清在这里而不是"输入一变化就清"：请求成功才是"这个查询真的被服务端接受了"的证据。
     toolbar.setSearchError(null);
@@ -470,33 +509,38 @@ async function refresh({ silent = false, flash = false, announce = false } = {})
     // `error` 一并进 store：失败时条数**未知**，列表与分页都不该把「取不到」画成「真的没有」
     // （`list.update` 与 `renderPagination` 都读这一位）。
     store.set({ loading: false, error: message });
-    if (serverUnreachable(error)) setStale(true);
+    setStale('list', serverUnreachable(error));
     // 400 + 搜索词非空 ⇒ 只可能是"搜索词超过服务端上限"（`messages.js` 的 describeListError
-    // 里那一支就是按这个判据分的，两边必须一致）。这条错误属于**搜索框**：此刻列表里留着的是
-    // 上一次查询的结果，用户的眼睛在搜索框上，错误就该说在它下面（`components.md` §2 的 error 格）。
+    // 里那一支就是按这个判据分的，两边必须一致）。这条错误属于**搜索框**：
+    // 即使结果区已收起旧行，字段旁仍要给就地错误（`components.md` §2 的 error 格）。
     const searchFieldError = error.status === 400 && store.get().filters.search !== '';
+    if (searchFieldError) toolbar.setSearchError(message);
     // 「该不该给重试」的判据只有一处（两条失败路径共用）：**重试必然再失败的不给** ——
     // 400（输入问题：搜索词过长 / 筛选值非法）与 429（限速窗口没过，默认封锁 15 分钟；
     // 文案里已经写着"请在 N 秒/分钟后重试"）。2026-09-22 发布前审核第 9 轮实测：
     // 429 此前两条路径都给了一个必然失败的「重试」。
     const retryable = error.status !== 400 && error.status !== 429;
-    if (store.get().items.length === 0) {
-      // 首屏失败：给出可操作的错误态，而不是把骨架屏永远留在那里。
-      // 结果区这时本来就是空的、整块都是错误面，够显眼 —— 不再往工具栏里重复说一遍同一句话。
+    if (store.get().items.length === 0 || !sameResultQuery(loadedFilters, state.filters)) {
+      // ADR D38：筛选 / 翻页 / 排序已变，但新请求失败；旧行不能继续放在新控件下面。
+      // 保留组件内部的旧节点供成功后对账；可见层改为持续的错误态，批量动作也随之收起。
+      store.set({ items: [], total: 0 });
+      // 首屏或新查询失败：给出可操作的错误态，不把骨架或旧查询结果留在当前筛选下面。
       list.showError(message, retryable ? () => refresh() : null);
       // 分页那一格也要跟着落到失败档 —— 失败路径不整块 `render()`（理由见上面的 store 说明），
       // 少了这一句它会**永远**停在加载档写下的「正在加载…」，与正下方的「加载失败」互相矛盾。
       renderPagination();
-    } else if (searchFieldError) {
-      toolbar.setSearchError(message);
-    } else {
+      syncHeader();
+    } else if (!searchFieldError) {
       // 已经有内容时保留旧数据 + 一条提示。带上「重试」：网络抖动这类瞬时故障占多数，
       // 而重试的成本正好是刚刚失败的那一次列表请求 —— 此前只能让用户自己再点一次刷新。
       toasts.error(message, retryable ? { action: { label: '重试', run: () => void refresh() } } : {});
     }
   } finally {
     // 已被取代时不要清 busy：那面“正在取”的旗子归更新的那次请求管
-    if (listGate.isCurrent(ticket)) list.el.removeAttribute('data-busy');
+    if (listGate.isCurrent(ticket)) {
+      list.el.removeAttribute('data-busy');
+      list.setQueryPending(false);
+    }
   }
 }
 
@@ -516,17 +560,18 @@ async function refreshStats() {
   } catch (error) {
     if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
-    if (serverUnreachable(error)) setStale(true);
+    setStale('stats', serverUnreachable(error));
     return;
   }
   if (!statsGate.isCurrent(ticket)) return;
   if (view !== store.get().filters.deleted) return; // 视图已切换：这份计数不属于当前视图
-  setStale(false);
+  setStale('stats', false);
   // 绘制放在 fetch 的 try 之外：真出渲染异常时不该被当成网络失败（那正是遮蔽 bug 的藏身处）
   store.set({ stats: { ...data, view } });
   const current = store.get();
   stats.update(current.stats, current.filters.deleted);
   toolbar.update({ filters: current.filters, byType: countsForView(current) });
+  syncHeader();
 }
 
 // ===== 首屏合成快照（`/ui/api/overview`，2026-09-18）=====
@@ -582,11 +627,12 @@ async function refreshOverview() {
     // 变更标记也一起种下：否则第一次 poll 会把「首屏已经看过的这一份」当成一次新变更，白刷一遍列表
     if (snapshot.marker) marker = `${snapshot.marker.count}:${snapshot.marker.lastModified}`;
 
-    setStale(false);
+    // 快照是附加信息；它的成功不能清掉列表或轮询报告的失联状态。
     const current = store.get();
     stats.update(current.stats, current.filters.deleted);
     stats.setHealth(healthSnapshot());
     toolbar.update({ filters: current.filters, byType: countsForView(current) });
+    syncHeader();
   } catch (error) {
     // 被更新的快照 abort 掉不是失败：静默退出（与 refreshStats / refresh 同一个判据）。
     // 少了这一句，每次"用户在加载中途又触发一次刷新"都会在控制台留一行无谓告警。
@@ -620,9 +666,12 @@ function healthSnapshot() {
 //     它是按天聚合的查询，一天之内只有写入才会改变某根柱子的高度；
 //   · 不阻塞首屏：列表与统计先落地，趋势晚一拍出现（它是"锦上添花"，不该拖慢第一行）。
 async function refreshActivity() {
+  const ticket = activityGate.begin();
   try {
-    stats.setActivity(await api.activity());
+    const activity = await api.activity(undefined, ticket.signal);
+    if (activityGate.isCurrent(ticket)) stats.setActivity(activity);
   } catch (error) {
+    if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
     /* 静默：趋势图不是关键路径（理由见上） */
   }
@@ -703,7 +752,19 @@ async function deleteItem(item) {
     // action 里的 401 要自己交出去（见 withAuthRedirect 的说明）：框内报"unauthorized"而页面不跳，
     // 实测就是这个形状。
     action: withAuthRedirect(async () => {
-      await api.patch(item, { isDelete: true });
+      try {
+        await api.patch(item, { isDelete: true });
+      } catch (error) {
+        if (error.status === 409) {
+          void refresh({ silent: true });
+          throw new Error('记录已被其他设备修改，列表正在刷新，请核对后重试。');
+        }
+        if (error.status === 404) {
+          void refresh({ silent: true });
+          throw new Error('这条记录已不在服务器上，列表正在刷新。');
+        }
+        throw error;
+      }
       const selection = new Map(store.get().selection);
       selection.delete(item.key);
       store.set({ selection });
@@ -788,11 +849,12 @@ async function restoreItem(item) {
 // 在回收站留 30 天、期间可恢复；代价改成"这条会从所有同步设备上消失，30 天后才彻底清除"。
 // （`messages.js` 的 `deleteConfirmSpec` 是唯一的口径来源，别在这里另写一份。）
 //
-// 批量取消（2026-09-22，用户定案）：**选择条上那枚按钮在途时变成「中止」**，点击它调用这里的钩子。
+// 批量取消（2026-09-22，用户定案）：可中止的选择条按钮在途时变成「中止」，点击它调用这里的钩子。
 // 与确认框里的中止同一条语义（`components/confirm.js` 的「取消 → 中止」是同一手法的先例）：
-//   · 写批量（收藏 / 置顶 / 恢复）—— 片与片之间停，在途那一片跑完 ⇒ 能如实报"停之前生效了多少"；
+//   · 超过一片的写批量（收藏 / 置顶 / 恢复）—— 片与片之间停，在途那一片跑完 ⇒ 能如实报"停之前生效了多少"；
 //   · 批量复制 —— 是读，连在途请求一起掐断（`api.batchMeta` 把 signal 交给 `request`）。
 // 对话框驱动的那些（移动到回收站 / 彻底删除）**不走这里**：它们的中止键在框里。
+// 同一时刻只允许一个无对话框批量任务占用这个钩子；并发会让后发者覆盖先发者的中止目标。
 let batchAbort = null;
 async function runBatch({
   update,
@@ -844,28 +906,40 @@ async function runBatch({
   };
 
   if (!destructive) {
+    if (batchAbort) {
+      toasts.error('已有批量操作进行中，请先等待或中止');
+      return false;
+    }
     // 无对话框的那三个（收藏 / 置顶 / 恢复）也要能停：控制器挂在模块级钩子上，
     // 选择条那枚按钮在途时变成「中止」就调它（见 `batchAbort` 的说明）。
     const controller = new AbortController();
     batchAbort = () => controller.abort();
     let allApplied = false;
     try {
-      allApplied = (await apply({ signal: controller.signal })) !== false;
-    } catch (error) {
-      if (handleAuthError(error)) return false;
-      // 这里只剩**请求本身**失败（部分未生效与中止两条路已在 apply 内报过）
-      toasts.error(`批量操作失败：${error.message}`);
+      try {
+        allApplied = (await apply({ signal: controller.signal })) !== false;
+      } catch (error) {
+        if (handleAuthError(error)) return false;
+        // 这里只剩**请求本身**失败（部分未生效与中止两条路已在 apply 内报过）
+        toasts.error(`批量操作失败：${error.message}`);
+        await refresh({ silent: true });
+        return false;
+      }
       await refresh({ silent: true });
-      return false;
+      list.restoreFocus();
+      return allApplied;
     } finally {
       batchAbort = null;
     }
-    await refresh({ silent: true });
-    list.restoreFocus();
-    return allApplied;
   }
 
-  const ok = await confirm.ask({ title, message, confirmLabel, action: withAuthRedirect(apply) });
+  const ok = await confirm.ask({
+    title,
+    message,
+    confirmLabel,
+    action: withAuthRedirect(apply),
+    cancellable: items.length > 100,
+  });
   // 无论成败都对账一次：批量是服务端**逐条**判定的，失败时也可能有一部分已经生效，
   // 界面停在旧状态比慢一点更糟。
   await refresh({ silent: true });
@@ -960,6 +1034,7 @@ async function batchPurge() {
     title: spec.title,
     message: spec.message,
     confirmLabel: spec.confirmLabel,
+    cancellable: chosen.length > 100,
     action: withAuthRedirect(async (context) => {
       const result = await api.batchPurge(chosen, {
         onProgress: (done, total) => context?.setMessage?.(batchProgressText(done, total)),
@@ -991,6 +1066,10 @@ async function batchPurge() {
 // 只复制**文本**记录：非文本记录的 text 是文件名，拼进去只会得到一串 .bin；
 // 跳过的条数在提示里如实报出，而不是静默少给几条。
 async function batchCopy() {
+  if (batchAbort) {
+    toasts.error('已有批量操作进行中，请先等待或中止');
+    return false;
+  }
   const chosen = [...store.get().selection.values()];
   if (chosen.length === 0) return false;
 
@@ -1044,10 +1123,9 @@ async function batchCopy() {
     toasts.error(clipboardFailureHint(window.isSecureContext, '可以在预览里逐条复制。'));
     return false;
   }
-  toasts.info(
-    `已复制 ${texts.length} 条文本（${charCount(payload)} 个字符` +
-      `${skipped > 0 ? `，跳过 ${skipped} 条非文本` : ''}）`,
-  );
+  const count = noticeCharCount(payload);
+  toasts.info(`已复制 ${texts.length} 条文本${count === null ? '' : `（${count} 个字符）`}` +
+    `${skipped > 0 ? `，跳过 ${skipped} 条非文本` : ''}`);
   return true;
 }
 
@@ -1115,7 +1193,11 @@ async function clearAll() {
 // 打开预览时把这一条写进 URL 的 hash：链接可以直接分享或收藏（`/ui_v1/#Text-<hash>`）。
 // 用 replaceState 而不是 pushState——它不该在后退历史里塞一条记录。
 function syncDeepLink(item) {
-  history.replaceState(null, '', `${location.pathname}${location.search}#${item.type}-${item.hash}`);
+  history.replaceState(
+    null,
+    '',
+    `${location.pathname}${location.search}#${encodeURIComponent(item.type)}-${encodeURIComponent(item.hash)}`,
+  );
 }
 
 async function previewItem(item) {
@@ -1145,22 +1227,45 @@ async function previewItem(item) {
 // ===== 深链接 =====
 // `#Text-<hash>`：打开页面即预览那一条，跨设备贴一条链接就能定位到同一份内容。
 // 用 hash 而不是 query string：筛选状态已经占了 query（见 filters.js），两者互不干扰。
-const DEEP_LINK = /^#([A-Za-z]+)-([0-9A-Fa-f]{8,128})$/;
+// 服务端只排除路径分隔符；协议客户端可以写入非十六进制 hash。
+const DEEP_LINK = /^#([A-Za-z]+)-(.+)$/;
 
-async function openDeepLink() {
+function parseDeepLink() {
   const match = DEEP_LINK.exec(location.hash);
-  if (!match) return;
-  const [, type, hash] = match;
+  if (!match) return null;
+  try {
+    const hash = decodeURIComponent(match[2]);
+    if (!hash || hash.includes('/') || hash.includes('\\')) return null;
+    return { type: match[1], hash };
+  } catch {
+    return null;
+  }
+}
+
+async function openDeepLink({ closeOnMissing = false } = {}) {
+  const target = parseDeepLink();
+  if (!target) {
+    // 仅 hashchange 的无效目标需要收壳；启动时没有片段不能打断用户刚点开的预览。
+    if (closeOnMissing) {
+      previewGate.begin();
+      preview.close();
+    }
+    return;
+  }
+  const { type, hash } = target;
   // **先把壳打开**（2026-09-22 发布前审核：此前是"取回来才弹"，于是慢网络下点一条分享链接
   // 会有整段时间"什么都没发生"）。此刻只知道类型与 hash，故只画标题行与加载态 ——
   // `renderHead()` 对缺字段不写假话（见那里的说明）。
   // 同时让任何在飞的列表预览作废（`previewGate`）：屏幕归这一次深链接。
-  previewGate.begin();
+  const ticket = previewGate.begin();
   preview.open({ type, hash, key: `${type}-${hash}` }, { loading: true });
   try {
-    const item = await api.get({ type, hash });
+    const item = await api.get({ type, hash }, ticket.signal);
+    // 连续打开两个链接、或在请求途中关框：只有最后一次仍可接管屏幕。
+    if (!previewGate.isCurrent(ticket)) return;
     if (item) await previewItem(item);
   } catch (error) {
+    if (ticket.signal.aborted || !previewGate.isCurrent(ticket)) return;
     if (handleAuthError(error)) return;
     preview.close(); // 取不到就得把壳收掉，否则屏幕上留一个"正在读取…"永远转着
     // 记录已被删除或被清理时说清原因，而不是静默什么都不发生
@@ -1226,7 +1331,8 @@ async function copyItem(item, knownText) {
       text = full.text;
     }
     if (await writeText(text)) {
-      toasts.info(`已复制 ${charCount(text)} 个字符`);
+      const count = noticeCharCount(text);
+      toasts.info(count === null ? '已复制长文本' : `已复制 ${count} 个字符`);
       void touchAccess(item); // 复制 = 使用 ⇒ 推进访问时间（失败静默，见该函数的说明）
       return true;
     }
@@ -1315,7 +1421,8 @@ async function copyLatest(button) {
     }
     if (await writeText(text)) {
       flashSuccess(button, { label: '已复制' });
-      toasts.info(`已复制最近一条（${charCount(text)} 个字符）`);
+      const count = noticeCharCount(text);
+      toasts.info(count === null ? '已复制最近一条长文本' : `已复制最近一条（${count} 个字符）`);
       void touchAccess(item);
       return true;
     }
@@ -1399,7 +1506,8 @@ async function downloadTextItem(item, knownText = undefined) {
     }
     const name = downloadNameForText(item);
     saveBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), name);
-    toasts.info(`已下载 ${name}（${charCount(text)} 个字符）`);
+    const count = noticeCharCount(text);
+    toasts.info(`已下载 ${name}${count === null ? '' : `（${count} 个字符）`}`);
     void touchAccess(item);
     return true;
   } catch (error) {
@@ -1436,9 +1544,7 @@ function withAuthRedirect(run) {
 //
 // **返回值是刚创建的那条记录**（`/ui/api/history` 回的 `toUiItem(entity)`）：预览框拿它改指向
 // 新记录（头部与后续编辑都跟着换，见 `preview.js` 的保存分支）。
-// **不给提示条**：这一刻对话框还开着，而提示条在顶层对话框**之下**（实测 `elementFromPoint` 在提示条
-// 自己的中心返回的是 `dialog`）—— 也就看不见；而"已保存为新记录"这句话本来就由对话框里那条
-// 就地说明在说（与 `info.js` 保留策略表单"对话框内的失败不用提示条"是同一个判据）。
+// 保存成功走全局提示条；它的宿主会停靠到最上层对话框，模态开着时也能看到（ADR D36）。
 async function createTextRecord(_item, text) {
   try {
     const created = await api.createText(text);
@@ -1450,8 +1556,9 @@ async function createTextRecord(_item, text) {
     syncDeepLink(created);
     // 保存成功的反馈走**全局提示条**（`toasts.info` —— 这个对象只有 `info`/`error` 两个口，
     // 与「已复制」「已移动到回收站」同一条通道；`toast.js` 的 `dockHost` 会在有对话框时把它搬进
-    // 框的 top layer，故它在框上看得见、也点得动）；字符数取服务端的 `size`，与头部/列表同一口径。
-    toasts.info(textSavedNote(created.size));
+    // 框的 top layer，故它在框上看得见、也点得动）；短文本与预览头部同用可见字符数，
+    // 长文本省略数字，免得为一句提示全文跑 Intl.Segmenter。
+    toasts.info(textSavedNote(noticeCharCount(text)));
     return created;
   } catch (error) {
     if (handleAuthError(error)) throw new Error('会话已过期，正在跳转登录页…');
@@ -1505,8 +1612,11 @@ function toggleTheme() {
 async function logout() {
   try {
     await api.logout();
-  } catch {
-    /* 即便请求失败也要回登录页 */
+  } catch (error) {
+    if (handleAuthError(error)) return;
+    // Cookie 是 HttpOnly；请求失败时浏览器并未退出。跳登录页还会被会话探测送回来。
+    toasts.error(`登出失败：${error.message}`);
+    return;
   }
   location.replace(`${PAGE_BASE}/login.html`);
 }
@@ -1528,7 +1638,7 @@ async function pollOnce() {
     // 迟到的旧信号不能改写 marker：marker 被旧值覆盖后，下一次比较会误判
     // （要么漏掉一次真正的变更，要么把同一变更重复当成新变更）。
     if (!pollGate.isCurrent(ticket)) return;
-    setStale(false);
+    setStale('poll', false);
     // 服务端时间 → 时钟差；最新一条记录的 LastModified → 「最近一次变更」。
     // 两者都由这一次轮询顺带带回（服务端在 /ui/api/poll 里一起给），不额外发请求。
     if (typeof next.serverTime === 'string') {
@@ -1543,14 +1653,20 @@ async function pollOnce() {
     // 但此前没有任何代码实现它 ⇒ 统计条会永久空着）。**只在这次轮询成功之后**补，
     // 所以服务端不可达时不会叠加请求；成功一次后 `stats` 非空，这条分支自然关掉。
     if (store.get().stats === null) void refreshOverview();
+    // 失联来源分别记账后，成功的 poll 不再能替列表/统计清故障；它要主动重试那两条链路。
+    // 否则服务恢复但 marker 没变时，横幅会一直停留到用户手动刷新。
+    if (staleSources.has('stats')) void refreshStats();
     const signature = `${next.count}:${next.lastModified}`;
     const changed = marker !== null && signature !== marker;
     marker = signature;
-    if (changed) {
+    if (changed || staleSources.has('list')) {
       if (document.visibilityState === 'visible') {
-        await refresh({ silent: true, flash: true });
-        // 有写入才可能改变某根柱子的高度（见 refreshActivity 的说明）
-        void refreshActivity();
+        await refresh({ silent: true, flash: changed });
+        // 轮询是推送的兜底；漏掉广播时，三块数据都要自行收敛。
+        if (changed) {
+          void refreshStats();
+          void refreshActivity();
+        }
       } else {
         missedWhileHidden = true;
       }
@@ -1558,7 +1674,7 @@ async function pollOnce() {
   } catch (error) {
     if (ticket.signal.aborted) return;
     if (handleAuthError(error)) return;
-    if (serverUnreachable(error)) setStale(true);
+    setStale('poll', serverUnreachable(error));
   }
 }
 
@@ -1652,37 +1768,75 @@ function installShortcuts() {
 
 // ===== 启动 =====
 
-async function boot() {
+let appMounted = false;
+let bootInFlight = false;
+
+function mountApp() {
+  if (appMounted) return;
+  document.getElementById('app-header').append(header.el);
+  document.getElementById('stats').replaceWith(stats.el);
+  // 挂载点本身就是 .toolbar，必须替换而不是嵌套两个工具栏。
+  document.getElementById('toolbar').replaceWith(toolbar.el);
+  document.getElementById('results-mount').replaceChildren(list.el);
+  document.getElementById('pagination').replaceWith(pagination.el);
+  appMounted = true;
+}
+
+async function boot({ retry = false } = {}) {
   // 同一文档里被重复求值（例如应用被以 `/ui_v1` 与 `/ui_v1/` 两个 URL 同时加载时，
   // 模块图会出现两份）会让第二次求值再做一遍**模块级的副作用**、并让第二次 boot 找不到
   // 已被替换掉的挂载点，得到半渲染的页面。实测触发过，故在文档上留一个标记。
   //
-  // ⚠️ 守卫必须是**这个函数的第一句**（2026-09-18 修）：此前它排在 `initNoticeBar()` 之后，
-  // 于是重复求值的那一份仍会多做一遍模块级的接线 —— 守卫管不到它本该管的东西。
+  // ⚠️ 初次调用必须在任何挂载副作用之前检查文档标记（2026-09-18 修）；首屏会话探测失败后
+  // 点击「重试」则沿用同一份模块实例，显式跳过这道只针对重复求值的检查。
   // （提示条那一处已在 2026-09-19 随提示条一起删除，见 `docs/ui-rename-v1-v2.md`。）
   // 模块级那几行（`createToasts` / `createConfirm` / …）在**模块求值时**就往 body 里塞
   // 常驻 `<dialog>`，那一段这里管不到，见 `docs/archive/AUDIT-v1-v2-divergence.md` §4.1
   // （V2 的解法是把这些创建搬进守卫之后）。
   const root = document.documentElement;
-  if (root.dataset.appBooted === '1') return;
-  root.dataset.appBooted = '1';
-
-  const session = await api.session();
+  if (!retry) {
+    if (root.dataset.appBooted === '1') return;
+    root.dataset.appBooted = '1';
+  }
+  if (bootInFlight) return;
+  bootInFlight = true;
+  let session;
+  try {
+    session = await api.session();
+  } catch (error) {
+    bootInFlight = false;
+    if (handleAuthError(error)) return;
+    // 会话探测发生在列表请求之前；这里若只弹瞬时提示，静态骨架会永远留在首屏。
+    // 挂载已有的错误态并给出重试入口，网络恢复后可以继续同一次启动。
+    mountApp();
+    const message = `无法连接服务器：${error.message}`;
+    store.set({ loading: false, error: message });
+    render();
+    header.el.inert = true;
+    toolbar.el.inert = true;
+    pagination.el.inert = true;
+    list.showError(message, () => {
+      store.set({ loading: true, error: null });
+      render();
+      void boot({ retry: true }).catch(reportBootFailure);
+    });
+    renderPagination();
+    setStale('session', serverUnreachable(error));
+    return;
+  }
+  bootInFlight = false;
   if (!session.authenticated) {
     redirectToLogin();
     return;
   }
 
-  store.set({ username: session.username, version: session.version });
+  setStale('session', false);
+  store.set({ username: session.username, version: session.version, loading: true, error: null });
 
-  document.getElementById('app-header').append(header.el);
-  document.getElementById('stats').replaceWith(stats.el);
-  // 必须 replaceWith：挂载点本身已经是 <div class="toolbar">，
-  // 用 append 会套出双层工具栏（外层成了只含一个子项的 flex 容器，
-  // padding/换行/收缩都作用在错误的那一层）
-  document.getElementById('toolbar').replaceWith(toolbar.el);
-  document.getElementById('results-mount').replaceChildren(list.el);
-  document.getElementById('pagination').replaceWith(pagination.el);
+  mountApp();
+  header.el.inert = false;
+  toolbar.el.inert = false;
+  pagination.el.inert = false;
 
   // 这一帧画的是**骨架**，不是空状态：store 的 `loading` 初始为 true，列表据此走加载档。
   // 此前这里画的是一句确定的「还没有任何记录」——而数据请求还没发出去，
@@ -1707,15 +1861,12 @@ async function boot() {
   // 深链接在首屏数据到位之后再打开：`#Text-<hash>` 要预览的那条可能不在当前页，
   // 走单条端点取（api.get），与列表是否包含它无关。
   await openDeepLink();
-  window.addEventListener('hashchange', () => void openDeepLink());
+  window.addEventListener('hashchange', () => void openDeepLink({ closeOnMissing: true }));
 
   window.addEventListener('popstate', () => {
-    const before = store.get().filters.deleted;
-    const filters = filtersFromUrl();
-    store.set({ filters });
-    refresh({ silent: true });
-    // 后退/前进也可能在活跃列表与回收站之间切换，计数同样要跟上
-    if (Boolean(filters.deleted) !== Boolean(before)) void refreshStats();
+    // 后退/前进与点击筛选是同一种视图切换：成员资格变化必须清掉跨页选择，
+    // 控件、加载态与统计也要走同一个出口。URL 已由浏览器更新，这里不再写历史。
+    applyFilters(filtersFromUrl(), { fromHistory: true });
   });
 
   // 前后台切换时开关推送通道，而不是让它带着半死连接硬撑：
@@ -1742,6 +1893,8 @@ async function boot() {
   });
 }
 
-boot().catch((error) => {
+function reportBootFailure(error) {
   if (!handleAuthError(error)) toasts.error(`初始化失败：${error.message}`);
-});
+}
+
+boot().catch(reportBootFailure);

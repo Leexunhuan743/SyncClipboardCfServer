@@ -14,7 +14,7 @@
 //    页脚最左那枚是销毁性的（「移动到回收站」/「彻底删除」），而按钮位置本身还会随记录类型变。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
-import { formatAbsolute, formatSize, typeLabel, typeChipClass } from '../format.js';
+import { formatAbsolute, formatSize, typeLabel, typeChipClass, charCount } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 // 数据文件地址只在 `api.dataUrl` 里定义（前缀 + `download=1` 的拼法）：
 // 组件里再抄一遍，就是又一处「改了接口前缀、漏了这个文件」的机会。
@@ -42,8 +42,10 @@ export const EDIT_SHORTCUTS = [
 // 「编辑」的体积上限（UTF-8 字节），与 `src/ui/routes.ts` 的 `UI_TEXT_CREATE_MAX_BYTES` **必须一致**：
 // 前端拦在按钮上（超了直接禁用 + 说明），服务端那一条是纵深防御。改一处就要改另一处。
 const EDIT_MAX_BYTES = 1024 * 1024;
+// 大文本不为头部一句数字同步扫描整段正文；短文本按用户看到的字素簇计数。
+const DISPLAY_COUNT_LIMIT = 20_000;
 
-export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onEdit, onDelete, onPurge, onClose }) {
+export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText, onEdit, onDelete, onPurge, onDismiss, onClose }) {
   const title = el('h2', { class: 'dialog__title', id: 'preview-title' });
   const meta = el('span', { class: 'dialog__meta' });
   // 类型徽标也放进标题行：同一句「内容」在不同类型下是完全不同的东西
@@ -70,7 +72,8 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 这一刻关掉，失败就会落在已经关掉的框里（提示条在顶层对话框**之下**，实测 `elementFromPoint`
   // 在提示条自己的中心返回的是 `dialog`），用户只看到"点了保存、什么都没发生"。
   const requestClose = () => {
-    if (saving) return;
+    if (saving || !dialog.open) return;
+    onDismiss?.();
     dialog.close();
   };
   const closeButton = el(
@@ -136,7 +139,15 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 不该被一个 Esc 丢掉。`cancel` 是可取消事件，`preventDefault()` 就能拦住 UA 的关框行为
   // （与 `confirm.js` 在途挡 Esc 是同一个手法）；非编辑态保持原样（Esc 关框）。
   dialog.addEventListener('cancel', (event) => {
-    if (!editing) return;
+    // 保存请求已发出时，Esc 不能先退出编辑，更不能第二次 Esc 关掉对话框。
+    if (saving) {
+      event.preventDefault();
+      return;
+    }
+    if (!editing) {
+      onDismiss?.();
+      return;
+    }
     event.preventDefault();
     exitEdit();
   });
@@ -243,6 +254,8 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         // 文案是可以随时改的（2026-09-23 修：此前用 `textContent.startsWith('下载')` 找按钮，
         // 改一次措辞就会让键静默失效，而行内那套（`list.js`）一直用的是 `data-action`）。
         'data-action': action,
+        // 窄屏只画图标时，隐藏的 .btn__label 不再提供可访问名；成功态由 flashSuccess 临时改名并还原。
+        'aria-label': label,
         disabled,
         title: titleText,
         onclick: async () => {
@@ -324,26 +337,22 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
   // 头部（标题 / 类型徽标 / 「N 个字符 · 时间」）的**唯一绘制点**：`open()` 与"保存成功后改指向新记录"
   // 两处调它，别在别处散写 `title` / `meta`。
   //
-  // 字符数**用服务端给的 `size`**，而不是本地按屏幕上那段算：两条理由 ——
-  //   ① 口径统一：列表、头部、提示条讲的都是"这条记录多大"（服务端 `dto.text.length`，UTF-16 码元），
-  //      同屏两个口径的数字（例如正文里 10 个 emoji：本地 `charCount` 说 10、服务端说 20）会互相打脸；
-  //   ② 成本：`charCount` 走 `Intl.Segmenter`，实测 1.1 MB 的正文要 **169ms**（Node 24，本机），
-  //      而重新打开一条大文本预览本来就要一次往返 —— 不该再叠一次百毫秒级的主线程计算。
-  // 这不是新决定：`docs/archive/AUDIT-v1-v2-divergence.md` §12.2 早就把"V1 预览里的「N 个字符」
-  // 读服务端 `size`、**有意不改**"记成了结论（那条与 V2 的口径分歧因此是有记录的）。
-  // 2026-09-22 起"已保存为新记录（N 个字符）"那条提示条也取同一个数（服务端的 `size`），
-  // 于是同一屏上不会出现两个不同的字符数。
-  function renderHead(item) {
+  // 服务端 `size` 是 UTF-16 码元数，10 个 emoji 会报成 20 个「字符」；原先与复制提示口径不同。
+  // 头部与提示统一：短文本用 `charCount(currentText)`，超过阈值只写「长文本」，避免在打开
+  // 1 MiB 正文时为一句数字额外阻塞主线程（实测全量 Segmenter 约 169ms）。
+  function renderHead(item, { loading = false } = {}) {
     title.textContent = item.type === 'Text' ? '文本内容' : (item.dataName ?? item.type);
     typeChip.className = `chip ${typeChipClass(item.type)}`;
     typeChipLabel.textContent = typeLabel(item.type);
     // 深链接会先开壳（那时只知道类型与 hash，见 `main.js` 的 `openDeepLink`）——
     // 缺字段就**不写**副信息：写「0 个字符」或「undefined」都是假话，而空着只是"还没到"。
     const sizeText =
-      item.size === undefined
+      loading || item.size === undefined
         ? ''
         : item.type === 'Text'
-          ? `${Number(item.size) || 0} 个字符`
+          ? currentText.length <= DISPLAY_COUNT_LIMIT
+            ? `${charCount(currentText)} 个字符`
+            : '长文本'
           : formatSize(item.size);
     const timeText = item.createTime ? formatAbsolute(item.createTime) : '';
     meta.textContent = [sizeText, timeText].filter(Boolean).join(' · ');
@@ -539,7 +548,9 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
         type: 'button',
         title: '退出编辑，不保存改动（Esc）',
         'aria-keyshortcuts': 'Escape',
-        onclick: () => exitEdit(),
+        onclick: () => {
+          if (!saving) exitEdit();
+        },
       },
       [el('span', { class: 'btn__label', text: '取消' })],
     );
@@ -571,6 +582,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
       saving = true;
       setPending(save, true);
       closeButton.disabled = true; // 在途不许关框：提示条压在这个模态之下，关掉就等于把失败丢在屏幕外
+      cancel.disabled = true;
       try {
         // `onEdit` 保证回传刚创建的那条记录（形状不对时 `api.createText` 已经抛了），
         // 故这里不写"万一是别的形状"的兼容分支 —— 那样只会把一个猜出来的状态画到屏幕上。
@@ -593,6 +605,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
       } finally {
         saving = false;
         closeButton.disabled = false;
+        cancel.disabled = false;
         setPending(save, false);
       }
     };
@@ -649,7 +662,8 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
     currentText = text ?? item.text ?? '';
     editing = false;
     activeSave = null; // 同上：换记录时旧编辑会话的保存闭包必须失联
-    renderHead(item);
+    // 长文本列表项此时只有截断正文；加载壳不能把这 500 字误报为全文字符数。
+    renderHead(item, { loading });
     body.className = 'dialog__body';
     replaceOwn(body);
     replaceOwn(footer, el('span', { class: 'dialog__foot-spacer' }));
@@ -709,6 +723,7 @@ export function createPreview({ onCopy, onCopyImage, onDownload, onDownloadText,
 
   return {
     open,
+    isOpen: () => dialog.open,
     // 程序化关闭也过 `requestClose()`：`#29` 把"保存途中不许关框"写成了硬约束
     // （那一刻关掉，失败会落在已经关掉的框里、提示条又在模态之下），而两个入口必须同一条规矩
     // —— 目前唯一的程序化调用方是 `main.js` 取全文失败时收壳（那时不在编辑态，不受影响）。

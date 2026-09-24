@@ -38,19 +38,21 @@ export async function writeText(text) {
       /* 继续降级 */
     }
   }
+  let area;
   try {
-    const area = document.createElement('textarea');
+    area = document.createElement('textarea');
     area.value = text;
     area.setAttribute('readonly', '');
     area.style.position = 'fixed';
     area.style.top = '-1000px';
     document.body.append(area);
     area.select();
-    const ok = document.execCommand('copy');
-    area.remove();
-    return ok;
+    return document.execCommand('copy');
   } catch {
     return false;
+  } finally {
+    // 旧式复制若抛异常也要移除临时节点；它的 value 是完整的剪贴板正文。
+    area?.remove();
   }
 }
 
@@ -78,8 +80,9 @@ export async function writeImage(blob) {
 }
 
 async function toPng(blob) {
+  let bitmap;
   try {
-    const bitmap = await createImageBitmap(blob);
+    bitmap = await createImageBitmap(blob);
     const canvas = document.createElement('canvas');
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
@@ -87,8 +90,12 @@ async function toPng(blob) {
     if (!context) return null;
     context.drawImage(bitmap, 0, 0);
     bitmap.close?.();
+    bitmap = null;
     return await new Promise((resolve) => canvas.toBlob((result) => resolve(result), 'image/png'));
   } catch {
     return null;
+  } finally {
+    // canvas 不可用、绘制抛错或编码失败时也释放已解码的位图。
+    bitmap?.close?.();
   }
 }

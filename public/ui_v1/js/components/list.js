@@ -15,7 +15,7 @@
 // 已一起清掉，别再照旧稿加回来。取舍与判据见 `progress.md` §155。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
-import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty, typeLabel, typeChipClass } from '../format.js';
+import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty, typeLabel, typeChipClass, truncateText } from '../format.js';
 import { itemIsImage } from '../clipboard.js';
 import { buildThumb, buildFlags, TOGGLES, applyToggleState, playPop } from './row-content.js';
 import { createTooltip } from './tooltip.js';
@@ -23,7 +23,7 @@ import { setPending, flashSuccess, isPending } from './toast.js';
 import { DEFAULT_FILTERS } from '../filters.js';
 
 // 骨架的行数区间。上限 50 与 V2 的 `board.js` 同源：行数只需把折线以下的内容先推开，
-// 而 50 行（表格档 50 × 47px；卡片档 50 × 103px）都远超任何视口，每页 500 行时画 500 条骨架没有意义；
+// 而 50 行（表格档 50 × 47px；卡片档 50 × 103px；粗指针下两档各再 +14px）都远超任何视口，每页 500 行时画 500 条骨架没有意义；
 // 下限 3 是"页面看起来在加载"的最小量。行数**必须**贴近真实页大小，理由见 renderSkeletonRows。
 const SKELETON_MAX_ROWS = 50;
 const SKELETON_MIN_ROWS = 3;
@@ -131,7 +131,18 @@ export const ROW_SHORTCUTS = [
   { keys: ['Delete', 'Backspace'], label: '移动到回收站 / 彻底删除（要过确认框）', actions: ['delete', 'purge'] },
 ];
 
-function buildActions(item, actions) {
+// `ref`（行的**可变引用**）而不是构建期的 `item`：按钮的**形态**用构建期快照定（类型 / 有无数据 /
+// 是否已删 —— 这些都在行的内容签名里，变了就会重建行），但动作的**载荷**必须在点击当下现读
+// `ref.item`。理由与实测（2026-09-23）：
+//   行内开关（收藏 / 置顶）成功后就地换掉 `ref.item`（`version`/`lastModified`/`lastAccessed` 都变），
+//   而 `signature()` **不含** `version` ⇒ 这一行不会被重建 ⇒ 按钮闭包会一直抓着旧快照。
+//   于是「先按 `s` 收藏、再点『复制』」时，`touchAccess` 回显的是**过期 version**，服务端按上游
+//   `shouldUpdate`（5 分钟内要求 `newVersion >= oldVersion`）判 **409**，而 `touchAccess` 对 409 的
+//   既定语义是**静默丢弃** ⇒ 复制之后「访问」列不更新（同一个原因也让 V1 探针的失败请求判据红）。
+//   同一条纪律在 `buildCheckbox` 与行体点击里早就写着（它们用 `ref.item`），这里是它的第三个落点。
+function buildActions(ref, actions) {
+  // 构建期快照：只用来决定按钮的**形态**（标签、`disabled`、回收站分支）
+  const item = ref.item;
   // 回收站里的行只做两件事（见下）：恢复与彻底删除。**能否恢复不在这里判**——
   // 2026-09-22（ADR D29）改成真回收站之后，软删不再清数据，带数据文件的记录恢复时
   // 会连数据一起回来（服务端那条上游守卫已经去掉），故这里没有"不可恢复"这一档。
@@ -151,7 +162,7 @@ function buildActions(item, actions) {
         action: 'restore',
         label: '恢复',
         icon: 'undo',
-        run: () => actions.onRestore(item),
+        run: () => actions.onRestore(ref.item),
         successLabel: '已恢复',
         title: '恢复到历史记录（含数据文件）（r）',
       }),
@@ -160,7 +171,7 @@ function buildActions(item, actions) {
         action: 'preview',
         label: '预览',
         icon: 'eye',
-        run: () => actions.onPreview(item),
+        run: () => actions.onPreview(ref.item),
       }),
       actionSlot(null),
       // 彻底删除：不可恢复，故同样过确认框（main.js 的 purgeItem）。服务端把"只删已删除的行"
@@ -169,7 +180,7 @@ function buildActions(item, actions) {
         action: 'purge',
         label: '彻底删除',
         icon: 'trash',
-        run: () => actions.onPurge(item),
+        run: () => actions.onPurge(ref.item),
         title: '从服务器永久删除这条记录（不可撤销）（Delete）',
       }),
     ]);
@@ -183,7 +194,7 @@ function buildActions(item, actions) {
     action: 'preview',
     label: '预览',
     icon: 'eye',
-    run: () => actions.onPreview(item),
+    run: () => actions.onPreview(ref.item),
     title: '预览这一条（v）',
   });
 
@@ -197,7 +208,7 @@ function buildActions(item, actions) {
           // 部署信息里"复制"），读者会以为是三种不同的行为。
           label: '复制文本',
           icon: 'copy',
-          run: () => actions.onCopy(item),
+          run: () => actions.onCopy(ref.item),
           successLabel: '已复制',
           title: '复制这段文本（c）',
         })
@@ -206,7 +217,7 @@ function buildActions(item, actions) {
             action: 'copy-image',
             label: '复制图片',
             icon: 'copy',
-            run: () => actions.onCopyImage(item),
+            run: () => actions.onCopyImage(ref.item),
             successLabel: '已复制',
             disabled: !item.hasData,
             title: item.hasData ? '复制这张图片（c）' : '数据不可用，无法复制（c）',
@@ -224,7 +235,7 @@ function buildActions(item, actions) {
           action: 'download',
           label: item.hasData ? '下载' : '下载文本',
           icon: 'download',
-          run: () => actions.onDownloadText(item),
+          run: () => actions.onDownloadText(ref.item),
           successLabel: '已下载',
           title: item.hasData ? '下载这条记录的数据文件（d）' : '把这段正文存成 .txt（d）',
         })
@@ -232,7 +243,7 @@ function buildActions(item, actions) {
           action: 'download',
           label: '下载',
           icon: 'download',
-          run: () => actions.onDownload(item),
+          run: () => actions.onDownload(ref.item),
           successLabel: '已下载',
           disabled: !item.hasData,
           title: item.hasData ? '下载这条记录（d）' : '数据不可用，无法下载（d）',
@@ -246,7 +257,7 @@ function buildActions(item, actions) {
     action: 'delete',
     label: '移动到回收站',
     icon: 'trash',
-    run: () => actions.onDelete(item),
+    run: () => actions.onDelete(ref.item),
     // 键与 hover 一起写：`Delete` 是本行唯一的销毁性动作，但它**照旧要过确认框**
     // （确认框的初始焦点在「取消」，所以一次误按不至于删掉东西）。
     title: '移动到回收站（Delete，30 天内可以从回收站恢复）',
@@ -359,7 +370,7 @@ export function createList(actions) {
     tbody.addEventListener('keydown', (event) => {
       if (!NAV_KEYS.has(event.key)) return;
       // Shift 在这里**不再一律让路**（2026-09-22）：Shift+方向键 = 从锚点行扩展选择 ——
-      // 与鼠标 Shift+点击同一套语义、共用同一个 `anchorIndex`。此前键盘用户只能一条条按 Space，
+      // 与鼠标 Shift+点击同一套语义、共用同一个记录锚点。此前键盘用户只能一条条按 Space，
       // 勾 50 行就是 50 次；而"连续选一段"本来就是批量操作的常见起点。
       // 其余修饰键（Ctrl/Alt/Meta）仍然让路。
       if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
@@ -384,17 +395,14 @@ export function createList(actions) {
       }
       const next = rows[targetIndex];
       if (event.shiftKey) {
-        // 扩展选择：锚点缺失时落在**当前行**（与 Shift+点击「没有锚点就先锚在这里」同义），
-        // 然后按 [min, max] 取整段 —— 与鼠标那条路用的是同一个 `onSelectRange`。
-        const anchor = anchorIndex ?? index;
-        anchorIndex = anchor;
-        const from = Math.min(anchor, targetIndex);
-        const to = Math.max(anchor, targetIndex);
-        actions.onSelectRange(currentItems.slice(from, to + 1));
+        // 锚在记录 key 上，交互时再按当前顺序求位置；刷新/排序会复用行节点，
+        // 构建行时捕获的下标此时已经不是用户眼前的位置。
+        if (itemIndex(anchorKey) < 0) anchorKey = row.dataset.key;
+        selectRangeTo(next.dataset.key);
       } else {
         // 普通移动把锚点跟着走：与鼠标"最后点过的那一行"是同一条纪律，
         // 否则"先点一下、再按几下 ↓、然后 Shift+↓"会从很旧的那一行开始扩，读起来像跳选。
-        anchorIndex = index;
+        anchorKey = row.dataset.key;
       }
       // 定位"同一个控件"：动作按钮按 data-action 找。**四个槽位是固定的**
       // （预览 / 复制 / 下载 / 移动到回收站，见 `buildActions`），回收站行则是"恢复"固定在槽 1
@@ -503,7 +511,8 @@ export function createList(actions) {
 
   // 画骨架行。行数按**当前页大小**给 —— 这不是审美取舍，是布局正确性：
   // 骨架行高与真实行同高（`.skeleton__row` 的高度：表格档绑 `.table td`、卡片档绑
-  // `.table tr.row` 的盒模型，两处推导都在 components.css），
+  // `.table tr.row` 的盒模型，**粗指针下两档的行再各长到 `--hit-min`**（47 → 61、103 → 117）——
+  // 三处推导都在 components.css），
   // 行数又贴近真实页大小，于是内容落地时折线以上的内容**一点不动**。
   // 反例是 V2 实测过的（A-02）：6 行骨架（384px）对 50 行真实表（3930px），
   // 内容一到，页脚与分页从视口里被整段顶出去 —— CLS 0.90。
@@ -536,10 +545,8 @@ export function createList(actions) {
   let hasRendered = false;
   let currentItems = [];
   let selection = new Set();
-  // 范围选择的锚点（Shift+点击的起点）
-  let anchorIndex = null;
-  // 上一份列表的**首行 key**：用来判断"这还是不是同一份列表"（见 update 里那段）。
-  let lastFirstKey = null;
+  // 用记录 key 而不是构建期下标作范围选择锚点：对账会复用并重排行节点。
+  let anchorKey = null;
   // 收行后焦点该落到哪里：removeItem 记下（哪个操作、第几行），调用方在**对话框关闭之后**
   // 调 restoreFocus() 落地——模态期间文档是 inert 的，那时候 focus() 会被忽略。
   let pendingFocus = null;
@@ -608,8 +615,23 @@ export function createList(actions) {
       filters.types !== 'All' ||
       filters.starred ||
       filters.search !== '' ||
-      filters.range !== 'all'
+      (filters.range !== 'all' &&
+        (filters.range !== 'custom' || filters.after !== null || filters.before !== null))
     );
+  }
+
+  function itemIndex(key) {
+    return key === null || key === undefined
+      ? -1
+      : currentItems.findIndex((item) => item.key === key);
+  }
+
+  function selectRangeTo(key) {
+    const anchor = itemIndex(anchorKey);
+    const target = itemIndex(key);
+    if (anchor < 0 || target < 0 || anchor === target) return false;
+    actions.onSelectRange(currentItems.slice(Math.min(anchor, target), Math.max(anchor, target) + 1));
+    return true;
   }
 
   // 复选框（含 Shift 范围选择）。回收站里同样需要它：批量恢复与「彻底删除选中」都以选择集为入口。
@@ -617,31 +639,28 @@ export function createList(actions) {
   // 入参是那一行的**可变引用**（`rowRefs` 里那个），不是构建时的 `item`：行内开关（收藏/置顶）
   // 成功后就地改的是 `ref.item`，而这个闭包如果一直抓着旧对象，之后勾选这一行就会把**旧快照**
   // 存进选择集 —— 选择条的方向与文案随之按旧值算（"已置顶的记录点置顶没反应"就是这么来的）。
-  function buildCheckbox(ref, index) {
+  function buildCheckbox(ref) {
     const item = ref.item; // 这里只用它读 key / type / hash 这些**不随写入变化**的字段
     const checkbox = el('input', {
       class: 'checkbox',
       type: 'checkbox',
-      'aria-label': `选择 ${item.type} ${item.hash.slice(0, 8)}`,
+      'aria-label': `选择${typeLabel(item.type)}：${truncateText(previewText(item), 40)}`,
     });
     checkbox.checked = selection.has(item.key);
     // Shift+点击选择整段（起点是上一次点的那个复选框）：批量软删一条条勾是纯体力活。
     // 必须挂在 click（而不是 change）上：preventDefault 能挡住原生行为，change 就不会触发。
     checkbox.addEventListener('click', (event) => {
-      if (event.shiftKey && anchorIndex !== null && anchorIndex !== index) {
+      if (event.shiftKey && selectRangeTo(item.key)) {
         event.preventDefault();
-        const from = Math.min(anchorIndex, index);
-        const to = Math.max(anchorIndex, index);
-        actions.onSelectRange(currentItems.slice(from, to + 1));
         return;
       }
-      anchorIndex = index;
+      anchorKey = item.key;
     });
     checkbox.addEventListener('change', () => actions.onSelect(ref.item, checkbox.checked));
     return el('label', { class: 'check-wrap' }, [checkbox]);
   }
 
-  function buildRow(item, index, flashKeys) {
+  function buildRow(item, flashKeys) {
     const row = el('tr', {
       class: 'row',
       role: 'row',
@@ -661,7 +680,7 @@ export function createList(actions) {
     const ref = { item };
     rowRefs.set(row, ref);
 
-    const checkboxWrap = buildCheckbox(ref, index);
+    const checkboxWrap = buildCheckbox(ref);
 
     const preview = previewText(item);
     // 行内正文：悬停把被 CSS 裁掉的那部分给回一点（2026-09-21，硬约束 #26）。
@@ -764,7 +783,7 @@ export function createList(actions) {
       timeCell('col-accessed', item.lastAccessed),
       // 回收站里的行没有收藏/置顶动作（见 flagButtons）
       el('td', { class: 'col-star', role: 'cell' }, flagButtons),
-      el('td', { class: 'col-actions', role: 'cell' }, [buildActions(item, actions)]),
+      el('td', { class: 'col-actions', role: 'cell' }, [buildActions(ref, actions)]),
     ];
     row.append(...cells.filter(Boolean));
 
@@ -783,26 +802,23 @@ export function createList(actions) {
     // 用户正在选文字（想手动复制）时也不触发——那一下点是在划线，不是在「打开」。
     //
     // 2026-09-21（用户定的选中态交互）：**选区非空时行体点击 = 切换该行选中**（Shift+点击 =
-    // 范围选择，锚点与复选框共用 `anchorIndex`），不再打开预览；预览/下载等图标在按钮区里照常。
+    // 范围选择，锚点与复选框共用同一个记录 key），不再打开预览；预览/下载等图标在按钮区里照常。
     // 选区为空时维持"行体点击 = 预览"。
     row.addEventListener('click', (event) => {
       if (event.target.closest('button, input, a, label')) return;
       if ((window.getSelection()?.toString() ?? '') !== '') return;
       if (selection.size > 0) {
-        if (event.shiftKey && anchorIndex !== null && anchorIndex !== index) {
+        if (event.shiftKey && selectRangeTo(item.key)) {
           event.preventDefault();
-          const from = Math.min(anchorIndex, index);
-          const to = Math.max(anchorIndex, index);
-          actions.onSelectRange(currentItems.slice(from, to + 1));
           return;
         }
-        anchorIndex = index;
+        anchorKey = item.key;
         // 用 ref.item 而不是闭包里的 item：行内开关（收藏/置顶）会就地换掉 ref.item，
         // 存旧对象会让批量按钮的方向（收藏/取消收藏）按旧数据算 —— 与 buildCheckbox 同一条纪律。
         actions.onSelect(ref.item, !selection.has(item.key));
         return;
       }
-      actions.onPreview(item);
+      actions.onPreview(ref.item);
     });
 
     return row;
@@ -841,6 +857,14 @@ export function createList(actions) {
     }
     headClear.hidden = true;
 
+    // 后台刷新会重画头栏；正在执行的批量按钮必须留在 DOM 里，
+    // 否则「中止」键被换成一枚新的普通按钮，长批量就失去取消入口。
+    if (headSelection.querySelector('[data-cancel="true"]')) {
+      const count = headSelection.querySelector('.results__selection-count');
+      if (count) count.textContent = `已选 ${selected.size} 条`;
+      return;
+    }
+
     // 批量按钮的文案随选区**当前状态**反过来：选中的都已收藏时给的是「取消收藏」。
     // 固定写「收藏」会让用户对着已收藏的记录点一个看起来没反应的按钮（服务端确实写了一次，
     // 状态却不变）——这类「点了没反应」正是要避免的。
@@ -867,7 +891,8 @@ export function createList(actions) {
           //
           // 2026-09-22（批量取消）：`cancellable` 的按钮在途时**同一个键换一副面孔** ——
           // 转圈让位给「中止」、指针事件保留（CSS 的 `[data-cancel]`），点它就请求停下。
-          // 只有"能停"的动作带这个标记：对话框驱动的「移动到回收站」/「彻底删除」，中止键在框里。
+          // 只有"能停"的动作带这个标记：读批量可随时停，写批量需超过一片；
+          // 对话框驱动的「移动到回收站」/「彻底删除」，中止键在框里。
           onclick: async (event) => {
             const button = event.currentTarget;
             if (isPending(button)) {
@@ -875,6 +900,12 @@ export function createList(actions) {
               if (button.dataset.cancel === 'true') actions.onBatchCancel?.();
               return;
             }
+            const peers = cancellable
+              ? [...headSelection.querySelectorAll('button')]
+                  .filter((entry) => entry !== button)
+                  .map((peer) => ({ peer, wasDisabled: peer.disabled }))
+              : [];
+            for (const entry of peers) entry.peer.disabled = true;
             setPending(button, true);
             if (cancellable) {
               button.dataset.cancel = 'true';
@@ -889,6 +920,8 @@ export function createList(actions) {
               labelEl.textContent = label;
               button.setAttribute('aria-label', label);
               setPending(button, false);
+              for (const entry of peers) entry.peer.disabled = entry.wasDisabled;
+              if (cancellable) renderHead({ ...lastHead, selection });
             }
           },
         },
@@ -898,7 +931,7 @@ export function createList(actions) {
 
     const buttons = recycleMode
       ? [
-          batchButton('restore', '恢复选中', 'undo', () => actions.onBatchRestore(), { cancellable: true }),
+          batchButton('restore', '恢复选中', 'undo', () => actions.onBatchRestore(), { cancellable: chosen.length > 100 }),
           // 中间这一枚就是"移除少量/中量"的出口：没有它，想永久删掉几条只能整罐倒（清空回收站）。
           batchButton('purge', '彻底删除选中', 'trash', () => actions.onBatchPurge()),
           // 「清空回收站」**不在这里**（2026-09-22 挪走）：它清的是整个回收站、与选择集无关，
@@ -913,14 +946,14 @@ export function createList(actions) {
             chosen.every((item) => item.starred) ? '取消收藏' : '收藏',
             'star',
             () => actions.onBatchFlag('star'),
-            { cancellable: true },
+            { cancellable: chosen.length > 100 },
           ),
           batchButton(
             'pin',
             chosen.every((item) => item.pinned) ? '取消置顶' : '置顶',
             'pin',
             () => actions.onBatchFlag('pin'),
-            { cancellable: true },
+            { cancellable: chosen.length > 100 },
           ),
           batchButton('delete', '移动到回收站', 'trash', () => actions.onBatchDelete()),
         ];
@@ -960,7 +993,7 @@ export function createList(actions) {
         next.push(existing);
         continue;
       }
-      const row = buildRow(item, index, flashKeys);
+      const row = buildRow(item, flashKeys);
       rowSignatures.set(row, sig);
       if (existing) {
         // 内容变了（多半是别的设备改了这条）：闪一次说明「它刚被更新」
@@ -985,16 +1018,20 @@ export function createList(actions) {
   return {
     el: node,
 
+    // 新查询等待期间旧行只是视觉占位，不能在新筛选条件下继续操作它们。
+    // 同一查询的背景刷新不调用这一档，用户仍可正常使用当前结果。
+    setQueryPending(pending) {
+      table.inert = pending;
+      headSelection.inert = pending;
+    },
+
     update(state) {
       const { items, total, filters, flashKeys } = state;
-      // 锚点只在**同一份列表**里有意义（2026-09-23 实测补）：翻页/改筛选/换排序之后，那一行
-      // 多半已经不在页内，而 `anchorIndex` 是个**下标** —— 拿它去切当前页的 `items` 会选中一片
-      // 与用户锚点无关的行（实测：第 1 页锚第 6 行 → 翻到第 2 页按 `Shift+↓`×2，选中的是
-      // 页内第 4–6 行，而不是第 2–4 行）。判据用**首行 key**：轮询刷新只要成员没变就不误伤，
-      // 而选择集变化走的是 `updateSelection`、不经过这里。
-      const firstKey = items[0]?.key ?? null;
-      if (firstKey !== lastFirstKey) anchorIndex = null;
-      lastFirstKey = firstKey;
+      // 换查询时清锚；同一查询的刷新若只是插行或重排，锚点仍跟着那条记录走。
+      if (lastFilters && Object.keys(DEFAULT_FILTERS).some((key) => filters[key] !== lastFilters[key])) {
+        anchorKey = null;
+      }
+      if (anchorKey !== null && !items.some((item) => item.key === anchorKey)) anchorKey = null;
       selection = state.selection;
       recycleMode = Boolean(filters.deleted);
       // 头栏常驻出口的一条证据（见 renderHead）：`deletedCount` 是**全表**聚合，
@@ -1043,7 +1080,7 @@ export function createList(actions) {
         rowByKey.clear();
         const flash = flashKeys ?? new Set();
         for (let index = 0; index < items.length; index += 1) {
-          const row = buildRow(items[index], index, flash);
+          const row = buildRow(items[index], flash);
           rowSignatures.set(row, signature(items[index]));
           rowByKey.set(items[index].key, row);
           tbody.append(row);

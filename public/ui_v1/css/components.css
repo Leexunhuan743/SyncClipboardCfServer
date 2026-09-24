@@ -1483,7 +1483,7 @@ th[aria-sort="descending"] .th-sort__arrow {
 
 .kv__row {
   display: grid;
-  grid-template-columns: var(--kv-k, 92px) minmax(0, 1fr);
+  grid-template-columns: var(--kv-k) minmax(0, 1fr);
   gap: 2px var(--sp-4);
   align-items: baseline;
 }
@@ -1535,7 +1535,7 @@ th[aria-sort="descending"] .th-sort__arrow {
  * （用户："输入框要在对应行 不要两行"）。 */
 .field-inline {
   display: grid;
-  grid-template-columns: var(--kv-k, 92px) minmax(0, 1fr);
+  grid-template-columns: var(--kv-k) minmax(0, 1fr);
   align-items: center;
   gap: 0 var(--sp-4);
 }
@@ -1674,6 +1674,14 @@ th[aria-sort="descending"] .th-sort__arrow {
   flex: 1 1 auto;
 }
 
+/* 预览页脚的四枚操作在手机宽度下放不进一行。它们都有图标和 aria-label，
+ * 仅收起可见文字；编辑态的「取消 / 保存」没有 data-action，仍显示文字。 */
+@media (max-width: 560px) {
+  .dialog__foot > .btn[data-action] .btn__label {
+    display: none;
+  }
+}
+
 /* ============ 快捷键列表（`components/shortcuts.js`）============
  * 键帽用 `kbd`：等宽字体 + 细边框，读者一眼能分出"这是键盘上的键"而不是按钮名。
  * 两列用 grid（键帽列 `auto`、说明列 `1fr`）——列表项长度不一时说明左缘仍对齐。 */
@@ -1708,7 +1716,7 @@ th[aria-sort="descending"] .th-sort__arrow {
 
 .shortcuts__keys kbd {
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   line-height: 1.6;
   padding: 0 6px;
   border: 1px solid var(--border);
@@ -1899,10 +1907,21 @@ th[aria-sort="descending"] .th-sort__arrow {
   animation: sheen var(--dur-skeleton) linear infinite;
 }
 
-/* 粗指针：真表头里 `.th-sort` 长到 `--hit-min`（44）⇒ 表头占位跟着长到 61px（卡片档亦然）。
- * 与 `.skeleton__row` 的那条粗指针规则同一个理由：两档的盒模型都由令牌决定，占位必须同源。 */
+/* 粗指针：真表头里 `.th-sort` 长到 `--hit-min`（44）⇒ 表头占位跟着长到 61px。
+ *
+ * ⚠️ **表格档的行也必须跟着长**（2026-09-23 探针实测补：`--width 1024 --coarse` 报 `gap=14`）：
+ * 那一档的行高由行内 `.icon-btn` 的 `--hit-min` 决定 = `8+8+1+44 = 61px`，而 `.skeleton__row`
+ * 的基础值写的是**细指针**的 47px ⇒ 骨架每行比真实行矮 14px（50 行 700px）。
+ * 1024×768 正是 iPad 横屏的视口，而它 > 860px ⇒ 走**表格档 + 粗指针**，这一组合此前从未量过
+ * （§102.8 的「10 档全对」量的是细指针的表格档与卡片档两族）。
+ * 卡片档（≤860px + 粗指针）由文件末尾那条 `(max-width: 860px) and (pointer: coarse)` 覆盖成
+ * 117px —— 两条特异性相同，它排在后面，靠顺序取胜。 */
 @media (pointer: coarse) {
   .skeleton__head {
+    height: calc(2 * 8px + 1px + var(--hit-min));
+  }
+
+  .skeleton__row {
     height: calc(2 * 8px + 1px + var(--hit-min));
   }
 }

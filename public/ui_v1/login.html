@@ -23,7 +23,7 @@
     <link rel="manifest" href="/ui_v1/manifest.webmanifest" />
     <!-- theme-color 只有一条：由下面的**外链**脚本 theme-init.js 按**生效**主题（含应用内开关）
          写入（外链而非内联是为了让 CSP 保持 script-src 'self'，见该文件头注释）。
-         media 门控的两条只跟随系统，用户在应用里切到深色时顶栏会仍是浅色。 -->
+         若改成只靠 media 门控的两条，应用内切主题时顶栏会跟不上。 -->
     <meta name="theme-color" content="#faf8f5" />
     <link rel="stylesheet" href="/ui_v1/css/tokens.css" />
     <link rel="stylesheet" href="/ui_v1/css/base.css" />

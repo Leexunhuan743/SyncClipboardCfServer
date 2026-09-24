@@ -26,15 +26,17 @@
 需要本地 dev server（`npm run dev`）：
 
 ```bash
-node test/manual/probe-ui-v1.mjs                    # 读真实 DOM 的值（只读）
+node test/manual/probe-ui-v1.mjs                    # 读 DOM；会创建并清理一条 PROBE-* 记录
 node test/manual/probe-ui-v1.mjs --width 390 --height 844
 node test/manual/probe-ui-v1.mjs --width 1024 --coarse   # 触屏模拟：量行内操作的命中区与间距
 node test/manual/probe-ui-v1.mjs --shots .shots     # 顺带出图
-node test/manual/probe-ui-v1.mjs --write            # 会写：收藏开关来回切一次（状态净零）
+node test/manual/probe-ui-v1.mjs --write            # 额外：收藏开关来回切一次（状态净零）
 ```
 
 > 手动脚本一律显式给 `--port`（默认端口与其它探针/`states.mjs` 有重合，撞上残留浏览器会量到
 > 另一个页面的状态，得到假结论；详见 `docs/progress.md` §62.6）。
+> 默认探针也会真实写入并清理自己创建的记录；非本机目标默认拒绝，只有确认目标可丢弃后
+> 才能用 `ALLOW_REMOTE_TARGET=1` 显式放行。
 
 ## 已知边界
 
@@ -47,6 +49,7 @@ node test/manual/probe-ui-v1.mjs --write            # 会写：收藏开关来�
   （**不再隐藏**，2026-09-18 反转，见 `css/layout.css` 的 ≤560 块与 `docs/ui.md` §9.9）。
 - 没有列显示开关与**多键**排序：类型 / 大小 / 创建 / 修改 / 访问这 5 列都能在表头点着排，
   但同一时刻只有一键（`js/main.js` 的 `onSort` 只写一个 `sort` 字段）。
+- 「复制选中」只拼接文本记录的完整正文；图片、文件与文件夹会跳过并在提示中报数。批量下载尚无入口。
 
 ## 详细文档
 

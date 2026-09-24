@@ -7,6 +7,7 @@
 //   range=all|today|7d|30d   —— 预设，边界在每次请求时按"现在"重算（页面开一整天也不会停在旧窗口）
 //   range=custom&after=&before= —— 自定义，毫秒时间戳；before 是**开区间上界**（对齐服务的 CreateTime < before）
 // 预设不写死边界进 URL：否则分享出去的链接会随着对方打开的时间而语义漂移。
+import { truncateText } from './format.js';
 
 export const DEFAULT_FILTERS = {
   page: 1,
@@ -132,7 +133,8 @@ export function filtersFromUrl(search = location.search) {
     pageSize: nearestPageSize(params.get('pageSize')),
     types,
     starred: params.get('starred') === '1',
-    search: (params.get('search') ?? '').slice(0, 200),
+    // URL 里的搜索词会回显到输入框；按 UTF-16 码元截断会把边界上的 emoji 切成替代符。
+    search: truncateText(params.get('search') ?? '', 200),
     range,
     after,
     before,

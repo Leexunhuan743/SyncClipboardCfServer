@@ -21,6 +21,13 @@ function arg(name, fallback = null) {
 }
 
 const BASE = arg('base', 'http://127.0.0.1:8787');
+// 默认流程会真实写入再清理 PROBE-* 记录；与写库套件同一条目标边界。
+// 必须在启动浏览器、登录和任何请求之前检查，免得把探针误指线上实例。
+const targetHost = new URL(BASE).hostname;
+const localTargets = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0']);
+if (!localTargets.has(targetHost) && process.env.ALLOW_REMOTE_TARGET !== '1') {
+  throw new Error(`V1 探针会写入/删除历史记录，拒绝非本机目标：${BASE}（确认是可丢弃实例后用 ALLOW_REMOTE_TARGET=1 放行）`);
+}
 const USER = arg('user', 'admin');
 const PASS = arg('pass', 'admin');
 const URL_PATH = arg('url', '/ui_v1/');
@@ -36,9 +43,9 @@ const ANONYMOUS = process.argv.includes('--anonymous');
 // 不传就只出数值 —— 这是它与 shoot.mjs 的分工：shoot 只出图，probe 出值，两者都能出图时
 // 以"谁拥有这个界面"为准：V1 的运行时证据都收在本文件里。
 const SHOTS = arg('shots', null);
-// `--write`：额外走一次**真实的写路径**（收藏开关来回切一次，净零）。默认不做：
-// 本探针默认只读，只有显式加这个参数才会改动目标实例上的数据（与仓库里"写库套件要显式放行"
-// 是同一条纪律）。它验的是"点下去真的写进去了"，而不只是"按钮画得对"。
+// 默认流程的 SAVE 检查会创建一条 PROBE-* 文本记录，再软删并彻底删除；清理失败会判红。
+// `--write` **额外**走收藏开关的往返写路径（状态净零）。两条都会改动目标实例，
+// 因此只应指向可写的本地测试实例。它验的是"点下去真的写进去了"，而不只是"按钮画得对"。
 const WRITE = process.argv.includes('--write');
 // `--coarse`：模拟触屏（`pointer: coarse`）。行内操作那一排的命中区与间距只在粗指针下才变，
 // 而它正是"下载紧挨着删除"这类误触的现场 —— 只能在模拟成触屏时才量得到。
@@ -86,6 +93,7 @@ const SKIP_IS_PRECONDITION = [
   /coarse pointer/, // 触屏构件对触屏有意不挂监听
   /every row is pinned/, // 库里每一行都已置顶 ⇒ 没有"未置顶的行"可测
   /not enough rows/,
+  /no rows in switched view/,
   /少于两行/, // 批量复制需要两行
   /not Text/, // 第一行不是文本记录 ⇒ 编辑路径不适用
   /no star button/, // 该行没有收藏开关（回收站视图）
@@ -172,6 +180,22 @@ try {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   const send = (method, params) => cdp.send(method, params, sessionId);
+  // 真实输入的派发：细指针用鼠标；`--coarse` 下 Chrome headless 的触屏模拟会让
+  // `Input.dispatchMouseEvent` **永久挂起**（CDP 30s 超时；2026-09-23 实测，1440/1024 两档复现，
+  // 与 `setEmitTouchEventsForMouse` 的开关无关，切回 `Input.dispatchTouchEvent` 即恢复）。
+  // 粗指针设备本来就该用**轻点**：一次 touchStart + touchEnd，浏览器会合成兼容的 click。
+  const tapAt = async (x, y) => {
+    if (COARSE) {
+      await send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x, y, radiusX: 1, radiusY: 1, force: 1, id: 1 }],
+      });
+      await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      return;
+    }
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x, y });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x, y });
+  };
   await send('Page.enable');
   await send('Runtime.enable');
   await send('Network.enable');
@@ -210,8 +234,15 @@ try {
 
   const consoleErrors = [];
   const failedRequests = [];
+  // requestId → 方法：失败请求那一行带上 `PATCH` / `POST` / `GET`，才能一眼看出是哪条路径
+  // （2026-09-23 定位「复制后的 touchAccess 被自己判 409」时缺的就是这个）。
+  // 只**加**信息，判据不变：仍然是「任何 ≥400 的响应都进 failedRequests」。
+  const requestMethods = new Map();
   cdp.ws.addEventListener('message', (event) => {
     const msg = JSON.parse(event.data);
+    if (msg.method === 'Network.requestWillBeSent') {
+      requestMethods.set(msg.params.requestId, msg.params.request?.method ?? '?');
+    }
     if (msg.method === 'Runtime.consoleAPICalled' && msg.params?.type === 'error') {
       consoleErrors.push((msg.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' '));
     }
@@ -219,7 +250,9 @@ try {
       consoleErrors.push(`未捕获异常：${msg.params?.exceptionDetails?.exception?.description ?? ''}`);
     }
     if (msg.method === 'Network.responseReceived' && (msg.params?.response?.status ?? 200) >= 400) {
-      failedRequests.push(`${msg.params.response.status} ${msg.params.response.url}`);
+      failedRequests.push(
+        `${msg.params.response.status} ${requestMethods.get(msg.params.requestId) ?? '?'} ${msg.params.response.url}`,
+      );
     }
   });
 
@@ -1236,6 +1269,51 @@ try {
     }
   }
 
+  // 浏览器后退也必须走筛选的成员资格规则：旧实现从回收站后退时选区仍有 1 条，
+  // 活跃列表却没有任何勾选行，批量操作因此指向看不见的记录（ADR D38）。
+  const popSelection = await read(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (ready) => {
+      for (let i = 0; i < 50; i += 1) {
+        if (ready()) return true;
+        await wait(100);
+      }
+      return false;
+    };
+    const original = location.search;
+    const view = document.querySelector('.toolbar button[title^="回收站"]');
+    if (!view) return JSON.stringify({ error: 'no recycle view button' });
+    view.click();
+    const switched = await until(() => location.search !== original && !document.querySelector('.table')?.hidden);
+    const checkbox = document.querySelector('tbody tr.row input.checkbox');
+    if (!switched || !checkbox) {
+      history.back();
+      await until(() => location.search === original);
+      return JSON.stringify({ skipped: 'no rows in switched view' });
+    }
+    checkbox.click();
+    const before = document.querySelector('.results__selection-count')?.textContent?.trim() ?? '';
+    history.back();
+    const restored = await until(() => location.search === original && !document.querySelector('.table')?.hidden);
+    return JSON.stringify({
+      before,
+      restored,
+      selectionHidden: document.querySelector('.results__selection')?.hidden,
+      selectedChecked: document.querySelectorAll('tbody input.checkbox:checked').length,
+    });
+  })()`);
+  console.log('POPSEL   ', popSelection);
+  {
+    const result = JSON.parse(popSelection);
+    if (result.skipped) console.log('POPSEL   skipped:', result.skipped);
+    else check(
+      '后退恢复筛选时清空不再属于当前视图的选择',
+      result.before.includes('已选 1 条') && result.restored === true &&
+        result.selectionHidden === true && result.selectedChecked === 0,
+      popSelection,
+    );
+  }
+
   // 行间方向键：焦点放在第 1 行的「预览」上，按 ↓ 后应当落在第 2 行的**同一个**控件上。
   // 这条检查存在的理由：方向键是**纯增量**（Tab 顺序一个不动），它最容易在重构行结构时
   // 被顺手弄坏 —— 坏了不会有任何报错，只是键盘用户按了没反应。
@@ -1346,8 +1424,10 @@ try {
       pendingAfter,
       clipboardReadable: !clipboard.startsWith('ERR:'),
       clipboardHead: clipboard.slice(0, 60),
-      containsFirst: texts[0] !== '' && clipboard.includes(texts[0]),
-      containsSecond: texts[1] !== '' && clipboard.includes(texts[1]),
+      // 行尾归一后再比：Windows 剪贴板往返会把行内的 \\n 变成 \\r\\n，直接 includes 会读到 false
+      // （2026-09-23 实测：clipboardHead 里明明有两段文本，containsSecond 却是 false）。
+      containsFirst: texts[0] !== '' && clipboard.replace(/\\r\\n/g, '\\n').includes(texts[0]),
+      containsSecond: texts[1] !== '' && clipboard.replace(/\\r\\n/g, '\\n').includes(texts[1]),
       toast: [...document.querySelectorAll('.toast')].map((t) => t.textContent).join(' | '),
     };
     // 收尾：取消选择（只动本机界面状态，不碰服务端）
@@ -1579,8 +1659,7 @@ try {
     ? { x: Math.max(2, Math.floor(editOpen.box.l / 2)), y: Math.max(2, Math.floor(editOpen.box.t / 2)) }
     : null;
   if (backdrop) {
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...backdrop });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...backdrop });
+    await tapAt(backdrop.x, backdrop.y);
     await new Promise((r) => setTimeout(r, 250));
   }
   const afterBackdrop = backdrop ? await editState() : { open: null, editing: null };
@@ -1702,9 +1781,8 @@ try {
   // 点击会落到 dialog 上 —— 那正是"假提示条"的实测形态）。先点、再看提示条与对话框各自的反应。
   let prvToastClick = null;
   if (!prvToast.skipped && prvToast.center) {
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: prvToast.center.x, y: prvToast.center.y });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: prvToast.center.x, y: prvToast.center.y });
-    await new Promise((r) => setTimeout(r, 250));
+    await tapAt(prvToast.center.x, prvToast.center.y);
+    await new Promise((r) => setTimeout(r, 1600));
     prvToastClick = JSON.parse(
       (await read(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2167,9 +2245,8 @@ try {
     return JSON.stringify({ found: true, visible: r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight, point: window.__helpPoint });
   })()`)) ?? '{}');
   if (kbFix.helpButton.found) {
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: kbFix.helpButton.point.x, y: kbFix.helpButton.point.y });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: kbFix.helpButton.point.x, y: kbFix.helpButton.point.y });
-    await new Promise((r) => setTimeout(r, 700));
+    await tapAt(kbFix.helpButton.point.x, kbFix.helpButton.point.y);
+    await new Promise((r) => setTimeout(r, 400));
     kbFix.helpByButton = await read(`Boolean(document.querySelector('dialog[open] .shortcuts'))`);
     await keyPress('Escape', 'Escape', 27);
     await new Promise((r) => setTimeout(r, 600));
@@ -2217,7 +2294,7 @@ try {
     const r = document.querySelector('dialog[open] .dialog__foot').getBoundingClientRect();
     return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), scrollable: document.querySelector('dialog[open] .dialog__body').scrollHeight > document.querySelector('dialog[open] .dialog__body').clientHeight + 1 });
   })()`)) ?? '{}');
-  if (kbFix.wheel.scrollable) {
+  if (kbFix.wheel.scrollable && !COARSE) {
     const wheelAt = (modifiers) =>
       send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: kbFix.wheel.x, y: kbFix.wheel.y, deltaX: 0, deltaY: 120, modifiers });
     await wheelAt(0);
@@ -2225,6 +2302,9 @@ try {
     await wheelAt(2); // 2 = Ctrl
     await new Promise((r) => setTimeout(r, 250));
     kbFix.wheelEvents = JSON.parse((await read(`JSON.stringify(window.__wheel)`)) ?? '[]');
+  } else if (kbFix.wheel.scrollable) {
+    // 粗指针设备没有滚轮，且 headless 触屏模拟下 mouseWheel 与鼠标一样会挂起 ⇒ 不派发、判据也不跑
+    kbFix.wheelEvents = [];
   }
 
   await read(`document.querySelector('dialog.dialog[open]')?.close(), 1`);
@@ -2243,7 +2323,7 @@ try {
     );
     check('`Esc` 清空选择（净零）', kbFix.afterEscClear === 0, String(kbFix.afterEscClear));
     check('预览框的键按 `data-action` 找到按钮（`e` 真键盘进入编辑态）', kbFix.editByKey === true, String(kbFix.previewActions));
-    if (kbFix.wheel.scrollable) {
+    if (kbFix.wheel.scrollable && !COARSE) {
       const plain = (kbFix.wheelEvents ?? []).find((e) => e.ctrl === false);
       const ctrl = (kbFix.wheelEvents ?? []).find((e) => e.ctrl === true);
       check('滚轮转发照旧接管（正文可滚时普通滚轮被 preventDefault）', plain?.prevented === true, JSON.stringify(kbFix.wheelEvents));
@@ -2286,8 +2366,7 @@ try {
   })()`)) ?? '{}');
   if (dock.afterOpen.dialogOpen && dock.afterOpen.retryHit) {
     const p = JSON.parse((await read(`JSON.stringify(window.__retry2)`)) ?? 'null');
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: p.x, y: p.y });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: p.x, y: p.y });
+    await tapAt(p.x, p.y);
     await new Promise((r) => setTimeout(r, 1600));
   }
   dock.afterClick = JSON.parse((await read(`JSON.stringify({
@@ -3091,7 +3170,7 @@ try {
     if (footerBox.skipped) {
       console.log('FOOTER  ', JSON.stringify(footerBox));
     } else {
-      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: footerBox.x, y: footerBox.y });
+      if (!COARSE) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: footerBox.x, y: footerBox.y });
       await wait(500);
       const footerState = await read(`(() => {
         const box = document.querySelector('.footer-links');
@@ -3131,7 +3210,7 @@ try {
     // 分页区单独一张：窄屏下它曾经折成四行、两个按钮各占一整行（用户 2026-09-18 的截图）。
     // 判据看 `PAGER` 行。**必须先把指针移开**：上一步的悬停还开着致谢面板，它会正好盖住分页区
     // （第一版就是这么拍出一张"看不出问题"的废图）。
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 8, y: 8 });
+    if (!COARSE) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 8, y: 8 });
     await wait(400);
     await read(`(() => {
       document.querySelector('.pagination')?.scrollIntoView({ block: 'center' });

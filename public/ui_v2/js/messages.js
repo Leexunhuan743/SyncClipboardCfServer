@@ -135,10 +135,10 @@ export function editTooLargeText(limit) {
  * 长度按提示条写（2.6s 内读完一行）：编辑的语义是**新建**（正文一改 hash 就变），
  * 说明这一点就够 —— "原来那条仍在历史里""列表已刷新"是用户在列表里一眼可见的事实，
  * 塞进提示条只会让它在读完之后还占着屏幕底部。
- * @param {number} chars
+ * @param {number|null} chars 大文本省略数字，避免全文计数阻塞界面
  */
 export function textSavedNote(chars) {
-  return `已保存为新记录（${chars} 个字符）`;
+  return chars === null ? '已保存为新记录' : `已保存为新记录（${chars} 个字符）`;
 }
 
 /**

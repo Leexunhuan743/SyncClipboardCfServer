@@ -13,6 +13,8 @@
 import { describe, expect, it, afterEach } from 'vitest';
 // @ts-expect-error TS7016：`public/ui_v2/**` 是零构建的原生 ES 模块，不在 tsconfig 的 include 里（同 next-target.test.ts）
 import { isImageName, itemIsImage, writeImage, writeText, canWriteImage } from '../public/ui_v2/js/clipboard.js';
+// @ts-expect-error TS7016：V1 同样是原生 ES 模块，单独钉住临时文本域的失败清理
+import { writeText as writeTextV1, writeImage as writeImageV1 } from '../public/ui_v1/js/clipboard.js';
 
 const g = globalThis as unknown as Record<string, unknown>;
 
@@ -45,6 +47,22 @@ describe('clipboard.isImageName / itemIsImage', () => {
 });
 
 describe('clipboard.writeImage 的判别结果', () => {
+  it('V1 图片转码失败也释放已解码的位图', async () => {
+    let closed = 0;
+    stubGlobals({
+      window: { isSecureContext: true },
+      ClipboardItem: class { constructor(_items: Record<string, Blob>) {} },
+      navigator: { clipboard: { write: async () => undefined } },
+      createImageBitmap: async () => ({ width: 2, height: 2, close: () => { closed += 1; } }),
+      document: { createElement: () => ({ getContext: () => null }) },
+    });
+    expect(await writeImageV1(new Blob([new Uint8Array(4)], { type: 'image/jpeg' }))).toEqual({
+      status: 'failed',
+      reason: '图片转码失败',
+    });
+    expect(closed).toBe(1);
+  });
+
   it('没有 ClipboardItem（http 非 localhost / 老浏览器）→ unsupported，且不去碰 clipboard', async () => {
     const calls: unknown[] = [];
     stubGlobals({ window: { isSecureContext: true }, navigator: { clipboard: { write: (x: unknown) => calls.push(x) } } });
@@ -144,6 +162,27 @@ describe('clipboard.writeImage 的判别结果', () => {
 });
 
 describe('clipboard.writeText 的降级链', () => {
+  it('V1 旧式复制抛异常时也移除装有全文的临时文本域', async () => {
+    let removed = 0;
+    stubGlobals({
+      window: { isSecureContext: false },
+      navigator: {},
+      document: {
+        body: { append: () => undefined },
+        createElement: () => ({
+          value: '',
+          style: {},
+          setAttribute: () => undefined,
+          select: () => undefined,
+          remove: () => { removed += 1; },
+        }),
+        execCommand: () => { throw new Error('copy denied'); },
+      },
+    });
+    expect(await writeTextV1('private text')).toBe(false);
+    expect(removed).toBe(1);
+  });
+
   it('安全上下文 + 现代 API 可用 → true，不走 execCommand', async () => {
     let execCalls = 0;
     stubGlobals({
