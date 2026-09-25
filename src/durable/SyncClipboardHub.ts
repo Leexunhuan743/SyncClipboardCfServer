@@ -4,11 +4,23 @@
 // 另负责 negotiate 签发的 connectionToken 的登记与校验（上游 hub 类级 [Authorize] 的等价物）。
 //
 // 三种传输的连接模型：
-//   ws  —— WebSocketPair，服务端主动 send/close
+//   ws  —— WebSocketPair + **Hibernation API**（`state.acceptWebSocket` 登记，事件走
+//          `webSocketMessage` / `webSocketClose` / `webSocketError` 类方法），服务端主动 send/close
 //   sse —— 挂起的流式响应（transform stream + writer），按 `data: <msg>\n\n` 帧写入
 //   lp  —— 无状态轮询：GET 取消息（无消息则挂起至多 POLL_TIMEOUT_MS、或返回 204 表示服务端关闭），
 //          POST 上报客户端消息，DELETE 关闭连接
 // 三种传输共用同一套心跳（15s Ping）与静默清理（60s），因为客户端 ServerTimeout 对三者一致。
+//
+// ⚠️ WS **必须**走 Hibernation API：用标准 WS API（`server.accept()` + `addEventListener`）时
+// 「No WebSocket standard API is used」这一条 hibernate 前置条件不成立 ⇒ 对象在**整个连接期间**
+// 计 duration（官方 pricing 脚注 4：Calling `accept()` on a WebSocket in an Object will incur
+// duration charges for the entire time the WebSocket is connected），与是否真被回收无关。
+// 实测代价：本 DO 吃掉 Free 日额度的 84.5–85.5%（11,014–11,103 GB-s/天，activeTime 99.6%）；
+// 迁移后同样的 15 s alarm 心跳下 duration 降到满额的 0.076–0.1%。
+// 依据与回归面：docs/do-hibernation-plan.md §5 P1 / §8、docs/design.md D42。
+// ⚠️ 两种 API **不可并用**：`acceptWebSocket` 之后 `addEventListener` 收不到事件。
+// ⚠️ SSE 与长轮询**仍是**不可 hibernate 的（活着的 `writer` / 未兑现的 `pending` 无法迁移）
+// ⇒ 有这两类连接在线时，本对象照样全程计费。这是已知且已登记的边界（D42）。
 import { parseClientMessage, handshakeResponse, invocationMessage, closeMessage, pingMessage } from './signalr';
 import {
   basicAuthUsername,
@@ -45,6 +57,19 @@ const IDLE_TIMEOUT_MS = 60_000;
 // 且服务端每 15s 的 Ping 会先行返回，故正常情况不会走到这个超时。
 const POLL_TIMEOUT_MS = 25_000;
 const TOKEN_PREFIX = 'tok:';
+// 认证失败计数的落盘节流（详见 persistAuthLimits）：两次「纯计数推进」落盘之间的最小间隔。
+// 取 15 s 与 hibernate 的静默阈值（10 s）同一量级 —— 节流窗口决定「hibernate 会抹掉多少失败次数」
+// （即攻击者停手等 hibernate 能多试几次），而写率上界是 1 行 / 15 s，与攻击流量无关。
+const AUTH_RATE_LIMIT_PERSIST_MIN_INTERVAL_MS = 15_000;
+
+// 认证失败计数的落盘形态（单个 storage key ⇒ 一次落盘 = 1 行写）。
+// `persistedAt` 必须**一起**落盘：节流判据的内存基线会被 hibernate 清掉，只有把「上次落盘时刻」
+// 本身存下来，唤醒后「距上次落盘多久」才仍然算得对 —— 否则每段静默都会把节流重置成「刚落过盘」，
+// 于是节流形同虚设（每次失败都落一行）。
+interface PersistedAuthLimits {
+  persistedAt: number;
+  limits: Record<string, AuthLimitState>;
+}
 
 // 长轮询单连接队列上限（F9 第四类封顶）：无上限时一次写可让 N 条连接各积压整条消息
 // （实测 30 连接 × 1.6MB = 48MB，单连接累积 4.5MB）。超限按「服务端关闭」语义结束该连接
@@ -98,29 +123,39 @@ function readAuthLimitKeys(body: unknown): string[] {
 }
 
 export class SyncClipboardHub {
-  // WebSocket 连接（含最后活跃时间，用于静默清理）
-  private wsClients = new Map<WebSocket, number>();
+  // ⚠️ WS 连接集合**不在内存里**：由平台代管（`state.getWebSockets()`），每连接的 `lastSeen`
+  // 存在该连接的 attachment 里（hibernate 会丢弃内存态，连接本身不丢）。
   private sseClients = new Map<string, SseClient>();
   private lpClients = new Map<string, LongPollClient>();
   private state: DurableObjectState;
   private env: Bindings;
   // 认证失败计数的权威副本（F7；Worker 侧 src/rateLimit.ts 调用本 DO 的 AUTH_RATE_LIMIT_PATH）。
   // DO 单线程，计数天然串行化，无需额外的锁或事务。
+  // ⚠️ hibernate 会**常规性**地清空这份内存态（每段静默约 10 s），而封锁窗口是分钟级 ⇒ 落盘
+  // 不再是「尽力而为」，而是封锁语义的一部分（详见 persistAuthLimits 与 docs/design.md D42）。
   private authLimits = new Map<string, AuthLimitState>();
   private authFailuresSincePersist = 0;
+  /** 上次落盘时刻（随快照一起落盘，唤醒后由构造函数恢复 ⇒ 节流判据跨 hibernate 仍然有效） */
+  private authLimitsPersistedAt = 0;
+  /** 上次落盘时各 key 的封锁截止时间（识别「封锁开始/延长」这一实质变化；唤醒后同样从快照恢复） */
+  private authLimitsPersistedBlocks = new Map<string, number>();
   private burstWindowStart = 0;
   private burstCount = 0;
 
   constructor(state: DurableObjectState, env: Bindings) {
     this.state = state;
     this.env = env;
-    // 低频落盘的计数在 DO 重启后恢复。丢失等价于计数归零（最坏多给阈值次失败），故为尽力而为。
+    // 低频落盘的计数在 hibernate 唤醒后恢复（构造函数每次唤醒都会重跑）。
     state.blockConcurrencyWhile(async () => {
       try {
-        const saved = await state.storage.get<Record<string, AuthLimitState>>(
-          AUTH_RATE_LIMIT_STORAGE_KEY,
-        );
-        if (saved) this.authLimits = new Map(Object.entries(saved));
+        const saved = await state.storage.get<PersistedAuthLimits>(AUTH_RATE_LIMIT_STORAGE_KEY);
+        if (saved) {
+          this.authLimits = new Map(Object.entries(saved.limits));
+          this.authLimitsPersistedAt = saved.persistedAt;
+          for (const [key, limit] of this.authLimits) {
+            if (limit.blockedUntil > 0) this.authLimitsPersistedBlocks.set(key, limit.blockedUntil);
+          }
+        }
       } catch {
         /* 读取失败按空表起算 */
       }
@@ -203,53 +238,76 @@ export class SyncClipboardHub {
     }
   }
 
-  // ---------- WebSocket ----------
+  // ---------- WebSocket（Hibernation API）----------
 
+  // 升级：用 `state.acceptWebSocket(server)` 把连接交给平台代管，事件走下面三个类方法。
+  // 101 响应与其响应头与标准 API 形态**逐字节一致** ⇒ wire 不变（docs/protocol.md §10 无新差异行）。
   private handleWebSocket(request: Request): Response {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    this.wsClients.set(server, Date.now());
-    this.scheduleHeartbeat();
-    server.accept();
+    this.state.acceptWebSocket(server);
+    // `lastSeen` 只能存 attachment（内存 Map 会被 hibernate 丢弃）。⚠️ 单条 attachment 上限
+    // 16,384 字节；且「改完之后不重新序列化就不保留」⇒ 每次触碰都要重写一次。
+    server.serializeAttachment({ lastSeen: Date.now() });
+    void this.scheduleHeartbeat();
+    return new Response(null, { status: 101, webSocket: client });
+  }
 
-    server.addEventListener('message', (event) => {
-      this.wsClients.set(server, Date.now());
-      const text = typeof event.data === 'string' ? event.data : '';
-      const reply = this.replyToClientMessage(text);
-      if (reply === 'close') {
-        try {
-          server.send(closeMessage());
-        } catch {
-          /* 已关闭 */
-        }
-        server.close();
-        return;
-      }
-      if (reply !== null) {
-        try {
-          server.send(reply);
-        } catch {
-          this.wsClients.delete(server);
-        }
-      }
-    });
-
-    const drop = () => {
-      this.wsClients.delete(server);
-      this.scheduleHeartbeat();
-    };
-    server.addEventListener('close', drop);
-    server.addEventListener('error', () => {
-      drop();
+  // 消息：握手响应 / Close 回帧 / Ping 忽略（与旧的 message 监听器逐句等价）。
+  // 参数是 `string | ArrayBuffer`；hibernate 过的连接被唤醒后本方法同样会被调用，
+  // 因此**不得**依赖任何内存态（连接集合与 lastSeen 都不在内存里）。
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    ws.serializeAttachment({ lastSeen: Date.now() });
+    const text = typeof message === 'string' ? message : '';
+    const reply = this.replyToClientMessage(text);
+    if (reply === 'close') {
       try {
-        server.close();
+        ws.send(closeMessage());
       } catch {
         /* 已关闭 */
       }
-    });
+      ws.close();
+      return;
+    }
+    if (reply !== null) {
+      try {
+        ws.send(reply);
+      } catch {
+        // 连接集合由平台代管 ⇒ 这里只需结束这条连接（旧实现是从内存 Map 里删掉）
+        try {
+          ws.close();
+        } catch {
+          /* 已关闭 */
+        }
+      }
+    }
+  }
 
-    return new Response(null, { status: 101, webSocket: client });
+  // 关闭。⚠️ **必须显式 `ws.close(code, reason)`**：本仓库 `compatibility_date = "2025-09-01"`
+  // 早于 `2026-04-07`，官方文档明确「On older compatibility dates … you must call
+  // `ws.close(code, reason)` inside this handler to complete the WebSocket close handshake.
+  // Failing to reciprocate the close will result in `1006` errors on the client」
+  // ⇒ 漏掉这一句会让客户端收到 1006（表现为「连接莫名断开」）。**不要**靠升级 compat 日期回避：
+  // 那会一次性引入该日期之前的全部行为变更，而本仓库的 compat 日期是有意钉住的。
+  // 后两个形参是平台传入的（`wasClean` / 错误对象），本实现不用 —— 保留下划线名以表明是有意忽略。
+  async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
+    try {
+      ws.close(code, reason);
+    } catch {
+      /* 已关闭 */
+    }
+    void this.scheduleHeartbeat();
+  }
+
+  // 错误：与旧的 error 监听器等价（结束该连接 + 重算心跳）。
+  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    void this.scheduleHeartbeat();
+    try {
+      ws.close();
+    } catch {
+      /* 已关闭 */
+    }
   }
 
   // ---------- Server-Sent Events ----------
@@ -265,7 +323,7 @@ export class SyncClipboardHub {
     const writer = writable.getWriter();
     const sse: SseClient = { id, writer, lastSeen: Date.now(), closed: false };
     this.sseClients.set(id, sse);
-    this.scheduleHeartbeat();
+    void this.scheduleHeartbeat();
 
     // 立即写一个注释帧：促使头部与首字节尽早下发（部分中间代理会缓冲到首字节）
     void this.writeSseRaw(sse, ': connected\n\n');
@@ -301,7 +359,7 @@ export class SyncClipboardHub {
     } catch {
       /* 已关闭 */
     }
-    this.scheduleHeartbeat();
+    void this.scheduleHeartbeat();
   }
 
   // ---------- 长轮询 ----------
@@ -315,7 +373,7 @@ export class SyncClipboardHub {
     if (!lp) {
       lp = { id, queue: [], queuedBytes: 0, pending: null, pollSeq: 0, lastSeen: Date.now(), closed: false };
       this.lpClients.set(id, lp);
-      this.scheduleHeartbeat();
+      void this.scheduleHeartbeat();
       return new Response(null, { status: 200, headers: POLL_HEADERS });
     }
     lp.lastSeen = Date.now();
@@ -395,7 +453,7 @@ export class SyncClipboardHub {
       lp.closed = true;
       this.settlePoll(lp, new Response(null, { status: 204 }));
       this.lpClients.delete(id);
-      this.scheduleHeartbeat();
+      void this.scheduleHeartbeat();
     }
     const sse = this.sseClients.get(id);
     if (sse) this.closeSseClient(id);
@@ -445,7 +503,7 @@ export class SyncClipboardHub {
           lp.queue = [];
           lp.queuedBytes = 0;
           this.settlePoll(lp, new Response(null, { status: 204 }));
-          this.scheduleHeartbeat();
+          void this.scheduleHeartbeat();
         }
       }
     }
@@ -483,9 +541,12 @@ export class SyncClipboardHub {
       pruneAuthLimits(this.authLimits, now, limitConfig);
       this.persistAuthLimits(now);
     } else if (op === 'clear') {
+      let cleared = false;
       for (const key of keys) {
-        this.authLimits.delete(key);
+        if (this.authLimits.delete(key)) cleared = true;
       }
+      // 计数清零是实质变化：不落盘的话，陈旧计数会在 hibernate 唤醒后复活（可能误封合法用户）
+      if (cleared) this.persistAuthLimits(now, true);
     }
     const blocks: Record<string, number> = {};
     for (const key of keys) {
@@ -504,61 +565,113 @@ export class SyncClipboardHub {
     this.burstCount++;
   }
 
-  // 低频落盘：每 N 次失败落一次（失败路径不做同步存储写，也不写 D1）
-  private persistAuthLimits(now: number): void {
-    const blocked = [...this.authLimits.values()].some((state) => isAuthLimitBlocked(state, now));
+  // 落盘认证失败状态。失败路径**不 await** 这次写（也不写 D1）—— DO 的 output gate 保证
+  // 它在响应送出前已持久化，所以「不 await」不等于「不保证」。
+  //
+  // ⚠️ 为什么落盘是**安全语义**而不是「尽力而为」：hibernate 会**常规性**地清空内存态
+  // （每段静默约 10 s 一次；P1 之后更频繁），而封锁窗口是分钟级（默认 15 min）⇒ 只靠内存时
+  // 「被封禁的来源停手 10 秒就能重来」。因此封锁状态必须落盘；节流窗口则决定攻击者能多试几次。
+  //
+  // 落盘触发（都是「状态实质变化」，且**不**按失败次数写一行）：
+  //   ① 任一 key **开始或延长**封锁 —— 安全关键状态，立即落盘（不受节流）；
+  //   ② 计数清零（认证成功）—— `force`：不落盘的话陈旧计数会在唤醒后复活，可能误封合法用户；
+  //   ③ 纯计数推进 —— 「距上次落盘 ≥ AUTH_RATE_LIMIT_PERSIST_MIN_INTERVAL_MS」或
+  //      「累计失败 ≥ AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES」满足其一才落。
+  // 写放大（每次封锁事件的行写数）：一次 `put` = **1 行**。快速爆破（请求不断 ⇒ DO 不 hibernate）
+  // 时计数在内存里连续累加，通常只落 1 行（封锁那一刻）；慢速试探（每段静默被 hibernate 一次）
+  // 时按节流窗口落，上界 = 封锁窗口 / 15 s + 1 ≈ **61 行**（默认 15 min），且与攻击流量无关。
+  private persistAuthLimits(now: number, force = false): void {
     this.authFailuresSincePersist++;
-    if (!blocked && this.authFailuresSincePersist < AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES) return;
+    if (!force && !this.authLimitsChanged(now)) return;
     this.authFailuresSincePersist = 0;
-    const snapshot: Record<string, AuthLimitState> = {};
-    for (const [key, state] of this.authLimits) snapshot[key] = state;
+    this.authLimitsPersistedAt = now;
+    const limits: Record<string, AuthLimitState> = {};
+    this.authLimitsPersistedBlocks.clear();
+    for (const [key, state] of this.authLimits) {
+      limits[key] = state;
+      if (state.blockedUntil > 0) this.authLimitsPersistedBlocks.set(key, state.blockedUntil);
+    }
+    const snapshot: PersistedAuthLimits = { persistedAt: now, limits };
     void this.state.storage.put(AUTH_RATE_LIMIT_STORAGE_KEY, snapshot).catch(() => {
       /* 落盘失败不影响限速判定（内存态仍然生效） */
     });
+  }
+
+  /** 距上次落盘之间是否发生了「实质变化」（封锁开始/延长、计数推进到阈值或节流窗口）。
+   *  ⚠️ 判据必须能在 hibernate 之后仍然成立 ⇒ `authLimitsPersistedAt` 与 `authLimitsPersistedBlocks`
+   *  都随快照落盘、并由构造函数恢复；若只用内存基线，每次唤醒都会被重置成「刚落过盘」，
+   *  于是节流失效（每次失败都落一行）而计数仍被抹掉。 */
+  private authLimitsChanged(now: number): boolean {
+    for (const [key, state] of this.authLimits) {
+      if (
+        state.blockedUntil > now &&
+        state.blockedUntil > (this.authLimitsPersistedBlocks.get(key) ?? 0)
+      ) {
+        return true; // 封锁开始或延长
+      }
+    }
+    return (
+      this.authFailuresSincePersist >= AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES ||
+      now - this.authLimitsPersistedAt >= AUTH_RATE_LIMIT_PERSIST_MIN_INTERVAL_MS
+    );
   }
 
   // ---------- 心跳与清理 ----------
 
   // DO alarm：发心跳、清理死连接并安排下一轮（DO 空闲时定时器冻结，alarm 由平台保证触发）
   async alarm(): Promise<void> {
-    this.heartbeatScheduled = false; // 本轮 alarm 已触发，允许下一轮排程
     this.sendPings();
     this.closeIdleClients();
-    this.scheduleHeartbeat();
+    await this.scheduleHeartbeat();
   }
 
   private clientCount(): number {
-    return this.wsClients.size + this.sseClients.size + this.lpClients.size;
+    // WS 的连接集合由平台代管（内存 Map 已被 hibernate 移除）。
+    // ⚠️ 已知口径差：`getWebSockets()` 可能仍包含正在关闭（CLOSING）的连接 ⇒ 计数可能略高于
+    // 实际活连接数，最坏后果是心跳多排几轮（不丢消息、不误杀连接）。
+    return this.state.getWebSockets().length + this.sseClients.size + this.lpClients.size;
   }
 
-  /** 心跳 alarm 是否已在路上（本 DO 单实例 ⇒ 内存标志足够，无需读存储）。
-   *  为什么必须防重排：直接 `setAlarm(now+15s)` 会覆盖已有 alarm，而连接建立/关闭
-   *  （8 个调用点）都会调 scheduleHeartbeat —— 若连接事件来得比 15s 更勤，心跳将
-   *  **永远不触发**，WebSocket/SSE 客户端在 30s ServerTimeout 处被自己判超时并反复重连。
-   *  平台保证 alarm 触发后清除，因此「已排程」⇒ 本轮心跳已在路上。 */
-  private heartbeatScheduled = false;
-
-  private scheduleHeartbeat(): void {
-    if (this.clientCount() === 0) {
-      this.heartbeatScheduled = false;
-      return;
+  /** 安排下一轮心跳 alarm。
+   *  **判据必须是平台上的 pending alarm（`getAlarm()`），不能是内存标志**：hibernate 会清空内存态
+   *  （每段静默约 10 s），唤醒后内存标志是 false 而平台上 alarm 仍在路上 ⇒ 用内存标志会**重复**
+   *  `setAlarm`（覆盖已有 alarm，等于把心跳往后推）。
+   *  ⚠️ `getAlarm()` 在 `alarm()` **正在执行**时返回 `null`（除非期间又 `setAlarm` 过）⇒ 不能把它
+   *  读成「从未排程」；按官方示例的 `if (!currentAlarm)` 形态理解即可：只有「确实已有一个待触发的
+   *  alarm」才跳过。`alarm()` 内重排时它必然是 `null`，于是会重新排程 —— 这正是要的语义。
+   *  为什么必须防重排：直接 `setAlarm(now+15s)` 会覆盖已有 alarm，而连接建立/关闭（8 个调用点）
+   *  都会调 scheduleHeartbeat —— 若连接事件来得比 15s 更勤，心跳将**永远不触发**，
+   *  WebSocket/SSE 客户端在 30s ServerTimeout 处被自己判超时并反复重连。 */
+  private async scheduleHeartbeat(): Promise<void> {
+    if (this.clientCount() === 0) return;
+    let currentAlarm: number | null;
+    try {
+      currentAlarm = await this.state.storage.getAlarm();
+    } catch {
+      // 读失败按「未排程」处理：宁可多排一次，也不能让心跳停摆
+      currentAlarm = null;
     }
-    if (this.heartbeatScheduled) return;
-    this.heartbeatScheduled = true;
+    if (currentAlarm !== null) return;
     void this.state.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
   }
 
   // 向全部连接发送 Ping：WebSocket 直接发；SSE 写 data 帧；长轮询入队（下次轮询立即取走）。
   // 长轮询尤其依赖它——空轮询响应不会重置客户端 ServerTimeout，必须有真实消息。
+  // ⚠️ 这里**不**刷新 WS 的 `lastSeen`（与迁移前一致）：客户端的 15s keepalive Ping 会经
+  // `webSocketMessage` 刷新它，而服务端 ping 若也刷新，半开 TCP 就永远不会被 `closeIdleClients` 回收。
   private sendPings(): void {
     const ping = pingMessage();
-    for (const [ws] of this.wsClients) {
+    for (const ws of this.state.getWebSockets()) {
       try {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(ping);
         }
       } catch {
-        this.wsClients.delete(ws);
+        try {
+          ws.close();
+        } catch {
+          /* 已关闭 */
+        }
       }
     }
     for (const sse of this.sseClients.values()) {
@@ -572,9 +685,13 @@ export class SyncClipboardHub {
   // 关闭静默超过 IDLE_TIMEOUT_MS 的连接（半开 TCP 不会有 close/error 事件，F10）
   private closeIdleClients(): void {
     const now = Date.now();
-    for (const [ws, last] of this.wsClients) {
+    for (const ws of this.state.getWebSockets()) {
+      // `lastSeen` 从 attachment 读（内存 Map 已被 hibernate 移除）。缺失按 0 处理 —— 那意味着
+      // 「从未见过这条连接」；所以**每个** accept/消息路径都必须重新序列化 attachment，
+      // 否则唤醒后第一轮就会把全部 WS 当死连接关掉（症状：「一唤醒就全体掉线」）。
+      const attachment = ws.deserializeAttachment() as { lastSeen?: number } | null;
+      const last = attachment?.lastSeen ?? 0;
       if (now - last > IDLE_TIMEOUT_MS) {
-        this.wsClients.delete(ws);
         try {
           ws.close(1000, 'idle timeout');
         } catch {
@@ -637,7 +754,12 @@ export class SyncClipboardHub {
       }
     }
     if (checkBasicAuth(this.env, request)) {
-      for (const key of keys) this.authLimits.delete(key); // 成功即清零
+      let cleared = false;
+      for (const key of keys) {
+        if (this.authLimits.delete(key)) cleared = true; // 成功即清零
+      }
+      // 清零必须落盘（同 handleAuthRateLimit 的 clear）：否则陈旧计数会在唤醒后复活
+      if (cleared) this.persistAuthLimits(now, true);
       return null;
     }
     for (const key of keys) {
@@ -661,13 +783,17 @@ export class SyncClipboardHub {
     } catch {
       return;
     }
-    for (const [ws] of this.wsClients) {
+    for (const ws of this.state.getWebSockets()) {
       try {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(message);
         }
       } catch {
-        this.wsClients.delete(ws);
+        try {
+          ws.close();
+        } catch {
+          /* 已关闭 */
+        }
       }
     }
     for (const sse of this.sseClients.values()) {

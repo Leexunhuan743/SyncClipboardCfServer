@@ -93,7 +93,9 @@ function warnRateLimitOverrideOnce(got: string, range: string): void {
 
 // DO 侧内部端点（仅 Worker → DO 调用，不经外部路由暴露）
 export const AUTH_RATE_LIMIT_PATH = '/auth-rate-limit';
-// DO 侧低频落盘的 storage key（每 AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES 次失败或产生新封锁时落一次）
+// DO 侧落盘的 storage key（形态 `{persistedAt, limits}`；落盘时机见 SyncClipboardHub.persistAuthLimits：
+// 封锁开始/延长与计数清零**立即**落，纯计数按「每 AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES 次失败
+// 或距上次落盘 ≥15 s」节流落 —— hibernate 会清空 DO 内存态，故落盘是封锁语义的一部分，见 ADR D42）
 export const AUTH_RATE_LIMIT_STORAGE_KEY = 'authRateLimits';
 export const AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES = 20;
 // 热状态下拉取 DO 权威快照的最小间隔（避免被攻击流量放大成 DO 打点）

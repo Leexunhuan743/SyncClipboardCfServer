@@ -637,14 +637,42 @@ describe('F9 · 越界数值不再导致 OFFSET 类型错误', () => {
 // F10 的运行时行为难以断言（需要 60s 墙钟 + 真实 workerd alarm），
 // 这里直接驱动 DO 的清理逻辑，确定性地锁住「静默 >60s 关闭、活跃保留」与「alarm 发心跳并重排」。
 type HubInternals = {
-  wsClients: Map<unknown, number>;
   sseClients: Map<string, unknown>;
   lpClients: Map<string, unknown>;
   closeIdleClients(): void;
   alarm(): Promise<void>;
 };
 
-async function makeHub(setAlarm: (t: number) => void) {
+// P1（WS 迁 Hibernation API，docs/design.md D42）之后 WS 连接集合**不在内存里**：
+// 集合由平台代管（`state.getWebSockets()`），每连接的 `lastSeen` 存在该连接的 attachment 里
+// （`closeIdleClients` 用 `deserializeAttachment()` 读）。桩因此必须提供
+// `acceptWebSocket` / `getWebSockets` / `storage.getAlarm`，否则这组用例会 TypeError
+// —— 属于桩与真实接口不一致，不是被测量行为。
+interface FakeSocket {
+  readyState: number;
+  sent: string[];
+  closed: Array<[number | undefined, string | undefined]>;
+  send(message: string): void;
+  close(code?: number, reason?: string): void;
+  deserializeAttachment(): { lastSeen: number } | null;
+}
+
+function fakeSocket(lastSeen: number): FakeSocket {
+  return {
+    readyState: 1,
+    sent: [],
+    closed: [],
+    send(message: string) {
+      this.sent.push(message);
+    },
+    close(code?: number, reason?: string) {
+      this.closed.push([code, reason]);
+    },
+    deserializeAttachment: () => ({ lastSeen }),
+  };
+}
+
+async function makeHub(setAlarm: (t: number) => void, sockets: FakeSocket[] = []) {
   const { SyncClipboardHub } = await import('../src/durable/SyncClipboardHub');
   const storage = {
     get: async () => null,
@@ -654,11 +682,17 @@ async function makeHub(setAlarm: (t: number) => void) {
     setAlarm: async (t: number) => {
       setAlarm(t);
     },
+    // 心跳防重排的判据是「平台上有没有 pending alarm」（`storage.getAlarm()`）；桩里恒为「没有」。
+    getAlarm: async () => null,
   };
   // 真实 DO 的 state 一定实现 blockConcurrencyWhile（本轮 F7 用它做启动期状态加载）；
   // 桩缺它会让 DO 构造抛错 —— 属于桩与真实接口不一致，不是被测量行为。
   const state = {
     storage,
+    acceptWebSocket: (ws: FakeSocket) => {
+      sockets.push(ws);
+    },
+    getWebSockets: () => sockets,
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
   return new SyncClipboardHub(state as never, {} as never) as unknown as HubInternals;
@@ -666,31 +700,24 @@ async function makeHub(setAlarm: (t: number) => void) {
 
 describe('F10 · 死连接清理（半开 TCP 不会产生 close/error 事件）', () => {
   it('closeIdleClients 关闭静默 >60s 的连接，保留活跃连接', async () => {
-    const hub = await makeHub(() => undefined);
-    const closed: [number, string][] = [];
-    const mk = () => ({ readyState: 1, close: (c: number, r: string) => closed.push([c, r]) });
-    const idle = mk();
-    const active = mk();
-    hub.wsClients.set(idle, Date.now() - 61_000);
-    hub.wsClients.set(active, Date.now());
+    const idle = fakeSocket(Date.now() - 61_000);
+    const active = fakeSocket(Date.now());
+    const hub = await makeHub(() => undefined, [idle, active]);
 
     hub.closeIdleClients();
 
-    expect(closed).toEqual([[1000, 'idle timeout']]);
-    expect(hub.wsClients.has(idle)).toBe(false);
-    expect(hub.wsClients.has(active)).toBe(true);
+    expect(idle.closed).toEqual([[1000, 'idle timeout']]); // 只关了静默那条
+    expect(active.closed).toEqual([]);
   });
 
   it('alarm() 发送心跳并重排下一轮 alarm（DO 空闲时定时器冻结，靠 alarm 保活）', async () => {
     const alarms: number[] = [];
-    const hub = await makeHub((t) => alarms.push(t));
-    const sent: string[] = [];
-    const ws = { readyState: 1, send: (m: string) => sent.push(m), close: () => undefined };
-    hub.wsClients.set(ws, Date.now());
+    const ws = fakeSocket(Date.now());
+    const hub = await makeHub((t) => alarms.push(t), [ws]);
 
     await hub.alarm();
 
-    expect(sent.length).toBe(1); // SignalR keepalive ping（{"type":6}）
+    expect(ws.sent.length).toBe(1); // SignalR keepalive ping（{"type":6}）
     expect(alarms.length).toBe(1);
     expect(alarms[0]!).toBeGreaterThan(Date.now());
   });

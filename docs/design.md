@@ -96,6 +96,9 @@
 
 | D38 | **V1 列表结果必须与当前查询同属一份状态**（2026-09-23）：筛选、排序、翻页及浏览器后退/前进共用 `applyFilters()`；成员资格改变时清空跨页选择。请求期间暂留变淡的旧行作视觉占位，但表格与批量操作条为 `inert`；新查询失败后改为持续的错误态并收起旧行，同一查询的后台刷新失败则保留旧行。列表、统计、轮询的失联来源分别登记，只有本链路恢复才能清除自己的失败状态 | 旧实现的 `popstate` 绕过选区清理：回收站选中 1 条后退回历史，批量条仍写「已选 1 条」而当前页 0 行勾选。列表请求失败时 URL/筛选控件已经切到新视图，旧行仍显示在它下面；成功的统计请求还能清掉列表失败的横幅。两条浏览器复现见 `progress.md` §170。保持请求期间的旧行可避免瞬间空白，但它们不能在新条件下继续接收操作 | 已定（2026-09-23） |
 | D39 | **V1 的「N 个字符」只报用户可见字符数**（2026-09-23）：预览头部、复制与编辑保存提示在正文 ≤20,000 UTF-16 码元时统一用 `charCount()`；更大的正文不展示字符数（头部写「长文本」），避免同步扫描阻塞预览与操作反馈。`messages.js` 两版正文保持逐字一致，`textSavedNote(null)` 表示省略数字 | 服务端 `size = dto.text.length` 是 UTF-16 码元数，10 个 emoji 会报 20 个「字符」；V1 原先头部和保存提示取 `size`、复制提示取字素簇数，同屏互相矛盾。直接给所有大文本跑 `Intl.Segmenter` 又会给 1 MiB 预览增加约 169ms 主线程工作。按长度分档保留短文本的准确性，同时让大文本优先流畅显示。历史上「头部有意使用 size」的决定见归档审计 §12.2，本条自此取代它 | 已定（2026-09-23；静态改动，运行验证留给用户手动完成） |
+| D40 | **Free 计划适配：10 ms CPU 是平均预算（平台有 rollover）、`[limits]` 不要设、清理按 CPU 收敛**（2026-09-25，审计轮；**同日按账户实测修订 ①**）：① 请求体上限的**默认值不动**，**部署到 Free 时也不要调小** —— 48 MiB 是 isolate 内存维度（Free/Paid 同为 128 MiB）的结论；原「推算有效上限约 3–10 MiB、建议先设 `2 MiB`」**已被账户实测推翻**（本账号真实承载过 15.5 MiB 的 zip 请求体 / 20.36 MiB 的 Group 载荷，单次调用 CPU 达 ~0.7 s 仍成功，30 天 0 次资源超限；见 `docs/free-plan-account-facts.md`）；② `wrangler.toml` **不加 `[limits]` 段** —— Free 上 `subrequests` 不能放宽额度，只可能把「到 Cloudflare 服务」的 1,000 次/调用钳低，而清理的 800 次预算正建立在那 1,000 之上；③ 清理任务（Cron）在 Free 上按**慢收敛**对待：单轮工作量由**子请求预算 + CPU 行字节预算**（256 KiB/轮/阶段，按实测行字节动态收敛，**不是平坦条数**）双重收敛；万一整轮仍被平台终止，**轮首心跳**（进入 `runCleanup` 先写一次 `cleanup:lastRunAt`）让「被终止」可见而不再静默 | 依据：`docs/free-plan-audit.md` §1（限额事实 + 子请求口径裁定：Free = 50 次外部 `fetch` + 1,000 次到 Cloudflare 服务）、§3（落库路径的 SHA-256/解压是 CPU 主导项）、§5（P0-1/P0-2/P0-3）、§6.1（实测回填）；账户实测见 `docs/free-plan-account-facts.md`（配额消耗、CPU 分位与单次峰值、权限边界、账户计划未判定）。三条官方出处：<https://developers.cloudflare.com/workers/platform/limits/>（CPU 10 ms 档 + 子请求两行）、<https://developers.cloudflare.com/workers/wrangler/configuration/#limits>（"The free account maximum is 50"）、<https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/>（"50 external subrequests and 1000 subrequests to Cloudflare services"）。**为什么不做成代码里的"Free 档默认值"**：Worker 运行期读不到账号计划（`Bindings` 里没有计划字段），只能靠人配 ⇒ 做成开关会立刻漂移（部署开关要同步四处的纪律见 `AGENTS.md` §1）；**代价与影响** —— **Free**：10 ms 是**平均**预算 —— 平台对偶发越界有 rollover CPU time（官方 metrics 页：「更高的分位可能看起来超过 CPU 时间上限而不产生调用错误」），只有**持续**越界才以 `error 1102`（CPU 超限）终止；实测本账号单次 CPU 达 633 / 712 ms 仍成功（`docs/free-plan-account-facts.md` §3.2）。一个常驻 WebSocket 的 DO duration 实测 11,014–11,103 GB-s/天 = 日额度 13,000 GB-s 的 **84.5–85.5%**（与推算吻合）；清理按行字节预算慢收敛，被终止时**可见**（轮首心跳）但仍慢。**Paid**：CPU 5 min ⇒ 上传侧与 `[limits]` 那两条都不成立、48 MiB 默认值继续有效，**无需任何改动**。**另有一条两档都生效**：行字节预算是按 **CPU 安全上限**取的（运行期读不到账号计划 ⇒ 不可能按计划分档），因此 Paid 上它**比必要值保守**（那边是 30 s CPU 档）—— 代价是大记录库的清理收敛比改动前慢（256 KiB/轮/阶段；4 KB 行约 64 条/轮），收益是**任何档都不会因为一轮清理过大而整轮被终止**（宁可慢收敛，也不依赖"当轮一定不超"）；数值待实测标定（见 `docs/free-plan-audit.md` §6 M3） | 已定（2026-09-25）；首轮落地为**文档**（本文件 §4/§7.1/§13 + `README.md`「容量估算与限制」），代码侧不改默认值。**第二轮（同日）已按本条落地代码**：单轮工作量改按**行字节预算**收敛 + **轮首心跳**（`src/cleanup.ts`），文档同步在本文件 §9/§13 与 `docs/protocol.md` §10 |
+| D41 | **P4（放宽心跳节奏）不做：实测证明 15 s alarm 的 duration 代价仅满额的 0.1%**（2026-09-25）：**决策** —— 不把 `HEARTBEAT_INTERVAL_MS`（`src/durable/SyncClipboardHub.ts:38`）放宽到接近客户端超时，也不为「省唤醒」改心跳机制；`sendPings` / `scheduleHeartbeat` 的现有形态**保持不动**。**理由** —— 云端 A 臂实测（`HibernatingAlarm` = `acceptWebSocket` + 15 s alarm ping）：两个**独立全窗**读数分别是满额的 **0.076%**（30 分钟、alarm 触发 119 次、净 0.175 / 满额 230.4 GB-s）与 **0.1%**（10 分钟、alarm 触发 39 次、0.12 / 满额 76.8 GB-s）⇒ **15 s alarm 自身的 duration 代价可忽略**，放宽它对 duration **没有收益**；另有一条硬约束：客户端 **ServerTimeout 30 s**（`src/durable/SyncClipboardHub.ts:11` / `:37`）⇒ 服务端到客户端的应用层 Ping **不能稀于 ~30 s**，能调的空间本来就只有「15 s → 更接近 30 s」。**代价** —— 无（本决策 = 不改）。**影响** —— Free 与 Paid **都无需**为此改动；`docs/do-hibernation-plan.md` §5 P4 已相应降级为「不需要」（其「零唤醒心跳」备选路径所依赖的 `setWebSocketAutoResponse` 匹配语义，也因此不再需要验证）。 | 依据：`docs/do-hibernation-plan.md` §4.1（A 臂两次读数与「满额」口径）与 §5 P4；实验过程与两条环境事实见 `docs/progress.md` §182–§183。**注意**：本条**不**涉及 WS hibernation 改造本身（那是 P1 —— 已由 **D42** 采纳并实施，见 §4.1 与 `docs/progress.md` §183/§184），也**不**涉及 SSE / 长轮询（P3 / P2，仍不能判定）。 | 已定（2026-09-25）；实现处无需注明 D 号（本轮不涉及代码改动） |
+| D42 | **采纳 P1：`SyncClipboardHub` 的 WS 路径迁到 Hibernation API**（2026-09-25，用户定案）：`src/durable/SyncClipboardHub.ts` 的 `handleWebSocket` 由 `server.accept()` + 三个 `addEventListener` 改为 `state.acceptWebSocket(server)` + 类方法 `webSocketMessage` / `webSocketClose` / `webSocketError`（**类声明保持普通 class**，不改成 `extends DurableObject` —— §4.2① 已本地实测按名分派成立）；WS 连接集合与 `lastSeen` 从内存 `Map` 迁到 `state.getWebSockets()` + 每连接的 `serializeAttachment({lastSeen})`（**每次触碰都要重新序列化**，单条上限 16,384 字节）；心跳防重排判据从内存标志 `heartbeatScheduled` 改为 `await state.storage.getAlarm()`（`alarm()` 运行中它返回 `null`）；`webSocketClose` 里**必须**显式 `ws.close(code, reason)`；`authLimits` 的封锁状态改为**按实质变化落盘**（封锁开始/延长立即落、计数清零强制落、纯计数按 15 s 节流落），因为 hibernate 会常规性清空内存态而封锁窗口是分钟级。**为什么**：生产实测该 DO 的 duration 吃掉 Free 日额度 **84.5–85.5%**（11,014–11,103 GB-s/天、`activeTime` 99.6%），根因是标准 WS API 让 hibernate 前置条件「No WebSocket standard API is used」不成立（pricing 脚注 4：`accept()` 之后**整个连接期间**计费，与是否真被回收无关）；A 臂两次独立全窗实测把「WS 单独在线」的 duration 压到满额的 **0.076%**（30 min / 119 次 alarm）与 **0.1%**（10 min / 39 次 alarm），并已裁定 **15 s alarm 不阻止 hibernate** ⇒ 心跳节奏不动（D41 不变）。**边界（不得越读）**：① **SSE 与长轮询的既有实现保持原样** —— 活的 `writer` 与未兑现的 `pending` 不可迁移 ⇒ **有这两类连接在线时该对象仍不可 hibernate、照样全程计费**（P2/P3 仍不能判定）；② 本地**不**验证 hibernation 本身（本地不会真 hibernate，`progress.md` §181）⇒ 收益须上线后按 `docs/do-hibernation-plan.md` §8.5 的 Analytics 查询复核；③ wire **逐字节不变**（`docs/protocol.md` §10 无新差异行），`compatibility_date` / `[[migrations]]` / `AVAILABLE_TRANSPORTS` 均未动。**代价**：`lastSeen` 每次触碰都要重写 attachment；`getWebSockets()` 可能含 CLOSING ⇒ `clientCount()` 可能略偏高（最坏多排几轮心跳）；认证失败计数的落盘行写数 = **1 行/次**（快速爆破 ≈1–2 行/封锁事件，慢速试探上界 ≈ 封锁窗口 / 15 s + 1）。 | 已定（2026-09-25）；实现处注明 D42 |
 
 ## 3. 架构总览
 
@@ -159,6 +162,10 @@ SyncClipboardCfServer/
 │   ├── protocol.md             # 协议契约（精确到端点与字段）
 │   ├── ui.md                   # Web 历史界面：来源、边界、模块、API、设计系统
 │   ├── ui-document-preview.md  # 文档预览集成（File Viewer）：决策、方案、CSP 放宽清单与过程日志
+│   ├── free-plan-audit.md      # Cloudflare Free 计划适配审计（限额事实、子请求/CPU 折算、优先级清单；D40）
+│   ├── free-plan-account-facts.md # Cloudflare **账户实测事实**（配额实测、权限边界、查询原文；账户计划未判定）
+│   ├── free-plan-baseline.md   # Free 计划适配分支的基线门禁记录
+│   ├── do-hibernation-plan.md  # DO Hibernation 改造方案（候选并列、**不含决定**；收益待实测）
 │   ├── progress.md             # 开发进度追踪（按轮次的历史）
 │   └── progress-index.md       # 上面那份的**目录**（由它的 `##` 标题生成，守卫盯着）
 ├── public/                     # 静态资源（由 Cloudflare 托管，run_worker_first 优先进 Worker 以支持 UI_ENABLED 开关）
@@ -370,7 +377,19 @@ CI 在 `Deploy Worker` 之前自动执行 `--remote`，手工部署者见 README
 | --- | --- | --- |
 | 平台单请求体 | **100 MiB**（Free/Pro；Business 200 / Enterprise 500） | 平台在 Worker 读到 body 之前就判，任何应用层设计都绕不过 |
 | isolate 内存 | **128 MiB**，**被所有并发请求共享** | 预算是"求和"关系，不是"每请求一份" |
-| CPU 时间 | Free **10 ms** / Paid **30 s** 每请求 | 哈希与 zip 解压都是 CPU 工作 ⇒ 大文件同步本质上需要付费计划；应用层改不了 |
+| CPU 时间 | Free **10 ms（平均预算；偶发越界由 rollover CPU time 吸收）** / Paid **30 s** 每请求 | 哈希与 zip 解压都是 CPU 工作；实测本账号单次调用 CPU 达 633 / 712 ms（Group 上传）仍成功 ⇒ 偶发大上传不会失败，**持续**越界才被终止 |
+
+**Free 上先撞的是第三条，不是前两条（D40）**：落库必须对整份 payload 做 SHA-256（Group 还要全量解压），
+所以 CPU 是这条路径的支配成本。但 10 ms 是**平均**预算而非单次硬顶 —— 平台对偶发越界有 **rollover
+CPU time**（官方 metrics 页：「更高的分位可能看起来超过 CPU 时间上限而不产生调用错误」；limits 页：
+每个 isolate 对「偶发越界」有内建余量），只有**持续**越界才以 `error 1102` 终止。**账户实测**（2026-09-24，
+见 `docs/free-plan-account-facts.md` §3.2）：单次调用 CPU 达 **633 ms / 712 ms**（15.5 MiB 的 Group
+zip 上传）仍然成功，30 天内**资源超限 0 次** ⇒ 原「有效上传上限约 3–10 MiB」的折算**已被实测推翻**。
+所以默认的 48 MiB 是**内存维度**的结论、与计划无关，且**部署到 Free 时也不要调小**。Cron 的 CPU 是
+**同一档 10 ms**，而清理的单轮工作量由**子请求预算 + CPU 行字节预算**（§9 的 `SUBREQUEST_BUDGET` 与
+`SOFT_DELETE_ROW_BYTES_PER_ROUND` / `HARD_DELETE_ROW_BYTES_PER_ROUND` = 256 KiB/轮/阶段）**双重**收敛；
+单轮**仍可能**被平台终止（单条记录自带 1 MiB 内联文本时任何预算都挡不住**持续**超限），但被终止时**轮首心跳**
+已把 `cleanup:lastRunAt` 落库 ⇒ 在 `/ui/api/info` 上**可见**，不再是静默失败。见 §9 与 §13 的对应行。
 
 **单请求峰值 ≈ 1× body**（不是 2×）——这三处都为"省一份拷贝"专门改过，所以"body 大小"直接等于"内存占用"：
 
@@ -465,10 +484,25 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
 - 吞吐与批次（2026-09-15 起）：软删单批 **500 条**（对齐上游 `HistoryManagerHelper.BatchSize`）；
   目录清扫改为"每轮一次列举 + 每批一次批量删"，于是**每条记录只花 1 次子请求**（广播；硬删 0 次），
   而不是旧实现的 3 次（R2 列举 + R2 删除 + 广播）。实测：300 条过期 / 500 条超量都在**一轮内**处理完
-  （旧实现分别为 105 / 115 条每轮）。约束仍是平台单次调用的 1,000 次内部子请求上限（本项目按 800 计预算）。
+  （旧实现分别为 105 / 115 条每轮）。约束仍是平台单次调用的 1,000 次内部子请求上限（本项目按 800 计预算）；2026-09-25 起另有 **CPU 行字节预算**（256 KiB/轮/阶段，见下一条）。
 - 实现：`src/cleanup.ts`（`runCleanup`）+ `src/index.ts` 的 `scheduled` handler + `db.ts`/`storage.ts` 数据层方法。
-  每个阶段各带**子请求预算**（默认 800/轮，`SUBREQUEST_BUDGET`）与 Meta 游标：Free 计划每轮约 50 条
-  D1 语句 / 10ms CPU 的硬顶下，积压大的库会「一轮跑不完、下轮续跑」——这是设计行为（见 §13 风险表）
+  每个阶段各带**两重预算**与 Meta 游标：**子请求预算**（默认 800/轮，`SUBREQUEST_BUDGET`）与
+  **CPU 行字节预算**（256 KiB/轮/阶段，`SOFT_DELETE_ROW_BYTES_PER_ROUND` / `HARD_DELETE_ROW_BYTES_PER_ROUND`，
+  估算函数 `estimateEntityRowBytes` / `estimateKeyRowBytes`）。驱动量取**字节**而不是条数：软删是
+  `UPDATE … RETURNING *`，其后的三件活（JSON 反序列化、`rowToEntity`、广播载荷 `entityToDtoWire`）都与行字节
+  成正比；而平坦条数上限只能取最小公倍数（≈40 条），会把小记录库的吞吐砍十几倍、CPU 收益为零。
+  因此**软删单批 500 / 硬删单批 1000 不变**（它们是"一条语句 + 一批广播/批量删"的内存界，也是上游批量语义），
+  改的是"单轮最多 materialize 多少行字节"（按实测平均行字节动态收敛，预算耗尽即 truncated、游标语义不变）。
+  ⚠️ 这个预算是**按 CPU 安全上限取的、Free 与 Paid 两档都生效** —— 运行期读不到账号计划（`Bindings` 里没有
+  计划字段），**不可能按计划分档**；因此 Paid 上它**比必要值保守**（那边是 30 s CPU 档），代价是大记录库的
+  清理收敛比改动前慢（256 KiB/轮/阶段；4 KB 行约 64 条/轮），收益是**任何档都不会因为一轮清理过大而整轮被
+  终止**（宁可慢收敛，也不依赖"当轮一定不超"）。数值待实测标定（见 §13 与 `docs/free-plan-audit.md` §6 M3）。
+  Free 的 Cron 与 HTTP 同为 **10 ms CPU** 的**平均预算**（平台对偶发越界有 rollover CPU time，只有**持续**
+  越界才终止）下，积压大的库会「一轮跑不完、下轮续跑」——这是设计行为
+  （见 §13 风险表）。万一整轮仍被平台终止（顶层 catch 不执行），**轮首心跳**（一进入 `runCleanup` 就先写一次
+  `cleanup:lastRunAt`，与轮尾那次并存，语义分别是「本轮**尝试**开始」与「本轮**完成**」）已把"尝试"落了库
+  ⇒ 「被终止」在 `/ui/api/info` 上可见，不再回到 F11 那种静默形态。**注意"可见"≠"不超"**：单条记录自带
+  1 MiB 内联文本时，任何条数/字节组合都挡不住**持续**超限（P0-1 的同源结论），兜底是"可见"而非"保证不超"。
 
 > **孤儿判定的键形式契约（曾因此出一小时清空一次的生产事故）**：
 > 目录名一律用 `{Type}_{hash}/`（**不带 `history/` 前缀**、**带尾斜杠**）这一种形式 ——
@@ -623,14 +657,14 @@ D1 用 `--local` 初始化、凭据用 `--var` 临时注入，因此 **CI 不需
 
 | 风险 | 等级 | 缓解 |
 |---|---|---|
-| 平台单请求体上限 100 MiB；大文件同步受应用层上限（默认 48 MiB）约束 | 中 | 客户端默认 `MaxFileByte`=20 MB；上限可用仓库变量 `MAX_REQUEST_BODY_BYTES` 调到 64 MiB；付费计划可提升平台上限。取值依据见 §7.1 |
+| 平台单请求体上限 100 MiB；大文件同步受应用层上限（默认 48 MiB）约束 | 中 | 客户端默认 `MaxFileByte`=20 MB；上限可用仓库变量 `MAX_REQUEST_BODY_BYTES` 调到 64 MiB；付费计划可提升平台上限。取值依据见 §7.1。**CPU 侧不要额外调小**：Free 的 10 ms 是**平均**预算、平台有 rollover CPU time，实测本账号单次调用 CPU 达 633 / 712 ms（15.5 MiB 的 Group zip 上传）仍然成功（见 §7.1、D40 与 `docs/free-plan-account-facts.md`） |
 | isolate 内存 128 MiB 被并发共享，而工作集预算**按请求**计算 | 低 | 单客户端同步场景不会出现两个大上传重叠；真要并发大文件需加 isolate 级信号量（见 §7.1「残留风险」） |
 | SignalR 协议细节多（token 模式/握手/ping） | 中 | `@microsoft/signalr` 真实客户端测试；按上游顺序宣告三种传输（D6），WS 被阻断时客户端可自动降级 |
 | D1 免费版写并发/读主库限制 | 低 | 单用户秒级频率，远低于限额 |
 | Group ZIP 校验在 JS 端性能（大压缩包） | 低 | fflate 流式处理；单文件解压逐条哈希 |
 | DO 单实例为广播单点 | 低 | 个人场景足够；DO 迁移由平台保障连接不掉 |
 | 默认保留期 0 + 收藏/置顶豁免 => 默认态只有条数上限（1000）在回收，且收藏/置顶**不参与裁剪** | 中 | 对齐上游 3.3.0 的既定语义（`AppSettings.HistoryRetentionMinutes=0`）；要按时间回收需显式设置 `HISTORY_RETENTION_MINUTES`。极端情形（收藏/置顶占满 1000）下 D1 行数无界增长直至平台容量上限 —— 个人场景不可达 |
-| Free 计划的清理硬顶（约 50 条 D1 语句 / 10ms CPU 每次 Cron） | 低 | 积压库一轮跑不完，由 Meta 游标**下一轮续跑**（不会静默丢阶段）；README 已注明「清理与 >1MB 上传建议 Workers Paid」。对齐上游的清理语义不变，只是收敛速度受平台约束 |
+| Free 计划的清理预算：**10 ms CPU 平均**（HTTP 与 Cron 同一档，平台另有 rollover CPU time）+ 1,000 次/调用「到 Cloudflare 服务」的子请求 | 中 | 子请求侧 800/轮 + 阶段保底 + 游标续跑；**CPU 侧自 2026-09-25 起有 256 KiB/轮/阶段的**行字节预算（按实测行字节动态收敛，条数上限不动）⇒ **双重截断**（§9）。整轮若仍被平台终止（顶层 catch 不执行），**轮首心跳**会先落下 `cleanup:lastRunAt` ⇒ 「被终止」在 `/ui/api/info` 上**可见**而不再静默（原始发现见 `docs/free-plan-audit.md` §5 P0-3，其建议 1/2 已落地；"可见"≠"不超"—— 单条 1 MiB 内联文本仍挡不住 10 ms）。积压大时升级 Workers Paid，或放宽 `wrangler.toml` 的 Cron 间隔；对齐上游的清理语义不变，只是收敛速度受平台约束。⚠️ 但**行字节预算两档都生效、且是同一个常数**（运行期读不到账号计划 ⇒ 不可能分档）⇒ 升级 Paid 只解掉 CPU 这一档的平均预算、**不会放宽它**，大记录库的收敛在 Paid 上同样慢（见 §9 与 D40）。**实测回填（2026-09-25）**：本账号 Cron 264/264 全部 success、单轮 CPU 均值 7.46 ms / 峰值 19.5 ms（**未被终止**）⇒ 当前是「预算到位、但尚未成为约束」的状态；数据见 `docs/free-plan-account-facts.md` §3.4 |
 | `statistics.totalFileSizeMB` 每次全桶列举 R2（O(对象数) 次子请求） | 低 | 单用户规模（数千对象）≈ 数次调用；十万对象级再考虑落 Meta 缓存（见 protocol.md §10 的 statistics 行） |
 | Group 上传峰值内存 = body + 2×解压（fflate 缓冲翻倍 + 交付拷贝） | 低 | 解压预算按 2 分摊（`groupZipDecompressionCap`）+ 单条目 24 MiB 上限；条目内容用后即弃只留哈希（`src/hash.ts` 2026-09-22 重构） |
 | 长轮询队列上限按连接计（每连接 ≤1M 码元 / 64 条） | 低 | 30–60 条停滞连接才逼近 DO 内存（算术推算，未压测）；客户端 100s 轮询超时 + 60s 静默清理兜底 |

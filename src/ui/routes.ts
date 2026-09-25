@@ -26,7 +26,9 @@ import {
   UiQueryError,
   listUiHistory,
   countByTypeViews,
+  statisticsFromViews,
   readChangeMarker,
+  readLastModified,
   readActivity,
   readBatchMeta,
   BATCH_META_MAX_ITEMS,
@@ -40,17 +42,12 @@ import { AVAILABLE_TRANSPORTS, HUB_PATH, issueConnectionToken } from '../hub';
 import { notFoundPage } from './notFound';
 import { isValidProfileHash, HistoryRecordUpdateDto } from '../types';
 import type { HistoryStatisticsDto } from '../types';
-import { CLEANUP_META_KEYS, CLEANUP_PHASES, readRetentionSettings } from '../cleanup';
+import { CLEANUP_META_KEYS, CLEANUP_PHASES, CLEANUP_AND_SETTINGS_META_KEYS, retentionSettingsFromMeta } from '../cleanup';
 import { createUiMaintenanceRoutes } from './maintenance';
 
 // 清理的**可观测面**（F11）：清理任务把「本轮开始时间 / 失败信息 / 续跑游标」写进 Meta，
-// `/ui/api/info` 只读展示同一批键——「静默未清理」因此可以被看见。
-// 键名取自 cleanup.ts 的契约常量，避免两处各写一份字面量、改一处忘一处。
-const CLEANUP_META_KEY_LIST: string[] = [
-  CLEANUP_META_KEYS.lastRunAt,
-  CLEANUP_META_KEYS.lastError,
-  ...CLEANUP_PHASES.map((phase) => CLEANUP_META_KEYS.cursors[phase]),
-];
+// `/ui/api/info` 只读展示同一批键——「静默未清理」因此可以被看见。键表（清理六键 + 保留策略两键，
+// **一次查询取回**）与解析函数都由 cleanup.ts 提供，这里不再自己拼一份字面量。
 // lastError 的展示上限：这是**展示侧**自己的边界（不依赖上游自觉）——产出侧 cleanup.ts 已截到
 // 300 且压成单行，这里再夹一道，保证响应体永远不会带出成段的内部错误串（表名/约束/对象键）。
 const CLEANUP_ERROR_MAX_CHARS = 300;
@@ -78,26 +75,27 @@ function readIntParam(raw: string | null, fallback: number, min: number, max: nu
 }
 
 /**
- * 部署信息的**统计层**：一次 R2 全桶扫描（体积）+ 两条 D1 聚合（官方统计、按类型计数）。
+ * 部署信息的**统计层**：一次 R2 全桶扫描（体积）+ **一条** D1 聚合（按类型 + 全库四个计数）。
  *
  * 为什么单独成层（审计 O-01）：这一层是 `/ui/api/overview` 与 `/ui/api/info` 共同需要的，
  * 而 `overview` 还要在它之上叠元信息。**不能**把它做成 `deploymentInfo` 的必填参数 ——
  * 那样 `/ui/api/info` 那一路也得先自己算一遍，等于没省。
  * 原先 `overview` 是把这一层跑两遍（自己跑一次 + `deploymentInfo` 内部再跑一次），
  * 于是单次首屏 = 2×R2 全桶列举 + 2×statistics + 2×countByTypeViews。
+ *
+ * 2026-09-25（审计 P1-3）：这一层原先还要 `db.statistics`（另一条全表聚合）——
+ * 那四个计数与 `countByTypeViews` 的分组结果**同源**（见 `statisticsFromViews` 的等价性说明），
+ * 现在从同一条 GROUP BY 里算出，D1 语句从 2 条降到 1 条。
  */
 async function deploymentStats(env: Bindings): Promise<{
   bytes: number;
   stats: HistoryStatisticsDto;
   views: UiViewCounts;
 }> {
-  const { db, storage } = stores({ env });
-  const bytes = await storage.totalHistorySize();
-  const [stats, views] = await Promise.all([
-    db.statistics(historySizeMB(bytes)),
-    countByTypeViews(env.DB),
-  ]);
-  return { bytes, stats, views };
+  const { storage } = stores({ env });
+  // R2 列举与 D1 聚合互不依赖 ⇒ 并发（这条路径是首屏必经，别把两次往返串起来）。
+  const [bytes, views] = await Promise.all([storage.totalHistorySize(), countByTypeViews(env.DB)]);
+  return { bytes, stats: statisticsFromViews(views, historySizeMB(bytes)), views };
 }
 
 /**
@@ -113,8 +111,9 @@ async function deploymentMeta(
   ds: Awaited<ReturnType<typeof deploymentStats>>,
 ) {
   const { db } = stores({ env });
-  const meta = await db.getMetaValues(CLEANUP_META_KEY_LIST);
-  const retention = await readRetentionSettings(db, env);
+  // 清理六键 + 保留策略两键**一次取回**（审计 P1-3：此前是两次 getMetaValues，两条 D1）。
+  const meta = await db.getMetaValues(CLEANUP_AND_SETTINGS_META_KEYS);
+  const retention = retentionSettingsFromMeta(meta, env);
   // 清理侧：键在「从未跑过清理」时不存在，故全部容忍缺省（D1 报错与统计层同样向上抛，
   // 不在这里特殊化——诊断面整体失败比"部分字段静默为默认值"更容易被发现）。
   const lastError = meta.get(CLEANUP_META_KEYS.lastError) ?? '';
@@ -123,8 +122,9 @@ async function deploymentMeta(
     // 客户端「服务器地址」填这个（本实现把 WebDAV 兼容端点放在站点根）
     serverUrl: `${origin}/`,
     hubTransports: AVAILABLE_TRANSPORTS,
-    // 保留策略：与清理任务读**同一份生效值**（readRetentionSettings：Meta 覆盖优先、env 回落）——
-    // 此前这里直接读 env，于是「清理按 Meta 跑、界面显示按 env」会当场分叉（后端能力评估 §2.5）。
+    // 保留策略：与清理任务读**同一份生效值**（同一个解析函数 retentionSettingsFromMeta：
+    // Meta 覆盖优先、env 回落；值来自上面那次合并查询）——此前这里直接读 env，于是
+    // 「清理按 Meta 跑、界面显示按 env」会当场分叉（后端能力评估 §2.5）。
     // 连**来源**一起报：界面要用它显示「此处的设置 / 部署环境变量」，而 /ui/api/settings 是另一个
     // 端点、界面并不调用它——来源只报在那边就等于永远显示「部署环境变量」（复核发现的接线缺口）。
     retention: {
@@ -770,15 +770,14 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   //                        `totalCount` 的「全库 N 条」）。保留它是因为接口契约与 `test/ui.test.ts`
   //                        在钉这条分法 —— 别按"没人用"删掉。
   guarded.get('/ui/api/statistics', async (c) => {
-    const { db, storage } = stores(c);
+    const { storage } = stores(c);
     const flag = readDeletedFlagOr400(new URL(c.req.url).searchParams);
     if (!flag.ok) return flag.response;
     const deleted = flag.value;
-    const bytes = await storage.totalHistorySize();
-    const [stats, views] = await Promise.all([
-      db.statistics(historySizeMB(bytes)),
-      countByTypeViews(c.env.DB),
-    ]);
+    // 四个计数与 byType 来自**同一条** GROUP BY（审计 P1-3；等价性见 statisticsFromViews）；
+    // R2 列举与它互不依赖 ⇒ 并发。
+    const [bytes, views] = await Promise.all([storage.totalHistorySize(), countByTypeViews(c.env.DB)]);
+    const stats = statisticsFromViews(views, historySizeMB(bytes));
     // byType 随视图走（工具栏的类型计数必须与列表同源），byTypeActive 恒为活跃口径。
     // 两个 starred 计数**都进响应**（各自是全表聚合，与这次请求的视图无关），由前端按当前
     // 视图取用：统计条「已收藏」那一格与工具栏「收藏」筛选同屏，必须给出同一个数
@@ -829,10 +828,13 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     const flag = readDeletedFlagOr400(new URL(c.req.url).searchParams);
     if (!flag.ok) return flag.response;
     const deleted = flag.value;
-    const [ds, marker] = await Promise.all([
+    // 行数来自统计层那条 GROUP BY 的 `Σc`（= `COUNT(*)`），故这里只再取 `MAX(LastModified)`
+    // ——单列、走 idx_h_user_modify，不再为同一个数多扫一遍全表（审计 P1-3）。
+    const [ds, lastModified] = await Promise.all([
       deploymentStats(c.env),
-      readChangeMarker(c.env.DB),
+      readLastModified(c.env.DB),
     ]);
+    const marker = { count: ds.views.total, lastModified };
     const info = await deploymentMeta(c.env, new URL(c.req.url).origin, ds);
     return Response.json({
       stats: ds.stats,

@@ -88,7 +88,12 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
         text: '',
         hasData: false,
       };
-      return c.json(JSON.parse(profileDtoToJson(fallback)), 200);
+      // 直接以 profileDtoToJson 的**字面量**为 body：`c.json(JSON.parse(...))` 会
+      // stringify → parse → stringify 三轮（同一份 DTO 编码两次、还要建一棵临时对象树）。
+      // content-type 必须逐字照抄 Hono `c.json` 写出的那一个：`application/json`（**不带 charset**）。
+      return new Response(profileDtoToJson(fallback), {
+        headers: { 'content-type': 'application/json' },
+      });
     }
     // 上游 GetSyncProfile 无文件时返回 new TextProfile(string.Empty).ToProfileDto：
     //   Hash = GetHash() = SHA256("")，Text = ""，HasData = false，DataName = null（整键省略），
@@ -100,7 +105,10 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
       hasData: false,
       size: 0,
     };
-    return c.json(JSON.parse(profileDtoToJson(empty)), 200);
+    // 同上：body 就是字面量，content-type 与 Hono `c.json` 一致（`application/json`，无 charset）
+    return new Response(profileDtoToJson(empty), {
+      headers: { 'content-type': 'application/json' },
+    });
   });
 
   // PUT /SyncClipboard.json —— 上传剪贴板（含历史复用/新建+数据校验+广播）

@@ -5,7 +5,7 @@ import { MAX_REQUEST_BODY_BYTES } from './requestLimits';
 import {
   sha256Hex,
   textProfileHash,
-  fileProfileHash,
+  fileProfileHashFromContentHash,
   groupHashFromEntries,
   groupZipDecompressionCap,
   parseGroupZip,
@@ -124,17 +124,25 @@ export function resolveCreateProfileType(dto: ProfileDto): ProfileType {
 
 // 校验 dto 数据并写入 history 持久区（CreateAndSaveNewProfile 的 SetAndMoveTransferData 等价）
 // 校验失败抛 ProfileDataInvalidError（PUT 路径由路由映射为 400）
+//
+// `contentHash` = 调用方**已经**为 `content` 算出的 SHA-256（PUT 路径核对客户端声明的
+// `transferDataHash` 时必然算过一次）。三种类型的持久化结果都要它：
+//   · Text  —— 它就是 profile hash 本身
+//   · File/Image —— profile hash = sha256(fileName|contentHash)，且 transferDataHash = 它
+//   · Group —— transferDataHash = 它（profile hash 是条目哈希，与 zip 字节无关）
+// 不传时按需现算。传进来只影响「同一份字节被摘要几遍」，哈希值与落库值逐字节不变。
 export async function validateAndPersistData(
   storage: R2Storage,
   dto: ProfileDto,
   dataName: string,
   content: Uint8Array,
+  contentHash?: string,
 ): Promise<PersistedData> {
   const type = dto.type;
 
   if (type === ProfileType.Text) {
     // 大文本以临时文件传输：哈希 = SHA256hex(内容)
-    const hash = await textProfileHashOf(content, dto.hash);
+    const hash = await textProfileHashOf(content, dto.hash, contentHash);
     const persisted: PersistedData = {
       hash,
       // 传输文件的 SHA-256 = 同一份字节的哈希（textProfileHashOf 已算过，复用）
@@ -152,7 +160,9 @@ export async function validateAndPersistData(
   }
 
   if (type === ProfileType.File || type === ProfileType.Image) {
-    const hash = await fileProfileHash(dataName, content);
+    // 内容字节只摘要一次：它既是 profile hash 的输入，又是 transferDataHash 本身
+    const bytesHash = contentHash ?? (await sha256Hex(content));
+    const hash = await fileProfileHashFromContentHash(dataName, bytesHash);
     if (dto.hash && !hashEquals(hash, dto.hash)) {
       throw new ProfileDataInvalidError('Hash is not match data.');
     }
@@ -161,7 +171,7 @@ export async function validateAndPersistData(
     // 声明值优先，缺失时才回退到内容长度（F11）
     return {
       hash,
-      transferDataHash: await sha256Hex(content),
+      transferDataHash: bytesHash,
       text: dataName,
       size: dto.size ?? content.length,
       transferDataFile: dataName,
@@ -185,7 +195,8 @@ export async function validateAndPersistData(
     // 上游 Group 的 Size = 解压后条目长度之和，不是 zip 体积（F11）
     return {
       hash,
-      transferDataHash: await sha256Hex(content),
+      // zip **字节**的 SHA-256（≠ 上面的条目哈希）；调用方算过就复用
+      transferDataHash: contentHash ?? (await sha256Hex(content)),
       text,
       size: totalSize,
       transferDataFile: dataName,
@@ -196,10 +207,14 @@ export async function validateAndPersistData(
   throw new ProfileDataInvalidError(`Unsupported profile type: ${ProfileType[type]}`);
 }
 
-async function textProfileHashOf(content: Uint8Array, expected: string): Promise<string> {
+async function textProfileHashOf(
+  content: Uint8Array,
+  expected: string,
+  contentHash?: string,
+): Promise<string> {
   // 上游 PUT 路径按**文件字节**求哈希（TextProfile.SetTransferData → CalculateFileSHA256），
   // 与 POST 路径一致；经解码再编码会在非 UTF-8 字节流上产生偏差。
-  const hash = await sha256Hex(content);
+  const hash = contentHash ?? (await sha256Hex(content));
   if (expected && !hashEquals(hash, expected)) {
     throw new ProfileDataInvalidError('Hash is not match data.');
   }
@@ -293,13 +308,16 @@ export async function putSyncProfile(
       // 上游 3.3.0 #413：`ProfileDto.TransferDataHash`（可选）声明的是**传输数据文件的 SHA-256**。
       // 声明了就必须与暂存文件的实际字节一致（不符 ⇒ 400，与上游 catch 同文案）；
       // 没声明则跳过 —— 旧客户端不受影响。
+      // 这一次摘要同时是 profile 哈希的输入（File/Image）与 transferDataHash 本身，故往下传，
+      // 避免 validateAndPersistData 对同一份字节再摘要一遍。
+      let contentHash: string | undefined;
       if (dto.transferDataHash !== null && dto.transferDataHash !== undefined) {
-        const actual = await sha256Hex(content);
-        if (!hashEquals(dto.transferDataHash, actual)) {
+        contentHash = await sha256Hex(content);
+        if (!hashEquals(dto.transferDataHash, contentHash)) {
           throw new ProfileDataInvalidError('Hash is not match data.');
         }
       }
-      persisted = await validateAndPersistData(storage, createDto, fileName, content);
+      persisted = await validateAndPersistData(storage, createDto, fileName, content, contentHash);
     } catch (err) {
       // 上游 catch 全部异常 → BadRequest("Hash is not match data.")
       throw new BadRequestError('Hash is not match data.');
@@ -615,7 +633,9 @@ async function validateAndPersistWithName(
   expectedHash: string,
 ): Promise<PersistedData> {
   if (type === ProfileType.File || type === ProfileType.Image) {
-    const hash = await fileProfileHash(fileName, content);
+    // 内容字节只摘要一次：它既是 profile hash 的输入，又是 transferDataHash 本身
+    const bytesHash = await sha256Hex(content);
+    const hash = await fileProfileHashFromContentHash(fileName, bytesHash);
     if (expectedHash && !hashEquals(hash, expectedHash)) {
       throw new ProfileDataInvalidError('File transfer data hash mismatch.');
     }
@@ -626,7 +646,7 @@ async function validateAndPersistWithName(
     return {
       hash,
       // 传输文件的 SHA-256 是**原样字节**的哈希，与上面的 `hash`（= fileProfileHash）不同
-      transferDataHash: await sha256Hex(content),
+      transferDataHash: bytesHash,
       text: fileName,
       size: content.length,
       transferDataFile: fileName,

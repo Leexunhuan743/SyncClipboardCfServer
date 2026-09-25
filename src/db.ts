@@ -55,12 +55,21 @@ export interface DbRow {
 }
 
 export function rowToEntity(r: DbRow): HistoryRecordEntity {
+  // FilePaths 的**常见形态是 `'[]'`**（写路径 `entityParams` 对非 Group 记录写的正是它），而列表一次
+  // 要映射 500 行 —— 逐行 JSON.parse 里绝大多数是在解析这两个字节。短路与解析**逐位等价**：
+  // `JSON.parse('[]')` 得到空数组（length 0），`JSON.parse('')` 抛错后同样回落到空数组（下面的 catch）；
+  // 其余取值一律走原解析路径。于是所有调用方（协议分页、同名候选、批量元数据、UI 列表）拿到的
+  // 实体逐字段不变 —— 包括 `entityToDto` 那个 `filePaths.length > 0 || transferDataFile !== ''`
+  // 的 `hasData` 判据（短路只是把"解析出来的空数组"直接给出来）。
+  // 畸形 JSON（带外写入）仍按"解析失败 ⇒ 空数组"处理，与改动前一致。
   let filePaths: string[] = [];
-  try {
-    const parsed = JSON.parse(r.FilePaths);
-    if (Array.isArray(parsed)) filePaths = parsed as string[];
-  } catch {
-    /* 保留空数组 */
+  if (r.FilePaths !== '[]' && r.FilePaths !== '') {
+    try {
+      const parsed = JSON.parse(r.FilePaths);
+      if (Array.isArray(parsed)) filePaths = parsed as string[];
+    } catch {
+      /* 保留空数组 */
+    }
   }
   return {
     id: r.ID,
@@ -150,6 +159,14 @@ export interface DataRecordRow {
   createTime: number;
   size: number;
 }
+
+// `GET /file/{name}` 的候选扇出上限（常数，不加配置）。依据：调用方对**每条**候选各做一次 R2 get
+// （`src/routes/webdav.ts` 的 GET/HEAD 分支），而 Free 的单次调用上限是 1,000 次「到 Cloudflare
+// 服务」的子请求（Workers limits 的 `#subrequests` 第二行 + 2026-02-11 changelog）——
+// 候选数因此就是 R2 子请求数。正常库（同名文件被反复覆盖上传）同名候选 ≤ 数条，32 远超实际；
+// 超限时 `listTransferFileCandidates` 少返回候选，路由找不到存在的对象 ⇒ 404（与"文件缺失"同一出口）。
+// 这是对上游的**有意偏离**（上游逐条 `File.Exists`，条数无界），登记在 docs/protocol.md §10。
+export const MAX_TRANSFER_FILE_CANDIDATES = 32;
 
 export class HistoryDb {
   constructor(private db: D1Database) {}
@@ -305,31 +322,58 @@ export class HistoryDb {
     return (res.results ?? []).map(rowToEntity);
   }
 
-  // 同名传输文件的**全部候选**，按 LastAccessed 倒序（上游 GetRecentTransferFile）。
+  // 同名传输文件的**候选**（上游 GetRecentTransferFile）：按 LastAccessed 倒序，最多
+  // `MAX_TRANSFER_FILE_CANDIDATES` 条（上限的理由见下面那段）。
   // 上游的过滤条件是 `basename(TransferDataFile) == fileName && File.Exists(...)`，即
   // **文件不存在时会继续回退到更旧的同名记录**；存在性依赖存储层，故这里只返回候选，
   // 由调用方逐个探测（本实现存储的 TransferDataFile 即文件名，与上游 GetPersistentPath 结果一致）。
   //
-  // ⚠️ 这里的预筛**不能用 LIKE**（2026-09-20 修）：D1 的 LIKE 模式上限是 50 字节
+  // ⚠️ **候选数上限**（有意偏离上游，登记在 docs/protocol.md §10）：调用方对**每条**候选各做一次
+  // R2 get（`src/routes/webdav.ts` 的 GET/HEAD `/file/:fileName`），候选数就是 R2 子请求数 ——
+  // Free 的单次调用上限是 1,000 次「到 Cloudflare 服务」的子请求，而候选数由库内容决定、
+  // 本身无界（上游跑在文件系统上，没有子请求配额这回事）。正常库里同名候选只有几条
+  // （同名文件被反复覆盖上传），故取 32 作常数上限；超限时这里少返回候选，调用方找不到存在的对象
+  // ⇒ 落到与「文件缺失」同一条出口（**404**）。上限在 SQL 里生效（预筛的 LIMIT），
+  // 而不是取回后切片 —— 否则内存与 D1 行读都不受约束。
+  //
+  // ⚠️ **预筛必须与调用方那道 JS 精确过滤等价**，否则 `LIMIT` 会被伪候选吃满、把真候选挤出候选集
+  // （数据在、下载却 404 —— 那是正确性回退，不是性能取舍）。此前预筛只做「后缀相等」，比 JS 的
+  // `basename(x) === fileName` **更宽**：`x = 'foo-c.pdf'`、`fileName = 'c.pdf'` 时后缀匹配成立，
+  // 而 `basename` 是 `'foo-c.pdf'` ⇒ 它是一条伪候选。现在的判据与 JS 逐位等价：
+  //   · `instr(?2, '/') = 0` —— `basename` 的结果里不可能有 `/`，故 `fileName` 含 `/` 时 JS 侧恒不命中
+  //     （路由层 `invalidFileName` 已挡掉含 `/`、`\` 的名字，这条是给直接调用本函数的调用方兜底）；
+  //   · 后缀相等 `substr(x, -length(?2)) = ?2`；
+  //   · 且「长度相等（此时 `x = fileName`）**或** 后缀之前那一个字符是 `/`」——
+  //     `'dir/x.bin'` 命中，`'foo-c.pdf'` 不命中。
+  // 该等价对 `x = fileName`（无目录）、`'dir/name'`、`x = ''`（`fileName` 非空时长度不足 ⇒ 不命中）、
+  // 以及带目录前缀的形态逐一成立；`=` 对 TEXT 是 BINARY、JS 的 `===` 也大小写敏感 ⇒ 两侧同判据。
+  // 下面那道 JS 过滤**保留**：它是语义的权威表述，也是将来改预筛时的第二道防线。
+  //
+  // ⚠️ 预筛**不能用 LIKE**（2026-09-20 修）：D1 的 LIKE 模式上限是 50 字节
   // （见 serialization.ts 的 MAX_LIKE_PATTERN_BYTES），而文件名由客户端给 ——
   // 「Invoice_2026-08_ACME-Corporation_final-signed-version-2.pdf」就 59 字节（`%/` + 名字 = 61 > 50）。名字 ≥49 字节时
   // 这条查询**直接报错**，`GET /file/{name}` 恒 500（实测：48 字节 404、49 字节 500；
   // CJK 20 字 = 60 字节同样 500），而「下载」正是客户端唯一的取数据路径。
-  // 改用 `substr(…, -length(?2))`：没有通配符、没有模式长度限制。它与 LIKE 的偏差**两个方向都有**：
-  // 更宽的地方是"不锚定前一个分隔符"，**更严**的地方是大小写（`=` 对 TEXT 是 BINARY，而 LIKE 对 ASCII
-  // 不区分大小写）。两者对最终候选集的影响都会被调用方那道精确过滤吸收，所以终态与改前逐条相同 ——
-  // 候选集的**语义由调用方的 `basename(...) === fileName` 定义**（与上游 `Path.GetFileName(...) == fileName` 同义）
-  // —— 预筛只要不漏候选即可，多给的会被滤掉。
+  // 改用 `substr(…, -length(?2))`：没有通配符、没有模式长度限制。它与 LIKE 的差异只剩大小写
+  // （`=` 对 TEXT 是 BINARY，而 LIKE 对 ASCII 不区分大小写）—— 而这里本来就**要与 JS 的 `===` 同侧**，
+  // 故 `=` 是正确的选择。候选集的**语义**由调用方的 `basename(...) === fileName` 定义
+  // （与上游 `Path.GetFileName(...) == fileName` 同义），预筛与它等价（见上一段）。
   async listTransferFileCandidates(fileName: string): Promise<HistoryRecordEntity[]> {
     // 空名：上游 `string.IsNullOrEmpty(fileName)` 直接返回 null（也让 SQL 不碰 substr 的 0 边界）
     if (fileName === '') return [];
     const res = await this.db
       .prepare(
         `SELECT * FROM HistoryRecords
-         WHERE UserId = ?1 AND (TransferDataFile = ?2 OR substr(TransferDataFile, -length(?2)) = ?2)
-         ORDER BY LastAccessed DESC`,
+         WHERE UserId = ?1
+           AND instr(?2, '/') = 0
+           AND (TransferDataFile = ?2
+                OR (substr(TransferDataFile, -length(?2)) = ?2
+                    AND (length(TransferDataFile) = length(?2)
+                         OR substr(TransferDataFile, -length(?2) - 1, 1) = '/')))
+         ORDER BY LastAccessed DESC
+         LIMIT ?3`,
       )
-      .bind(HARD_CODED_USER_ID, fileName)
+      .bind(HARD_CODED_USER_ID, fileName, MAX_TRANSFER_FILE_CANDIDATES)
       .all<DbRow>();
     return (res.results ?? [])
       .map(rowToEntity)
@@ -415,6 +459,12 @@ export class HistoryDb {
   // 四个计数**一条聚合查询**出齐：旧实现先把全部行的 Stared/IsDeleted 拉回 JS 再循环，
   // 而统计在每次页面加载、星标、删除、切视图时都会跑（后端能力评估 §3.1）。
   // 语义与原实现逐条对齐：starred 在**整个结果集**上累加，不区分已删/活跃。
+  //
+  // ⚠️ **唯一的调用方是协议端点 `/api/history/statistics`**（`src/routes/history.ts`）。界面侧
+  // （`/ui/api/statistics`、`/ui/api/info`、`/ui/api/overview`）不再调它：它本来就要跑一条
+  // `GROUP BY Type, IsDeleted, Stared`（`src/ui/query.ts` 的 `countByTypeViews`），四个计数从那份
+  // 结果集里 `Σc` 就能算出（同一份数据上逐位相同，证明见 `statisticsFromViews`），
+  // 再打一条同表的全表聚合是纯浪费（审计 P1-3）。协议端点因此**原样不动**。
   async statistics(totalFileSizeMB: number): Promise<HistoryStatisticsDto> {
     const res = await this.db
       .prepare(

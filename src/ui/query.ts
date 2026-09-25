@@ -13,6 +13,7 @@ import {
   InvalidQueryValueError,
 } from '../serialization';
 import { HistoryRecordDto, HistoryRecordEntity, ProfileType, ProfileTypeFilter, HARD_CODED_USER_ID } from '../types';
+import type { HistoryStatisticsDto } from '../types';
 
 export type UiSortField = 'id' | 'type' | 'size' | 'createTime' | 'lastModified' | 'lastAccessed';
 export type UiSortOrder = 'asc' | 'desc';
@@ -68,11 +69,23 @@ export interface UiTypeCounts {
 // 一次 GROUP BY 取回的计数：两套类型计数（活跃 / 回收站）+ 两个收藏计数（活跃 / 回收站）。
 // 收藏的两个都**与请求视图无关**（各自是对全表的一次聚合），所以响应里两个一起给，
 // 前端按当前视图取用即可 —— 不必像 `byType` 那样关心"这份响应属于哪个视图"。
+//
+// 后四个是**全库计数**（不分类型、不随视图走），与协议端点 `/api/history/statistics` 的
+// `HistoryStatisticsDto` 四个计数**同源同值**：它们由同一条 GROUP BY 顺带算出（见
+// `statisticsFromViews` 的等价性说明），界面因此不必再打一条 `db.statistics` 的全表聚合。
 export interface UiViewCounts {
   byActive: UiTypeCounts;
   byDeleted: UiTypeCounts;
   starredActive: number;
   starredDeleted: number;
+  /** 全库总行数（= `COUNT(*)`） */
+  total: number;
+  /** 未删除行数（= `SUM(IsDeleted = 0)`） */
+  active: number;
+  /** 已删除行数（= `SUM(IsDeleted != 0)`） */
+  deleted: number;
+  /** 已收藏行数，**含已删除**（= `SUM(Stared != 0)`，与协议 DTO 的 `starredCount` 同口径） */
+  starred: number;
 }
 
 export class UiQueryError extends Error {
@@ -348,20 +361,53 @@ export async function countByTypeViews(db: D1Database): Promise<UiViewCounts> {
   const byDeleted: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
   let starredActive = 0;
   let starredDeleted = 0;
+  // 全库计数与上面几个来自**同一份结果集**：`Σc` = COUNT(*)，按 Stared/IsDeleted 分组求和 =
+  // 对应的 `SUM(CASE …)`（协议端点那条聚合的等价形式，见 statisticsFromViews）。
+  let total = 0;
+  let active = 0;
+  let deleted = 0;
+  let starred = 0;
   for (const row of rows.results ?? []) {
-    const deleted = row.IsDeleted !== 0;
+    const isDeleted = row.IsDeleted !== 0;
+    total += row.c;
+    if (isDeleted) deleted += row.c;
+    else active += row.c;
     // 累加而不是赋值：`Stared` 进了分组，同一个 (Type, IsDeleted) 现在会有两行（收藏 / 未收藏）
     if (row.Stared !== 0) {
-      if (deleted) starredDeleted += row.c;
+      starred += row.c;
+      if (isDeleted) starredDeleted += row.c;
       else starredActive += row.c;
     }
-    const bucket = deleted ? byDeleted : byActive;
+    const bucket = isDeleted ? byDeleted : byActive;
     if (row.Type === ProfileType.Text) bucket.Text += row.c;
     else if (row.Type === ProfileType.Image) bucket.Image += row.c;
     else if (row.Type === ProfileType.File) bucket.File += row.c;
     else if (row.Type === ProfileType.Group) bucket.Group += row.c;
   }
-  return { byActive, byDeleted, starredActive, starredDeleted };
+  return { byActive, byDeleted, starredActive, starredDeleted, total, active, deleted, starred };
+}
+
+/**
+ * 由 `countByTypeViews` 的同一次聚合结果组装协议形状的统计 DTO（**界面侧**用）。
+ *
+ * **等价性**（与 `db.statistics` 那条聚合逐位相同）：`db.statistics` 是
+ * `COUNT(*)` / `SUM(Stared != 0)` / `SUM(IsDeleted != 0)` / `SUM(IsDeleted = 0)` 的一条聚合；
+ * 而 `GROUP BY Type, IsDeleted, Stared` 的结果集按 `Σc` 给出同样四个数 —— `Σc` 就是 `COUNT(*)`，
+ * 按 `Stared` / `IsDeleted` 分组求和就是对应的 `SUM(CASE …)`。两者在同一份数据上取值相同，
+ * 包括**零行时同为 0**（空结果集 ⇒ 四个变量都是初值 0）。`totalFileSizeMB` 仍由调用方传入
+ * （来自 R2 实列，口径不变）。
+ *
+ * 为什么在界面侧组装：`db.statistics` 是协议端点 `/api/history/statistics` 的公共实现，
+ * 界面每次首屏再打一条同表的全表聚合是纯浪费（审计 P1-3）；协议端点因此原样不动。
+ */
+export function statisticsFromViews(views: UiViewCounts, totalFileSizeMB: number): HistoryStatisticsDto {
+  return {
+    totalCount: views.total,
+    starredCount: views.starred,
+    deletedCount: views.deleted,
+    activeCount: views.active,
+    totalFileSizeMB,
+  };
 }
 
 // 变更信号：前端的自动刷新用它判断「要不要重新拉列表」。
@@ -378,6 +424,23 @@ export async function readChangeMarker(db: D1Database): Promise<UiChangeMarker> 
     .bind(USER_ID)
     .first<{ c: number; m: number }>();
   return { count: res?.c ?? 0, lastModified: res?.m ?? 0 };
+}
+
+/**
+ * 只取 `MAX(LastModified)`（变更信号的后一半）。
+ *
+ * 为什么单开一个而不是复用 `readChangeMarker`：`/ui/api/overview` 的行数**已经**从它自己那条
+ * `GROUP BY`（`countByTypeViews`）里算出来了（`Σc` = `COUNT(*)`），再打一条带 `COUNT(*)` 的聚合
+ * 就是白扫一遍全表。单列查询走 `idx_h_user_modify`（`schema.sql`：(UserId, LastModified)），
+ * 不需要回表 —— 这正是审计 P1-3 建议的口径。
+ * `/ui/api/poll` 仍用 `readChangeMarker`：它每 10 s 被调一次，两个值必须**一条语句**取回。
+ */
+export async function readLastModified(db: D1Database): Promise<number> {
+  const res = await db
+    .prepare(`SELECT COALESCE(MAX(LastModified), 0) AS m FROM HistoryRecords WHERE UserId = ?1`)
+    .bind(USER_ID)
+    .first<{ m: number }>();
+  return res?.m ?? 0;
 }
 
 // ===== 活动趋势（docs/ui-v2-design.md §6.2 的 N2）=====

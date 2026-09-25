@@ -567,10 +567,19 @@ describe('F9 请求体上限（413）', () => {
 });
 
 describe('F9 长轮询队列封顶（真实 DO 类）', () => {
+  // P1（WS 迁 Hibernation API，docs/design.md D42）之后 DO 会调 `state.acceptWebSocket` /
+  // `state.getWebSockets`（`clientCount()` 与 `scheduleHeartbeat()` 都要用），以及
+  // `storage.getAlarm()`（心跳防重排判据）⇒ 夹具必须一并实现，否则这组用例直接 TypeError
+  // （桩与真实接口不一致，不是被测量行为）。
   function createDoState(): DurableObjectState {
     const storage = new Map<string, unknown>();
+    const sockets: WebSocket[] = [];
     return {
       blockConcurrencyWhile: async (callback: () => Promise<unknown>) => callback(),
+      acceptWebSocket: (ws: WebSocket) => {
+        sockets.push(ws);
+      },
+      getWebSockets: () => sockets,
       storage: {
         get: async (key: string) => storage.get(key),
         put: async (key: string, value: unknown) => {
@@ -579,6 +588,7 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
         delete: async (key: string) => storage.delete(key),
         list: async () => new Map(),
         setAlarm: async () => {},
+        getAlarm: async () => null,
       },
     } as unknown as DurableObjectState;
   }

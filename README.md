@@ -242,12 +242,43 @@ Cloudflare 默认分配的 `*.workers.dev` 域名在部分国内运营商网络�
 
 ## 容量估算与限制
 
+### Cloudflare Free 计划的真实约束
+
+> 下面几条是 Free 上**真正会先撞到**的限制。数字的完整推导（逐入口子请求表、CPU 遍数折算、
+> 每日配额折算）在 [docs/free-plan-audit.md](docs/free-plan-audit.md)，基线门禁记录在
+> [docs/free-plan-baseline.md](docs/free-plan-baseline.md)；决策登记为 `docs/design.md` 的 D40。
+
+- **CPU 是平均预算，不是单次硬顶**：Free 的 HTTP 请求与 Cron 触发**同一档**（都是 10 ms），但平台另有
+  **rollover CPU time** 机制 —— 官方 metrics 页原文是「更高的分位可能看起来超过 CPU 时间上限而不产生
+  调用错误」，limits 页写「每个 isolate 对偶发越界有内建余量」。⇒ **偶发越界不报错，持续越界才终止**。
+  本账号实测（2026-09-24，见 [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)）：单次
+  调用 CPU 达 **633 ms / 712 ms**（Group 上传）仍然成功，30 天内**资源超限 0 次**。⇒ **不要调小
+  `MAX_REQUEST_BODY_BYTES`**：48 MiB 是**内存维度**的结论（Free 与 Paid 的内存同为 128 MiB），而本账号
+  已真实承载过 **15.5 MiB 的 zip 请求体（20.36 MiB 的 Group 载荷）**；调到 `2 MiB` 会拒掉这些已经成功
+  的同步。只有**持续**越界（长期平均超过 10 ms）时平台才以 `error 1102`（超出资源上限）终止调用，
+  **不是**干净的 413。
+- **不要设置 `[limits] subrequests`**：它在 Free 上**不能放宽**额度（文档只写"free account maximum
+  is 50"），反而可能把「到 Cloudflare 服务」的 1,000 次/调用额度钳低 —— 清理任务的 800 次子请求预算
+  正建立在那 1,000 之上。将来确需 `[limits]` 时只加 `cpu_ms`。
+- **请求额度 10 万/天 ≈ 4 台常驻客户端**（实测口径：本部署单日峰值 **24,212 次**请求，2026-09-22，
+  见 [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)；按下一节的 17,280 次/台
+  **估算**则是约 5 台，该估算偏乐观约 25%）。界面侧还要算上一次页面加载的
+  三十多个静态资源请求（`run_worker_first` 让它们同样经 Worker），频繁刷新会明显加快消耗。
+- **Durable Object 的 duration 是隐藏额度**：Free 每日 13,000 GB-s。DO 用的是非 Hibernation 的
+  `server.accept()`，**WebSocket 连着多久就计费多久**，且按分配到的 128 MB 计（与实际用量无关）
+  ⇒ 一个常驻连接约 0.128 GB × 86,400 s = **11,059 GB-s/天，吃掉日额度约 85%**。Free 上因此没有余量
+  容纳第二个常驻 DO 对象。
+- **清理任务是慢收敛，而且可能被平台中断**：一轮跑不完由 Meta 游标下一轮续跑（单轮工作量按**行字节预算**
+  256 KiB/阶段收敛，而不是平坦条数）；若单轮 CPU 仍超限，平台**直接终止**本轮 —— 但**轮首心跳**（进入清理
+  就先写一次"最近一次尝试"）已经落库，所以"被终止"在部署信息里**看得见**，不再是静默的（只是会慢收敛）。
+  积压大时建议升级 Workers Paid，或把 Cron 间隔放宽（`wrangler.toml` 的 `[triggers]`）。
+
 ### 请求量与免费额度
 
 Cloudflare Workers 免费计划提供每日 10 万次请求额度：
 - **客户端探活消耗**：官方客户端处于后台运行时，每 10 秒会执行一次长连接保活检查，每次包含两个请求（`PROPFIND /` 和 `GET /api/version`）。
 - **单客户端请求量**：一个客户端全天保持运行，每天约产生 `(86400 / 10) * 2 ≈ 17,280` 次请求。
-- **承载量**：5 台客户端同时全天在线时，每天基础心跳约产生 8.6 万次请求，落在 10 万次免费额度内。多于 5 台客户端长时间运行建议升级为 Workers Paid 计划。
+- **承载量**：5 台客户端同时全天在线时，每天基础心跳约产生 8.6 万次请求（按 17,280 次/台**估算**），落在 10 万次免费额度内；但本部署实测单日峰值为 **24,212 次**（2026-09-22）⇒ 实际约合 **4 台**（该估算偏乐观约 25%）。多于 4–5 台客户端长时间运行建议升级为 Workers Paid 计划。
 
 ### Web 界面连接消耗
 
@@ -258,6 +289,7 @@ Cloudflare Workers 免费计划提供每日 10 万次请求额度：
 
 - **单文件大小限制**：写端点对请求体进行了拦截保护，默认上限为 **48 MiB**，最大允许放宽至 **64 MiB**。超出限制的请求会直接返回 413 状态码。
 - **内存考量**：Cloudflare Workers 每个 isolate 的内存为 128 MiB，由所有并发请求共享。因为 R2 无法像传统文件系统那样直接重命名文件，上传时需要将文件数据读入内存计算哈希并写入存储。限制在 48~64 MiB 是为了预留内存，避免并发写入时出现内存溢出（OOM）导致其他正常请求一并返回 503。
+- **⚠️ 不要因为「部署在 Free 上」就调小它**：48 MiB 是**内存维度**的结论（Free 与 Paid 同为 128 MiB）；Free 的 10 ms CPU 是**平均预算**且平台有 rollover CPU time（偶发越界不报错），本账号实测已承载过 **15.5 MiB 的 zip 请求体（20.36 MiB 的 Group 载荷）**、单次调用 CPU 达 ~0.7 s 仍然成功 ⇒ 调到 `2 MiB` 只会拒掉这些**已经成功**的同步（见本节开头「Cloudflare Free 计划的真实约束」与 [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)）。
 - **大文本同步**：复制超过 10,240 字符的长文本时，服务端自动将其转存为数据流文件，客户端可完整同步全文。
 - **文件夹（Group）压缩包**：支持同步文件夹，解压总量限制为 64 MiB，解压条目上限 1,000 项，**单条目上限 24 MiB**，单文件解压膨胀比上限 100:1（完整上限清单见上文「已知限制」）。
 
@@ -377,6 +409,10 @@ test/                   测试套件（集成测试、协议回归测试、文�
 - [docs/protocol.md](docs/protocol.md)：官方协议逐条对照、DTO 契约与已知差异表
 - [docs/ui.md](docs/ui.md)：Web 历史界面的接口设计、鉴权模型与前端规范
 - [docs/security-fix-plan.md](docs/security-fix-plan.md)：安全审计与已知安全加固项说明
+- [docs/free-plan-audit.md](docs/free-plan-audit.md)：Cloudflare Free 计划适配审计（平台限额事实、逐入口子请求/CPU 折算、优先级清单）
+- [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)：Cloudflare **账户实测事实**档案（配额实测、权限边界、查询原文；账户计划未判定）
+- [docs/free-plan-baseline.md](docs/free-plan-baseline.md)：Free 计划适配分支的基线门禁记录
+- [docs/do-hibernation-plan.md](docs/do-hibernation-plan.md)：Durable Object Hibernation 改造方案（阻止 hibernate 的构造清单、内存态迁移去向、文档矛盾、并列候选方案；**不含决定**，收益待实测）
 - [AGENTS.md](AGENTS.md)：开发行为契约与代码维护规范
 
 ## 许可证

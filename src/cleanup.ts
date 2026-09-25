@@ -14,6 +14,15 @@
 //   · 阶段进度写进 Meta 游标（CLEANUP_META_KEYS.cursors），本轮没跑完的下轮接着跑；
 //   · 每阶段一行 `[cleanup]` 结构化日志 + `cleanup:lastRunAt` / `cleanup:lastError` 落库。
 //
+// P0-3（CPU）：子请求预算只管**子请求数**，而平台的另一道约束是 **CPU** —— Free 的 Cron 同样只有
+// 10 ms（**平均**预算）。⚠️ 这 10 ms 不是"单次硬顶"：平台另有 **rollover CPU time** 机制（官方
+// workers/observability/metrics-and-analytics 原文「更高的分位可能看起来超过 CPU 时间上限而不产生
+// 调用错误」；limits 页的 built-in flexibility 段同义）⇒ **偶发越界不报错，持续越界才终止**。
+// 但**持续**超限时平台确实会直接终止整个调用 ⇒ 上面的日志与落库**全都不会执行**，F11 的形态会以
+// 「看起来一切正常」的方式回归。两处补上：① runCleanup **轮首**先写一次心跳（即使本轮被终止，
+// UI 也能看到「最近一次尝试」在动）；② 单轮工作量按**行字节**（CPU 的真正驱动量）收敛，
+// 推导见下面「CPU 预算」段。
+//
 // 契约（调用方依赖）：**runCleanup 不向调用方抛裸错**。scheduled handler 只有 ctx.waitUntil，
 // 抛出去就是「静默失败」；一切失败都记进返回值、`[cleanup]` 日志与 `cleanup:lastError`。
 import { HistoryDb } from './db';
@@ -42,6 +51,47 @@ const HARD_DELETE_BATCH_LIMIT = 1000;
 const MAX_BATCHES_PER_PHASE = 20;
 // 已删除记录保留期（上游 RemoveOutOfDateDeletedRecords 固定 30 天）
 const DELETED_RETENTION_DAYS = 30;
+
+// ===== CPU 预算 =====
+
+// 单轮单阶段的**行字节预算**（估算，非精确计量）。为什么需要它：SUBREQUEST_BUDGET 只约束
+// **子请求数**，而平台的另一道约束是 CPU —— Free 的 Cron 与 HTTP 一样只有 **10 ms**
+// （Workers limits 的 `#cpu-time` / `#cron-triggers`）。这 10 ms 是**平均**预算：平台另有
+// **rollover CPU time**（偶发越界不报错，官方出处见文件头 P0-3 段），只有**持续**超限时平台才
+// **直接终止**整个调用：
+// 本文件的顶层 catch 与 `src/index.ts` 的 `ctx.waitUntil(...).catch` 都不执行 ⇒ 没有
+// `[cleanup] run …` 汇总行、游标与 lastError 不落库、UI 的清理可观测面停在旧值上
+// **看起来一切正常**（F11 的原始形态）。故除轮首心跳外，单轮工作量也必须按 CPU 收敛。
+//
+// **为什么是「行字节」而不是「条数」**：这一轮的 CPU 支配项是**字节数**，不是条数。
+// 软删阶段的 `UPDATE … RETURNING *`（db.ts 的 softDeleteOldest）把**整行**（含 Text）作为 JSON
+// 返回，Worker 侧要对它做 ① JSON 反序列化 ② rowToEntity 映射 ③ 广播载荷构造（entityToDtoWire，
+// 含 3 次 toIso）—— 三者都与行字节数成正比，与条数无关：
+//   · 500 条小记录（Text=''，夹具行 ≈ 260 B）= 130 KB ⇒ ≈ 1 ms
+//   · 500 条 4 KB 文本 = 2 MB ⇒ ≈ 20–40 ms ⇒ **已经吃掉整个 10 ms 预算**
+//   · 500 条 1 MiB 内联文本 = 500 MB ⇒ 不可能（也远超 128 MB isolate 内存）
+// 用一个常数条数同时覆盖这三种数据，只能取最小公倍数（≈40 条），代价是把小记录库的清理吞吐砍掉
+// 12 倍而**没有任何 CPU 收益**。故：条数上限保持不变（它同时是「对齐上游的批量语义」与
+// 「单条语句 + 一批广播」的内存界，见上面的常量注释），另加按**实际行字节**动态收敛的单轮预算
+// —— 大记录库自动慢收敛（多轮推进，游标语义不变，见 ZERO_CURSORS 的注释），小记录库不受影响。
+//
+// 数值口径（**全是推断，必须实测标定** —— docs/free-plan-audit.md §6 的 M3）：
+//   · 文本为主的 JSON 反序列化按 **100 MB/s** 的悲观吞吐折算（V8 原生 JSON.parse 常见
+//     200–400 MB/s，取 100 即留 2–4 倍安全系数）；
+//   · 10 ms 先扣掉与记录无关的固定项：R2 列举结果反序列化（1 页 1000 个对象 ≈ 100 KB ≈ 1 ms）、
+//     4 次 Meta D1 的 JS 侧开销、框架与抖动 ⇒ 留 ~5 ms 给记录 materialize；
+//   · 两个软删阶段（retention / trim）各 2.5 ms ⇒ 2.5 ms × 100 MB/s ≈ **256 KiB**；
+//   · 硬删阶段的行只有 (Type, Hash) 两列（db.ts 的 hardDeleteOldDeletedRecords），1,000 条
+//     ≈ 70 KB ⇒ 条数上限先起作用；同样给 256 KiB 是**统一的兜底**（积压 20,000 条时它才会先触发）。
+// 预算在**批与批之间**生效：一批的字节数只有取回后才知道，故首批的越界量 ≤ batchLimit × 单行字节
+// —— 这是本口径的固有误差（也是「单条记录自带 1 MiB 内联文本」这种形态无解的原因），别当成保证。
+const SOFT_DELETE_ROW_BYTES_PER_ROUND = 256 * 1024;
+const HARD_DELETE_ROW_BYTES_PER_ROUND = 256 * 1024;
+
+// 一行记录在 CPU 口径下的**估算**字节数（口径见上面）：固定部分（列名 + 定长列）用常数近似。
+// 它是预算的**权重**而不是精确计量 —— 只要求随行字节成比例地收紧，不要求逐字节吻合。
+const ENTITY_ROW_FIXED_BYTES = 256; // RETURNING * 的固定部分（16 个列名 + 数字/定长列）
+const KEY_ROW_FIXED_BYTES = 64; // RETURNING Type, Hash 的固定部分（真实值 ≈28 B，保守取 2 倍）
 
 // ===== 子请求记账模型 =====
 // 每个外部调用 = 1 次子请求：D1 语句、R2 调用、DO fetch 各计一次。
@@ -130,6 +180,11 @@ export const SETTINGS_META_KEYS = {
 
 const SETTINGS_META_KEY_LIST: string[] = Object.values(SETTINGS_META_KEYS);
 
+// 清理可观测面（六键）+ 保留策略（两键）的**合并键表**：UI 的 `/ui/api/info` 与 `/ui/api/overview`
+// 两批都要读，分成两次 `getMetaValues` 就是两次 D1 子请求（审计 P1-3）。
+// 键名仍只在本文件定义（src/ui/routes.ts 从这里 import，不再自己拼一份字面量）。
+export const CLEANUP_AND_SETTINGS_META_KEYS: string[] = [...META_KEYS_ALL, ...SETTINGS_META_KEY_LIST];
+
 // env 未提供时的内置默认（与 wrangler.toml [vars] 的取值一致：0 = 不限制保留时长 / 1000 条）。
 // ⚠️ 保留期这一项 2026-09-22 由 10080（7 天）改成 **0**：对齐上游 3.3.0 的
 // `AppSettings.HistoryRetentionMinutes` 默认值（上游 #402/#426 把它改成了「0 = 不限制」，
@@ -177,10 +232,10 @@ export function settingsFromEnv(env: Bindings): RetentionSettings {
   };
 }
 
-// 保留策略的**唯一**读入口：cleanup（runCleanup）、/ui/api/info、/ui/api/settings 三处共用，
-// 杜绝「清理按 Meta、界面显示按 env」的分叉。成本 = 1 次 D1 读（getMetaValues 单条 IN 查询）。
-export async function readRetentionSettings(db: HistoryDb, env: Bindings): Promise<RetentionSettings> {
-  const meta = await db.getMetaValues(SETTINGS_META_KEY_LIST);
+// 保留策略的解析：从**已取回**的 Meta 值 + env 算出生效值与来源。抽成纯函数是为了让
+// UI 侧能把「清理可观测面 + 保留策略」并成**一次** `getMetaValues`（见 CLEANUP_AND_SETTINGS_META_KEYS）
+// —— 解析口径只此一份，与 readRetentionSettings 不可能分叉。
+export function retentionSettingsFromMeta(meta: Map<string, string>, env: Bindings): RetentionSettings {
   const fromMeta = {
     retentionMinutes: parseSettingValue(meta.get(SETTINGS_META_KEYS.retentionMinutes)),
     maxSavedHistoryCount: parseSettingValue(meta.get(SETTINGS_META_KEYS.maxSavedHistoryCount)),
@@ -197,6 +252,15 @@ export async function readRetentionSettings(db: HistoryDb, env: Bindings): Promi
     retentionSource: sourceOf(fromMeta.retentionMinutes, base.retentionMinutes),
     maxCountSource: sourceOf(fromMeta.maxSavedHistoryCount, base.maxSavedHistoryCount),
   };
+}
+
+// 保留策略的**唯一读入口**（只需要保留策略的调用方走这里）：cleanup（runCleanup）与
+// /ui/api/settings（maintenance.ts）共用，杜绝「清理按 Meta、界面显示按 env」的分叉。
+// 成本 = 1 次 D1 读（getMetaValues 单条 IN 查询）。
+// ⚠️ /ui/api/info 与 /ui/api/overview **不走这里**：它们本来就要读清理的六个 Meta 键，
+// 两批键并成一次查询更省（它们用 retentionSettingsFromMeta 解析同一份值，故显示仍与清理同源）。
+export async function readRetentionSettings(db: HistoryDb, env: Bindings): Promise<RetentionSettings> {
+  return retentionSettingsFromMeta(await db.getMetaValues(SETTINGS_META_KEY_LIST), env);
 }
 
 export interface CleanupResult {
@@ -291,6 +355,25 @@ function recordFailure(failures: string[], stage: CleanupStage, err: unknown): v
  *  软删阶段还要整行来做广播载荷。 */
 type CleanupRow = { type: ProfileType; hash: string };
 
+/** 软删批（`RETURNING *`）的行字节估算：Text 与 FilePaths 是 JSON 体积的支配项。
+ *  `filePaths` 已经是解析后的数组，这里只累加长度（不重新 stringify —— 那本身又是一次 CPU 开销）。 */
+function estimateEntityRowBytes(rows: HistoryRecordEntity[]): number {
+  let bytes = 0;
+  for (const r of rows) {
+    let paths = 2; // '[]'
+    for (const p of r.filePaths) paths += p.length + 3; // 每个元素的引号 + 逗号
+    bytes += ENTITY_ROW_FIXED_BYTES + r.text.length + paths + r.hash.length + r.transferDataFile.length;
+  }
+  return bytes;
+}
+
+/** 硬删批（`RETURNING Type, Hash`）的行字节估算：每行只有两个短列。 */
+function estimateKeyRowBytes(rows: { hash: string }[]): number {
+  let bytes = 0;
+  for (const r of rows) bytes += KEY_ROW_FIXED_BYTES + r.hash.length;
+  return bytes;
+}
+
 interface BatchPhaseSpec<T extends CleanupRow> {
   phase: CleanupPhase;
   /** 每条记录产生的子请求数 */
@@ -301,13 +384,17 @@ interface BatchPhaseSpec<T extends CleanupRow> {
   batchedCallCost: number;
   /** 单批条数上限 */
   batchLimit: number;
+  /** 单轮行字节预算（CPU 口径，推导见 SOFT_DELETE_ROW_BYTES_PER_ROUND） */
+  rowBytesPerRound: number;
+  /** 本批已 materialize 的行字节估算（CPU 口径，同上） */
+  estimateRowBytes(rows: T[]): number;
   /** 取一批候选；hasMore 必须按**实际生效的条数**判定，否则会把"候选已取完"误判成"被截断" */
   fetchBatch(limit: number): Promise<{ rows: T[]; hasMore: boolean }>;
   /** 本批的收尾动作：软删广播变更，硬删清扫数据目录（两侧语义见上面记账模型） */
   applyBatch(rows: T[]): Promise<void>;
 }
 
-// 分批推进一个「按记录处理」的阶段：每批先按剩余额度算出可负担的条数，
+// 分批推进一个「按记录处理」的阶段：每批先按剩余额度（子请求 + CPU 字节）算出可负担的条数，
 // 连一条都负担不起就停止并把该阶段标记为 truncated（下一轮从游标续跑，绝不静默跳过）。
 async function drainBatches<T extends CleanupRow>(
   run: CleanupRun,
@@ -315,17 +402,26 @@ async function drainBatches<T extends CleanupRow>(
 ): Promise<PhaseOutcome> {
   let processed = 0;
   let batches = 0;
+  // 本阶段本轮已 materialize 的行字节（CPU 口径；见 SOFT_DELETE_ROW_BYTES_PER_ROUND）
+  let rowBytes = 0;
   for (let i = 0; i < MAX_BATCHES_PER_PHASE; i++) {
     // 每批的额度里先扣掉本阶段的固定开销（硬删的一次批量删）与查询，再按每条成本折算条数。
     const room = run.budget.roomFor(spec.phase) - spec.queryCost - spec.batchedCallCost;
     // costPerRecord 为 0（硬删：不广播、目录并入批次清扫）时不受"每条成本"约束，只按批上限推进；
     // 它仍要求 room ≥ 0，也就是至少付得起这一批的查询与清扫。
-    const limit =
+    const subrequestLimit =
       spec.costPerRecord > 0
-        ? Math.min(spec.batchLimit, Math.floor(room / spec.costPerRecord))
+        ? Math.floor(room / spec.costPerRecord)
         : room >= 0
           ? spec.batchLimit
           : 0;
+    // CPU 口径：按**已实测的平均行字节**把这一批压进剩余预算。首批只能用 batchLimit 约束
+    // （行字节数要取回后才知道）；此后每批都按实测均值收窄，于是「500 条 × 1 MiB」这种形态
+    // 从第二批起就被挡住（首批的越界量见 SOFT_DELETE_ROW_BYTES_PER_ROUND 末尾的说明）。
+    const avgRowBytes = processed > 0 ? rowBytes / processed : 0;
+    const byteLimit =
+      avgRowBytes > 0 ? Math.floor((spec.rowBytesPerRound - rowBytes) / avgRowBytes) : spec.batchLimit;
+    const limit = Math.min(spec.batchLimit, subrequestLimit, byteLimit);
     if (limit < 1) return { processed, batches, truncated: true };
     run.budget.spend(spec.queryCost);
     batches++;
@@ -333,6 +429,7 @@ async function drainBatches<T extends CleanupRow>(
     await spec.applyBatch(rows);
     run.budget.spend(rows.length * spec.costPerRecord);
     processed += rows.length;
+    rowBytes += spec.estimateRowBytes(rows);
     if (!hasMore) return { processed, batches, truncated: false };
   }
   return { processed, batches, truncated: true };
@@ -446,6 +543,8 @@ function cleanRetention(run: CleanupRun, retentionMinutes: number): Promise<Phas
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
+    rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
+    estimateRowBytes: estimateEntityRowBytes,
     fetchBatch: async (limit) => {
       const rows = await run.db.softDeleteExpiredRecords(cutoffMs, run.nowMs, limit);
       return { rows, hasMore: rows.length === limit };
@@ -463,6 +562,8 @@ function cleanTrim(run: CleanupRun, maxCount: number): Promise<PhaseOutcome> {
     queryCost: 2 * SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
+    rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
+    estimateRowBytes: estimateEntityRowBytes,
     fetchBatch: async (limit) => {
       const overage = (await run.db.countActiveRecords()) - maxCount;
       if (overage <= 0) return { rows: [], hasMore: false };
@@ -484,6 +585,8 @@ function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutco
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: SUBREQUESTS_PER_SWEEP_CALL,
     batchLimit: HARD_DELETE_BATCH_LIMIT,
+    rowBytesPerRound: HARD_DELETE_ROW_BYTES_PER_ROUND,
+    estimateRowBytes: estimateKeyRowBytes,
     fetchBatch: async (limit) => {
       const rows = await run.db.hardDeleteOldDeletedRecords(cutoffMs, limit);
       return { rows, hasMore: rows.length === limit };
@@ -596,6 +699,24 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       nowMs: Date.now(),
       sweep: null,
     };
+    // 轮首心跳（P0-3）：**一进入就先写一次** `cleanup:lastRunAt`，与轮尾那次**共存**，两者语义不同：
+    //   · 这次 = 「本轮**尝试**开始」。**持续** CPU 超限时平台直接终止调用（Free 的 Cron 是 10 ms
+    //     的**平均**预算；偶发越界由平台的 rollover CPU time 吸收，见文件头 P0-3 段），
+    //     顶层 catch 与轮尾落库都不会执行；若只有轮尾那次写，UI 的清理可观测面会**停在旧值上**
+    //     而看起来一切正常 —— 那正是 F11 的原始形态。有了它，哪怕本轮被终止，lastRunAt 也已经
+    //     推进到本轮的起点，「清理到底还在不在跑」在任何时刻都可回答（§9 的「一轮跑不完、
+    //     下轮续跑」是设计行为，这里只是把它变得**可见**）。
+    //   · 轮尾那次 = 「本轮**完成**」（值同为本轮起点 startedAt，见收尾落库处）：它只在跑到收尾时
+    //     执行，失败（D1 抖动）也不会抹掉轮首这次写下的值。
+    // 成本：+1 次 D1 子请求/轮 = 72 次/天（可忽略；本轮的子请求总数仍远低于 SUBREQUEST_BUDGET）。
+    const startedAt = new Date(run.nowMs).toISOString();
+    try {
+      run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);
+      await run.db.setMetaValues({ [CLEANUP_META_KEYS.lastRunAt]: startedAt });
+    } catch (err) {
+      recordFailure(run.failures, 'meta', err);
+    }
+
     // 保留策略：Meta 覆盖优先、env 回落（§2.5 在线可调）。读失败按「未配置」处理并记一条失败 ——
     // 与读游标同一条纪律：诊断面出问题不能把清理整体拖停（此时回落 env/内置默认，等价于改动前的行为）。
     // settings 整份留在外层：除了算生效值，它的**来源**字段还要写进每个阶段的 `reason=`（见 disabledReason）
@@ -611,7 +732,6 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
     }
     const retentionMinutes = settings.retentionMinutes ?? DEFAULT_RETENTION_MINUTES;
     const maxCount = settings.maxSavedHistoryCount ?? DEFAULT_MAX_SAVED_HISTORY_COUNT;
-    const startedAt = new Date(run.nowMs).toISOString();
 
     // 上一轮的游标：读失败不阻断清理（按 0 处理并照常记账/落库）
     try {
@@ -661,6 +781,10 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
 
     // 收尾落库：六个键每轮都写（UI 据此展示进度与失败）。写失败只记日志/返回值 ——
     // 此时已无处落库，且不能把错误抛给调用方。
+    // `lastRunAt` 与轮首心跳写的是**同一个值**（本轮起点 startedAt），但语义是「本轮**完成**」：
+    // 只有跑到这里才说明四个阶段都执行过（或被显式关闭/截断），且游标与 lastError 已一起落库。
+    // 被 CPU 终止的那一轮到不了这里，UI 看到的是轮首心跳（「尝试开始」）——两者的区别在
+    // runCleanup 开头的心跳注释里。
     try {
       run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);
       await run.db.setMetaValues({

@@ -25,9 +25,21 @@ export function textProfileHash(text: string): Promise<string> {
 // ===== File / Image（上游 FileProfile.CombineHash / GetSHA256HashFromFile）=====
 // contentHash = SHA256hex(内容)
 // hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
-export async function fileProfileHash(fileName: string, content: Uint8Array): Promise<string> {
-  const contentHash = await sha256Hex(content);
+//
+// 拆成「内容哈希 → profile 哈希」两步的理由：调用方几乎总是**同时**需要内容字节的 SHA-256
+// （落库的 `transferDataHash`，以及 PUT 路径对客户端声明的核对）。此前 `fileProfileHash`
+// 内部独占那次摘要，调用方只能再算一遍 —— 同一份内容字节被 SHA-256 两遍，而 CPU 是 Workers
+// 的**平均**预算（Free 档 10 ms/调用；平台对偶发越界有 rollover CPU time —— 偶发越界不报错、
+// 只有**持续**越界才终止，见 docs/free-plan-account-facts.md），重复摘要就是白烧预算
+// （见 src/profile.ts 的 PersistedData.transferDataHash）。
+// 传进来的 `contentHash` 不必是大写：`toUpperCase()` 仍在，与旧实现逐字节等价。
+export function fileProfileHashFromContentHash(fileName: string, contentHash: string): Promise<string> {
   return sha256Hex(`${fileName}|${contentHash.toUpperCase()}`);
+}
+
+// 内容字节 → profile 哈希的薄封装（**不要删**：测试与调用方按名字取用，见 test/hash.test.ts）
+export async function fileProfileHash(fileName: string, content: Uint8Array): Promise<string> {
+  return fileProfileHashFromContentHash(fileName, await sha256Hex(content));
 }
 
 // ===== Group（上游 GroupProfile.CaclHashAndSize / CalculateEntriesHashAsync）=====

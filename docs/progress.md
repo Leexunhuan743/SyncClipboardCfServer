@@ -12020,3 +12020,847 @@ PATCH，回显 version/lastModified）再按 `s` 切收藏，两个写撞在同�
   三档探针各自的 `PROBE-*` 记录由探针自己清理（`trashResidual 0` / `finalTotal 706`）。
 - 本轮**没有**覆盖（如实登记，与 §172.6 同）：**真机触屏**（本机无设备，headless 的触屏模拟不能替代）、
   `docs/ui.md` §11.2 的 **6× CPU 降速 TaskDuration 预算**（人工步骤，四个探针脚本都没实现）。
+
+## 177. Free 计划 CPU：写路径同一份 payload 的 SHA-256 遍数 3→1（2026-09-25）
+
+背景：Workers **Free 计划的 CPU 上限是 10 ms/请求**（平台口径见
+<https://developers.cloudflare.com/workers/platform/limits/>，逐入口折算见 `docs/free-plan-audit.md`、
+决策登记为 `docs/design.md` 的 D40）。写路径的 CPU 支配项是**对整份 payload 字节做 SHA-256** ——
+落库要存传输数据文件的哈希（`transferDataHash`），而 profile 哈希又要用**同一份内容**的哈希；
+此前这两处各算一遍，PUT 路径在客户端声明 `transferDataHash` 时还要**再**算一遍。
+
+### 177.1 问题（改动前，逐处带 `文件:行`）
+
+| 端点 | 情形 | 同一份字节被摘要的遍数 | 摘要位置（改动前） |
+|---|---|---|---|
+| `PUT /SyncClipboard.json` | File/Image + 客户端声明 `transferDataHash` | **3** | `profile.ts:297`（声明核对）+ `hash.ts:29`（`fileProfileHash` 内层）+ `profile.ts:164`（`transferDataHash`） |
+| 同上 | File/Image 未声明 | **2** | `hash.ts:29` + `profile.ts:164` |
+| 同上 | Text 大文本（带 data）+ 声明 | **2** | `profile.ts:202`（`textProfileHashOf`）+ `profile.ts:297` |
+| 同上 | Group + 声明 | zip 字节 **2**（另有逐条目哈希，属 §8.3 算法本体，减不掉） | `profile.ts:297` + `profile.ts:188` |
+| `POST /api/history` | File/Image 带 data | **2** | `hash.ts:29` + `profile.ts:629` |
+| 同上 | Text / Group 带 data | 1（本轮未动） | `profile.ts:578` / `profile.ts:656` |
+
+根因是一处**封装泄漏**：`fileProfileHash`（`hash.ts:28-31`）内部独占「内容字节 → 内容哈希」那一次摘要，
+而调用方紧接着还要同一份内容哈希，只能再算一遍。PUT 路径的第三遍来自
+`putSyncProfile` 为核对客户端声明而独立算的那一次（`profile.ts:297`）。
+
+### 177.2 改法（行为逐字节不变）
+
+1. `src/hash.ts`：把公式拆成两步 —— 新增 `fileProfileHashFromContentHash(fileName, contentHash)`；
+   `fileProfileHash` **保留为它的薄封装**（既有导出不删：`test/hash.test.ts`、`test/dto-validation.test.ts`
+   按名字取用）。`toUpperCase()` 留在纯函数里，喂小写 contentHash 也逐字节等价。
+2. `src/profile.ts`：`validateAndPersistData` 增**可选**入参 `contentHash`（调用方已算过就复用，不传则现算，
+   既有 4 参调用方不受影响）；`putSyncProfile` 把「核对客户端声明」那一次摘要的结果往下传（`profile.ts:313-320`）。
+   于是 File/Image 只摘要一次并同时喂给 profile 哈希与 `transferDataHash`（`profile.ts:164-165`、`174`）、
+   Group 复用它做 zip 字节哈希（`profile.ts:199`）、Text 复用它做 profile 哈希（`profile.ts:217`）。
+3. `validateAndPersistWithName`（POST 路径，`profile.ts:637-638`）：File/Image 分支先算一次 `bytesHash`，
+   再 `fileProfileHashFromContentHash(fileName, bytesHash)`。
+4. `src/routes/webdav.ts`：`GET /SyncClipboard.json` 的两个降级出口原为
+   `c.json(JSON.parse(profileDtoToJson(x)))` —— 同一份 DTO **stringify → parse → stringify 三轮**
+   （还要建一棵临时对象树）；改为直接以 `profileDtoToJson()` 的**字面量**为 body（`webdav.ts:94-96`、`109-111`）。
+   `content-type` 逐字保持 Hono `c.json` 写出的 `application/json`（**不带 charset** —— 与同函数 `ok` 出口的
+   `application/json; charset=utf-8` 本就不同；**这次不改它**，改它才是行为变化）。
+
+哈希值、`transferDataHash`、`size`、状态码、响应体字节、错误文案、广播内容全部未变；
+`docs/protocol.md` §10 **没有新增任何差异行**（本次不产生协议差异）。
+
+### 177.3 一次性脚本读数（未入库，跑完即删）
+
+脚本用 `esbuild` 把 `src/*.ts` 打包成 ESM 再在 Node 里跑（本机 Node 24 有全局 `crypto.subtle`），
+「改动前」= `git archive HEAD src` 导出的副本，「改动后」= 工作区；**没有** stash/checkout 任何人的文件。
+
+**（1）可比性**：把 `docs/protocol.md` §8 的三条公式**独立**实现一份（只用 `node:crypto`，不 import 仓库源码），
+与改动后的 `src/hash.ts` 对比 **147 项** —— 7 种内容（空 / ASCII / CJK / emoji 代理对 / 二进制 0x00-0xFF /
+带 NUL+CRLF / 100 KB 伪随机）× 6 种文件名（`report.pdf`、含 `/`、含 `\`、CJK、含公式分隔符 `|`、空名）
+× `fileProfileHash` / `fileProfileHashFromContentHash`（大写与小写 contentHash 各一次），
+外加 Group 的 6 组条目集（含「代理对与 BMP 的 UTF-8 字节序与 UTF-16 码元序**相反**」的一对、
+同名重复条目、空集合、倒序输入）：**147/147 逐字节相同，退出码 0**。
+
+**（2）摘要账本**（同一批夹具；「遍」= 入参长度等于 payload 长度的 `crypto.subtle.digest` 次数）：
+
+| 端点 | 改动前 | 改动后 |
+|---|---|---|
+| PUT File（声明 `transferDataHash`） | 3 | **1** |
+| PUT File（未声明） | 2 | **1** |
+| PUT File→Image 提升（`.png`，声明） | 3 | **1** |
+| PUT Text 大文本（声明） | 2 | **1** |
+| PUT Group（声明） | zip 字节 2 | **1**（逐条目哈希仍在，属 §8.3 本体） |
+| POST File（带 `X-SyncClipboard-Transfer-Data-Hash`） | 2 | **1** |
+| POST File（无头） | 2 | **1** |
+| POST Text / POST Group | 1 | 1（未动） |
+
+两次运行产出的 `hash` / `transferDataHash` / `size` / `text` **逐字段 diff 为空**。
+
+**（3）降级出口的响应字节**：对四种存储值（缺失 / 字面 `null` / 损坏 `[]` / 正常）分别跑改动前后的
+`webdav.ts` 打包件，`status` + 全部响应头 + body 字节（含 sha256）**diff 为空**；
+降级出口实测 `content-type: application/json`（无 charset）、body 分别 140 B / 67 B。
+
+### 177.4 门禁状态：**本轮未跑**（并发编辑），以及未做项
+
+**四条门禁本轮一条都没跑**（`tsc --noEmit`、`eslint`、`node --check` ×4、全量 vitest）：
+本轮改动期间有**另一位工作者在途编辑** `src/cleanup.ts` / `src/db.ts` / `src/ui/*`（`budget-core`），
+对半成品树跑门禁的红绿都不可信（`AGENTS.md` §1 惯例 4 的反面：那是假红的来源）。
+⇒ 「门禁全绿」这一条**本次未验证**，不得当作已通过引用；集成门禁由统一提交者在工作区冻结后跑。
+（改动期间跑过一次 `tsc --noEmit` 得退出码 0，但当时树里已含上述在途改动，故**不作为门禁读数**。）
+
+其余未做/未验证，如实登记：
+
+- **未在真 Workers 上量 CPU**：10 ms 是平台口径，本节量的是「遍数」这一可复现的代理量；
+  `crypto.subtle.digest` 的绝对吞吐随平台实现而变，本机 Node 读数不可外推到 Workers。
+- **Group 的解压与逐条目哈希未动**：`parseGroupZip` 的 inflate 与每条目 `sha256Hex` 是 §8.3 算法本体；
+  `transferDataHash` 也必须对 zip 字节算一次（客户端据此校验），减不掉。
+- **Text 分支的 `new TextDecoder().decode(content).length` 未动**（`profile.ts:153`）：它不是「重复遍数」，
+  且手写计数器要复刻 `TextDecoder` 对孤立代理/非法序列的 U+FFFD 口径，风险大于收益。
+- **`historyListToJson`（`serialization.ts:379-381`）与 `src/multipart.ts` 未动**：前者是 `map().join()`
+  一次 O(总长) 拼接（分页 ≤50 条，无二次方行为）；后者已是零拷贝 `subarray` + 循环外复用编码器 +
+  `indexOf` 首字节扫描（F9 那轮做过），指不出可改的重复拷贝。
+- **读路径本就不对 payload 做 O(n) 哈希**：`GET /api/history/{id}/data`（`routes/history.ts:304-351`）与
+  `GET /file/{name}` 都是流式转发 R2 对象；`/data` 不回填 `transferDataHash` 是既有决定
+  （重算要把对象整包读进内存，代价不成比例）。
+
+## 178. Free 计划 CPU：清理的行字节预算、轮首心跳与首屏 D1 语句数 5→3（2026-09-25）
+
+本轮把 `docs/free-plan-audit.md` 的 P0-3 / P1-3 / P1-4 / P1-5 落成代码。Free 的硬顶是 **10 ms CPU**
+（HTTP 与 Cron 同一档；平台口径与逐入口折算见该审计 §1/§3，决策登记见 `docs/design.md` 的 D40）。
+只碰 4 个文件：`src/cleanup.ts`、`src/db.ts`、`src/ui/query.ts`、`src/ui/routes.ts`。
+
+### 178.1 清理任务的 CPU 纪律（P0-3）
+
+**问题**：`SUBREQUEST_BUDGET`（`cleanup.ts:38`）只约束**子请求数**，整条链路上没有 CPU 维度。
+Cron 的 CPU 同样是 10 ms，超限时平台**直接终止**调用 ⇒ `runCleanup` 的顶层 catch 与
+`src/index.ts` 的 `ctx.waitUntil(...).catch` 都不执行：`[cleanup]` 汇总行不打印、游标与
+`cleanup:lastError` 不落库、`cleanup:lastRunAt` 停在旧值 ⇒ UI 的清理可观测面（F11）
+**看起来一切正常**（那正是 F11 的原始形态）。
+
+**改法 1 —— 轮首心跳**（`cleanup.ts:697-712`）：进入 `runCleanup` 即写一次 `cleanup:lastRunAt`，
+与轮尾那次（`cleanup.ts:776-793`）**共存**、语义不同 —— 轮首 = 「本轮**尝试**开始」、
+轮尾 = 「本轮**完成**」（两者写的是同一个值 = 本轮起点，但只有跑到收尾才执行；轮尾失败也不会抹掉
+轮首的值）。被终止的那一轮到不了轮尾 ⇒ lastRunAt 仍推进到本轮起点，「清理还在不在跑」随时可回答。
+成本 +1 次 D1/轮 = 72 次/天。
+
+**改法 2 —— 单轮工作量按「行字节」收敛**（预算段 `cleanup.ts:52-89`；估算函数 `cleanup.ts:355-375`；
+`drainBatches` `cleanup.ts:378-417`；三处接线 `cleanup.ts:541/560/583`）。
+
+为什么是字节而不是条数：本轮的 CPU 支配项是**字节数**。软删阶段是 `UPDATE … RETURNING *`
+（`db.ts` 的 `softDeleteOldest`），Worker 侧要对它做 ① JSON 反序列化 ② `rowToEntity` 映射
+③ 广播载荷构造（`entityToDtoWire`，含 3 次 `toIso`）—— 三者都与行字节成正比、与条数无关：
+
+| 单批 500 条的数据 | 返回的 JSON | 10 ms 预算下 |
+|---|---|---|
+| 小记录（`Text=''`，夹具行 ≈ 260 B） | 130 KB | ≈ 1 ms，安全 |
+| 4 KB 文本 | 2 MB | ≈ 20–40 ms，**已超** |
+| 1 MiB 内联文本 | 500 MB | 不可能（也远超 128 MB isolate） |
+
+一个常数条数要同时覆盖这三种数据，只能取最小公倍数（≈40 条），代价是把小记录库的清理吞吐砍掉 12 倍
+而**没有任何 CPU 收益**。故条数上限**不动**（`SOFT_DELETE_BATCH_LIMIT = 500` 是对齐上游的批量语义，
+`HARD_DELETE_BATCH_LIMIT = 1000` 是「一次语句 + 一次批量删」的内存界），另加按**实测行字节**动态收敛的
+单轮预算：两个软删阶段各 **256 KiB/轮**、硬删阶段 **256 KiB/轮**。推导：10 ms 先扣掉与记录无关的固定项
+（R2 列举结果反序列化 1 页 ≈ 100 KB ≈ 1 ms、4 次 Meta D1 的 JS 侧开销、框架与抖动）⇒ 留 ~5 ms 给记录
+materialize；按**文本 JSON 反序列化 100 MB/s** 的悲观吞吐折算（V8 原生 `JSON.parse` 常见 200–400 MB/s），
+2.5 ms × 100 MB/s ≈ 256 KiB。于是：260 B 行 ≈ 1000 条/轮（子请求预算先绑在 ~700–740 条/轮，
+与改动前**逐位相同**）、4 KB 行 ≈ 64 条/轮、100 KB 行 ≈ 2–3 条/轮；硬删 71 B/行 ≈ 3700 条/轮
+（常规积压 ≤1000 仍一批跑完）。游标语义未变：候选集单调消耗、下一轮重查（不用 OFFSET）。
+
+两个如实登记的边界：① 预算是**估算**（固定项用常数近似），且**在批与批之间**生效 —— 一批的字节数只有
+取回后才知道，故首批的越界量 ≤ `batchLimit × 单行字节`；② 单条记录自带 1 MiB 内联文本时，任何条数/字节
+组合都挡不住 10 ms 超限（与 P0-1 同源），本轮的兜底是**轮首心跳让终止可见**，不是「保证不超」。
+
+**没有下调那两个条数上限**（与审计建议的字面不同，理由见上）。若将来要改成平坦条数上限，必须同时改
+`test/cleanup-budget.test.ts`（它用真实 `runCleanup` 钉了「软删一轮 500 条」「硬删一轮 900 条」）与
+`docs/protocol.md` §10 的「软删单批 500」那一行。
+
+### 178.2 首屏/统计的 D1 语句数（P1-3）
+
+| 入口 | 改动前 | 改动后 | 少掉的那条 |
+|---|---|---|---|
+| `GET /ui/api/overview` | 5 | **3** | `db.statistics` + 两条 Meta 读合并成一条 |
+| `GET /ui/api/info` | 4 | **2** | 同上 |
+| `GET /ui/api/statistics` | 2 | **1** | `db.statistics` |
+
+- 四个全库计数从 `countByTypeViews` 那条 `GROUP BY Type, IsDeleted, Stared` 里**顺带**算出
+  （`query.ts:76-88` 的 `UiViewCounts` 增 `total/active/deleted/starred`，`:352-387` 累加，
+  `:403-410` 的 `statisticsFromViews` 组装成协议形状）。等价性：`Σc = COUNT(*)`、
+  按 `Stared`/`IsDeleted` 分组求和 = 对应的 `SUM(CASE …)`，零行时四者同为 0。
+- **协议端点未受影响**：`db.statistics`（`db.ts:468`）一行未改，唯一调用方仍是 `src/routes/history.ts`
+  （`/api/history/statistics`）⇒ 5 个字段与 `totalFileSizeMB` 口径逐位不变；`db.ts:441-449` 的注释改成
+  「界面不再调它」并写明等价性的出处。
+- 变更信号的后一半改走**单列** `MAX(LastModified)`（`query.ts:438`，走 `idx_h_user_modify`，不用回表）；
+  `overview` 的行数直接用 `Σc`。`/ui/api/poll` 仍是单语句 `readChangeMarker`（每 10 s 一次，
+  两个值必须一条语句取回）。取舍：`overview` 的 `(count, lastModified)` 现在来自两条并发语句，
+  写入落在两者之间时这一对可能不自洽 —— 只会**多触发**一次前端静默刷新，不会漏变更
+  （漏变更那条路是 poll，未动）。
+- Meta 键合并：`cleanup.ts:181` 导出 `CLEANUP_AND_SETTINGS_META_KEYS`（清理六键 + 保留策略两键），
+  解析口径抽成纯函数 `retentionSettingsFromMeta`（`cleanup.ts:233`），`readRetentionSettings`
+  （`cleanup.ts:257`）成为它的薄封装 —— 界面与清理仍读**同一份**生效值，不存在两套解析。
+
+### 178.3 列表每行的 `JSON.parse(FilePaths)`（P1-5）
+
+`rowToEntity`（`db.ts:57-73`）对 `FilePaths` 加两个短路：`'[]'` 与 `''` 不再进 `JSON.parse`。
+等价性逐位成立：`JSON.parse('[]')` 得到空数组（length 0）；`JSON.parse('')` 抛错后原路径同样回落空数组。
+其余取值（含畸形 `'{}'` / `'null'` / `'x'`）**不进短路**、仍按原路径解析并原样回落 ⇒ 所有调用方
+（协议分页、同名候选、`readBatchMeta`、UI 列表）拿到的实体逐字段不变，`entityToDto` 的
+`hasData = filePaths.length > 0 || transferDataFile !== ''` 亦然。
+
+未采用「SQL 侧算 `HasData`」（`json_valid` + `json_type='array'` + `json_array_length>0` 在语义上确实
+与 JS 等价）：仓库内零处使用 `json_*` 函数，**D1 是否支持 JSON1 本轮无法验证**，而一个不存在的函数就是
+列表端点 500 ⇒ 这种未验证的 SQL 变更不该在「不跑测试」的一轮里落地。故非 `'[]'` 的行
+（实际即 Group 记录）仍逐行解析。
+
+### 178.4 `GET /file/{name}` 的候选扇出上限（P1-4）
+
+`src/routes/webdav.ts` 对**每条**同名候选各做一次 R2 `get`，候选数无界 ⇒ 极端数据下超 1,000 次
+「到 Cloudflare 服务」的子请求。上限加在**扇出的源头**：`db.ts:169` 的
+`MAX_TRANSFER_FILE_CANDIDATES = 32` + `listTransferFileCandidates` 的 SQL `LIMIT`（`db.ts:361-375`）；
+超限时少返回候选 ⇒ 路由找不到存在的对象 ⇒ 404（与「文件缺失」同一出口）。
+`src/routes/webdav.ts` **未改动**（本轮该文件由另一位工作者在改）。
+
+⚠️ **前提：预筛必须与调用方那道 JS 精确过滤等价**，否则 `LIMIT` 会被伪候选吃满、把真候选挤出候选集
+（数据在、下载却 404 —— 正确性回退，不是性能取舍）。原先的预筛只做「后缀相等」，比 JS 的
+`basename(x) === fileName` **更宽**：`x = 'foo-c.pdf'`、`fileName = 'c.pdf'` 时后缀匹配成立，
+而 `basename` 是 `'foo-c.pdf'`。现在的判据：
+
+```sql
+WHERE UserId = ?1
+  AND instr(?2, '/') = 0
+  AND (TransferDataFile = ?2
+       OR (substr(TransferDataFile, -length(?2)) = ?2
+           AND (length(TransferDataFile) = length(?2)
+                OR substr(TransferDataFile, -length(?2) - 1, 1) = '/')))
+ORDER BY LastAccessed DESC
+LIMIT ?3
+```
+
+**实测（一次性脚本，跑完即删、未入库）**：用 `node:sqlite`（与测试夹具同一驱动）把 35 个
+`TransferDataFile` 取值 × 44 个 `fileName` 逐例对比 SQL 预筛与 JS 过滤的结果集 —— **0 处不一致**
+（覆盖 `'dir/x.bin'`、`'/x.bin'`、`'dir/sub/x.bin'`、`'foo-c.pdf'` vs `'c.pdf'`、空串、`'dir/'`、
+反斜杠、emoji 代理对、大小写对照）。另做 LIMIT 判别性场景：40 条「后缀匹配但 `basename` 不命中」的
+伪候选，`LastAccessed` 全部比唯一真候选（`dir/c.pdf`）新 ⇒ `ORDER BY acc DESC LIMIT 3` 仍返回真候选
+（改前会被伪候选挤出）。
+
+**现有断言静态复核**：`test/fixes.test.ts` 的「600 条记录里命中 `payload-599.bin`」（同长度诱饵
+`payload-598.bin` 被排除）与「`same.bin` → `['NEW','OLD']`」、`test/fix-regressions.test.ts` 的三处
+`/file/{name}`（同名两条记录、软删后仍命中、≥49 字节名字 → 404）**均不受影响**；这些用例的候选数 ≤ 2
+⇒ 上限不触发。
+
+**协议差异**：这是对上游的**有意偏离**（上游逐条 `File.Exists`、无子请求配额），
+`docs/protocol.md` §10 的新增行由统一提交者补（本轮不改文档登记表）。
+
+### 178.5 门禁状态：本轮**未运行任何测试**
+
+原因：本轮改动期间工作区有**并发编辑**（另有工作者在改 `src/hash.ts` / `src/profile.ts` /
+`src/routes/webdav.ts` / `docs/**`），对半成品树跑门禁的红绿都不可信（`AGENTS.md` §1 惯例 4 的反面）。
+`tsc --noEmit`、`eslint`、`node --check`、全量 vitest **一条都没跑**，也未提交、未 push ⇒
+「门禁全绿」本次**未验证**，不得当作已通过引用；集成门禁由统一的集成窗口（工作区冻结后）跑。
+唯一跑过的是 §178.4 那个一次性探针（`node:sqlite`，仓库外的临时文件，跑完即删）。
+
+未做项：审计 P1-2（把 `storage.totalHistorySize()` 的全桶列举结果落 Meta 缓存）**决定不做** ——
+它引入 ≤20 分钟的字节数陈旧窗口（用户可见），而现有测试的字节断言走的是协议端点、发现不了它，
+收益与代价不匹配。
+
+## 179. V1 探针 RETRY 行的 390 档现象：对照 master 判定为既有、非本分支引入（2026-09-25）
+
+`perf/free-plan` 分支跑发布门禁时，V1 探针的 `RETRY` 行在 **390×844** 与 **1440×900** 两档读数不同。
+本轮用 `git worktree` 拉了 master 的对照工作树做定性：**master 上同样复现 ⇒ 既有现象，
+不是这三笔改动（`3a3597e` / `2f3c17c` / `80b6ffa`）引入的**。
+
+### 179.1 现象
+
+`test/manual/probe-ui-v1.mjs` 的 `A5 · 失败路径的「重试」`（脚本第 2745–2794 行）用
+`Network.emulateNetworkConditions({ offline: true })` 制造一次列表请求失败，恢复网络后点提示条里的
+「重试」，读 `#notice` 是否收起（`staleBanner`）与提示条是否清空（`toasts`）。
+
+**390×844 档**（本分支两次运行逐字相同，`…` 处是两侧一致的字段）：
+
+```
+RETRY    {"rowsBefore":50,"hasAction":true,"actionLabel":"重试","toastText":"已下载 Text-7DBB32C9.txt（16 个字符） | 无法读取历史记录：Failed to fetch重试 | 无法读取历史记录：Failed to fetch重试",…} → {"rowsAfter":50,"staleBanner":true,"toasts":"无法读取历史记录：Failed to fetch重试"}
+```
+
+**1440×900 档**：
+
+```
+RETRY    {"rowsBefore":50,"hasAction":true,"actionLabel":"重试","toastText":"已下载 Text-7DBB32C9.txt（16 个字符） | 无法读取历史记录：Failed to fetch重试",…} → {"rowsAfter":50,"staleBanner":false,"toasts":""}
+```
+
+两处差异：① 断网窗口里窄档出现了**两条**失败提示条（宽档一条）；② 点「重试」后窄档 `staleBanner`
+仍为 `true`、失败提示条未消，宽档已复位。
+
+⚠️ **这一行只 `console.log`、没有任何断言**（全文件仅第 2794 行一处打印；`docs/ui.md` 里搜不到
+`RETRY` 判据）⇒ 它**不进** `auditFindings`、不影响探针退出码。本轮两档探针都是 `findings=0` /
+退出码 0 / `CONSOLE ERRORS none` / `FAILED REQUESTS none`，故它不是门禁红项，只是一条**未被判定**的
+观察。
+
+### 179.2 对照实验（master 工作树）
+
+`master` 当时 = `a5a1248` = 本分支起点 ⇒ 天然是「改动前」快照。
+
+```bash
+git worktree add ../SyncClipboardCfServer-ctl-master master
+# 环境：复制 .dev.vars（未打印内容）；复制 .wrangler/state（D1 + R2 + DO）以求数据同源；
+# node_modules 不重复安装，用目录联接指向主仓库：
+#   powershell -NoProfile -Command "New-Item -ItemType Junction -Path <ctl>\node_modules -Target <main>\node_modules"
+node node_modules/wrangler/bin/wrangler.js dev --test-scheduled --port 8788 --ip 127.0.0.1
+# 探针的服务地址是 --base（默认 http://127.0.0.1:8787）⇒ 对照侧不必占 8787：
+node test/manual/probe-ui-v1.mjs --base http://127.0.0.1:8788 --port 9421 --width 390 --height 844
+node test/manual/probe-ui-v1.mjs --base http://127.0.0.1:8788 --port 9422 --width 390 --height 844
+```
+
+**四份 390 档读数并排**（两侧跑的是**同一个探针文件** —— 本轮未改 `test/**`）：
+
+| 运行 | 代码 | 退出码 | findings | 断网窗口内失败提示条 | 重试后 `staleBanner` | 重试后提示条 |
+|---|---|---|---|---|---|---|
+| 本分支 #1（CDP 9412） | `perf/free-plan` | 0 | 0 | 2 条 | `true` | 1 条未消 |
+| 本分支 #2（CDP 9413） | `perf/free-plan` | 0 | 0 | 2 条 | `true` | 1 条未消 |
+| master #1（CDP 9421） | `a5a1248` | 0 | 0 | 2 条 | `true` | 1 条未消 |
+| master #2（CDP 9422） | `a5a1248` | 0 | 0 | 2 条 | `true` | 1 条未消 |
+
+四份的 `RETRY` 行**逐字节相同**。两次对照运行之间的整份输出，在归一化（`PROBE-*` 标记、`t`/`ms` 计时）
+后**无任何差异** ⇒ 对照侧自身是确定性的，不是偶发。
+
+### 179.3 判定与如实登记的边界
+
+- **判定：既有现象，非本分支引入。** 依据是四份 390 档读数逐字节相同，且两侧代码的差异只在
+  `src/**` 与 `docs/**`（服务端响应与视口宽度无关）。
+- **数据差异（如实登记）**：对照工作树的 D1 是主仓库 `.wrangler/state` 在 14:57 的副本，而本分支那两次
+  探针跑在 14:3x —— 中间全量套件往主库写了记录，故两侧活跃记录数是 **730 vs 724**（趋势图 `ariaLabel`
+  随之 12973 vs 12825）。把这两处计数归一化后，两侧整份输出**只剩 `PERF` 的计时标记**不同
+  （`rAF1` 与 `DCL` 的先后），`STATE` 的其余差异只是第 31 行落到了另一条记录上。`RETRY` 场景不读任何
+  计数，故该差异不影响本判定。
+- **未深究根因、未修**（不在本轮范围，且没有任何断言钉它）。本轮**未查**的候选：那第二条失败提示条
+  从哪来、「重试」在窄档为何未复位（窄档工具栏/提示条宿主是否不同、`retry` 是否被连点两次、
+  1800 ms 的等待窗口是否够 —— 都只是候选，**没有一条被验证**）。要修先给这条判据补一个断言。
+- **收尾**：对照工作树已 `git worktree remove`（`node_modules` 联接与 `.wrangler/state` 随目录一并删除），
+  主仓库 `git status` 干净、`git log` 只多本节这一笔。未 push。
+
+## 180. 账户事实核查：Free 前提被推翻一条（「有效上传上限 3–10 MiB」），文档与注释按实测改写（2026-09-25）
+
+用户直接质疑本分支的前提（原话：「你关于 cf 的免费是不是有什么误解？你去看我的账户，都查一遍」）⇒
+本轮先做了一次**只读的账户事实核查**（不部署、不起 dev、不写 D1/R2/DO、不跑门禁；核查阶段零文件改动），
+再按核查结果纠正文档。账户事实归档为新增的
+[`docs/free-plan-account-facts.md`](free-plan-account-facts.md)（配额实测、权限边界、查询原文、附带发现）。
+
+### 180.1 哪条结论错了、被什么证据推翻
+
+**错的那条**：`docs/free-plan-audit.md` 的「一句话结论」与 D40 ① ——「Free 上 10 ms CPU 是硬顶 ⇒
+有效上传上限约 3–10 MiB，超过会以 `error 1102` 失败」，以及由此推出的「部署到 Free 时应把
+`MAX_REQUEST_BODY_BYTES` 调到 `2 MiB`」。
+
+**推翻它的证据（三重对齐；取数 2026-09-25 07:19–07:31 UTC）**：
+
+| 证据面 | 取值 |
+|---|---|
+| D1（服务端 UTC 时间戳） | `id=1317 type=Group Size=20.361 MiB CreateTime=2026-09-24T15:17:54.529Z`（同批另有 6 条 9.7–20.0 MiB 的 Group） |
+| R2（真实字节数） | `16,247,298 B (15.495 MiB) history/Group_DE74C3D1…/File_2026-09-24_15-18-26_e2i4efql.dnk.zip` |
+| GraphQL Analytics（CPU 峰值小时） | `2026-09-24T15:00Z P999 = 633,571 µs`（`err=0`）；`16:00Z P999 = 712,024 µs`（对应 16:37Z 那条 16.56 MiB） |
+
+即：**20.36 MiB 的 Group 载荷 / 15.5 MiB 的 zip 请求体真实落库成功，单次调用 CPU 达 633 / 712 ms，
+30 天内资源超限 0 次**（账号级 11 个 Worker、约 10.7 万次请求，`exceededResources` 0 次）。
+
+**根因是漏了一条官方机制**：**rollover CPU time** —— 官方 metrics 页原文「更高的分位可能看起来超过
+CPU 时间上限而不产生调用错误」，limits 页也写「每个 isolate 对偶发越界有内建余量」⇒ 10 ms 是**平均**
+预算、不是单次硬顶，只有**持续**越界才终止。
+
+**账户计划仍未判定**（本机 wrangler OAuth 缺 `billing:read`，`GET /accounts/{id}/subscriptions` → 403；
+补法见 `free-plan-account-facts.md` §2.1）。但有一条**与计划无关的两难论证**：若账户是 Free ⇒ 20.36 MiB
+上传在 Free 上成功即推翻该结论；若账户是 Paid ⇒ 整条 Free 前提不成立。**两种情形下结论都错**，
+故本轮改写不需要先判定计划。
+
+### 180.2 改了什么
+
+| 路径 | 改动 |
+|---|---|
+| `docs/free-plan-account-facts.md` | **新增**：§1 账户/资源清单、§2 计划判定与两难论证、§3 实测运行事实、§4 查询原文与「查不到的项」、§5 附带发现、§6 对既有文档的影响 |
+| `README.md` | ①「10 ms CPU 才是硬顶」→「平均预算 + rollover（偶发越界不报错、持续才终止）」；② 删「有效上传上限约 3–10 MiB／建议先设 `2 MiB`／超限以 `error 1102` 结束」→ 实测口径 + **不要调小**；③「上传大小与并发内存」⚠️ 行同上；④「10 万/天 ≈ 5 台」→ 约 **4 台**（实测单日 24,212 次）；⑤ 文档清单补 `free-plan-account-facts.md` |
+| `docs/design.md` | D40 标题与 ①（不调小 + 标注被推翻）与「代价与影响」Free 段；§7.1 的 CPU 表格行 + 「Free 上先撞的是第三条」整段（补 rollover 与 633/712 ms 实测）；§9「10 ms CPU 的硬顶下」→ 平均预算；§13 两条风险行（单请求体行、清理行，后者补 cron 实测）；§4 目录树补一行 |
+| `docs/free-plan-audit.md` | **不重写原分析**：开头「一句话结论」后加 **修订 r4** 说明（写明被推翻、指向 §6.1 与本档案）；§6 后新增 **§6.1 实测回填**表（M1/M3/M6/M7/M9 的实测值，并列出仍未测的 M2/M4/M5/M8）；§1.1 的 **CFG-1** 行改为精确表述（「只能配 Paid」是过度引申，不影响「不要设」的结论） |
+| `src/cleanup.ts` | **仅注释**：文件头 P0-3 段与「CPU 预算」段补 rollover 说明；轮首心跳处注释同改。**常量一字未动** |
+| `docs/progress.md` / `docs/progress-index.md` | 本节 |
+
+### 180.3 刻意没改的（以及为什么）
+
+- **`MAX_REQUEST_BODY_BYTES` 保持 48 MiB**（`src/requestLimits.ts:10`）：实测已成功承载 15.5 MiB 请求体，
+  调到 `2 MiB` 只会拒掉真实同步。线上部署态的 var 也是 50331648，**无漂移**。
+- **`SOFT_DELETE_ROW_BYTES_PER_ROUND` / `HARD_DELETE_ROW_BYTES_PER_ROUND` 保持 256 KiB**：该预算按
+  CPU 安全上限取，**保守但无害** —— 实测当前库仅 293 行、cron 264/264 全成功、单轮 CPU 均值 7.46 ms
+  （峰值 19.5 ms），它**从未成为约束**；没有实测依据支持放宽，故不动。
+- **`wrangler.toml` 保持无 `[limits]`**：设 `cpu_ms` 只会更早失败，不会抬高上限。
+- **`docs/free-plan-audit.md` §3/§5 正文里的「必然超 10 ms」「3–10 MiB」原样保留**：那是带日期的静态
+  推断产物，本轮只在其上加了 r4 修订说明与 §6.1 实测回填，**不重写历史**。
+- **不在本轮允许改动的 6 个路径内、故只登记未改**：`docs/protocol.md:481` 与
+  `docs/backend-gaps.md:73/186/209` 仍写着「Free 的 Cron 与 HTTP 同为 10 ms CPU」「真正的约束是免费档
+  10ms CPU」这类同一前提的余波表述（`docs/backend-gaps.md` 的用法是「导出必须流式」的论据，不是本次
+  被推翻的那条上限结论）。**未改**，留待后续一轮统一订正。
+
+### 180.4 门禁
+
+**未跑任何门禁**（用户明确指示；且本轮除 `src/cleanup.ts` 的注释外全为文档）。
+`docs/progress.md` ↔ `docs/progress-index.md` 的一致性用**人工逐字比对**（两处标题逐字核对）代替
+`test/docs.test.ts` 的守卫；`README.md`/`docs/design.md` 里被守卫盯着的「N 个套件」「共 N 个资源」
+两类数字**本轮未触碰**。
+
+### 180.5 范围外余波收敛：同一前提的 5 处措辞已对齐
+
+§180.3 里「不在本轮允许改动的路径内、故只登记未改」的那批余波（`docs/protocol.md:481` 与
+`docs/backend-gaps.md:73/186/209`），连同当时未列出的 `src/hash.ts` 注释与
+`docs/ui-v2-design.md:300/579`，本轮统一改写：把「Free 的 Cron 与 HTTP 同为 **10 ms CPU**」
+「免费档 **10 ms CPU** 约束下」这类说法，换成 §180.1 的口径 —— **10 ms 是平均预算**，
+平台有 **rollover CPU time**（偶发越界不报错、只有**持续**越界才终止）。
+
+**只改措辞，工程结论一字不动**：这几处原本支持的判断（导出必须全程流式、不得先聚合再压缩、
+清理按「子请求 + 行字节」双重预算收敛、避免对同一份 payload 重复 SHA-256）**依然成立**，
+本轮不因它们改动任何设计、预算或常量。逐处处置：
+
+| 路径 | 处置 |
+|---|---|
+| `src/hash.ts:31-34`（**仅注释**） | 「Workers Free 计划只有 10ms CPU/请求」→「CPU 是 Workers 的**平均**预算（Free 档 10 ms/调用；rollover…）」；**未动任何代码行** |
+| `docs/protocol.md:481`（§10 保留/清理行） | 「Free 的 Cron 与 HTTP 同为 **10 ms CPU**」→「Cron 与 HTTP 共用同一档 **10 ms CPU 平均预算**（偶发越界由 rollover 吸收…）」 |
+| `docs/backend-gaps.md:73`（§2.8） | 「免费档 **10 ms CPU / 50 子请求**约束下」→「CPU 是**平均**预算（…）⇒」，并**删去**「50 子请求」这个已被 §7.5 订正过的旧口径（内部服务上限是 1,000，保留它等于把一个已知错的数字再写一遍） |
+| `docs/backend-gaps.md:186`（§7.5 订正记录） | 订正栏的「真正的约束是免费档 10ms CPU」→「CPU 预算（10 ms/**调用**，且是**平均**预算）」，并注明口径出处；左栏的原表述按本文件「订正可追溯、不静默改写」的惯例**原样保留** |
+| `docs/backend-gaps.md:209`（§8 的 §2.8 行） | 同上措辞对齐 |
+| `docs/ui-v2-design.md:300`（N5） | 「免费档 10ms CPU / 50 子请求约束下不得先聚合再压缩」→「CPU 是**平均**预算（…）⇒ 不得先聚合再压缩」，同样删去旧口径 |
+| `docs/ui-v2-design.md:579`（§12.6） | 「免费档 10ms CPU 约束下必须全程流式」→ 同上口径 |
+
+**刻意未改**（都是带日期的历史记录，本仓库的惯例是不静默改写，改它们等于伪造当时的推断）：
+`docs/progress.md` 第 12123 行（§178 开头的「Free 的硬顶是 **10 ms CPU**」）、第 1798 行（§36 段内的
+§2.8 行）、第 1859 行（同段的订正记录）；`docs/free-plan-audit.md` §3/§5 的静态推断正文（§180.3 已明确
+保留，只加 r4 说明与 §6.1 实测回填）；`docs/free-plan-account-facts.md` 中作为「被推翻的那条」被引用的
+原话（引用处本就正确）。
+
+**本轮未跑任何门禁**（用户明确指示；除 `src/hash.ts` 一处注释外全为文档），
+`docs/progress.md` ↔ `docs/progress-index.md` 的一致性同样用**人工逐字比对**代替守卫：
+正文全部 `## ` 标题（trim、剔除「目录」）与索引全部 `- ` 行仍逐条相等（180/180）——
+本节只加 `### 180.5` 这一层小标题，**未动任何 `##` 标题**。
+## 181. 普通 class（不 extends DurableObject）在 Hibernation API 下按名分派 handler：本地 miniflare 实测确认（2026-09-25）
+
+`docs/do-hibernation-plan.md` §4.2① 登记的那条未知，本轮用**仓库外一次性探针**在**本地 miniflare**上
+测掉了（非云端、无需凭据、不部署、不取数）。结论：**普通 class 同样被按名分派**，DO Hibernation 改造
+不需要动类声明。
+
+### 181.1 未解决的问题
+
+官方文档与 API 参考里**所有** hibernation 示例都写 `extends DurableObject`，但**没有一句**说
+「不继承就不分派 handler」；而本仓库的 Hub 是**普通 class** —— `src/durable/SyncClipboardHub.ts:101` 的
+`export class SyncClipboardHub {`，构造函数签名 `(state: DurableObjectState, env: Bindings)`（`:114`），
+自持 `this.state`。若运行期**必须**继承，`docs/do-hibernation-plan.md` §8 的 P1 清单就得多一项
+「改类声明 + `super(ctx, env)` + 对齐 `this.state` 与基类 `ctx`」；若不必须，这项可以整条划掉。
+
+### 181.2 方法（两档 + 一对照）
+
+仓库外探针 `%TEMP%/plain-class-do-probe/`，**两档都**用 `this.state.acceptWebSocket(server)`
+（与生产一致的调用形态），另设一档 `extends DurableObject` 作对照（证明脚手架本身跑得通）：
+
+| 路由 | 类 | 写法 |
+|---|---|---|
+| `/plain` | `PlainHub` | **普通 class**：`constructor(state, env)` + `this.state`（实验组） |
+| `/ext` | `ExtHub` | `extends DurableObject` + `this.ctx`（**对照**） |
+
+两者都定义 `fetch`（`new WebSocketPair()` → `acceptWebSocket` → 101 响应）与
+`webSocketMessage` / `webSocketClose` / `webSocketError` 三个 handler。
+
+复现：
+
+```
+cd %TEMP%/plain-class-do-probe
+npx wrangler dev --port 8899          # 显式端口，避免与其它本地服务撞
+# 另一个终端：
+node ws-client.mjs plain 8899 5000    # 连 /plain、发一条 'hello'、等 5 s（超时以退出码 2 结束）
+node ws-client.mjs ext   8899 5000    # 对照
+```
+
+客户端 `ws-client.mjs` 连上后发一条文本帧 `hello`，5 s 内收到帧即判通过。
+
+### 181.3 版本与读数
+
+```
+wrangler            4.131.2            （与仓库 package.json 的 ^4.131.2 同档）
+miniflare           5.20260911.1-alpha
+探针 compatibility_date = "2025-09-01" （与仓库 wrangler.toml:3 同档）
+```
+
+客户端读数：
+
+```
+[client] plain: FRAME "PLAIN_HANDLER_OK"     ← 3 次全部收到，无超时
+[client] ext:   FRAME "EXT_HANDLER_OK"       ← 对照组通过
+```
+
+本地日志（原文摘录，实验组）：
+
+```
+[plain] constructor ran
+[plain] acceptWebSocket ok, sockets=1
+[plain] webSocketMessage "hello"
+[plain] webSocketClose code=1005
+```
+
+⇒ `webSocketMessage` 与 `webSocketClose` **都到达了普通 class 的实例方法**（后者由客户端 `ws.close()`
+不带 code 触发，故 `code=1005`）⇒ 按名分派成立，**类声明不需要改**。
+
+### 181.4 覆盖边界（不得越读）
+
+- **`webSocketError` 未验证**：探针里定义了它，但本轮**没有触发**（未构造出非断开类错误）。
+  它走的是同一条按名解析路径，风险低，但**不得写成已验证**。
+- **本地不验证 hibernation 本身**：miniflare 是否真让对象进入 hibernated、duration 是否因此停计费，
+  本实验**答不了** —— 那是云端 Analytics 的事，见 `docs/do-hibernation-plan.md` §4.1 的四臂对照。
+  另注：官方「本地开发不 hibernate」那句是**按版本门控**的旧说明，不构成对本实验结论的反驳。
+- 单次本地实验、单一 wrangler/miniflare 版本档；云端同档 `compatibility_date` 下的行为未另行验证。
+
+### 181.5 对文档的影响
+
+| 路径 | 改动 |
+|---|---|
+| `docs/do-hibernation-plan.md` §4.2① | 从「未明确」改为**已实测**（附方法/版本/读数/覆盖边界），并加「§4.2① 的本地实测」小节 |
+| `docs/do-hibernation-plan.md` §8.1 | 新增 **#15**：类声明与构造函数**不需要改动**；只留一句兜底（若将来被推翻，改 `extends DurableObject` + `super(ctx, env)`） |
+| `docs/progress.md` / `docs/progress-index.md` | 本节 |
+
+### 181.6 门禁
+
+**未跑任何门禁**（用户指示）。`docs/progress.md` ↔ `docs/progress-index.md` 的一致性用**人工逐字比对**
+代替 `test/docs.test.ts` 的守卫：正文全部 `## ` 标题（trim、剔除「目录」）与索引全部 `- ` 行逐条相等
+（**181/181**）。
+
+## 182. 四臂 DO hibernation 实验：方法与环境事实已验证、**四臂数字未取得**（凭据窗口用尽）（2026-09-25）
+
+### 182.1 本节要解决什么（以及**没有**解决什么）
+
+`docs/do-hibernation-plan.md` §4.1 的四臂对照要在**云端**回答三个问题：
+
+| 臂 | 路径 | 类 | 构造要点 |
+|---|---|---|---|
+| A | `/a` | `HibernatingAlarm` | `ctx.acceptWebSocket` + 15 s alarm ping |
+| B | `/b` | `StandardAlarm` | `server.accept()` + 同款 15 s alarm（**生产现状形态的对照**） |
+| C | `/c` | `HibernatingIdle` | `acceptWebSocket`、无 alarm、WS 保持连接 |
+| D | `/d` | `HibernatingSse` | 无 WS、无 alarm，仅一条**悬着的流式响应** |
+
+- **`B ÷ A`**：hibernation 到底省多少（**主问题**）；
+- **`A vs C`**：那条 15 s alarm 是否阻止 hibernate（裁定官方文档自相矛盾处）；
+- **`D vs C`**：一条悬着的流式响应是否**单独**就让 duration 满额（决定 P1 的收益上限）。
+
+⚠️ **四臂数字本次未取得**（原因见 §182.4）⇒ **本节不含 hibernation 收益的任何结论**。
+本节只记录：方法（已干跑验证）、环境事实、额度结算、两条未采信观察、遗留物、已知限制、下一步。
+
+### 182.2 方法已验证（30 秒窗口干跑）
+
+四臂并行（四个**独立 DO 命名空间**，指标按 `namespaceId` 分行 ⇒ 互不污染），驱动由
+`%TEMP%/do-hibernation-probe/run-parallel.mjs` 编排：生产闸门 → t0 基线 → 四驱动**同时启动**
+→ t≈5 min 采样 S1 → 驱动停止后立刻采样 S2 → settle 5 min 后采样 S3（S2→S3 仍爬升 > 2 GB-s 则补 S4）。
+
+干跑（窗口 30 s）实测：
+
+- 四驱动**同时启动**、各自保持**整整 30 s**（exit 0）；
+- D 的 curl：**exit 28** + **HTTP 200** + 首字节 **0.45 s** + 正文 `: connected`（**1 帧**）；
+- A 收到 **1** 条 ping、B 收到 **2** 条、C 收到 **0** 条（C 无 alarm，符合构造）；
+- **聚合延迟 > 30 s**：该窗口四臂的指标 delta **全是 0.000**（`t0 = S1 = S2 = S3`）。
+
+⇒ 窗口下限由聚合延迟决定（**10 分钟是安全值**）；且**单点 delta 会被延迟吃掉**，判据必须是
+**斜率 + 多次采样**：`速率 = (S2 − S1) ÷ 两读数之间实际秒数` —— 对延迟的**常数偏移免疫**。
+
+### 182.3 环境事实（4 条，逐条实测）
+
+1. **必须经代理，而 Node 默认不用代理**：本机出网必须走 `HTTP(S)_PROXY=127.0.0.1:7897`；
+   `curl` 走代理正常，但 **Node 的 `fetch`/`WebSocket` 默认忽略代理环境变量**
+   （`NODE_USE_ENV_PROXY` 未设）⇒ 直连 `*.workers.dev` 全部失败：WS 握手 **10.7 s 超时 + code 1006**，
+   裸 `node:tls` 连 **TLS 握手都完不成（12 秒零字节、`secureConnect` 未触发）**。
+   **解法：给 Node 进程加 `NODE_USE_ENV_PROXY=1`**（实测生效：15 s alarm ping 准点收到）。
+2. **`process.exit()` 紧跟 `fetch` ⇒ Windows libuv 断言崩溃**：
+   `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94`，
+   退出码 **`0xC0000409`（3221226505）**。`preflight.mjs` 因此把「**VERDICT GO**」误读成「闸门失败」
+   （编排层按退出码判闸门 ⇒ 误报 ABORT，实际判定是 GO、余量 1,977.5 GB-s）。
+   修法两层：① `process.exitCode = …` + **延后 1 秒退出**（`drive.mjs` 早有 1.5 s 延迟，故从未崩）；
+   ② **闸门判据改读 `VERDICT` 行**（**语义输出优先于退出码**，退出码只作辅助）。
+3. **curl 退出码语义**（D 臂驱动的核心判据之一）：**28** = 到 `-m` 上限时连接仍在 ⇒ **服务端一直没结束响应**；
+   **18** = 传输中途结束 ⇒ **服务端结束了响应体** ⇒ DO 很可能已 hibernate；`0` = 正常读完。
+4. **凭据窗口 ~1 小时，且无法自续**：`npx wrangler login` 发的 access token **只活约 1 小时**，
+   而登录取回的 refresh token 在本机**一直报 `invalid_grant`**（两次都是）⇒ 我**无法自行续期**；
+   每次实验必须**落在窗口内**跑完。**API Token 无此问题**（已给 `auth.mjs` 加
+   `CF_PROBE_TOKEN_FILE` 支持：`env` → 文件（默认 `%TEMP%/cf-token.txt`，只读首行/BOM/空白）→ OAuth）。
+
+### 182.4 为什么缺数字（如实）
+
+凭据于 **2026-09-25T09:52:06Z** 过期（09:48 还成功读过基线，09:52 起全部 API 调用报 `invalid_grant`）。
+此前的时间花在三件事上：**修探针自身的 bug**（见 §182.8 第 5 条）、**干跑验证管线**、
+**串行跑的误报中止排查**（见 §182.3 第 2 条）⇒ **窗口用尽**。
+**这不是「实验失败」，而是「实验未完成、且已为下一次省掉全部准备时间」**：
+探针 Worker、四臂驱动、编排、取数、闸门、收尾脚本都已就绪并自检过。
+
+### 182.5 额度结算（实测读数）
+
+| 项 | GB-s | 说明 |
+|---|---|---|
+| smoke test（08:58–09:02） | ≈15.4 | A 0.059 / B 3.756 / C 0.014 / D 11.546 |
+| 串行跑中止（~09:22–09:40） | ≈7.8 | A **+0.180**、B +7.624、C 0、D 0 |
+| 干跑（30 s 窗口，09:49） | ≈8 | B≈3.8、D≈3.8、A/C≈0 |
+| **合计** | **≈32** | 生产闸门余量当时 ≈1,977 GB-s ⇒ 远未逼近 |
+
+**生产未受影响**（对照读数）：2026-09-25 **09:19Z** 当天已用 **4,211.72 GB-s**、
+速率 **0.12729 GB-s/s（满额的 99.4%）**、逐小时稳定 **≈460 GB-s**
+⇒ 生产 DO 仍按满额计费、量级正常，未被实验扰动。
+
+### 182.6 两条「未采信」观察（**不得当结论引用**）
+
+1. A 臂**串行试跑**约 18 分钟只花 **0.180 GB-s**（满额应 ≈138 GB-s ⇒ **≈0.13%**），
+   该窗口 `activeTime` 仅 **2 秒**。
+2. B 的 **+7.624 GB-s** 更可能是 **smoke test 延迟到账**（该时段只有 `/a` 被动过）。
+
+**两条都不满足「完整 10 分钟保持 + 斜率采样」判据**，故标为**未采信、仅登记**。
+它们与「标准 WS API 永不可 hibernate」的预期**一致**，但**一致性 ≠ 证据**。
+
+### 182.7 遗留物与处置义务
+
+探针 Worker **`do-hibernation-probe`** 与四个 DO 命名空间（`HibernatingAlarm` / `StandardAlarm` /
+`HibernatingIdle` / `HibernatingSse`）**仍在账户上**。已用公开端点止损（不需要凭据）：
+四臂 `/<path>/cleanup` 各调一次 ⇒ `/<path>/info` 全为 **`sockets:0 / streams:0 / alarm:null`**
+⇒ 无 alarm 反复唤醒、无悬着的流。**待凭据到位即拆**（`%TEMP%/do-hibernation-probe/teardown.mjs`：
+四臂 `cleanup` → `wrangler delete --force` → 复查命名空间已清）。
+
+### 182.8 已知限制（6 条）
+
+1. **窗口不可跨 UTC 零点**：`run-parallel.mjs` 在模块加载时把 UTC 日期**钉死**
+   （`new Date().toISOString().slice(0,10)`），之后所有读数都只取**启动那天**的桶 ⇒ 跨零点窗口会**少算**
+   S2/S3（对「A 是否近 0」影响小，对「B ≈ 满额」这条**主判据**影响大）。**处置：开跑前算布尔值，会跨就推迟**（不改脚本）。
+2. **聚合延迟 > 30 s**（实测）⇒ 窗口下限由它决定，10 分钟安全。
+3. **单点 delta 不可作判据** ⇒ 必须斜率 + 多次采样。
+4. **本机网络必须经代理** ⇒ 复现者必须设 `NODE_USE_ENV_PROXY=1`。
+5. **探针自身的坑**：`await writer.write(首帧)` **早于**返回 `Response` ⇒ 写侧等读侧消费、读侧等 handler 返回
+   ⇒ **死锁**，客户端一个字节都收不到（curl `http_code=0`、挂满 `-m`）。改成
+   `new ReadableStream({ start(c) { c.enqueue(首帧) } })` 后正常。
+   ⚠️ **只作探针教训，不代表生产 SSE 有问题**（生产用的是 `TransformStream` + 异步写，形态不同）。
+6. **短窗精度**：30 s 窗口下四臂指标 delta 全 0；10 分钟窗口是**首次**真正可分辨的窗口。
+   若 10 分钟仍不可分辨（例如 B 的斜率明显低于满额且抖动大）⇒ **如实报回、不硬上**。
+
+### 182.9 下一步
+
+凭据到位 ⇒ 读新基线 → 并行 10 分钟 → S1/S2/S3（必要时 S4）→ 斜率与四个比值
+（`B÷A` / `A÷C` / `D÷C` / `D÷B`）→ 拆探针 → 复查生产 → 回报；
+并按 `docs/do-hibernation-plan.md` §4.1 回填、按 §7 的路径落 ADR + 另一节进度。
+
+### 182.10 门禁
+
+**未跑任何门禁**（用户指示）。`docs/progress.md` ↔ `docs/progress-index.md` 的一致性用**直接比对**
+代替 `test/docs.test.ts` 的守卫：正文全部 `## ` 标题（trim、剔除「目录」）与索引全部 `- ` 行**深度相等**
+（**182/182 = true**）。
+## 183. DO hibernation 实验收尾：D/C 补测**未测出**（~60 s 静默连接硬切 + 新命名空间 Analytics 落后）、A 臂**两个全窗读数互证**（2026-09-25）
+
+承接 §182（凭据窗口用尽那轮）与 `docs/do-hibernation-plan.md` §4.1。本轮窗口 **11:00–11:25 UTC**：
+按 §182.9 的下一步做了 **D 优先补测**，结果 **D / C 仍未测出**（根因见 §183.3 的两条新环境事实），
+但把 **A 臂**的结论**钉得更死**（§183.4，两个独立全窗读数互证），并**落盘了一条决策**（§183.11，ADR D41）。
+
+### 183.1 结果概览
+
+| 臂 | 本轮结果 | 结论 |
+|---|---|---|
+| A `HibernatingAlarm` | **有效全窗 ×2**（30 分钟 + 10 分钟，两次独立） | **采信**：`setAlarm` **不**阻止 hibernate；「WS 单独在线」duration ≈ 满额的 **0.08–0.1%** |
+| B `StandardAlarm` | 保持 20.5 s 即断（WS `1006`、`frames=0`） | **不采信**（连接层异常） |
+| C `HibernatingIdle` | 补测：保持 **60.9 s** 即断（WS `1006`、`frames=0`）；指标全 0，11:18:50 后才出现 `requests=2 / errors=1` | **未测出**（不完整，不能当读数） |
+| D `HibernatingSse` | 补测：HTTP **200**、首字节 **1.64 s**、**1 帧**，保持 **60.2 s** 即断（`curlExit=56`、`完整=false`）；指标 t0/S1/S2/S3 **全 0.000 GB-s、`requests=0`** | **未测出**（Analytics 根本还没落地） |
+
+⇒ **P1 的收益上限（D 问）与 P3 的必要性（D vs C）仍是未回答的**；`docs/do-hibernation-plan.md` §5 P1 / P3 已按此改写。
+
+### 183.2 D 优先补测的过程（为什么值得记）
+
+重建探针后**串行**跑（不再并行），窗口 **300 s**。D 臂驱动的**连接层是成功的**：
+`HTTP 200` + 首字节 **1.64 s** + 收到 **1 帧**（`: connected` 注释帧，形态与 §182.2 的干跑一致），
+但**保持 60.2 s 就被掐断**（`curlExit=56`「接收数据失败」、`完整=false`）。C 臂同形态：
+保持 **60.9 s** 后 WS `1006`、`frames=0`。
+
+**可重现性**：D **两次都是 60.2 s**（`60.248` / `60.245 s`）、C **两次都是 60.9 s**
+⇒ **稳定复现，不是偶发抖动**（同一根因也解释了第一轮 B 的 20.5 s 与 C/D 的 60 s 级掐断）。
+
+### 183.3 两条新环境事实（本轮实测，直接决定「哪些臂在本机可测」）
+
+1. **本机到 Cloudflare 的静默长连接有 ~60 秒硬切**：C（60.9 s / WS `1006`）与 D（60.2 s / `curl 56`）都被切，
+   而 **A 臂因为每 15 s 有 alarm ping 而活了 600 s / 1800 s** ⇒ 这是**客户端路径（本地代理 `127.0.0.1:7897`）
+   的空闲超时**，**不是** DO 或平台行为。**推论：任何需要服务端保持静默的臂（C / D）在本机不可测**，
+   必须在**无该代理的客户端**（CI runner / 另一台机器）上跑。
+2. **新建的 DO 命名空间 Analytics 落地极慢**：重建探针后 **~18 分钟**仍 `requests=0` ——
+   而一个**返回过 HTTP 200** 的命名空间不可能 `requests=0` ⇒ 那是**数据还没到**，不是「没流量」。
+   （对照：**旧**命名空间几分钟内就有数，**生产**当小时数据也是即时的。）
+   ⇒ **「短实验 + 删重建命名空间」这个组合不可用**；再跑应**沿用已存在的命名空间**，或等 **≥30 分钟**。
+
+### 183.4 A 臂：两个独立全窗读数（结论**不变但更强**）
+
+| # | 窗口 | 驱动判据 | 帧数 | duration | 满额占比 | activeTime | 出处 |
+|---|---|---|---|---|---|---|---|
+| ① | **1800 s**（09:12:35–09:42:35Z） | `heldFullPeriod=true`、`reason=hold-complete`、`close=null`、`errors=[]` | **119**（≈每 15.1 s 一条） | 净 **0.175 GB-s**（`durationRaw` 0.234 − 基线 0.059）；`rateHeld` **0.0000974 GB-s/s** | **0.076%**（满额 230.4 = 1800 s × 0.128） | **1.83 s**（`cpuTime` 0.059 s、`requests` 170） | `%TEMP%/do-hibernation-probe/arm-A.json` + `measure-A.json` |
+| ② | **600 s**（10:39:50–10:49:50Z） | `heldFullPeriod=true`、`close=null`、`errors=[]` | **39**（≈每 15.4 s 一条） | S1/S2/S3 = 0.339 / 0.367 / 0.396 GB-s；斜率 **0.00009 GB-s/s**；窗口总 delta **0.12 GB-s** | **0.1%**（满额 76.8） | **3 s**（`cpuTime` 0.095 s、`requests` 254） | `p-arm-A.json` + `p-driver-A.log` |
+
+**两次读数相差仅 1.3 倍 ⇒ 量级一致**；两次窗口内 alarm 都在跑（119 / 39 次，≈每 15.1–15.4 s 一条，
+与 `HEARTBEAT_INTERVAL_MS = 15_000` 吻合）而 duration 都在满额的千分之一量级
+⇒ **裁定：`setAlarm` 不阻止 hibernate**；**「WS 单独在线时段」的 duration ≈ 满额的 0.08–0.1%**。
+
+⚠️ **对 §182.6 第 1 条的标签更正**：那次「A 臂串行试跑 ≈0.13%、`activeTime` 仅 2 秒」当时被标为**未采信**
+（理由是「不满足完整 10 分钟保持 + 斜率采样」）。现在看清了：**被中止的是那一「批」（串行批），
+而该臂自身的窗口跑完了** —— 驱动判据完整（`heldFullPeriod: true` + `hold-complete` + `close: null` + `errors: []`）
+⇒ 按「**臂自身判据完整即可采信**」把它记为**第二个有效读数**（口径 0.076%，不是当时文本里的 0.13%）。
+§182 原文按「progress 按轮次记录」的惯例**保留不改**，更正记在本节。
+
+### 183.5 `B ÷ A`：以生产遥测作对照的**推定**（≈1300–1400×，量级「约 10³ 倍」）
+
+生产 `SyncClipboardHub` 同形态实测 **0.12745–0.12746 GB-s/s = 满额 99.6%**，A 臂 **0.0000974 / 0.00009 GB-s/s**
+⇒ 生产 ÷ A ≈ **1300–1400×**。
+⚠️ **必须标注**：两侧**不同日期 / 不同命名空间 / 不同窗口长度**（生产是 24 h 连续计费的部署，
+A 是探针命名空间的全窗保持）⇒ **不可当同仪器对照引用**。真正的 `B ÷ A` 同仪器对照要等 **B 臂**补测（当前 B 无效）。
+
+### 183.6 额度与生产复查
+
+- **本轮实验额度 ≈20–35 GB-s**（A 的 30 分钟那次净 0.175 GB-s、10 分钟那次 0.12 GB-s；其余为采样与短跑）。
+- **生产未被扰动**：11:25 UTC 复查当天已用 **5,236.01 GB-s**、速率 **0.12746 GB-s/s（满额的 99.6%）**
+  ⇒ 与 §182.5 的 09:19 读数（4,211.72 GB-s / 0.12729 GB-s/s）同一条满额曲线。
+- **清理**：`wrangler delete --force` 成功；复查**探针命名空间 = 0 / Worker = 0 / 公开 URL 404**
+  ⇒ §182.7 的「待凭据到位即拆」**已完成**。
+
+### 183.7 保留的「未采信」标签（不得当结论引用）
+
+D / C 的旧信号**继续标为未采信**：D `activeTime` **404 s** / delta **+16.87 GB-s** ——
+方向与预期一致（比 A 臂的 1.83–3 s 高两个量级），但 ① 该**命名空间有前序污染**（重建前的读数混入同一 `namespaceId`），
+② 窗口未跑满 ⇒ **只登记、不作证据**。
+
+### 183.8 证据链留存缺口（只登记，不影响结论）
+
+首轮四臂的汇总文件 `%TEMP%/do-hibernation-probe/parallel-results.json` **已被 C 单臂重跑以同名覆盖**
+（现内容只有 C 臂、约 1.0 KB）⇒ 首轮四臂的 S1/S2/S3 **只存在于当时的回报文本里**。
+**仍在盘**的量化证据是 §183.4 的 `arm-A.json` + `measure-A.json`（30 分钟）与 `p-arm-A.json` + `p-driver-A.log`（10 分钟），
+外加 `parallel-baseline.json`（11:07:40，四臂全 0，可佐证「新命名空间 Analytics 落后」）。
+A 臂两次读数**互证**，故该缺口**不影响任何结论**。
+
+### 183.9 重跑配方（下一步：无代理客户端）
+
+| 项 | 要求 |
+|---|---|
+| 客户端 | **无本地代理的客户端**（CI runner / 另一台机器）—— 否则任何静默臂都会在 ~60 s 被切（§183.3 事实 1） |
+| 命名空间 | **沿用已存在的**（不要删重建），或新建后**等 ≥30 分钟**再开跑（§183.3 事实 2） |
+| 窗口 | **≥10 分钟**（聚合延迟 > 30 s），且判据必须是**斜率 + 多次采样**（单点 delta 不可用） |
+| 编排 | **串行**；开跑前确认窗口**不跨 UTC 零点**（§182.8 第 1 条） |
+
+### 183.10 本轮落盘的决策与状态
+
+- **ADR D41（`docs/design.md` §2）：P4（放宽心跳节奏）不做** —— 依据就是 §183.4 的 A 臂两次读数
+  （15 s alarm 的 duration 代价仅满额的 0.1%），另有客户端 ServerTimeout 30 s 的硬约束。
+- **P1（只迁 WS 路径）**：**已实测支撑**（`docs/do-hibernation-plan.md` §5 P1）、**待项目所有者批准实施**；
+  **不为它写 ADR**（本轮不涉及代码）。
+- **P3 / P2**：仍不能判定（D 问未回答）。
+
+### 183.11 门禁
+
+**未跑任何门禁**（用户指示）。`docs/progress.md` ↔ `docs/progress-index.md` 的一致性用**直接比对**代替
+`test/docs.test.ts` 的守卫：正文全部 `## ` 标题（trim、剔除「目录」）与索引全部 `- ` 行**深度相等**（**183/183 = true**）。
+
+## 184. P1 落地：WS 路径迁到 Hibernation API（封锁状态改为按实质变化落盘）（2026-09-25）
+
+承接 §181–§183 与 `docs/do-hibernation-plan.md` §5 P1 / §8。本轮**改代码**：把 `SyncClipboardHub`
+的 WS 路径从标准 WS API 迁到 Hibernation API（落 ADR **D42**），并按用户要求把认证失败的**封锁状态**
+从「内存 + 低频落盘」改成「按实质变化落盘」。**只改 WS 路径** —— SSE 与长轮询的既有实现**保持原样**
+（它们仍会在有客户端时阻止 hibernate，这是已知且已登记的边界，D42 的边界①）。
+
+### 184.1 改动清单
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/durable/SyncClipboardHub.ts` | ① WS 升级 + 三个 handler 改 Hibernation API；② 连接集合与 `lastSeen` 迁到 `getWebSockets()` + attachment；③ `scheduleHeartbeat` 判据改 `getAlarm()`；④ `sendPings` / `closeIdleClients` / `broadcast` / `clientCount` 的 WS 分支改走 `getWebSockets()`；⑤ 认证失败封锁状态改为按实质变化落盘 |
+| `test/rate-limit.test.ts` | `createDoState()` 补 `acceptWebSocket` / `getWebSockets` / `storage.getAlarm`（不补则那组用例直接 TypeError） |
+| `test/fixes.test.ts` | F10 的 `makeHub()` 桩同样补三个方法；「往 `wsClients` 里塞连接」改成「塞假 socket（带 `deserializeAttachment`）」 |
+| `src/rateLimit.ts` | **只改注释**：`AUTH_RATE_LIMIT_STORAGE_KEY` 的落盘形态与时机（行为与取值未动） |
+| `docs/design.md` | 新增 **D42**；D41 末尾「P1 待项目所有者批准实施」改为指向 D42 |
+| `docs/do-hibernation-plan.md` | §7 / §8 标注已实施 |
+| `docs/progress.md` + `docs/progress-index.md` | 本节（标题逐字一致） |
+
+**未动**（逐条自检过）：`AVAILABLE_TRANSPORTS` 的顺序与内容、SSE / 长轮询实现、`src/routes/**`、
+`public/**`、`wrangler.toml`（含 `compatibility_date` 与 `[[migrations]]`）、`docs/protocol.md`、
+`README.md`、`docs/free-plan-*.md`。
+
+### 184.2 四条硬性契约怎么落的
+
+| 契约 | 落点（`src/durable/SyncClipboardHub.ts:行`） | 怎么保证 |
+|---|---|---|
+| **wire 逐字节不变** | `:245-255`（`new WebSocketPair()` + `new Response(null,{status:101,webSocket:client})` 原样保留） | 帧构造全在 `src/durable/signalr.ts`（未动）；`docs/protocol.md` §10 **未新增差异行**；`transports` / `signalr` 两条套件原样通过（含真实 `@microsoft/signalr` 客户端与心跳存活用例） |
+| **心跳与 alarm 语义不变** | `scheduleHeartbeat` `:645-660`；`alarm()` `:622-626` | 仍每 15 s 一次 `Ping`（`HEARTBEAT_INTERVAL_MS` 未动）；「已排程则跳过」保留，判据换成 `await this.state.storage.getAlarm()`（`if (currentAlarm !== null) return`）；**`alarm()` 运行中 `getAlarm()` 返回 `null`** 这一点写在 `:639-641` 的注释里 —— 它正是「alarm 内重排」所依赖的语义（否则心跳会停摆） |
+| **`webSocketClose` 显式 close** | `:294-301` | `ws.close(code, reason)` 显式调用；注释写明「compat 早于 2026-04-07 ⇒ 漏掉会让客户端收 1006」以及**不要**靠升级 compat 日期回避 |
+| **连接状态迁移** | 集合 → `this.state.getWebSockets()`；`lastSeen` → `serializeAttachment({lastSeen})`（`:252`、`:261`）；读 → `deserializeAttachment()?.lastSeen ?? 0`（`:692-693`） | `wsClients` 内存 Map **已删除**；`sendPings`（`:662-684`）/ `closeIdleClients`（`:686-717`）/ `broadcast`（`:786-798`）的 WS 分支全部改走 `getWebSockets()`；`clientCount()`（`:628-633`）＝ `getWebSockets().length + sseClients.size + lpClients.size`（三传输合计口径不变） |
+
+另两条按 §8.1 保留原样：类声明仍是**普通 class**（不 `extends DurableObject`，§181 已实测按名分派成立）；
+`scheduleHeartbeat` 的 8 个调用点同步改 `void this.scheduleHeartbeat()`，只有 `alarm()` 内 `await`。
+
+### 184.3 `authLimits` 跨 hibernate 的处置（用户单独验收项）
+
+**问题（为什么不能只靠内存）**：`authLimits` 是内存 Map；hibernate 会**常规性**地清空内存态
+（每段静默约 10 s 一次，P1 之后唤醒更频繁），而封锁窗口是 **15 min**（`AUTH_RATE_LIMIT_BLOCK_MS`）
+⇒ 只靠内存时「被封禁的来源停手 10 秒就能重来」。原实现只在「任一 key 已封锁」或「累计 20 次失败」
+时落盘，而阈值 `maxFailures = 10 < 20` ⇒ **封锁那一刻一定会落盘**（封锁本身不丢），但**计数进度**
+几乎从不落盘 ⇒ 慢速试探（每次尝试之间都被 hibernate）永远攒不到 10 次，**永远不会被封锁**。
+
+**处置（落盘内容 + 触发条件）**：落盘形态从裸 `Record<key, AuthLimitState>` 改成
+`{ persistedAt, limits }`（仍是**单个 storage key** ⇒ 一次落盘 = **1 行写**）；触发条件三类：
+
+1. 任一 key 的 `blockedUntil` **新产生或延长** ⇒ **立即**落盘（不受节流，安全关键状态）；
+2. 计数**清零**（认证成功 / `clear` op）⇒ **强制**落盘（否则陈旧计数会在唤醒后复活，可能误封合法用户）；
+3. 纯计数推进 ⇒ 「距上次落盘 ≥ **15 s**」或「累计失败 ≥ 20 次」满足其一才落。
+
+`persistedAt` 必须**一起**落盘：节流基线的内存副本会被 hibernate 清掉，若只存内存基线，每次唤醒都会
+被重置成「刚落过盘」⇒ 节流失效（每次失败都落一行）而计数照样被抹掉。
+
+**写放大（每次封锁事件的行写数，实测）**：一次性探针（**同一份 storage + 新实例**＝模拟 hibernate，
+并 await 构造期的 `blockConcurrencyWhile`；用假时钟推进节流窗口，因为真实 hibernate 周期是 ≥10 s 墙钟）：
+
+| 场景 | 读数 |
+|---|---|
+| 快速爆破（10 次失败后封锁，期间不 hibernate） | **2 行**（含冷启动首写；稳态为 **1 行**） |
+| 慢速试探（每次尝试之间都被 hibernate，间隔 15 s） | 第 **11** 次尝试被封锁，共 **10 行** |
+
+⇒ 上界 ≈ **封锁窗口 / 15 s + 1 = 61 行/事件**（默认 15 min），且**与攻击流量无关**（不是每次尝试都写一行）。
+同一探针还断言：**新实例（内存全丢）上同来源仍然 429** ⇒ 封锁跨 hibernate 成立。
+
+**为什么这不算安全回退**：① 封锁状态与「触发封锁所需的计数 + 时间窗」**都在 storage 里**，封锁一产生
+就立即落盘 ⇒ 唤醒后由构造函数读回、继续封锁；② 慢速试探不再能无限重来 —— 计数按节流窗口推进，
+封锁一定会到（探针：第 11 次尝试；最坏把到达时间拉长到「每 15 s 推进一次」的节奏）；③ 另有一层纵深：
+Worker isolate 的本地计数（`src/rateLimit.ts` 的 `cache.limits`，`noteAuthFailure`）在同一 isolate 内
+**第 11 次请求起就本地 429**，与 DO 是否 hibernate 无关。
+
+### 184.4 未验证项（不得越读）
+
+1. **本地不验证 hibernation 本身**：本地 miniflare/workerd 不会真的 hibernate（§181 已记）⇒ 本轮本地
+   验证到的是「**行为等价 + 门禁全绿**」，**hibernation 的实际收益必须上线后复核**：按
+   `docs/do-hibernation-plan.md` §8.5 的 Analytics 查询看 `duration` / `activeTime` 是否从
+   11,014–11,103 GB-s/天、≈86,000 s/天 显著下降（判据同 §8.5(b)；A 臂读数给的是「WS 单独在线时段
+   ≈ 满额 0.08–0.1%」这一**上界**）。
+2. **`webSocketError` 的按名分派仍未实测**（§4.2① 的覆盖边界：本地只验过 `webSocketMessage` /
+   `webSocketClose`）。
+3. **`getWebSockets()` 是否包含 CLOSING**（`clientCount()` 偏高）未实测 —— 若成立，症状是「DO 请求里
+   `type=alarm` 反而变多」（§8.2 末、§8.5(c)）。
+4. **1006 的关闭握手**只有官方文档依据，本地没有观测点（套件不检查关闭码）⇒ 上线后按 §8.5(c) 盯
+   「客户端报 1006」这一症状。
+5. **收益上限仍受 SSE / 长轮询限制**（§8.5 的臂 D 至今未测出）⇒ 若生产上确有 SSE/LP 连接，
+   duration 不会降（D42 边界①）。
+
+### 184.5 门禁（全部按退出码判定，未经管道吞掉失败）
+
+| # | 命令 | 退出码 |
+|---|---|---|
+| 1 | `node node_modules/typescript/bin/tsc --noEmit` | **0**（无输出） |
+| 2 | `node node_modules/eslint/bin/eslint.js public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` | **0**（无输出） |
+| 3 | `node --check test/manual/{probe,probe-ui-v1,states,shoot}.mjs` | **0 / 0 / 0 / 0** |
+| 4 | 全量套件（先起 `wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1`，再 `BASE=http://127.0.0.1:8787 vitest run --no-file-parallelism`） | **0** |
+
+汇总行**原文**（**最终树**上跑的那次，19:44:22 起跑）：
+
+```
+ Test Files  22 passed (22)
+      Tests  463 passed (463)
+   Start at  19:44:22
+   Duration  71.31s (transform 666ms, setup 0ms, collect 1.87s, tests 63.71s, environment 4ms, prepare 1.84s)
+```
+
+退出码另行用**不经管道**的一次跑法取（`--reporter=json --outputFile`，避免管道吞掉退出码）：
+`GATE4_EXIT=0`，JSON 汇总 `success: true` / `numTotalTests: 463` / `numPassedTests: 463` /
+`numFailedTests: 0`。**两跑读数逐项一致**（同为 22 套件 / 463 用例 / 失败 0）。
+
+与基线（`docs/free-plan-baseline.md` §2.4：22 套件 / 463 用例 / 失败 0）**逐项一致**。重点套件：
+`transports`（9 ✓，含 WS / SSE / 长轮询三传输与降级链）、`signalr`（4 ✓，含真实 `@microsoft/signalr`
+客户端与**心跳存活 35 s**）、`rate-limit`（34 ✓，含本轮改过夹具的那组）、`ui-activity`（3 ✓）。
+
+环境前置与收尾：跑前确认无 `workerd` / `wrangler` 进程、8787 无 `LISTENING`、`.dev.vars` 已存在
+（**未打印、未提交其内容**）；同目录只有一个 `wrangler dev`。跑完已停该进程，复查进程已退、端口无
+`LISTENING`。
+
+⚠️ **本地验证到的是「行为等价 + 门禁全绿」** —— 本地 miniflare/workerd **不会真的 hibernate**
+（§181 已记），所以 hibernation 的**实际收益**（duration 是否从 84.5–85.5% 掉下来）**未在本地验证**，
+须上线后按 `docs/do-hibernation-plan.md` §8.5 的 Analytics 查询复核（见 184.4 第 1 条）。
+

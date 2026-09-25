@@ -297,7 +297,7 @@ V2 的三处升级：
 | N2 | `GET /ui/api/activity?days=30&tz=-480` | 概览带的**趋势图**需要「每天多少条」——现有端点只能给总数（`backend-gaps.md` §2.6 记了这条缺口，且提示**不要**复用 `db.statistics()` 的全表拉取） | `{days:[{day:'2026-09-15', total, Text, Image, File, Group}], max}`。`day` 按**客户端时区**切分（`tz` 分钟，与 `Date.prototype.getTimezoneOffset` 同号），否则「今天」在 UTC+8 会在早上 8 点错位。`days` 上限 90；SQL 走 `GROUP BY` + `strftime`，**1 条聚合查询**；顺带补上 `backend-gaps.md` §3.1 欠的合并查询 |
 | N3 | `POST /ui/api/history/batch-meta` | 预览/复制**全文**时逐条取单条是 O(N) 请求（`backend-gaps.md` §2.8 的口径）。列表正文截断在 500 字符且带 `textTruncated` | `{items:[{type,hash}]}`（≤ 100）→ `{items:[完整 HistoryRecordDto…]}`。用于「选中多条 → 一起复制/下载」与预览预取 |
 | N4 | `GET /ui/api/clients` | 概览带要显示**「几台设备在线」**；`backend-gaps.md` §2.7 指出 DO **没有可读状态端点**且 `clientCount()` 是 private | `{clients: number\|null, updatedAt}`。DO 侧新增一个**只读分支**（注意别落到 `handleLongPoll`），失败 → `clients: null`（不整体 5xx）。**成本复核**：这条会让 `/ui/api/overview` 带上一次 DO 往返；故 `overview` 里该字段仅当概览带展开时才请求，首屏不带 |
-| N5 | `GET /ui/api/export?format=json\|zip&scope=active\|all` | 「导出历史」是私有数据服务端的**最低义务**（用户数据可携带）；当前零导出路径 | **流式**产出（免费档 10ms CPU / 50 子请求约束下不得先聚合再压缩）：`json` 走 `ReadableStream` 逐行写；`zip` 复用既有 `fflate` 的 `Zip`（流式）。`scope` 上限由 `MAX_SAVED_HISTORY_COUNT` 约束 |
+| N5 | `GET /ui/api/export?format=json\|zip&scope=active\|all` | 「导出历史」是私有数据服务端的**最低义务**（用户数据可携带）；当前零导出路径 | **流式**产出（CPU 是**平均**预算：Free 档 10 ms/调用，偶发越界由 rollover CPU time 吸收、只有**持续**越界才终止 ⇒ 不得先聚合再压缩）：`json` 走 `ReadableStream` 逐行写；`zip` 复用既有 `fflate` 的 `Zip`（流式）。`scope` 上限由 `MAX_SAVED_HISTORY_COUNT` 约束 |
 
 **N5 的取舍**：导出是**大工程量**且不属于「让界面好看好用」的主线。
 本设计把它列为 **P3（可选，最后做）**，前置条件是 P0–P2 全部完成且验证通过。
@@ -576,7 +576,7 @@ FAILED REQUESTS  none
 | 项 | 原因 |
 |---|---|
 | `GET /ui/api/clients`（N4，在线客户端数） | 现状可用的信号已经够（同步状态点 + 最近同步时间）。要加它得给 DO 开一个只读分支，且会让概览带多一次 DO 往返 —— 收益不抵成本，**留作可选** |
-| `GET /ui/api/export`（N5，导出历史） | 流式 json/zip 是独立工程量（免费档 10ms CPU 约束下必须全程流式），不属于"让界面好用"的主线。**P3 候补** |
+| `GET /ui/api/export`（N5，导出历史） | 流式 json/zip 是独立工程量（CPU 是**平均**预算：Free 档 10 ms/调用，偶发越界有 rollover CPU time、只有**持续**越界才终止 ⇒ 必须全程流式），不属于"让界面好用"的主线。**P3 候补** |
 | `GET /ui/api/status`（合并 overview + activity） | 首屏已经压到 2 次请求（overview + list 并发，activity 不阻塞），再合并的收益小于它带来的耦合 |
 | 服务端缩略图（Cloudflare Images） | `docs/backend-gaps.md` §2.10 的独立立项，不是本次范围 |
 
