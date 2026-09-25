@@ -12864,3 +12864,108 @@ Worker isolate 的本地计数（`src/rateLimit.ts` 的 `cache.limits`，`noteAu
 （§181 已记），所以 hibernation 的**实际收益**（duration 是否从 84.5–85.5% 掉下来）**未在本地验证**，
 须上线后按 `docs/do-hibernation-plan.md` §8.5 的 Analytics 查询复核（见 184.4 第 1 条）。
 
+## 185. 旁挂部署 A/B：hibernation 收益真实边缘验证、P3 补测与三处微优化（2026-09-25）
+
+### 185.1 为什么要在真实边缘旁挂部署
+
+本地 miniflare/workerd **不会真的 hibernate**（§181），而本机到 Cloudflare 的静默长连接还有 ~60 s 硬切
+（§182/§183 的两条环境事实）⇒「生产上那 84.5–85.5% 的 duration 到底能不能掉下来」只能靠**真实运行时**回答。于是：
+
+- **分支侧**：把 `perf/free-plan`（`6498bf5`）部署成 `syncclipboard-freeplan-probe`；
+- **对照侧**：把 `origin/master`（`41d51b2`）部署成 `syncclipboard-master-probe` —— 在**独立 git worktree** 里部署，
+  其 `node_modules` 用目录联接（junction）指回主仓库 ⇒ **主仓库工作树未被触碰**（`git status` 全程干净、HEAD 仍 `6498bf5`）。
+
+两者的 `compatibility_date` / flags（`2025-09-01` + `nodejs_compat`）**逐字相同**；各自新建 D1
+（`e6faf56d-…` / `ee4f2f8d-…`，均已执行 `schema.sql`）与各自**新的** DO 命名空间
+（`3cf57bbeba1e4ed7bba394767d96c3ed` / `eb352d7cc9b24155bcd3dea5e6e22293`）；**都不绑 R2、都不配 Cron**
+（让 duration 信号干净，也不多占账号级 Cron）。生产 `syncclipboard-cf-server` 全程未动
+（`wrangler deployments list` 最新仍是 2026-09-22T17:04:55Z）。
+
+### 185.2 A/B 读数（同一台机器、同一套客户端脚本、同一 runtime 设置）
+
+| | 分支（Hibernation API） | master（标准 API，对照） |
+|---|---|---|
+| 客户端连接秒数（客户端侧实测） | 574 s（6 条连接，全部由我方 120 s 上限**干净 1000** 关闭） | ≈420 s（6 条连接） |
+| 命名空间 `duration` | **0.0184 GB-s** | **55.65 GB-s** |
+| `activeTime` | **0.144 s** | **434.7 s** |
+| 每连接秒占满速（0.12745 GB-s/s） | **0.025%** | **≈104%** |
+
+⇒ 每连接秒约 **4,100×** 差距，累计 3,021×（0.0184 vs 55.65）。master 的 434.7 s ≈ 客户端在线时长，
+正是「`accept()` 之后**整个连接期间**计费」的直接体现（明细见 `docs/do-hibernation-plan.md` §8.7(a)）。
+
+**旁证（同轮观测）**：分支侧每条连接在 121 s 内稳定收到 **8 次**服务端 ping（15 s 节拍 ⇒ 心跳经 alarm
+正常送达）；master 侧 6 条里有 2 条 `recv=1`（**一次 ping 都没收到**）—— 与「标准 API 把连接集合放在内存、
+DO 重启后 `clientCount()===0` 短路心跳」一致 ⇒ 这次迁移**顺带**修掉一个 liveness 弱点。
+
+### 185.3 P3 补测：长轮询吃掉全部收益、SSE 只吃 1/5
+
+| 相位（分支命名空间，各 5 分钟） | `duration` 增量 | 占满速 |
+|---|---|---|
+| 长轮询挂住（21 次轮询，每次 ~15 s） | **+39.69 GB-s** | **103%** |
+| SSE 挂住（300 s，4 帧） | **+7.72 GB-s** | **20%** |
+
+⇒ §183 里「D/C 未测出」那一项**在本轮补齐**：长轮询在线时该对象**仍然全程计费**（这就是 P2 的价值）；
+SSE 便宜得多。官方客户端的降级链是 `WS → SSE → 长轮询`，而生产实测**没有任何长轮询流量**
+（命名空间调用构成：`alarm` 3,089 + `http` 106）⇒ 当前客户端构成下 P1 的收益成立。
+
+### 185.4 可靠性三项
+
+1. **静默踢线**：连接后**什么都不发** ⇒ 分支与 master **都是 75 s 关闭、code 1000**（60 s 静默阈值 + 一个
+   心跳周期）⇒ 迁移未破坏静默回收，且客户端看到的是**干净关闭**（不是 1006 ⇒ `webSocketClose` 里那句显式
+   `ws.close(code, reason)` 生效）。
+2. **心跳泄漏**（计划 §8.2 末「`getWebSockets()` 含 CLOSING ⇒ `clientCount()` 偏高」的隐患）：客户端全部离开后
+   静默 8 分钟，两个命名空间的 `requests` 与 `duration` 增量**都是 0** ⇒ 真实运行时**不存在**该空转。
+3. **界面实时链路**（用户可见面）：`POST /ui/api/login`（会话 Cookie）→ `POST /ui/api/hub-ticket`（票据）→
+   用票据建 WS（与浏览器同形态：只有 `?id=`、无请求头）→ 一次真实 `PUT /SyncClipboard.json` ⇒
+   **界面 WS 当场收到** `{"type":1,"target":"RemoteHistoryChanged",…}` ✓。
+
+### 185.5 响应时间（冷/热，两版对照）
+
+| 端点 | 分支 冷 / 热 p50 | master 冷 / 热 p50 |
+|---|---|---|
+| `GET /api/version` | （本机代理抖动，未取到）/ — | 529 ms / 124 ms |
+| `GET /SyncClipboard.json` | 1121 ms / 139 ms | 984 ms / 146 ms |
+| `PROPFIND /` | 744 ms / 111 ms | 588 ms / 155 ms |
+| `PUT /SyncClipboard.json` | 732 ms / 263 ms | 898 ms / 252 ms |
+
+⇒ **两版无系统性差异**（冷态 0.6–1.1 s 主要是本机到 Cloudflare 的代理 RTT 与冷启动；热态 p50 111–263 ms 同档）
+⇒ **hibernation 没有引入可见的延迟回归**；同时修正了本轮早期「分支 PUT 4,144 ms」的孤例印象（那是瞬时冷启动）。
+
+### 185.6 同轮落地的三处微优化（`src/durable/SyncClipboardHub.ts`）
+
+1. **`authLimits` 快照按需加载**（`loadAuthLimitsOnce`）：hibernate 后构造函数**每次唤醒都重跑**，而多数唤醒
+   （keepalive / 广播 / 连接事件）用不到限速状态 ⇒ 旧写法每次唤醒白付一次 storage 读**和一个往返**；现在只有
+   `handleAuthRateLimit` 与 `connectionAuthFailure` 两条入口会读（**有效 token 的连接路径零存储读**）。
+2. **`alarm()` 内的重排不再读 `getAlarm()`**（`rearmHeartbeatInAlarm`）：alarm 运行期间它必为 `null`
+   （防重排判据本来就建立在这条语义上）⇒ 省 5,760 读/天。
+3. **落盘快照加形状守卫**（`readPersistedAuthLimits`，只认 `{persistedAt, limits}`）：生产 DO 里是**上一版的
+   平铺形态** ⇒ 部署后第一次唤醒按**空表起算**并留一条 `[hub] authRateLimits 快照形态不识别…` 告警，下一次
+   落盘即写回新形态（自愈）。**这不再是「靠 catch 兜住的异常」，而是显式判定的可预期事件**（最坏「多给阈值次
+   失败」，与既有取舍同侧）。测试：`test/rate-limit.test.ts` 新增两条（新形态被采信 = 正对照；旧形态按空表起算
+   并自愈到新形态），夹具 `createDoState()` 扩成可预置 storage 与回读落盘内容。
+
+### 185.7 文档口径订正：「10 万/天 ≈ 4 台」是错的
+
+`README.md`、`docs/free-plan-account-facts.md`（§3.3/§5.4）、`docs/free-plan-audit.md`（§6.1 的 M9 行）
+都写过「实测单日 24,212 次 ⇒ 约合 **4 台**常驻客户端」—— 那是把**整个部署**的日请求量当成了**单台**口径。
+正确口径（本轮按上游客户端源码逐行核实，且有两个独立读数互证）：
+
+- 每台 **17,280 次/天**：`TestAliveHelper` 每 10 s 调一次 `TestConnectionAsync` ⇒ `PROPFIND /` + `GET /api/version`；
+- 10 万/天的上限 = **约 5.8 台**（第 6 台 = 103,680 ⇒ 当天超限）；
+- 本部署实测 24,212 次/天 ⇒ **约 1.4 台**常驻；DO 侧 `wsIn ≈ 5,760/天`（一个客户端的 15 s keepalive）**独立印证**；
+- `PROPFIND /` 返回**静态** multistatus、`GET /api/version` 只读环境变量 ⇒ 这两个热端点 0 D1 / 0 R2 / 0 子请求，
+  消耗的只是 Worker 请求数本身。
+
+顺带排除一条**看似可行的优化**：曾考虑用边缘缓存 `GET /api/version` 省掉一半客户端请求，但该端点在
+**全局 Basic Auth 之内**（上游 `[Authorize]` 类级）⇒ 带凭据的请求不会被 CF 缓存，要生效就得让未认证也能取到
+版本串（协议可见变更）⇒ **不做**。
+
+### 185.8 门禁读数（本轮改动）
+
+- `tsc --noEmit` → **0**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` → **0**；
+  `node --check` 四个手动探针（`probe` / `probe-ui-v1` / `states` / `shoot`）→ **全 0**。
+- 全量套件（先起 `wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1`，
+  `BASE=http://127.0.0.1:8787`，`--no-file-parallelism`）：**22 套件 / 465 用例 / 失败 0 / 退出码 0**
+  —— 较 §184 的 463 条 **+2**，正是 §185.6 第 3 条新增的两条形状守卫用例。跑前确认无 `workerd` / `wrangler`
+  进程、8787 无监听；跑完已停该进程并复查进程与端口（`.dev.vars` 未打印、未提交）。
+

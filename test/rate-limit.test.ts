@@ -17,6 +17,7 @@ import {
   AUTH_RATE_LIMIT_MAX_FAILURES,
   AUTH_RATE_LIMIT_PATH,
   AUTH_RATE_LIMIT_RANGES,
+  AUTH_RATE_LIMIT_STORAGE_KEY,
   DEFAULT_AUTH_RATE_LIMIT_CONFIG,
   applyAuthFailure,
   authRateLimitConfig,
@@ -571,8 +572,16 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
   // `state.getWebSockets`（`clientCount()` 与 `scheduleHeartbeat()` 都要用），以及
   // `storage.getAlarm()`（心跳防重排判据）⇒ 夹具必须一并实现，否则这组用例直接 TypeError
   // （桩与真实接口不一致，不是被测量行为）。
-  function createDoState(): DurableObjectState {
-    const storage = new Map<string, unknown>();
+  // 限速快照改成**按需加载**（`loadAuthLimitsOnce`）后，构造函数不再调 `blockConcurrencyWhile`；
+  // 夹具仍实现它 —— 真实的 `DurableObjectState` 一定有此成员，桩缺了会让「DO 类在别处用到它」
+  // 变成 TypeError（同上：桩与真实接口不一致，不是被测量行为）。
+  // `seed` 预置 storage（例如**上一版遗留的**限速快照形态）；`peek` 回传同一份 Map，供断言落盘内容。
+  function createDoState(
+    seed: Record<string, unknown> = {},
+    peek?: { storage?: Map<string, unknown> },
+  ): DurableObjectState {
+    const storage = new Map<string, unknown>(Object.entries(seed));
+    if (peek) peek.storage = storage;
     const sockets: WebSocket[] = [];
     return {
       blockConcurrencyWhile: async (callback: () => Promise<unknown>) => callback(),
@@ -720,6 +729,58 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
 
     const cleared = await (await call('clear', [key])).json<AuthLimitResponseBody>();
     expect(cleared.blocks).toEqual({});
+  });
+
+  // 落盘形态的**形状守卫**（2026-09-25）：形态在本分支里改过一次（旧版是平铺的
+  // `Record<string, AuthLimitState>`，新版是 `{persistedAt, limits}`），而生产 DO 存储里可能
+  // 还留着旧值 ⇒ 没有守卫时 `Object.entries(saved.limits)` 会抛 TypeError 并被静默 catch。
+  // 这一组是那条路径的**正对照（新形态被采信）与迁移（旧形态按空表起算、下一次落盘自愈）**。
+  it('新形态快照 {persistedAt, limits} 被采信：封锁跨实例恢复（形状守卫的正对照）', async () => {
+    const { env } = createEnv();
+    const key = 'ip:203.0.113.51';
+    const blockedUntil = Date.now() + AUTH_RATE_LIMIT_BLOCK_MS;
+    const state = createDoState({
+      [AUTH_RATE_LIMIT_STORAGE_KEY]: {
+        persistedAt: Date.now(),
+        limits: { [key]: { windowStart: Date.now(), count: AUTH_RATE_LIMIT_MAX_FAILURES, blockedUntil } },
+      },
+    });
+    const hub = new SyncClipboardHub(state, env);
+    const res = await hub.fetch(
+      new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, { method: 'POST', body: JSON.stringify({ op: 'snapshot', keys: [key] }) }),
+    );
+    expect((await res.json<AuthLimitResponseBody>()).blocks).toEqual({ [key]: blockedUntil });
+  });
+
+  it('旧版平铺形态被识别为「无快照」：不采信、告警一次，下一次落盘即迁到新形态', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { env } = createEnv();
+    const key = 'ip:203.0.113.52';
+    const peek: { storage?: Map<string, unknown> } = {};
+    // 旧版落盘形态：平铺表，且里面有一条「已封锁」的记录
+    const legacy = { [key]: { windowStart: Date.now(), count: 99, blockedUntil: Date.now() + AUTH_RATE_LIMIT_BLOCK_MS } };
+    const hub = new SyncClipboardHub(createDoState({ [AUTH_RATE_LIMIT_STORAGE_KEY]: legacy }, peek), env);
+    const call = (op: string, keys: string[]) =>
+      hub.fetch(new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, { method: 'POST', body: JSON.stringify({ op, keys }) }));
+
+    // 旧形态不被采信 ⇒ 按空表起算（代价与既有取舍同侧：最坏多给阈值次失败），并留下一条可查的告警
+    expect((await (await call('snapshot', [key])).json<AuthLimitResponseBody>()).blocks).toEqual({});
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('authRateLimits'))).toBe(true);
+
+    // 下一次落盘写回新形态（自愈）
+    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) await call('report', [key]);
+    const persisted = peek.storage?.get(AUTH_RATE_LIMIT_STORAGE_KEY) as
+      | { persistedAt?: unknown; limits?: Record<string, unknown> }
+      | undefined;
+    expect(typeof persisted?.persistedAt).toBe('number');
+    expect(Object.keys(persisted?.limits ?? {})).toEqual([key]);
+
+    // 这份新快照能被同一个守卫读回（换一个实例 ⇒ 走一次真实的按需加载）
+    const rebooted = new SyncClipboardHub(createDoState({ [AUTH_RATE_LIMIT_STORAGE_KEY]: persisted }, {}), env);
+    const after = await rebooted.fetch(
+      new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, { method: 'POST', body: JSON.stringify({ op: 'snapshot', keys: [key] }) }),
+    );
+    expect(Object.keys((await after.json<AuthLimitResponseBody>()).blocks)).toEqual([key]);
   });
 });
 

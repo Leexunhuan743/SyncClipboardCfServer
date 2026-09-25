@@ -288,7 +288,11 @@ id=1306 type=1 size= 3.681 MiB  createUTC=2026-09-24T14:33:06.424Z
 ```
 
 ⇒ 账号级峰值 28,028/天 = Free 额度（100,000/天）的 **28%**；单 Worker 峰值 24,212/天。
-按此折算，10 万/天约合 **4 台**常驻客户端（`README.md` 里 17,280/台 的估算是 5 台 —— 见 §5.4）。
+按 **17,280 次/台/天**（每 10 s 一次探活 × 2 个请求，2026-09-25 按上游客户端源码核实）折算，
+单 Worker 峰值约合 **1.4 台**常驻客户端，10 万/天的上限约 **5.8 台**；DO 侧
+`inboundWebsocketMsgCount ≈ 5,760/天`（一个客户端的 15 s keepalive）是**独立印证**。
+⚠️ **2026-09-25 更正**：本节此前写「10 万/天约合 4 台」—— 那是拿**整个部署**的日请求量去除额度，
+把单台口径搞错了（§5.4 已重写）。
 
 ### 3.4 Cron 实测（`workersInvocationsScheduled`）
 
@@ -523,10 +527,24 @@ alarm 会持续唤醒 DO，这也是 §3.5 里 duration 24 小时/天、11,000 G
 ⇒ **若要把 DO duration 从 85% 压下来，Hibernation API 是唯一直接杠杆**（改动量在 DO 侧，
 不影响协议面）。**本轮未实施、未评估**。
 
-### 5.4 README 的"17,280 次/客户端/天"估算偏乐观
+> **2026-09-25 追加**：该杠杆已在 `perf/free-plan` 分支落地（ADR D42），并在**真实边缘**做了 A/B 实测：
+> 同形态客户端下，分支的 DO 每连接秒只计满速的 **0.025%**、master（标准 API）**≈104%**（约 4,100×，
+> 见 `docs/do-hibernation-plan.md` §8.6）。**尚未合并** ⇒ 生产此刻仍是上面的 85%。
 
-实测单 Worker 单日峰值 **24,212 次**（2026-09-22）⇒ 10 万/天约合 **4 台**，而非 5 台。
-差异可能来自界面侧轮询/静态资源请求与客户端探活叠加（未细分，故只作**估算口径**登记）。
+### 5.4 「每客户端 17,280 次/天」口径**成立**；此前据此反推的「约 4 台」不成立（2026-09-25 更正）
+
+- **单台口径（权威）**：`TestAliveHelper` 每 **10 s** 调一次 `TestConnectionAsync` →
+  `OfficialAdapter.TestConnectionAsync` = WebDAV `Test`（`PROPFIND /`）+ 版本检查（`GET /api/version`）
+  ⇒ **每次 2 个请求** ⇒ `86400 / 10 × 2 = 17,280 次/台/天`。2026-09-25 按上游客户端源码逐行核实
+  （`SyncClipboard.Core/RemoteServer/TestAliveHelper.cs`、`Adapter/OfficialServer/OfficialAdapter.cs`）
+  ⇒ 10 万/天的上限 = **约 5.8 台**（第 6 台 = 103,680 ⇒ 超限）。
+- **本部署实测**：单 Worker 单日峰值 **24,212 次**（2026-09-22）⇒ 约合 **1.4 台**常驻客户端，
+  **不是 4 台**。本节此前（以及 `README.md`、`docs/free-plan-audit.md` §6.1 的 M9 行）写的「约 4 台」
+  是把**整个部署**的日请求量当成了单台口径 —— 口径错误，现已更正。
+- **独立印证**：DO 侧 `inboundWebsocketMsgCount ≈ 5,760/天`（单客户端的 15 s keepalive 条数，
+  见 `docs/do-hibernation-plan.md` §2）与本节的「约 1.4 台」同侧。
+- 这两个端点都**不消耗** D1/R2/DO 额度（`PROPFIND /` 返回静态 multistatus；`GET /api/version` 只读
+  环境变量），消耗的只是 Worker 请求数本身。
 
 ### 5.5 部署态 var 与仓库 `[vars]` 的差异（非缺陷）
 

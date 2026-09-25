@@ -598,7 +598,7 @@ charges for the entire time the WebSocket is connected**"；脚注 5 —— dura
 | DO 请求数 | M6 | 峰值 **6,685/天**（09-22：alarm 5,783 + http 902），Free 额度 100,000/天 |
 | R2 Class A/B 的真实计数 | **M7** | 5 天 **Class A = 2,354**（PutObject 686 + ListObjects 1,667 + PutBucket 1）、**Class B = 1,578**（GetObject 1,452 + HeadBucket 126）；另 DeleteObjects 619 次按官方定价表不计 A/B（单日最大 09-21：ListObjects 1260 / PutObject 662 / GetObject 1293） |
 | D1 行读 / 行写日用量 | — | 峰值 行读 **675,016/天**（额度 5,000,000）、行写 **19,826/天**（额度 100,000）；库 290,816 B |
-| 逐日请求量 | M9 | 单 Worker 峰值 **24,212/天**（09-22）⇒ §4.1 的「5 台」应改为约 **4 台**（17,280/台 的估算偏乐观约 25%）；账号级峰值 28,028/天 |
+| 逐日请求量 | M9 | 单 Worker 峰值 **24,212/天**（09-22）⇒ 按 **17,280 次/台/天**（2026-09-25 按上游源码核实）约合 **1.4 台**常驻客户端；§4.1 的「5.79 台上限」**不变**。⚠️ 2026-09-25 更正：原写「应改为约 4 台」是把**整个部署**的日请求量当成了单台口径；DO 侧 `inboundWebsocketMsgCount ≈ 5,760/天`（一个客户端的 15 s keepalive）独立印证约 1 台 WS 客户端。账号级峰值 28,028/天 |
 
 **由实测得出的三条口径修正**（已同步进 `README.md` 与 `docs/design.md` 的 D40/§7.1/§9/§13）：
 

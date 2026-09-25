@@ -71,6 +71,35 @@ interface PersistedAuthLimits {
   limits: Record<string, AuthLimitState>;
 }
 
+/** 单条限速状态的形状判据（`AuthLimitState` 的三个数值字段）。 */
+function isAuthLimitState(value: unknown): value is AuthLimitState {
+  if (typeof value !== 'object' || value === null) return false;
+  const s = value as { windowStart?: unknown; count?: unknown; blockedUntil?: unknown };
+  return typeof s.windowStart === 'number' && typeof s.count === 'number' && typeof s.blockedUntil === 'number';
+}
+
+/**
+ * 落盘快照的形状守卫：只认 `{ persistedAt, limits }`，其余（含**上一版的平铺形态**
+ * `Record<string, AuthLimitState>`、以及任何损坏值）一律返回 `null`。
+ *
+ * 为什么需要它：形态在本分支里改过一次（旧版直接落平铺表），而 DO 存储里可能还留着旧值 ——
+ * 没有守卫时 `Object.entries(saved.limits)` 会抛 `TypeError`，只能靠构造函数里那个
+ * `catch {}` 兜住（**结果相同、但错误被静默**）。有了守卫，这条路径的语义是显式的：
+ * 「形态不认识 ⇒ 按空表起算」，并且调用处可以据此告警一次。
+ * 代价与既有取舍同侧：计数归零最坏等于「多给阈值次失败」；下一次落盘即写回新形态（自愈）。
+ */
+function readPersistedAuthLimits(raw: unknown): PersistedAuthLimits | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const v = raw as { persistedAt?: unknown; limits?: unknown };
+  if (typeof v.persistedAt !== 'number') return null;
+  if (typeof v.limits !== 'object' || v.limits === null) return null;
+  const limits: Record<string, AuthLimitState> = {};
+  for (const [key, value] of Object.entries(v.limits as Record<string, unknown>)) {
+    if (isAuthLimitState(value)) limits[key] = value;
+  }
+  return { persistedAt: v.persistedAt, limits };
+}
+
 // 长轮询单连接队列上限（F9 第四类封顶）：无上限时一次写可让 N 条连接各积压整条消息
 // （实测 30 连接 × 1.6MB = 48MB，单连接累积 4.5MB）。超限按「服务端关闭」语义结束该连接
 // （下一次轮询 204，客户端据此停止轮询），不发明新的状态码。
@@ -134,8 +163,10 @@ export class SyncClipboardHub {
   // ⚠️ hibernate 会**常规性**地清空这份内存态（每段静默约 10 s），而封锁窗口是分钟级 ⇒ 落盘
   // 不再是「尽力而为」，而是封锁语义的一部分（详见 persistAuthLimits 与 docs/design.md D42）。
   private authLimits = new Map<string, AuthLimitState>();
+  /** 快照加载的 memo（见 loadAuthLimitsOnce） */
+  private authLimitsLoaded: Promise<void> | null = null;
   private authFailuresSincePersist = 0;
-  /** 上次落盘时刻（随快照一起落盘，唤醒后由构造函数恢复 ⇒ 节流判据跨 hibernate 仍然有效） */
+  /** 上次落盘时刻（随快照一起落盘，唤醒后由快照恢复 ⇒ 节流判据跨 hibernate 仍然有效） */
   private authLimitsPersistedAt = 0;
   /** 上次落盘时各 key 的封锁截止时间（识别「封锁开始/延长」这一实质变化；唤醒后同样从快照恢复） */
   private authLimitsPersistedBlocks = new Map<string, number>();
@@ -145,21 +176,41 @@ export class SyncClipboardHub {
   constructor(state: DurableObjectState, env: Bindings) {
     this.state = state;
     this.env = env;
-    // 低频落盘的计数在 hibernate 唤醒后恢复（构造函数每次唤醒都会重跑）。
-    state.blockConcurrencyWhile(async () => {
+  }
+
+  /**
+   * 落盘快照的**按需**加载（只在首次用到限速状态时读一次）。
+   *
+   * 为什么不在构造函数里读（2026-09-25 微优化，理由带实测）：hibernate 之后构造函数
+   * **每次唤醒都会重跑**，而绝大多数唤醒根本用不到限速状态 —— 客户端 15 s keepalive、每次广播、
+   * 每条连接事件都会唤醒它（合并后估算 1.2 万–2.9 万次唤醒/天）⇒ 原来的写法就是同量级的 storage 读，
+   * 而且给**每次**唤醒都加一个存储往返的延迟，这些读全部白费。改成按需后：**只有**真正要判定或
+   * 查询限速的那两条入口（`handleAuthRateLimit` / `connectionAuthFailure`）会读。
+   * memo 一个 Promise：DO 单线程下并发调用共享同一次读取；读失败不重试（与旧写法同侧 ——
+   * 该实例按空表起算，下一次唤醒是新实例、会重新读）。
+   */
+  private loadAuthLimitsOnce(): Promise<void> {
+    this.authLimitsLoaded ??= (async () => {
       try {
-        const saved = await state.storage.get<PersistedAuthLimits>(AUTH_RATE_LIMIT_STORAGE_KEY);
-        if (saved) {
-          this.authLimits = new Map(Object.entries(saved.limits));
-          this.authLimitsPersistedAt = saved.persistedAt;
-          for (const [key, limit] of this.authLimits) {
-            if (limit.blockedUntil > 0) this.authLimitsPersistedBlocks.set(key, limit.blockedUntil);
+        const raw: unknown = await this.state.storage.get(AUTH_RATE_LIMIT_STORAGE_KEY);
+        const saved = readPersistedAuthLimits(raw);
+        if (saved === null) {
+          if (raw !== undefined && raw !== null) {
+            // 上一版遗留的平铺形态（或损坏值）：按空表起算，下一次落盘即写回新形态
+            console.warn('[hub] authRateLimits 快照形态不识别（上一版遗留或损坏）⇒ 按空表起算');
           }
+          return;
+        }
+        this.authLimits = new Map(Object.entries(saved.limits));
+        this.authLimitsPersistedAt = saved.persistedAt;
+        for (const [key, limit] of this.authLimits) {
+          if (limit.blockedUntil > 0) this.authLimitsPersistedBlocks.set(key, limit.blockedUntil);
         }
       } catch {
         /* 读取失败按空表起算 */
       }
-    });
+    })();
+    return this.authLimitsLoaded;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -529,6 +580,7 @@ export class SyncClipboardHub {
         status: 400,
       });
     }
+    await this.loadAuthLimitsOnce();
     const now = Date.now();
     // 限速参数可由仓库变量覆盖（**不建议改**）：DO 与 Worker 必须读**同一套**取值，否则会出现
     // "Worker 认为没封锁、DO 认为封锁"的分裂判定（两边都用 src/rateLimit.ts 的同一函数）。
@@ -622,7 +674,22 @@ export class SyncClipboardHub {
   async alarm(): Promise<void> {
     this.sendPings();
     this.closeIdleClients();
-    await this.scheduleHeartbeat();
+    this.rearmHeartbeatInAlarm();
+  }
+
+  /**
+   * `alarm()` 内的重排：**不读** `getAlarm()`。
+   *
+   * 官方语义：`alarm()` 正在执行时 `getAlarm()` 返回 `null`（除非期间又 `setAlarm` 过）——
+   * 本仓库的防重排判据（`scheduleHeartbeat`）本来就建立在同一条语义上，所以「我在 alarm 里」
+   * 本身就等价于「平台上没有待触发的 alarm」⇒ 那次 storage 读是多余的（按 15 s 节拍 = 5,760 读/天）。
+   * 边界：若本轮 `sendPings` / `closeIdleClients` 期间某个连接事件同步调过 `scheduleHeartbeat`
+   * 并排了 alarm，这里会把它**覆盖**成「此刻 + 15 s」—— 两个时间只差几毫秒，语义等价（心跳仍是
+   * 15 s 节拍，且不会出现两个 alarm：存储层只有一个 alarm 槽）。
+   */
+  private rearmHeartbeatInAlarm(): void {
+    if (this.clientCount() === 0) return;
+    void this.state.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
   }
 
   private clientCount(): number {
@@ -745,6 +812,8 @@ export class SyncClipboardHub {
         /* 读取失败按未授权处理 */
       }
     }
+    // 只有走到「要判定/推进限速」这一支才需要快照（有效 token 在上面已放行 ⇒ 该路径零存储读）
+    await this.loadAuthLimitsOnce();
     const now = Date.now();
     const keys = authLimitKeys(request, basicAuthUsername(request));
     for (const key of keys) {

@@ -597,12 +597,29 @@ query($acc:String!,$ns:String!,$a:Date!,$b:Date!){
 ⚠️ **`namespaceId` 必须取「实验部署那个 Worker」的命名空间**，**不是**生产命名空间
 （`0be018a796d8455f9b3786b35d265cd2`，`docs/free-plan-account-facts.md` §1.3）—— 拿生产数字冒充实验读数等于没测。
 
-**预期看到什么才算成功**（对照基线 `duration` = 11,014 / 11,103 / 10,970 GB-s/天、`activeTime` = 86,049 / 86,743 / 85,707 s/天）：
+**预期看到什么才算成功**（对照基线 `duration` = 11,014 / 11,103 / 10,970 GB-s/天、`activeTime` = 86,049 / 86,743 / 85,707 s/天）。
 
-1. 逐日 `duration` **显著低于** 11,000 GB-s（**幅度由 §4.1 的 B ÷ A 与臂 D 决定，本文件不预设数字**）；
-2. `activeTime` 从 ≈86,000 s/天 掉到**远低于**该值（若仍 ≈86,000 ⇒ 对象从未 hibernate，P1 无效）；
-3. 逐日 `duration` **不超过** Free 额度 13,000 GB-s/天；
-4. 若 P4 一并落地，`inboundWebsocketMsgCount` / `outboundWebsocketMsgCount` 应同步下降（现在 ≈6,246 / 7,263 条/天）。
+> **2026-09-25 更新（旁挂 A/B 实测后）**：下面 1/2 条从「显著低于」改成带数字的判据，
+> 并新增第 4 条（DO 请求数）。实测读数与复现配方见 §8.7。
+
+1. 逐日 `duration` **< 50 GB-s**（预期 **3–11 GB-s/天**；实测每连接秒只计满速的 0.025%）。
+2. `activeTime` **< 1,000 s/天**（预期 **约 22–90 s/天**；若仍 ≈86,000 ⇒ 对象从未 hibernate，P1 无效）。
+3. 逐日 `duration` **不超过** Free 额度 13,000 GB-s/天。
+4. **新增**：逐日 DO **请求数**（`durableObjectsInvocationsAdaptiveGroups` 的 `sum.requests`）——
+   合并后每个入站 WS 消息都是**一次调用**（实测：`wsIn` 不再统计它们，见 §8.7(c)），
+   预期 **1.2 万–2.9 万/天**（alarm 5,760 + 每客户端 5,760 keepalive + negotiate/广播），
+   判据 **< 100,000/天**（Free 额度）：
+   ```graphql
+   query($acc:String!,$ns:String!,$a:Date!,$b:Date!){
+     viewer{ accounts(filter:{accountTag:$acc}){
+       durableObjectsInvocationsAdaptiveGroups(limit:1000,
+         filter:{namespaceId:$ns,date_geq:$a,date_leq:$b}){
+         sum{requests errors} dimensions{type status}}}}}
+   ```
+5. ⚠️ **`inboundWebsocketMsgCount` / `outboundWebsocketMsgCount` 的读法变了**：Hibernation API 下
+   入站消息走 DO 调用 ⇒ `wsIn` **会掉到 0 附近**（实测探针命名空间 `wsIn = 0`、`wsOut = 47`），
+   这不是故障；客户端的存活改由第 4 条的请求数与客户端侧是否重连来观察。
+   （原第 4 条「若 P4 落地则 wsIn/wsOut 下降」随之作废 —— P4 未采纳，见 §5 的 P4 段。）
 
 **(c) 要盯的回归症状**：
 
@@ -611,7 +628,7 @@ query($acc:String!,$ns:String!,$a:Date!,$b:Date!){
 | 客户端报 **1006** 异常关闭 | `webSocketClose` 漏了 `ws.close(code, reason)`（§6①） |
 | 「一唤醒就全体掉线」 | `lastSeen` 未迁到 attachment，首轮 `closeIdleClients` 误杀（§6⑥） |
 | 每 **30 s** 一次的重连 | 心跳（`alarm` → `ws.send(ping)`）未送达 hibernated WS（`test/signalr.test.ts:125` 会先红） |
-| DO 请求里 `type=alarm` 反而**变多** | `getWebSockets()` 含 `CLOSING` ⇒ `clientCount()` 偏高、心跳多排（§8.2 末） |
+| DO 请求里 `type=alarm` 反而**变多** | `getWebSockets()` 含 `CLOSING` ⇒ `clientCount()` 偏高、心跳多排（§8.2 末）。⚠️ **2026-09-25 实测排除**：客户端全部离开后静默 8 分钟，两个命名空间的 `requests` 与 `duration` 增量**都是 0**（§8.7(c)） |
 
 ### 8.6 回滚
 
@@ -622,3 +639,51 @@ query($acc:String!,$ns:String!,$a:Date!,$b:Date!){
 - **状态**：`serializeAttachment` 写的 attachment 随连接生命周期消失（官方：「If either side closes the connection,
   attachments are lost」）⇒ 无需主动清理；平台上可能残留一个 pending alarm，而老代码的 `setAlarm` 会**覆盖**它
   ⇒ 无需处理（要立刻清干净可 `state.storage.deleteAlarm()`，**不必须**）。
+
+### 8.7 真实边缘 A/B 与第二轮微优化（2026-09-25 补充，**已实测**）
+
+**(a) 旁挂 A/B：分支 vs master**（同一台机器、同一套客户端脚本、同一 runtime 设置 —— 唯一差别是 Hub 实现）
+
+| | 分支（Hibernation API） | master（标准 API，对照） |
+|---|---|---|
+| 客户端连接秒数 | 574 s（6 条连接） | ≈420 s（6 条连接） |
+| `duration` | **0.0184 GB-s** | **55.65 GB-s** |
+| `activeTime` | **0.144 s** | **434.7 s** |
+| 每连接秒占满速 | **0.025%** | **≈104%**（434.7 s ≈ 客户端在线时长） |
+
+⇒ **每连接秒约 4,100× 差距**，累计 3,021×（0.0184 vs 55.65）。两版 `compatibility_date` 与 flags
+逐字相同（`2025-09-01` + `nodejs_compat`），源码分别取 `perf/free-plan` 的 `6498bf5` 与
+`origin/master` 的 `41d51b2`（后者在**独立 worktree** 里部署，主仓库工作树未被触碰）。
+
+**(b) 交付物（保留，供后续复测）**：`syncclipboard-freeplan-probe`（分支，DO 命名空间
+`3cf57bbeba1e4ed7bba394767d96c3ed`）与 `syncclipboard-master-probe`（master，
+`eb352d7cc9b24155bcd3dea5e6e22293`），各自独立 D1（`e6faf56d-4e8e-47b8-b50f-0c4ca5a806ed` /
+`ee4f2f8d-9369-4f77-bb29-691f00026ed6`），均**不绑 R2、不配 Cron**；生产 `syncclipboard-cf-server`
+全程未动（部署列表最新仍是 2026-09-22T17:04:55Z）。
+
+**(c) 同一环境下的其它实测**
+
+| 项 | 结果 |
+|---|---|
+| **P3：长轮询挂住 5 min** | `duration` **+39.69 GB-s** = 满速 **103%** ⇒ **长轮询在线时收益归零**（这就是 P2 的价值所在） |
+| **P3：SSE 挂住 5 min** | **+7.72 GB-s** = 满速 **20%** ⇒ 只吃掉 1/5。客户端降级链是 `WS → SSE → 长轮询` ⇒ 前两档都还能省 |
+| **静默踢线** | 连接后不发任何消息：分支与 master **都是 75 s、code 1000** ⇒ 迁移未破坏静默回收，客户端看到的是**干净关闭**（不是 1006） |
+| **心跳泄漏** | 无客户端静默 8 min：两个命名空间 `requests` / `duration` 增量均为 **0** ⇒ `clientCount()` 的 `CLOSING` 隐患在真实运行时不存在 |
+| **响应时间** | 冷/热各测：分支热态 p50 **111–263 ms**、master **124–252 ms**（冷态 0.6–1.1 s 含本机代理 RTT）⇒ **无系统性差异**、无延迟回归 |
+| **界面实时链路** | `login → hub-ticket → WS` 建立后，一次真实 PUT 的广播**当场送达界面 WS** ✓ |
+| **生产流量构成** | 命名空间调用 `type` 拆解：`alarm` 3,089 + `http` 106（**无长轮询流量**）⇒ 当前客户端构成下 P1 收益成立 |
+
+**(d) 第二轮微优化（同轮改动，均落在 `src/durable/SyncClipboardHub.ts`）**
+
+1. **限速快照改按需加载**（`loadAuthLimitsOnce`）：hibernate 后构造函数**每次唤醒都重跑**，而多数唤醒
+   （客户端 keepalive / 广播 / 连接事件）根本用不到限速状态 ⇒ 旧写法每次唤醒都多一次 storage 读**和**
+   一个往返延迟。现在只有 `handleAuthRateLimit` 与 `connectionAuthFailure` 两条入口会读
+   （**有效 token 的连接路径零存储读**）。
+2. **`alarm()` 内重排不再读 `getAlarm()`**（`rearmHeartbeatInAlarm`）：alarm 正在执行时平台上必无
+   pending alarm（防重排判据本来就建立在这条语义上）⇒ 省 5,760 读/天。
+3. **落盘形态的形状守卫**（`readPersistedAuthLimits`）：只认 `{persistedAt, limits}`。
+   ⚠️ **可预期的升级事件**：形态在本分支里改过一次，生产 DO 存储里是**旧版平铺形态** ⇒
+   部署后的第一次唤醒会读到不认识的形态，**按空表起算**并在日志留一条
+   `[hub] authRateLimits 快照形态不识别…` 告警，下一次落盘即写成新形态（自愈）。
+   代价与既有取舍同侧（最坏「多给阈值次失败」）；**不是缺陷，但要知道它会发生**。
+   测试面：`test/rate-limit.test.ts` 新增两条（新形态被采信 = 正对照；旧形态按空表起算 + 自愈到新形态）。
