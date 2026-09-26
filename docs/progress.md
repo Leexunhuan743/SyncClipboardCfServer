@@ -13114,5 +13114,72 @@ SSE 便宜得多。官方客户端的降级链是 `WS → SSE → 长轮询`，�
     （`最近一次清理只留下「开始」时间…通常是被平台终止（Cron 预算超限）…`）—— 旧实现这里显示「清理正常」；
   · 触发一轮 `/__scheduled` 后双戳相等 ⇒ 渲染 **「清理正常」**，title 为「最近一次完成：…」。
 
+## 188. 合并前审查（第二轮）：行字节预算改成"每批按候选字节硬约束"、R2 列举逐页记账、V2 抽屉补齐"未完成"判据（2026-09-26）
 
+> 输入：另一会话的交叉审查（工件在**本机** `.audit-forms/`：`report.md` + 判别性探针，**不在版本库内**）。
+> 三条意见中「完成戳缺失」与 §187 的 F2 同源，本轮修的是**它没覆盖干净**的几处残缺，外加把 §187 的
+> F1（首批 5 条探路 + 均值收窄）换成**更强且无参数**的形态 —— 探路批次只是把「首批越界」改小，
+> 均值仍可被"先小后大"的异构行骗过（§188.1 第 1 行）。
 
+| 意见 | 核实（以代码为准） | 处置 |
+|---|---|---|
+| **行字节预算仍可被异构行骗过**（High）：`drainBatches` 的每批条数由**已处理行的均值**外推 ⇒ 首批 5 条小行给出近乎 0 的均值 ⇒ 下一批按 500 条取 | **成立**：审计探针实测单轮 materialize **6,553,600 字节 = 25 × 预算**（105 条库：前 5 条空文本 + 其后 100 条各 64 KiB）。§187 的 F1 只约束了**首批**，均值外推这条路径原样保留 | **修**：每批先跑一条**只读**的 `length(Text)` 扫描量出候选逐行字节，再按前缀和决定取回几条 ⇒ 与行大小是否均匀**无关**；`firstBatchLimit` / `FIRST_BATCH_ROWS` 随之删除 |
+| **R2 列举"先列完再记账"**（Medium）：`historyGroups` 整桶列举结束后一次性 `spend(pages)` ⇒ 页数超过剩余额度时那次列举**已经发生**，记账事后补 | **成立**：审计探针 810 页形态实测记账 **818/800** 且仍写完成戳（自设预算被越过） | **修**：`listHistoryObjectsByDir(onPage)` 改为**逐页回调**（付不起即中断并返回 `aborted`）⇒ `historyGroups` 返回 `null` ⇒ 该阶段本轮 `truncated`，**且不删任何东西**（只列了一半的映射会把**活目录**当孤儿 ⇒ 误删） |
+| **记账可越 800 一格**（本轮新增，由上面那条的回归用例暴露）：`RESERVED_AFTER['orphans'] = 0` ⇒ 最后阶段能一路吃到 800，而**轮尾落库**（完成戳 + `lastError` + 四个游标 = 1 条 `setMetaValues`）再无条件扣 1 | **成立**：修完逐页记账后新用例仍断言到 `subrequests = 801` | **修**：新增 `SUBREQUESTS_ROUND_END = 1` 并计入**每个阶段**的预留（`RESERVED_AFTER` 的累加起点）⇒ 轮尾那次写永远付得起，记账不再越界 |
+| **README 把"生产 DO 用标准 API"写成了完成时**（Medium）：Hibernation 迁移仍在本分支上，README 那段断言线上已是迁移后形态 | **成立**（分支与 master 两态在文档里没有分开） | **修**：改写为「线上现状（master 形态）**vs** 本分支已迁 Hibernation」两态并列 + 边界（SSE/长轮询仍阻止休眠）+ 合并后以线上实测为准 |
+| **V2 抽屉的「未完成」判据缺失**（Medium）：V1 `stats.js` 已按「完成戳 ≥ 尝试戳」判定，V2 `drawer.js` 却只看**完成戳是否存在** ⇒ 「上一轮成功、这一轮中断」时仍显示已完成 | **成立**（§187 给 V2 只补了「上次完成」这一行事实，没带判据） | **修**：`drawer.js` 补同一条判据 + 新增「最近一轮」行（未完成 ⇒ warn + 文案点明"多为被平台终止，下一轮从游标续跑"） |
+
+### 188.1 落地内容
+
+**代码**
+- `src/db.ts`：新增 `scanSoftDeleteCandidateBytes(cutoffMs, limit, fixedBytes)` —— 一条**只读** `SELECT length(Text)`
+  扫描，列顺序与 `softDeleteExpiredRecords` / `trimToMaxCount` 的 `ORDER BY MAX(LastModified, LastAccessed), ID`
+  **完全一致**（顺序不一致 ⇒ 量到的就不是下一批要取的那些行）。`cutoffMs = null` 表示"条数上限"形态（把
+  收藏/置顶排除在候选之外，与 `trimToMaxCount` 同款豁免）。SQLite 的 `length()` 按**码点**计（JS 侧用 UTF-16 单元）
+  ⇒ 含 emoji 的文本最多低估 2 倍，仍满足"数量级约束"（注释已就地写明）。
+- `src/cleanup.ts`：`BatchPhaseSpec.fetchBatch` 签名改为 `(limit, byteLeft)`；`drainBatches` 把**本阶段剩余**的
+  行字节预算交给它；新增 `rowsWithinBytes(sizes, byteLeft)`（前缀和取整）；软删/条数上限两阶段的 `queryCost`
+  由 1→2 / 2→3（多出来的就是那条扫描语句），`fetchBatch` 里"无候选 ⇒ `hasMore: false`"与"预算挡住 ⇒
+  `hasMore: true`"分开（前者不是截断）；`historyGroups(run, phase)` 带阶段 + 逐页回调，返回 `null` 表示"列举被中断"，
+  `sweepWorkingDirs` / `cleanOrphans` 各自把它当"本轮不推进"；`SUBREQUESTS_ROUND_END` 计入预留。
+  删除：`FIRST_BATCH_ROWS` 常量、`firstBatchLimit` 字段与其在两处 spec 里的赋值。
+- `src/storage.ts`：`listHistoryObjectsByDir(onPage?)` 逐页回调 + `aborted` 返回位。
+- `public/ui_v2/js/ui/drawer.js`：抽屉的清理事实补「最近一轮」与完成戳判据（判据与 V1 `stats.js` 同款）。
+
+**测试（本轮 +2 用例，1 处旧注释/断言同步）**
+- `test/cleanup-budget.test.ts` fixture 新增 `expiredSizes` 逐行大小旋钮（`add()` 支持逐行文本覆盖）；
+  `CountingBucket` 新增 `pageSize`（默认 1000，与 R2 一致）。
+- 新增「异构行：首批 5 条小行不能让下一批 64 KiB 行越过 256 KiB 预算」——单轮 materialize ≤ 预算、
+  首轮 `expired < 50`、保留期阶段标记截断，并在 **60 轮内收敛到 105 条**（预算不造成永久漏删）。
+- 新增「R2 分页逐页记账：页数超预算时中断列举，且不越 800」——断言 `subrequests ≤ 800`、`listCalls ≤ 800`、
+  且 `deleteCalls === 0`（中断就**不删**，这是防误删的关键）。
+- §187 的 F1 用例注释与「至少 5 条」断言按新机制改写（探路批次已不存在，改为"至少推进 10 条"）。
+
+### 188.2 反证（修复前的红）
+
+审计探针（`.audit-forms/probes/R1/cleanup-overflow.test.ts`，**不在版本库**）在**修复前**的树上量到
+`materializedTextBytes = 6,553,600`（= 25 × 256 KiB）与 `subrequests = 818`（> 800）——与本轮新增的两条用例所指的
+是同一批观测。修复后那两份探针**按设计会失败** —— 这正是反证：它们在**修复前**的树上通过（探针自己打印的
+`materializedTextBytes = 6,553,600`、`subrequests = 818` 就是被审计行为），修复后红（实测
+`expect(result.expired).toBe(105)` 收到 **8**）。但它们**被 vitest 扫进了产品套件**：`.audit-forms/` 虽是点目录，
+`vitest.config.ts` 的 `exclude` 当时只写了 `.audits/` ⇒ 全量套件多出 **1 个文件 / 2 条必然失败的用例**
+（23 文件 / 475 用例 / 2 失败）。本轮把 `'**/.audit-forms/**'` 也加进 `exclude`（该文件的注释本就声明
+"审计工件不纳入产品套件"，这次是把它落到**实际目录名**上）⇒ 复跑回到 **22 套件 / 473 用例 / 失败 0**
+（较 §187 的 471 **+2** = 本轮新增的两条）。
+
+### 188.3 门禁与复验
+
+- 静态：`tsc --noEmit` **0**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0**；
+  `node --check test/manual/{probe,probe-ui-v1,states,shoot}.mjs` → **0/0/0/0**。
+- 全量套件（8787 dev server + `BASE` + `--no-file-parallelism`）：**22 套件 / 473 用例 / 失败 0 / 退出码 0**
+  —— 较 §187 的 471 条 **+2**（异构行、R2 分页逐页记账各一条）。第一次跑（`exclude` 只排 `.audits/` 时）是
+  **23 文件 / 475 用例 / 2 失败**，两条失败全部来自 `.audit-forms/probes/R1/cleanup-overflow.test.ts` ⇒ §188.2。
+- 浏览器探针（本轮改了 V2 界面 ⇒ DoD 第 5 条）：四档**全部**退出码 0、`CONSOLE ERRORS none`、
+  `FAILED REQUESTS none`、findings/problems **0** —— V2 `probe.mjs --url /ui_v2/app/` 的 1440×900（CLS 0.0019）
+  与 390×844（CLS 0.0073）、V1 `probe-ui-v1.mjs` 的 1440×900 与 390×844（`AUDIT SUMMARY findings=0`）。
+- V2 抽屉那条新判据**两向都在真实浏览器里验过**：
+  · 只留「尝试戳」（删掉 `cleanup:lastCompletedAt`）⇒ 「上次完成 **无（上轮没跑到收尾）**」+「最近一轮
+    **未完成（多为被平台终止，下一轮从游标续跑）**」，两行 `data-tone="warn"`（文字 + tone，不靠颜色单传）；
+  · 再触发一轮 `/__scheduled` ⇒ 「上次尝试」「上次完成」同为 `2026-09-26 18:02:30`、「最近一轮 **已完成**」、无 tone。
+  · 做法：`node --experimental-sqlite` 直改本地 dev D1（`.wrangler/state/.../9ba2b04b*.sqlite` 的 `Meta` 一行），
+    避免为一条断言再起一个 dev server（**只允许一个 `wrangler dev`**）；未动 `src/**`，验完由 `/__scheduled` 复原。

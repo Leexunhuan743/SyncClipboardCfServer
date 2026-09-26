@@ -595,6 +595,30 @@ export class HistoryDb {
     return res?.c ?? 0;
   }
 
+  // **候选行的逐行字节估算**（只读；不 materialize 行内容）：清理据此按字节预算决定取回几条。
+  // 与 `softDeleteOldest` 的候选判据、排序**逐字一致**（同一 WHERE / ORDER BY），否则按顺序取回的
+  // 前缀就不是这里量过的那批。`cutoffMs = null` 即"条数上限"形态（与 trimToMaxCount 同参）。
+  // ⚠️ SQLite 的 `length()` 按**码点**计，而 JS 侧估算用 UTF-16 单元 ⇒ 含增补平面字符（emoji 等）的
+  // 文本会被低估最多 2 倍；这里是**估算权重**（见 SOFT_DELETE_ROW_BYTES_PER_ROUND），不影响数量级约束。
+  async scanSoftDeleteCandidateBytes(
+    cutoffMs: number | null,
+    limit: number,
+    fixedBytes: number,
+  ): Promise<number[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT length(Text) + length(FilePaths) + length(Hash) + length(TransferDataFile) + ?3 AS bytes
+         FROM HistoryRecords
+         WHERE UserId = ?1 AND IsDeleted = 0 AND Stared = 0 AND Pinned = 0
+           AND (?2 IS NULL OR (LastModified < ?2 AND LastAccessed < ?2))
+         ORDER BY MAX(LastModified, LastAccessed) ASC, ID ASC
+         LIMIT ?4`,
+      )
+      .bind(HARD_CODED_USER_ID, cutoffMs, fixedBytes, limit)
+      .all<{ bytes: number }>();
+    return (res.results ?? []).map((r) => r.bytes);
+  }
+
   // 超量裁剪：软删最旧的非收藏/非置顶记录（上游 SetRecordsMaxCount → QueryDeleteOrderBy = MAX(LastModified, LastAccessed)）
   async trimToMaxCount(limit: number, nowMs: number): Promise<HistoryRecordEntity[]> {
     return this.softDeleteOldest(HARD_CODED_USER_ID, null, nowMs, limit);

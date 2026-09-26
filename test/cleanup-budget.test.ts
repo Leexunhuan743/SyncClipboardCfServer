@@ -52,12 +52,15 @@ class CountingBucket {
 
   constructor(readonly meter: SubrequestMeter) {}
 
+  /** 每页键数（默认 1000，与 R2 一致）；调小即可在少量对象上复现"页数超过子请求预算" */
+  pageSize = 1000;
+
   async list(opts: { prefix?: string; cursor?: string } = {}) {
     this.listCalls++;
     this.meter.charge();
     const keys = [...this.objects.keys()].filter((k) => k.startsWith(opts.prefix ?? '')).sort();
     const start = opts.cursor ? Number(opts.cursor) : 0;
-    const page = keys.slice(start, start + 1000);
+    const page = keys.slice(start, start + this.pageSize);
     const next = start + page.length;
     return {
       objects: page.map((k) => ({ key: k, size: this.objects.get(k) ?? 0 })),
@@ -111,6 +114,9 @@ interface Backlog {
   pinned?: number;
   /** 每条记录 `Text` 的字节数（默认 0 = 空文本）：用来让**行字节预算**真正生效（大记录库形态） */
   textBytes?: number;
+  /** **逐行**大小（按记录加入顺序，作用在过期记录上；缺项回落到 `textBytes`）——用于复现「先小后大」的异构行：
+   *  首批小行不得成为后续大行的"均值许可"（审查 R1 slot 4）。 */
+  expiredSizes?: number[];
 }
 
 interface Fixture {
@@ -147,12 +153,22 @@ function fixture(backlog: Backlog): Fixture {
        (UserId, Type, Text, Size, TransferDataFile, FilePaths, Hash, CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted)
      VALUES ('default_user', 0, ?7, ?8, '', '[]', ?1, ?2, ?3, ?3, ?4, ?5, 0, ?6)`,
   );
-  const add = (hash: string, lastModified: number, stared: number, pinned: number, isDeleted: number) => {
-    insert.run(hash, lastModified, lastModified, stared, pinned, isDeleted, rowText, rowText.length);
+  const add = (
+    hash: string,
+    lastModified: number,
+    stared: number,
+    pinned: number,
+    isDeleted: number,
+    text = rowText,
+  ) => {
+    insert.run(hash, lastModified, lastModified, stared, pinned, isDeleted, text, text.length);
     bucket.objects.set(`history/Text_${hash}/${hash}.bin`, 8);
   };
 
-  for (let i = 0; i < backlog.expired; i++) add(`EXP${i}`, expiredAt, 0, 0, 0);
+  for (let i = 0; i < backlog.expired; i++) {
+    const size = backlog.expiredSizes?.[i];
+    add(`EXP${i}`, expiredAt, 0, 0, 0, size === undefined ? rowText : 'x'.repeat(size));
+  }
   for (let i = 0; i < backlog.recent; i++) add(`REC${i}`, now, 0, 0, 0);
   for (let i = 0; i < backlog.hardDeletable; i++) add(`HARD${i}`, now - 31 * DAY_MS, 0, 0, 1);
   // 收藏/置顶对保留期与条数上限都豁免（修复预算逻辑时不得破坏这一点）
@@ -330,10 +346,10 @@ describe('F11 · 清理任务的子请求预算', () => {
     captureConsole();
 
     const first = await cronRun(f);
-    // F1 的判据：**首批不再按 batchLimit（500）取**，而是先用 firstBatchLimit 探路、第二批起按实测均值
-    // 收窄 ⇒ 4 KB 行的一轮被压在「预算 / 行大小」量级，而不是先把 ~2 MB 拉进内存再截断。
+    // F1 的判据（2026-09-26 §188 改为强形态）：每批都先按**只读字节扫描**定量 ⇒ 4 KB 行的一轮被压在
+    // 「预算 / 行大小」量级（≈64 条），而不是先把 ~2 MB 拉进内存再截断。
     expect(first.expired, '4 KB 行的一轮必须远小于 500（旧的"首批固定 500 条"已被字节预算挡住）').toBeLessThan(200);
-    expect(first.expired, '但至少要吃下探路的那一批').toBeGreaterThanOrEqual(5);
+    expect(first.expired, '预算不得把这一阶段压成空转（至少推进 10 条）').toBeGreaterThanOrEqual(10);
     expect(first.truncated, '被截断的阶段必须是保留期阶段').toContain('retention');
     expect(Number(metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention])).toBeGreaterThan(0);
     expect(first.failures).toEqual([]);
@@ -349,6 +365,75 @@ describe('F11 · 清理任务的子请求预算', () => {
     }
     expect(total, '501 条全部被软删').toBe(501);
     expect(metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention]).toBe('0');
+  });
+
+  it('审查 R1 slot 4 · 异构行：首批 5 条小行不能让下一批 64 KiB 行越过 256 KiB 预算', async () => {
+    // 旧实现按"已处理行"的均值外推 ⇒ 首批 5 条空文本给出近乎 0 的均值 ⇒ 下一批按 500 条取，
+    // 实测单轮 materialize 6,553,600 字节（= 25 × 预算）。现在每批先用**只读**的 length() 扫描量出
+    // 候选逐行字节、再据此定量 ⇒ 与"行大小是否均匀"无关。
+    const sizes = [...Array(5).fill(0), ...Array(100).fill(64 * 1024)];
+    const f = fixture({
+      expired: 105,
+      recent: 0,
+      hardDeletable: 0,
+      orphanDirs: 0,
+      maxCount: 1_000_000,
+      expiredSizes: sizes,
+      starred: 0,
+      pinned: 0,
+    });
+    captureConsole();
+
+    const SOFT_BUDGET = 262_144;
+    const materialized = () =>
+      (
+        f.sqlite
+          .prepare('SELECT COALESCE(SUM(length(Text)), 0) AS b FROM HistoryRecords WHERE IsDeleted = 1')
+          .get() as { b: number }
+      ).b;
+
+    const first = await cronRun(f);
+    expect(first.expired, '第一轮不该把 105 条（≈6.5 MB 正文）一次吃下').toBeLessThan(50);
+    expect(materialized(), '单轮 materialize 的正文必须落在 256 KiB 预算内').toBeLessThanOrEqual(SOFT_BUDGET);
+    expect(first.truncated, '被字节预算挡住 ⇒ 保留期阶段标记截断').toContain('retention');
+    expect(first.failures).toEqual([]);
+
+    // 多轮收敛：异构行也不许出现永久漏删
+    let total = first.expired;
+    let rounds = 0;
+    while (metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention] !== '0' && rounds < 60) {
+      const r = await cronRun(f);
+      expect(r.failures).toEqual([]);
+      total += r.expired;
+      rounds += 1;
+    }
+    expect(total, '105 条应全部被软删（不得因预算永久漏删）').toBe(105);
+  });
+
+  it('审查 R1 slot 1 · R2 分页逐页记账：页数超预算时中断列举，且不越 800', async () => {
+    // 旧实现把整桶列完才一次性 spend(pages) ⇒ 810 页时已发生 810 次调用、记账 818/800 仍写完成戳。
+    // 现在**逐页**扣账、付不起就中断；中断一律作废（半个映射会把活目录当孤儿 ⇒ 误删）。
+    const f = fixture({
+      expired: 0,
+      recent: 1,
+      hardDeletable: 0,
+      orphanDirs: 900,
+      maxCount: 1_000_000,
+      starred: 0,
+      pinned: 0,
+    });
+    (f.bucket as unknown as { pageSize: number }).pageSize = 1; // 900 个对象 ⇒ 900 页
+    captureConsole();
+
+    const result = await cronRun(f);
+
+    expect(result.subrequests, '自设的 800 子请求预算不得被越过').toBeLessThanOrEqual(SUBREQUEST_BUDGET);
+    expect(f.bucket.listCalls, '列举页数必须被剩余额度截住（而不是列完再记账）').toBeLessThanOrEqual(
+      SUBREQUEST_BUDGET,
+    );
+    expect(f.bucket.deleteCalls, '中断（未列完）时不得进入删除：半个映射会误删活目录').toBe(0);
+    expect(result.truncated, '列举被中断 ⇒ 孤儿阶段标记截断').toContain('orphans');
+    expect(result.failures).toEqual([]);
   });
 
   it('Meta 键集合：七个键每轮都写入（含「完成戳」），游标跨轮累计，收敛后回到 0', async () => {

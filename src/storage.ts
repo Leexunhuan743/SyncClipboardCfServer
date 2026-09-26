@@ -147,11 +147,20 @@ export class R2Storage {
   // （列举 + 删除，见 deletePrefix）降到**每轮一次列举 + 每批一次删除**，这是清理吞吐的关键：
   // 逐条删除时每条记录 3 次子请求，500 条/批就是 1500 次，已经超过平台单次调用 1000 的上限。
   // 返回 pages：列举的分页数（1000 键/页），供调用方按**实际**调用数记账（不靠猜页数）。
-  async listHistoryObjectsByDir(): Promise<{ groups: Map<string, string[]>; pages: number }> {
+  // `onPage`：**每页列举之前**调用（1 页 = 1 次子请求）；返回 false 表示调用方付不起下一页 ⇒
+  // 中断列举并置 `aborted`。中断的映射**不能**当结果用（半个映射会把活目录判成孤儿），见清理侧用法。
+  async listHistoryObjectsByDir(
+    onPage?: () => boolean,
+  ): Promise<{ groups: Map<string, string[]>; pages: number; aborted: boolean }> {
     const groups = new Map<string, string[]>();
     let pages = 0;
+    let aborted = false;
     let cursor: string | undefined;
     do {
+      if (onPage && !onPage()) {
+        aborted = true;
+        break;
+      }
       const listed = await this.bucket.list({ prefix: HISTORY_PREFIX, cursor });
       pages++;
       for (const obj of listed.objects) {
@@ -165,7 +174,7 @@ export class R2Storage {
       }
       cursor = listed.truncated ? listed.cursor : undefined;
     } while (cursor);
-    return { groups, pages };
+    return { groups, pages, aborted };
   }
 
   // 删掉**一批** key。R2 单次 delete 调用上限是 1000 个 key（与列举同量级），故分块；

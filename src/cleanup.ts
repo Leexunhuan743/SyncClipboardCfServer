@@ -47,11 +47,6 @@ const SOFT_DELETE_BATCH_LIMIT = 500;
 // 硬删单批条数：每条成本为 0（不广播，目录由所在批次一次批量删），单轮能吃下的量由
 // MAX_BATCHES_PER_PHASE × 本值决定；单批设上限是为了让「一次 D1 语句 + 一次批量删」的内存有界。
 const HARD_DELETE_BATCH_LIMIT = 1000;
-// 首批条数上限（行大小未知时的小批探路）：见 BatchPhaseSpec.firstBatchLimit。
-// 取 5：最坏单行 ~1 MiB（D1 单值上限）⇒ 首批最坏 ~5 MiB，远低于「500 条 × 1 MiB」的形态；
-// 而小行库的一轮仍能吃下约 9,500 行（20 批里只有第一批受影响）⇒ 吞吐代价可忽略。
-const FIRST_BATCH_ROWS = 5;
-
 // 单阶段批次数上限：防「D1 返回满批却没真正推进」时的死循环。
 const MAX_BATCHES_PER_PHASE = 20;
 // 已删除记录保留期（上游 RemoveOutOfDateDeletedRecords 固定 30 天）
@@ -88,8 +83,12 @@ const DELETED_RETENTION_DAYS = 30;
 //   · 两个软删阶段（retention / trim）各 2.5 ms ⇒ 2.5 ms × 100 MB/s ≈ **256 KiB**；
 //   · 硬删阶段的行只有 (Type, Hash) 两列（db.ts 的 hardDeleteOldDeletedRecords），1,000 条
 //     ≈ 70 KB ⇒ 条数上限先起作用；同样给 256 KiB 是**统一的兜底**（积压 20,000 条时它才会先触发）。
-// 预算在**批与批之间**生效：一批的字节数只有取回后才知道，故首批的越界量 ≤ batchLimit × 单行字节
-// —— 这是本口径的固有误差（也是「单条记录自带 1 MiB 内联文本」这种形态无解的原因），别当成保证。
+// 预算怎么才能真正**硬**约束住（2026-09-26 第二轮审查后定稿）：软删/条数上限两阶段每批先跑一条只读的
+// `length(Text)` 扫描（db.scanSoftDeleteCandidateBytes，列顺序与删除语句的 ORDER BY 逐字一致）量出候选逐行
+// 字节，再按前缀和定量 —— 于是"取回的字节"不依赖行大小是否均匀。**硬删/孤儿阶段不扫**：候选行只 `RETURNING
+// (Type, Hash)`，构造上就小，条数上限即可。仍无解的只剩「单条记录自带 1 MiB 内联文本」（单行就超预算，
+// 扫描后只取它一条）。曾经的"首批 5 条探路 + 按已处理均值收窄"已被删除：均值会被"先小后大"骗过，
+// 实测单轮 6,553,600 字节 = 25 × 预算（`progress.md` §188）。
 const SOFT_DELETE_ROW_BYTES_PER_ROUND = 256 * 1024;
 const HARD_DELETE_ROW_BYTES_PER_ROUND = 256 * 1024;
 
@@ -121,8 +120,8 @@ export type CleanupPhase = (typeof CLEANUP_PHASES)[number];
 //   retention = 1 批查询 + 少量广播；trim 多一条 COUNT；hardDelete = 1 批查询 + 1 次批量删
 //   （不广播）；orphans = 1 次活目录查询 + 1 次列举（按实际页数）+ 1 次批量删。
 // 前序阶段用不完的额度仍会**动态让给**后面的阶段（roomFor = 总预算 − 已花 − 后续阶段保底之和），
-// 所以这些数值是下限而不是上限。前提：SUBREQUEST_BUDGET 必须大于保底之和（当前 72），否则每个阶段
-// 都连第一批都跑不动 —— 调预算时同步复核这张表。
+// 所以这些数值是下限而不是上限。前提：SUBREQUEST_BUDGET 必须大于保底之和 + 轮尾（当前 72 + 1），
+// 否则每个阶段都连第一批都跑不动 —— 调预算时同步复核这张表。
 const PHASE_RESERVE: Record<CleanupPhase, number> = {
   retention: 16,
   trim: 16,
@@ -130,10 +129,15 @@ const PHASE_RESERVE: Record<CleanupPhase, number> = {
   orphans: 24,
 };
 
-// 每个阶段**之后**所有阶段的保底配额之和（模块加载时算一次，避免每轮重复计算）
+// 轮尾落库的固定成本：完成戳 + `lastError` + 四个游标在**一条** `setMetaValues` 里写完。
+// 它必须从**每个**阶段的额度里预留出来（含最后一个阶段：`RESERVED_AFTER['orphans'] = 0`，
+// 不预留的话最后阶段能一路吃到 800，轮尾那次写就把记账顶到 801 —— 2026-09-26 审查 R1 slot 1 实测）。
+const SUBREQUESTS_ROUND_END = SUBREQUESTS_PER_D1_STATEMENT;
+
+// 每个阶段**之后**所有阶段的保底配额之和 **+ 轮尾落库**（模块加载时算一次，避免每轮重复计算）
 const RESERVED_AFTER: Record<CleanupPhase, number> = (() => {
   const out: Record<CleanupPhase, number> = { retention: 0, trim: 0, hardDelete: 0, orphans: 0 };
-  let acc = 0;
+  let acc = SUBREQUESTS_ROUND_END;
   for (let i = CLEANUP_PHASES.length - 1; i >= 0; i--) {
     const phase = CLEANUP_PHASES[i]!;
     out[phase] = acc;
@@ -384,6 +388,18 @@ function estimateKeyRowBytes(rows: { hash: string }[]): number {
   return bytes;
 }
 
+/** 按剩余字节预算从候选尺寸里取出**能装下**的前缀条数（`sizes` 已按清理顺序排列）。 */
+function rowsWithinBytes(sizes: number[], byteLeft: number): number {
+  let sum = 0;
+  let k = 0;
+  for (const s of sizes) {
+    if (sum + s > byteLeft) break;
+    sum += s;
+    k += 1;
+  }
+  return k;
+}
+
 interface BatchPhaseSpec<T extends CleanupRow> {
   phase: CleanupPhase;
   /** 每条记录产生的子请求数 */
@@ -394,20 +410,16 @@ interface BatchPhaseSpec<T extends CleanupRow> {
   batchedCallCost: number;
   /** 单批条数上限 */
   batchLimit: number;
-  /**
-   * **首批**条数上限。首批的行字节数在取回前未知（`estimateRowBytes` 需要行本身），若一上来就按
-   * `batchLimit`（软删 500）取，500 条 × 4 KB 的行就是 ~2 MB 一次进内存 —— 远超 256 KiB 的预算，
-   * 而平台的 Cron CPU 只有 10 ms（**平均**预算，见文件头）。故首批只取 `FIRST_BATCH_ROWS` 条探路：
-   * 取回后 `avgRowBytes` 即已知，第二批起按实测均值收窄（大行被挡住、小行照旧吃满 `batchLimit`）。
-   * 代价：每轮第一批少处理几行 ⇒ 小行库的一轮从约 10,000 行降到约 9,500 行（20 批里只有 1 批受影响）。
-   */
-  firstBatchLimit: number;
   /** 单轮行字节预算（CPU 口径，推导见 SOFT_DELETE_ROW_BYTES_PER_ROUND） */
   rowBytesPerRound: number;
   /** 本批已 materialize 的行字节估算（CPU 口径，同上） */
   estimateRowBytes(rows: T[]): number;
-  /** 取一批候选；hasMore 必须按**实际生效的条数**判定，否则会把"候选已取完"误判成"被截断" */
-  fetchBatch(limit: number): Promise<{ rows: T[]; hasMore: boolean }>;
+  /**
+   * 取一批候选。`hasMore` 必须按**实际生效的条数**判定，否则会把"候选已取完"误判成"被截断"。
+   * `byteLeft` = 本阶段**剩余**的行字节预算（CPU 口径）：有逐行字节取数手段的阶段（软删两条路径）
+   * 必须据此把这一批实际 materialize 的量压在预算内；硬删/孤儿阶段的候选行只有 key（构造上就小），可忽略。
+   */
+  fetchBatch(limit: number, byteLeft: number): Promise<{ rows: T[]; hasMore: boolean }>;
   /** 本批的收尾动作：软删广播变更，硬删清扫数据目录（两侧语义见上面记账模型） */
   applyBatch(rows: T[]): Promise<void>;
 }
@@ -433,32 +445,41 @@ async function drainBatches<T extends CleanupRow>(
         : room >= 0
           ? spec.batchLimit
           : 0;
-    // CPU 口径：按**已实测的平均行字节**把这一批压进剩余预算。首批行字节未知 ⇒ 只取
-    // `firstBatchLimit` 条（小批探路，避免 500 条大记录一次进内存）；此后每批都按实测均值收窄。
-    const avgRowBytes = processed > 0 ? rowBytes / processed : 0;
-    const byteLimit =
-      avgRowBytes > 0 ? Math.floor((spec.rowBytesPerRound - rowBytes) / avgRowBytes) : spec.batchLimit;
-    const rowCap = batches === 0 ? spec.firstBatchLimit : spec.batchLimit;
-    const limit = Math.min(rowCap, subrequestLimit, byteLimit);
+    // CPU 口径：把本阶段**剩余**的行字节预算交给 `fetchBatch` —— 软删两条路径会先用一条**只读**的
+    // `length(...)` 扫描量出下一批候选的逐行字节，再据此决定取回几条 ⇒ 每批真正 materialize 的字节
+    // 都被预算硬约束，**与行大小是否均匀无关**。
+    // ⚠️ 2026-09-26 修（合并前审查 High）：此前按"已处理行"的均值外推，首批 5 条小行后紧跟一批大行
+    // 即可数量级越界 —— 实测 100 条 × 64 KiB = 6,553,600 字节 = 25 × 预算，见 `progress.md` §188。
+    const limit = Math.min(spec.batchLimit, subrequestLimit);
     if (limit < 1) return { processed, batches, truncated: true };
     run.budget.spend(spec.queryCost);
     batches++;
-    const { rows, hasMore } = await spec.fetchBatch(limit);
+    const { rows, hasMore } = await spec.fetchBatch(limit, Math.max(0, spec.rowBytesPerRound - rowBytes));
     await spec.applyBatch(rows);
     run.budget.spend(rows.length * spec.costPerRecord);
     processed += rows.length;
     rowBytes += spec.estimateRowBytes(rows);
+    // 空批 = 候选取完**或**被字节预算挡住：两种情况下这一批都不再推进 ⇒ 本轮到此为止
+    // （`hasMore` 区分二者：前者不算 truncated）。
+    if (rows.length === 0) return { processed, batches, truncated: hasMore };
     if (!hasMore) return { processed, batches, truncated: false };
   }
   return { processed, batches, truncated: true };
 }
 
-// 取（并按需列举一次）history/ 的目录 → key 映射。列举成本按**实际页数**记账（1 页 = 1 次子请求），
-// 不再按猜测的页数保守估算 —— 记账要"不少于实际"，而列举调用数是确定的。
-async function historyGroups(run: CleanupRun): Promise<Map<string, string[]>> {
+// 取（并按需列举一次）history/ 的目录 → key 映射。**逐页记账、逐页检查预算**（1 页 = 1 次子请求）：
+// 先前是"列举完再一次性扣页数"，页数超过当轮剩余额度时那次列举**已经发生** ⇒ 记账事后补，
+// 自设的 800 被越过（2026-09-26 审查实测：810 页 ⇒ 记账 818/800，还写了完成戳）。
+// ⚠️ 预算不足中断列举时**必须放弃这一轮**（返回 null）：只列了一半的映射会把**活目录**当成孤儿 ⇒ 误删。
+// 将来对象规模真到数百页时，应把"未列完"做成**跨轮可续**（持久化游标），而不是放弃。
+async function historyGroups(run: CleanupRun, phase: CleanupPhase): Promise<Map<string, string[]> | null> {
   if (run.sweep !== null) return run.sweep;
-  const { groups, pages } = await run.storage.listHistoryObjectsByDir();
-  run.budget.spend(Math.max(pages, 1));
+  const { groups, aborted } = await run.storage.listHistoryObjectsByDir(() => {
+    if (run.budget.roomFor(phase) < SUBREQUESTS_PER_SWEEP_CALL) return false;
+    run.budget.spend(SUBREQUESTS_PER_SWEEP_CALL);
+    return true;
+  });
+  if (aborted) return null;
   run.sweep = groups;
   return groups;
 }
@@ -471,7 +492,8 @@ async function sweepWorkingDirs(
   phase: CleanupPhase,
   dirs: string[],
 ): Promise<{ removedDirs: number; complete: boolean }> {
-  const groups = await historyGroups(run);
+  const groups = await historyGroups(run, phase);
+  if (groups === null) return { removedDirs: 0, complete: false }; // 列举被预算中断 ⇒ 本轮不扫
   let keys: string[] = [];
   let pendingDirs: string[] = [];
   let removedDirs = 0;
@@ -558,15 +580,20 @@ function cleanRetention(run: CleanupRun, retentionMinutes: number): Promise<Phas
   return drainBatches(run, {
     phase: 'retention',
     costPerRecord: SUBREQUESTS_PER_BROADCAST,
-    queryCost: SUBREQUESTS_PER_D1_STATEMENT,
+    // 一批两次查询：候选字节扫描（只读）+ 软删
+    queryCost: 2 * SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
-    firstBatchLimit: FIRST_BATCH_ROWS,
     rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateEntityRowBytes,
-    fetchBatch: async (limit) => {
-      const rows = await run.db.softDeleteExpiredRecords(cutoffMs, run.nowMs, limit);
-      return { rows, hasMore: rows.length === limit };
+    fetchBatch: async (limit, byteLeft) => {
+      const sizes = await run.db.scanSoftDeleteCandidateBytes(cutoffMs, limit, ENTITY_ROW_FIXED_BYTES);
+      if (sizes.length === 0) return { rows: [], hasMore: false }; // 没有候选 ⇒ 收工（不算截断）
+      const take = rowsWithinBytes(sizes, byteLeft);
+      if (take < 1) return { rows: [], hasMore: true }; // 连一条都装不下 ⇒ 预算挡住，本轮收工（truncated）
+      const rows = await run.db.softDeleteExpiredRecords(cutoffMs, run.nowMs, take);
+      // 扫描被 limit 截断 ⇒ 后面可能还有候选；或本次因预算少取 ⇒ 也还有候选
+      return { rows, hasMore: sizes.length === limit || sizes.length > take };
     },
     applyBatch: (rows) => broadcastRecords(run, 'retention', rows),
   });
@@ -577,17 +604,21 @@ function cleanTrim(run: CleanupRun, maxCount: number): Promise<PhaseOutcome> {
   return drainBatches(run, {
     phase: 'trim',
     costPerRecord: SUBREQUESTS_PER_BROADCAST,
-    // 一批两次查询：countActiveRecords（算超量）+ trimToMaxCount
-    queryCost: 2 * SUBREQUESTS_PER_D1_STATEMENT,
+    // 一批三次查询：countActiveRecords（算超量）+ 候选字节扫描（只读）+ trimToMaxCount
+    queryCost: 3 * SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
-    firstBatchLimit: FIRST_BATCH_ROWS,
     rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateEntityRowBytes,
-    fetchBatch: async (limit) => {
+    fetchBatch: async (limit, byteLeft) => {
       const overage = (await run.db.countActiveRecords()) - maxCount;
       if (overage <= 0) return { rows: [], hasMore: false };
-      const take = Math.min(overage, limit);
+      const cap = Math.min(overage, limit);
+      const sizes = await run.db.scanSoftDeleteCandidateBytes(null, cap, ENTITY_ROW_FIXED_BYTES);
+      // 可裁的（非收藏/非置顶）已耗尽 ⇒ **收工**（即使 active 仍超上限）：否则该阶段会永远"有更多"
+      if (sizes.length === 0) return { rows: [], hasMore: false };
+      const take = rowsWithinBytes(sizes, byteLeft);
+      if (take < 1) return { rows: [], hasMore: true }; // 连一条都装不下 ⇒ 预算挡住，本轮收工（truncated）
       const rows = await run.db.trimToMaxCount(take, run.nowMs);
       // 实际删到少于请求条数 ⇒ 可裁的（非收藏/非置顶）已耗尽，即使 active 仍超上限也**必须收工**：
       // 否则收藏/置顶占满配额时该阶段会永远"有更多"，每轮空转并把 truncated 永远挂在结果里。
@@ -605,10 +636,10 @@ function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutco
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: SUBREQUESTS_PER_SWEEP_CALL,
     batchLimit: HARD_DELETE_BATCH_LIMIT,
-    firstBatchLimit: HARD_DELETE_BATCH_LIMIT,
     rowBytesPerRound: HARD_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateKeyRowBytes,
-    fetchBatch: async (limit) => {
+    // 候选行只 RETURNING Type/Hash（构造上就小）⇒ 不看字节预算
+    fetchBatch: async (limit, _byteLeft) => {
       const rows = await run.db.hardDeleteOldDeletedRecords(cutoffMs, limit);
       return { rows, hasMore: rows.length === limit };
     },
@@ -628,7 +659,8 @@ async function cleanOrphans(run: CleanupRun): Promise<PhaseOutcome> {
   if (run.budget.roomFor('orphans') < SUBREQUESTS_PER_D1_STATEMENT + SUBREQUESTS_PER_SWEEP_CALL + 1) {
     return { processed: 0, batches: 0, truncated: true };
   }
-  const groups = await historyGroups(run);
+  const groups = await historyGroups(run, 'orphans');
+  if (groups === null) return { processed: 0, batches: 0, truncated: true }; // 列举被预算中断（见 historyGroups）
   if (groups.size === 0) return { processed: 0, batches: 0, truncated: false };
 
   run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);

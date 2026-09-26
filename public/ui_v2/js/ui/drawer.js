@@ -478,13 +478,21 @@ export function createDrawer(handlers) {
       }),
     );
   } else {
+    // 「上一轮成功、这一轮中断」必须也报出来：只看"完成戳是否存在"会把旧完成戳当成本轮完成
+    // （V1 统计条已按两个时间戳比较，这里补齐同一条判据 —— 2026-09-26 审查 R1/R3 两路独立发现）。
+    const attemptMs = cleanup.lastRunAt ? Date.parse(cleanup.lastRunAt) : NaN;
+    const completedMs = cleanup.lastCompletedAt ? Date.parse(cleanup.lastCompletedAt) : NaN;
+    const unfinished = Number.isFinite(attemptMs) && !(completedMs >= attemptMs);
     cleanupFacts.append(
       fact('上次尝试', formatAbsolute(cleanup.lastRunAt)),
       fact(
         '上次完成',
         cleanup.lastCompletedAt ? formatAbsolute(cleanup.lastCompletedAt) : '无（上轮没跑到收尾）',
-        cleanup.lastCompletedAt ? undefined : 'warn',
+        cleanup.lastCompletedAt && !unfinished ? undefined : 'warn',
       ),
+      unfinished
+        ? fact('最近一轮', '未完成（多为被平台终止，下一轮从游标续跑）', 'warn')
+        : fact('最近一轮', '已完成'),
       cleanup.lastError
         ? fact('上次错误', cleanup.lastError, 'warn')
         : fact('上次错误', '无'),
