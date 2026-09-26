@@ -55,7 +55,7 @@ export interface DbRow {
 }
 
 export function rowToEntity(r: DbRow): HistoryRecordEntity {
-  // FilePaths 的**常见形态是 `'[]'`**（写路径 `entityParams` 对非 Group 记录写的正是它），而列表一次
+  // FilePaths 的**常见形态是 `'[]'`**（**内联 Text**（无数据文件）的记录就是它；带数据的 Text/File/Image 写 `[dataName]`、Group 写顶层条目，见 `src/profile.ts`），而列表一次
   // 要映射 500 行 —— 逐行 JSON.parse 里绝大多数是在解析这两个字节。短路与解析**逐位等价**：
   // `JSON.parse('[]')` 得到空数组（length 0），`JSON.parse('')` 抛错后同样回落到空数组（下面的 catch）；
   // 其余取值一律走原解析路径。于是所有调用方（协议分页、同名候选、批量元数据、UI 列表）拿到的

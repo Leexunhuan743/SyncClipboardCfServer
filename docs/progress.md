@@ -12969,3 +12969,92 @@ SSE 便宜得多。官方客户端的降级链是 `WS → SSE → 长轮询`，�
   —— 较 §184 的 463 条 **+2**，正是 §185.6 第 3 条新增的两条形状守卫用例。跑前确认无 `workerd` / `wrangler`
   进程、8787 无监听；跑完已停该进程并复查进程与端口（`.dev.vars` 未打印、未提交）。
 
+## 186. 跨仓库兼容性审查：`perf/free-plan` vs 上游 C# 原版（2026-09-25/26）
+
+### 186.1 方法与结论
+
+- **方法**：4 个并行只读审查切片（HTTP 协议面 / WS 生命周期 / 有意偏离×客户端可见性 / 非协议面影响半径）
+  + 主线 8 项独立核对 + **真实 `@microsoft/signalr` 客户端在真实边缘对两个部署的 A/B**。
+- **结论：变更影响有限，且不改变官方客户端的可观测行为。** 分支对协议面的净影响 =
+  **1 条新增偏离**（`GET /file/{name}` 候选上限 32，已登记）+ **1 条修订行**（清理预算，已登记）。
+- **结构性证据（最强）**：定义 wire 的文件**一行未动** —— `src/hub.ts`（negotiate 载荷/传输顺序）、
+  `src/durable/signalr.ts`（帧编解码）、`src/index.ts`（路由/鉴权）、`src/routes/history.ts`、
+  `src/serialization.ts`（DTO 形态）、`src/types.ts`、`schema.sql`（D1 结构）、`wrangler.toml`
+  （compat 日期/迁移）：`git diff --numstat a5a1248..HEAD -- <file>` 逐文件为 0。
+
+### 186.2 四条切片的结论（要点）
+
+- **A（HTTP 协议面）**：59 个 src hunk 全覆盖，**只有 3 个**改变对外可见事实且全在同一处；
+  `GET /SyncClipboard.json` 两个降级出口经 **Hono 源码 + 构造级实测**证得状态码/头/体**逐字节同构**；
+  `PUT` 写路径的 `hash`/`transferDataHash`/`size`/`FilePaths` **逐值不变**；`src/ui/*` 不触协议端点
+  （`/api/history/statistics` 仍走 `db.statistics`，协议路由不 import `ui/`）。
+- **B（WS 生命周期）**：wire 帧（RS/握手/`type6`/`type1`/`type7`）与迁移前**逐句等价**；negotiate 载荷
+  **逐值与上游 v3.2.0 一致**（直接引 aspnetcore `HttpConnectionDispatcher.cs`/`NegotiateProtocol.cs`）；
+  生命周期上分支**比上游更宽松**（60 s 静默回收 vs 上游 `ClientTimeoutInterval` 30 s）⇒ 不存在
+  「上游会留、分支会踢」；**迁移顺手修掉旧实现的既有缺陷**（旧代码关闭时只 `drop()` 不回帧 ⇒ 客户端可能收
+  **1006**；现在显式回帧，实测分支侧正常关闭为 **1000**）。
+- **C（偏离×客户端可见性）**：判定**可发布**。关键结构性事实：**官方服务器模式取数据走
+  `/api/history/{id}/data`，从不调 `/file/*`**（`OfficialEventDrivenServer` → `HistoryTransferQueue` →
+  `OfficialAdapter`）⇒ `/file` 候选上限对官方模式**结构性不可达**（仅 WebDAV 模式可达，§10 已据实补
+  「可达面」）。另有 4 项**片段式**差异（404 响应体、降级出口 Content-Type、超范围 `Type` 序列化、
+  `GET /` 302 的登记位置）全部客户端不可见，本轮已补登记。
+- **D（非协议面影响半径）**：**4/5 项在明示前提下逐位等价**（等价前提钉在单点，例如 `contentHash` 与
+  `content` 同源由 `src/profile.ts` 单点保证）；清理**最终删除集合不变、无永久漏删**
+  （每轮首批不受字节约束 + 游标不参与查询）。
+
+### 186.3 主线的 8 项独立核对（含两条否证/修正）
+
+1. wire 定义文件全部未动（上表逐文件核对）。
+2. `src/routes/webdav.ts` 是唯一动过的 HTTP 出口文件，其改动 = **同字节、同 `content-type`、同 200**。
+3. **回滚双向安全**：master 若读到本分支的新落盘形态 `{persistedAt, limits}`，在 `isAuthLimitBlocked` /
+   `applyAuthFailure` / `pruneAuthLimits` 里都只走 `undefined > now`、`NaN < windowMs` 这类恒 false 分支
+   ⇒ **不崩、不误封**，真实 key 计数从 0 起算，下一次落盘写回平铺形态**自愈**。
+4. **真实库实测**（只读 SELECT，响应自证 `changed_db:false`）：生产库有数据文件的记录 12 条、12 个不同名
+   ⇒ **同名候选最大值 = 1**（上限 32，差 32 倍）。
+5. 上游 `SyncClipboardHub.cs` 只有 6 行空类（`[Authorize]` + 两个客户端方法）⇒ 线上行为由 ASP.NET
+   SignalR 默认值决定，而本仓库复刻它的 `src/durable/signalr.ts` **未改动**。
+6. **真实 SignalR 客户端 A/B**（真实边缘）：分支 `start()` 678 ms / master 663 ms；**35 s 后都仍 Connected**
+   （跨过客户端 `ServerTimeout` 30 s）；PUT 后都收到 `RemoteHistoryChanged` + `RemoteProfileChanged`。
+7. **修正切片 A 的一处算术**：「行字节预算让吞吐降到 1/10」对**软删/条数上限阶段不成立** —— 这两阶段每条花
+   1 次广播子请求，`SUBREQUEST_BUDGET = 800` 早已把每轮压到 ~800 行（`test/cleanup-budget.test.ts` 的
+   `expired === 500` 与「2400 条小行一轮约 739 条」两处用例都证实字节预算对小行**不 binding**）；
+   **真正的下降在硬删阶段**（~10×，但只处理 >30 天的已删行，积压有界）。
+8. **复核「值得担心三条」的性质**：`GROUP_ZIP_MAX_ENTRIES = 1000` 与 `SearchText` 48 字节上限
+   **都是分支前既有**（`git log -S` 定位到 `380b5da` / `645c2f8`；`src/serialization.ts` 本分支**完全未碰**），
+   且独立确认客户端对文件夹上传**只有总字节闸门、没有条目数闸门**（`ContentControlHelper.ValidateSize`）
+   ⇒ 属**既有窄风险**，不是本分支引入。
+
+### 186.4 本轮落地的修正
+
+- **`docs/protocol.md` §10（15 处）**：① `/file` 候选上限补**可达面**（仅 WebDAV 模式；官方模式结构性不可达）；
+  ② 应用层解压上限行改写为**可达**（客户端无条目数闸门）；③ `SearchText` 行改写为**可达**（客户端无长度限制）；
+  ④ **新增 4 行**登记（404 响应体 / 降级出口 Content-Type / 超范围 `Type` / `GET /` 302 的登记指引）；
+  ⑤ **7 处上游行号校准**（`HistoryController.cs:100`/`:141`、`HistoryService.cs:34`/`:65`/`:81`/`:325`/`:329`、
+   `SyncClipboardController.cs:120` 与 `:128/130/138/150/154/261`、`HistoryManagerHelper.cs:19`/`:66`），
+   **逐条经本机 grep 上游确认**后再改。
+- **`src/db.ts`**：`FilePaths` 短路处的注释订正 —— `'[]'` 是**内联 Text**（无数据文件）的形态；
+  带数据的 Text/File/Image 写 `[dataName]`、Group 写顶层条目。
+- **新增 2 条测试**：`test/protocol.test.ts` 的「PUT 带**正确** `transferDataHash` ⇒ 200，且回读的 `hash`
+  与 `transferDataHash` 都等于同一份字节算出的值」（内容复用支此前的唯一空档）；`test/fixes.test.ts` 的
+  「`statisticsFromViews` 与 `db.statistics` 四个计数在**空库与有数据**两种情况下逐位相同」。
+
+### 186.5 仍然已知的缺口（不阻断，登记备查）
+
+- **覆盖缺口**：① `/file` 候选 >32 无夹具（行为已登记但未被测试钉住）；② 行字节预算**真正生效**的那一支
+  无测试 —— 要钉它需给 `cleanup-budget` 的 fixture 加「行大小」旋钮，而现有用例全为小行、恰好绕过该分支；
+  ③ `/ui/api/overview` 的 marker（两条语句拼装、窄窗内可能撕裂）无测试。
+- **残余风险**：套件用的 `@microsoft/signalr` 是 **8.0.29**，而上游客户端已 **10.0.12**
+  （wire 协议自 2.x 起稳定，但这段版本跨度**未被测试覆盖**）。
+- **§10 引用校准**：本轮校准了上述 7 处；`docs/protocol.md` 全文另有约 33 处 `.cs:NNN` 引用，**未做机械化
+  全量校准**（抽查未见语义错误，只有行号漂移）。
+
+### 186.6 门禁读数（本轮改动）
+
+- `tsc --noEmit` → **0**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` → **0**；
+  `node --check` 四个手动探针 → **全 0**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787` + `BASE=http://127.0.0.1:8787` +
+  `--no-file-parallelism`）→ **22 套件 / 467 用例 / 失败 0 / 退出码 0** —— 较 §185 的 465 条 **+2**，
+  正是 §186.4 新增的两条（`protocol.test.ts` 的 PUT-happy-path 与 `fixes.test.ts` 的统计等价）。
+  跑前确认只有一个 `wrangler dev`；跑完已停该进程并复查（`.dev.vars` 未打印、未提交）。
+
+

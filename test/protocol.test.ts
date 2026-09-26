@@ -487,6 +487,35 @@ describe('历史 API', () => {
     expect(await put.text()).toBe('Hash is not match data.');
   });
 
+  it('PUT ProfileDto.TransferDataHash：与文件一致时 200，且落库的 transferDataHash 就是该文件的 SHA-256（复用支的端到端钉子）', async () => {
+    // 写路径改成「同一份字节只摘要一次」后，contentHash 复用支（src/profile.ts 的 bytesHash）只有静态论证；
+    // 这条用例把它钉在端到端行为上：声明一次正确的 transferDataHash ⇒ 200，且回读的 hash 与 transferDataHash
+    // 都等于**同一份字节**算出来的那两个值（profile hash 由它二次复合得到）。
+    const name = `put-hash-ok-${RUN}.bin`;
+    const content = Buffer.from('put-hash-ok-content');
+    expect((await req(`/file/${name}`, { method: 'PUT', body: content })).status).toBe(200);
+    const contentHash = sha256(content);
+    const fileHash = sha256(`${name}|${contentHash}`);
+    const put = await req('/SyncClipboard.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'File',
+        hash: fileHash,
+        text: name,
+        hasData: true,
+        dataName: name,
+        size: content.length,
+        transferDataHash: contentHash,
+      }),
+    });
+    expect(put.status, '声明的哈希与文件一致时必须 200').toBe(200);
+    const cur = await (await req('/SyncClipboard.json')).json<{ hash: string; transferDataHash?: string }>();
+    expect(cur.hash, 'profile hash 必须是 SHA256(fileName|contentHashUpper)').toBe(fileHash);
+    expect(cur.transferDataHash, '复用支必须落库为文件字节的 SHA-256').toBe(contentHash);
+  });
+
+
   it('PATCH：旧版本 → 409 回写服务器值；新版本 → 200', async () => {
     const text = `patch-${RUN}`;
     const hash = sha256(text);
