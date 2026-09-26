@@ -13034,17 +13034,27 @@ SSE 便宜得多。官方客户端的降级链是 `WS → SSE → 长轮询`，�
    **逐条经本机 grep 上游确认**后再改。
 - **`src/db.ts`**：`FilePaths` 短路处的注释订正 —— `'[]'` 是**内联 Text**（无数据文件）的形态；
   带数据的 Text/File/Image 写 `[dataName]`、Group 写顶层条目。
-- **新增 2 条测试**：`test/protocol.test.ts` 的「PUT 带**正确** `transferDataHash` ⇒ 200，且回读的 `hash`
+- **新增 3 条测试**：`test/protocol.test.ts` 的「PUT 带**正确** `transferDataHash` ⇒ 200，且回读的 `hash`
   与 `transferDataHash` 都等于同一份字节算出的值」（内容复用支此前的唯一空档）；`test/fixes.test.ts` 的
   「`statisticsFromViews` 与 `db.statistics` 四个计数在**空库与有数据**两种情况下逐位相同」。
+- **第 3 条**：`test/cleanup-budget.test.ts` 的「行字节预算真正生效的那一支：4 KB × 501 条超预算 ⇒ 本轮截断在
+  500 条、下一轮继续推进（无永久漏删）」—— 同时给该套件的 fixture 加了 `textBytes` 旋钮。
 
 ### 186.5 仍然已知的缺口（不阻断，登记备查）
 
-- **覆盖缺口**：① `/file` 候选 >32 无夹具（行为已登记但未被测试钉住）；② 行字节预算**真正生效**的那一支
-  无测试 —— 要钉它需给 `cleanup-budget` 的 fixture 加「行大小」旋钮，而现有用例全为小行、恰好绕过该分支；
-  ③ `/ui/api/overview` 的 marker（两条语句拼装、窄窗内可能撕裂）无测试。
-- **残余风险**：套件用的 `@microsoft/signalr` 是 **8.0.29**，而上游客户端已 **10.0.12**
-  （wire 协议自 2.x 起稳定，但这段版本跨度**未被测试覆盖**）。
+- **覆盖缺口（本轮收口后的现状）**：
+  ① `/file` 候选 >32 **仍无夹具** —— 保留为已知缺口（该行为是自己的**有意偏离**、已登记，钉它需要
+  33 条同名记录 + 让靠前 32 条对象缺失的构造；而本实现的「软删保留数据」恰好让这种状态更难出现）；
+  ② 行字节预算**真正生效**的那一支 —— **本轮已补**：给 `cleanup-budget` 的 fixture 加了 `textBytes` 旋钮
+  （默认 0 = 空文本小行），并新增用例「4 KB × 501 条 ⇒ 本轮截断在 500 条、下一轮吃下剩余 1 条并收敛」
+  （实测行为与静态推算一致，同时反证了 §186.3 第 7 条的修正）；
+  ③ `/ui/api/overview` 的 marker **判定不做** —— 它能写出的断言（`marker.count` 与 `stats.totalCount`）同源于
+  同一份 `views`，近乎同义反复；而它真正的风险是「两条语句之间的撕裂读」，需要毫秒级窗口 + 丢广播 +
+  计数不变的写三者同时成立，**不可确定性复现** ⇒ 按「不为充数而写测试」的纪律不补。
+- **残余风险（已收口）**：套件用的 `@microsoft/signalr` 仍是 **8.0.29**（上游客户端为 10.0.12）；本轮
+  **在仓库外**临时安装 `@microsoft/signalr@10`（实际拿到 **10.0.11**）并重跑真实边缘 A/B：分支与 master
+  两个部署都 `start()` 成功、**35 s 跨 ServerTimeout 仍 Connected**、都收到 `RemoteHistoryChanged` +
+  `RemoteProfileChanged` ⇒ **10.x 客户端跨度过已被实测覆盖**（套件内的版本仍是 8.0.29，未升级依赖）。
 - **§10 引用校准**：本轮校准了上述 7 处；`docs/protocol.md` 全文另有约 33 处 `.cs:NNN` 引用，**未做机械化
   全量校准**（抽查未见语义错误，只有行号漂移）。
 
@@ -13053,8 +13063,7 @@ SSE 便宜得多。官方客户端的降级链是 `WS → SSE → 长轮询`，�
 - `tsc --noEmit` → **0**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` → **0**；
   `node --check` 四个手动探针 → **全 0**。
 - 全量套件（`wrangler dev --test-scheduled --port 8787` + `BASE=http://127.0.0.1:8787` +
-  `--no-file-parallelism`）→ **22 套件 / 467 用例 / 失败 0 / 退出码 0** —— 较 §185 的 465 条 **+2**，
-  正是 §186.4 新增的两条（`protocol.test.ts` 的 PUT-happy-path 与 `fixes.test.ts` 的统计等价）。
+  `--no-file-parallelism`）→ **22 套件 / 468 用例 / 失败 0 / 退出码 0** —— 较 §185 的 465 条 **+3**，正是 §186.4 新增的三条。
   跑前确认只有一个 `wrangler dev`；跑完已停该进程并复查（`.dev.vars` 未打印、未提交）。
 
 

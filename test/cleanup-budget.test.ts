@@ -109,6 +109,8 @@ interface Backlog {
   starred?: number;
   /** 置顶记录条数（同上），默认 1 */
   pinned?: number;
+  /** 每条记录 `Text` 的字节数（默认 0 = 空文本）：用来让**行字节预算**真正生效（大记录库形态） */
+  textBytes?: number;
 }
 
 interface Fixture {
@@ -139,13 +141,14 @@ function fixture(backlog: Backlog): Fixture {
   const now = Date.now();
   const expiredAt = now - (RETENTION_MINUTES + 120) * 60_000;
 
+  const rowText = 'x'.repeat(backlog.textBytes ?? 0); // 默认空文本（小行）；大行用来触发行字节预算
   const insert = sqlite.prepare(
     `INSERT INTO HistoryRecords
        (UserId, Type, Text, Size, TransferDataFile, FilePaths, Hash, CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted)
-     VALUES ('default_user', 0, '', 0, '', '[]', ?1, ?2, ?3, ?3, ?4, ?5, 0, ?6)`,
+     VALUES ('default_user', 0, ?7, ?8, '', '[]', ?1, ?2, ?3, ?3, ?4, ?5, 0, ?6)`,
   );
   const add = (hash: string, lastModified: number, stared: number, pinned: number, isDeleted: number) => {
-    insert.run(hash, lastModified, lastModified, stared, pinned, isDeleted);
+    insert.run(hash, lastModified, lastModified, stared, pinned, isDeleted, rowText, rowText.length);
     bucket.objects.set(`history/Text_${hash}/${hash}.bin`, 8);
   };
 
@@ -278,6 +281,34 @@ describe('F11 · 清理任务的子请求预算', () => {
     expect([...f.bucket.objects.keys()].sort()).toHaveLength(502);
     expect(measuredSubrequests(f)).toBeLessThanOrEqual(result.subrequests);
     expect(result.failures).toEqual([]);
+  });
+
+  it('行字节预算真正生效的那一支：4 KB × 501 条超预算 ⇒ 本轮截断在 500 条、下一轮继续推进（无永久漏删）', async () => {
+    // 其它用例全是空文本小行（≈270 B/行）⇒ 256 KiB 的行字节预算**从不 binding**（子请求预算先命中，
+    // 一轮就是 500 条）。这条专钉「大行」那一支：501 条 × 4 KB ≈ 2.05 MB ⇒ 首批 500 条即超预算
+    // ⇒ 第二批 `byteLimit < 0` ⇒ 本轮 truncated；同时证明**没有行被永久跳过** —— 下一轮从剩余候选继续。
+    const f = fixture({
+      expired: 501,
+      recent: 0,
+      hardDeletable: 0,
+      orphanDirs: 0,
+      maxCount: 1_000_000,
+      textBytes: 4096,
+      starred: 0,
+      pinned: 0,
+    });
+    captureConsole();
+
+    const first = await cronRun(f);
+    expect(first.expired, '首批吃满批上限 500 条（501 条 × 4 KB 已远超 256 KiB 预算）').toBe(500);
+    expect(first.truncated, '被截断的阶段必须是保留期阶段').toContain('retention');
+    expect(Number(metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention])).toBeGreaterThan(0);
+    expect(first.failures).toEqual([]);
+
+    const second = await cronRun(f);
+    expect(second.expired, '下一轮吃下剩余 1 条并收敛（字节预算不会造成永久漏删）').toBe(1);
+    expect(metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention]).toBe('0');
+    expect(second.failures).toEqual([]);
   });
 
   it('Meta 键集合：六个键每轮都写入，游标跨轮累计，收敛后回到 0', async () => {
