@@ -13183,3 +13183,56 @@ SSE 便宜得多。官方客户端的降级链是 `WS → SSE → 长轮询`，�
   · 再触发一轮 `/__scheduled` ⇒ 「上次尝试」「上次完成」同为 `2026-09-26 18:02:30`、「最近一轮 **已完成**」、无 tone。
   · 做法：`node --experimental-sqlite` 直改本地 dev D1（`.wrangler/state/.../9ba2b04b*.sqlite` 的 `Meta` 一行），
     避免为一条断言再起一个 dev server（**只允许一个 `wrangler dev`**）；未动 `src/**`，验完由 `/__scheduled` 复原。
+
+## 189. P3 复核：长轮询 103% 可信、SSE 的 20% 判为代理硬切的假象；生产用了哪些传输合并前无法判定（2026-09-26）
+
+起因：用户定案「暂不合并，先测 P3」。复核过程中推翻了两条**已在文档里**的论断 —— 一条是 P3 的 SSE 读数，
+一条是「生产无长轮询流量」。两处都已就地订正（`docs/do-hibernation-plan.md` §5 P3 与 §8.7(c)、`README.md`）。
+
+### 189.1 「SSE = 20%」大概率是假象（**旧读数不可引用**）
+
+`docs/progress.md` §185.3 与 `docs/do-hibernation-plan.md` §8.7(c) 载：SSE 挂住 5 min ⇒ `duration` **+7.72 GB-s
+= 满速 20%**（注「300 s，4 帧」）。这条与**本机实验环境**的两条已知事实冲突：
+
+- 本机到 Cloudflare 的**静默长连接有 ~60 s 硬切**（§4.1 实测：D 臂 60.2 s、curl `56`；C 臂 60.9 s、WS `1006`）；
+- 服务端心跳是 **15 s** 一帧 ⇒ 「**4 帧**」= **60 s** 的存活时间，`60 / 300 = **20%**` —— 与读数**逐位吻合**。
+  （若 SSE 真的挂满 300 s，按 15 s 心跳应有 ~20 帧。）
+
+⇒ 该读数更可能是「SSE 流在 60 s 被代理切断、相位照跑到 300 s」的产物，**不是**「SSE 挂着时的计费速率」。
+旁证：plan §5 P3 自己把这条臂（D / `HibernatingSse`）标成「第二轮补测**仍未测出**」「旧信号**不采信**」——
+即**从未**有过一次有效的 SSE 相位。**结论：SSE 的真实代价仍未知**（若 C4 的推定成立 —— 挂起的流式响应阻止
+hibernate —— 则与长轮询同级 ≈100%，只是没人测出来过）。
+
+对照：**长轮询那一行可信**（103%、21 次轮询）：长轮询每 ~15 s **重连一次**，代理切掉一次不影响它继续 poll
+⇒ 相位里 300 s 全程有活动，读数不是切线的产物。
+
+### 189.2 「生产无长轮询流量」推论不成立（**论断撤回**）
+
+§185.3 的依据是「命名空间调用 `type` 拆解：`alarm` 3,089 + `http` 106」。但**长轮询的每一次 poll 本身也是
+一次 `http` 调用**（`POST [endpoint-base]/negotiate` + 后续 `GET .../hub?id=`），`type` 拆分**分不出** LP。
+反向验算也不成立：设 4 台客户端用 LP（按服务端 ≤25 s 的挂起上限 ⇒ ~3.4k poll/台/天）⇒ 13.8k http/天，
+与实测 ~24.2k 请求/天（含 5,783 alarm）**不矛盾** ⇒ 「用 LP」与「用 WS」两种世界都与现有计数兼容。
+⇒ **该论断撤回**：生产实际用了哪些传输，**合并前无法从现有可观测面判定**。
+
+### 189.3 谁可能持有 SSE / 长轮询（**代码面已定**）
+
+| 消费方 | 传输抉择 | 证据 |
+|---|---|---|
+| **本仓库界面**（V1/V2） | **只用 WebSocket**，无降级 | `public/ui_v1/js/signalr.js:135`、`public/ui_v2/js/push.js:138` 各只有一处 `new WebSocket(...)`；`public/` 全目录 `ServerSentEvents|LongPolling` **零命中**。实时通道断开时界面走的是**应用层 10 s 轮询 `/ui/api/*`**（不经 DO） |
+| **官方客户端** | 默认链（WS 优先，**仅 WS 失败才降级**） | 上游 `OfficialAdapter.cs:90-96` 的 `WithUrl(...)` 只设了 `Headers` 与 `Proxy`，**没有** `.Transports(...)`；上游 `src/` 全仓 `HttpTransportType` **零命中**；语义按官方文档「SignalR uses the new WebSocket transport where available and falls back to older transports where necessary」（*Introduction to SignalR*，`learn.microsoft.com/en-us/aspnet/signalr/overview/getting-started/introduction-to-signalr`）；结构面另见 SignalR 传输规范 `TransportProtocols.md` —— SSE 与长轮询是**半传输**（必须配 HTTP POST 使用），只有 WebSockets 是全双工单连接 |
+
+⇒ 两档降级的共同前提是**WS 不可用**（剥 `Upgrade` 的代理 / 只放行普通 HTTP 的防火墙）。
+在生产 WS 正常的前提下，**P1 的收益成立**；一旦有连接落在 SSE/LP 上，则按 189.1 的结论：LP ⇒ 收益归零、
+SSE ⇒ 代价未知（可能同级）。
+
+### 189.4 要把 P3 在生产侧收口，只有两条路
+
+1. **先部署一份「只加传输打点」的 master 侧小改动**（不动 P1）：在 `handleWebSocket` / `handleSseConnect` /
+   长轮询新建连接三处各加一行 `console.log('[hub] connect transport=ws|sse|lp …')`，并把既有的
+   `[DO] broadcast … clients=N` 改成按传输拆解（`ws:a sse:b lp:c`）。`[observability] enabled` 已开 ⇒ 一天后
+   在 Workers Logs 里**直接数**生产用了哪些传输。**当前服务端做不到**：`clientCount()`（`SyncClipboardHub.ts:709`）
+   只有总数，且只在广播时打日志。
+2. **合并 P1 后看 `duration`**（§8.5）：塌到 3–11 GB-s/天 ⇒ 生产是 WS（P3 的收益上限没被吃）；**不塌** ⇒ 反证
+   有 SSE/LP 在线，此时再按第 1 条打点定位。
+
+**本轮未做**：没有部署任何东西（用户定案暂不合并）；没有为打点改代码（等用户在两条路里选一条）。
