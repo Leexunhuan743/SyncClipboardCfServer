@@ -13236,3 +13236,51 @@ SSE ⇒ 代价未知（可能同级）。
    有 SSE/LP 在线，此时再按第 1 条打点定位。
 
 **本轮未做**：没有部署任何东西（用户定案暂不合并）；没有为打点改代码（等用户在两条路里选一条）。
+
+## 190. P3 传输打点落地（三档建连/断开各一行 + 广播按传输拆解）与一个 dev server 孤儿导致的假读数（2026-09-26）
+
+用户定案走「办法 A」：**省电改动 + 传输打点一起上线**（一次部署同时拿到 `duration` 与传输构成两个信号）。
+本节记录打点本身、读法，以及落地过程中踩到的一个坑。
+
+### 190.1 打点内容（`src/durable/SyncClipboardHub.ts`，11 处）
+
+新增私有 `transportBreakdown()` ⇒ `ws:a sse:b lp:c`，并在**三档传输的建连/断开各一处**打印：
+
+| 事件 | 位置 | 日志 |
+|---|---|---|
+| WS 建连 | `handleWebSocket`（`acceptWebSocket` 之后，计数才含这一条） | `[hub] connect transport=ws clients=…` |
+| WS 断开 | `webSocketClose` / `webSocketError` | `[hub] disconnect transport=ws reason=close\|error clients=…` |
+| SSE 建连 | `handleSseConnect` | `[hub] connect transport=sse clients=…` |
+| SSE 断开 | `closeSseClient`（唯一收口点：同 id 重连 / 写失败 / 客户端要求关闭 / 静默回收 / DELETE 都经它） | `[hub] disconnect transport=sse clients=…` |
+| 长轮询建连 | `handleLongPoll` 首轮 GET **与** `handleClientMessage` 的异常时序补建 | `[hub] connect transport=lp clients=…` |
+| 长轮询断开 | `handleLongPollClose`（客户端 DELETE）与 `closeIdleClients`（静默回收） | `[hub] disconnect transport=lp reason=delete\|idle clients=…` |
+| 广播 | 既有的 `[DO] broadcast` 行 | `clients=` 由总数改成 `ws:a sse:b lp:c` |
+
+两处刻意设计：① **不落连接 id** —— SSE/长轮询的 `id` 就是 negotiate 签发的 **`connectionToken`**，SignalR 传输规范
+要求它保密（`docs/do-hibernation-plan.md` 同款结论）；② 断开时 `ws:` 计数可能仍含 CLOSING 的连接（实测那条是
+`disconnect transport=ws … clients=ws:1`）⇒ 已知口径差，与 `clientCount()` 同源，不修。
+
+**部署后怎么读**（判据）：Workers Logs（`[observability] enabled` 已开）按 `[hub] connect` 过滤 —— 只出现
+`transport=ws` ⇒ P1 收益成立；出现 `transport=lp` ⇒ 该时段收益归零（§189.1 的 103%）；出现 `transport=sse` ⇒
+按 §189.1 结论其代价**未知**（旧读数已判为假象）。同时看 `duration` 是否从 ~11,050 GB-s/天 塌到 3–11 GB-s/天。
+
+### 190.2 踩到的坑：8787 上同时有两个 workerd ⇒ 读到的是**旧 bundle**
+
+现象：打点落地后重跑 `transports.test.ts`，服务端日志里**一条 `[hub] connect` 都没有**，而既有的
+`[DO] broadcast … clients=0` 仍是**旧格式**（总数字，而不是 `ws:a sse:b lp:c`）。第一反应是"打点没进代码"，
+但盘上文件确实有（`grep -c "transportBreakdown\|\[hub\] connect transport" src/durable/SyncClipboardHub.ts` = 11）。
+
+根因：**`127.0.0.1:8787` 上有两个 LISTENING 的 workerd**（`netstat -ano | grep 8787 | grep -i listening` 给出
+**两个 pid**），其中一个是上一轮遗留的**孤儿树**（`wrangler dev` 没随会话退出回收）⇒ 测试恰好打到它那份**打点前
+的 bundle**。项目级 `hub ps` 里那些历史项**全是 exited** ⇒ 孤儿不属于任何 hub 管理项，只能从命令行
+（`pgrep -a node | grep "wrangler.js dev"`）与 socket 拥有者（`netstat -ano`）两侧核对后清掉；
+`taskkill /PID <wrangler 根> /T` **不生效**（Node 不处理该信号）⇒ 需要 `/F`。
+
+⇒ **补的判据（跑门禁前必做）**：`netstat -ano | grep 8787 | grep -i listening` **必须只有一个 pid**；
+两个就是有孤儿。`AGENTS.md` 的 DoD 只说「跑前确认只有一个 `wrangler dev`」，本节补上**检测命令**与**症状**：
+「**文件是对的、新代码却不生效** ⇒ 先怀疑有第二个 dev server，而不是怀疑构建或缓存」。
+清理后重跑，三种传输的建连/断开全部按预期打印（`ws` / `sse` / `lp` 各一组）。
+
+### 190.3 门禁与复验
+
+（本节由本轮门禁跑完后回填）
