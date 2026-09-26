@@ -752,35 +752,52 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
     expect((await res.json<AuthLimitResponseBody>()).blocks).toEqual({ [key]: blockedUntil });
   });
 
-  it('旧版平铺形态被识别为「无快照」：不采信、告警一次，下一次落盘即迁到新形态', async () => {
+  it('旧版平铺形态被**迁移**（不是丢弃）：生效中的封锁跨部署保留，下一次落盘写成新形态', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { env } = createEnv();
     const key = 'ip:203.0.113.52';
     const peek: { storage?: Map<string, unknown> } = {};
-    // 旧版落盘形态：平铺表，且里面有一条「已封锁」的记录
-    const legacy = { [key]: { windowStart: Date.now(), count: 99, blockedUntil: Date.now() + AUTH_RATE_LIMIT_BLOCK_MS } };
+    // 旧版（master）落盘形态：平铺表，里面有一条**仍在有效期内**的封锁
+    const blockedUntil = Date.now() + AUTH_RATE_LIMIT_BLOCK_MS;
+    const legacy = { [key]: { windowStart: Date.now(), count: 99, blockedUntil } };
     const hub = new SyncClipboardHub(createDoState({ [AUTH_RATE_LIMIT_STORAGE_KEY]: legacy }, peek), env);
     const call = (op: string, keys: string[]) =>
       hub.fetch(new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, { method: 'POST', body: JSON.stringify({ op, keys }) }));
 
-    // 旧形态不被采信 ⇒ 按空表起算（代价与既有取舍同侧：最坏多给阈值次失败），并留下一条可查的告警
-    expect((await (await call('snapshot', [key])).json<AuthLimitResponseBody>()).blocks).toEqual({});
-    expect(warn.mock.calls.some((c) => String(c[0]).includes('authRateLimits'))).toBe(true);
+    // ① 迁移：旧形态里的封锁**被采信** —— 部署不再把"仍在生效中的封锁"清空（否则攻击者等到发布窗口就能重来）
+    expect((await (await call('snapshot', [key])).json<AuthLimitResponseBody>()).blocks).toEqual({ [key]: blockedUntil });
+    // 旧形态是**可识别**的 ⇒ 不该留下「形态不识别」的告警
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('authRateLimits'))).toBe(false);
 
-    // 下一次落盘写回新形态（自愈）
-    for (let i = 0; i < AUTH_RATE_LIMIT_MAX_FAILURES; i++) await call('report', [key]);
+    // ② 下一次实质变化即落成新形态（persistedAt 取 0 ⇒ 节流判据立刻允许落盘）
+    await call('clear', [key]);
     const persisted = peek.storage?.get(AUTH_RATE_LIMIT_STORAGE_KEY) as
-      | { persistedAt?: unknown; limits?: Record<string, unknown> }
+      | { persistedAt?: unknown; limits?: unknown }
       | undefined;
     expect(typeof persisted?.persistedAt).toBe('number');
-    expect(Object.keys(persisted?.limits ?? {})).toEqual([key]);
+    expect(persisted?.limits).toEqual({});
 
-    // 这份新快照能被同一个守卫读回（换一个实例 ⇒ 走一次真实的按需加载）
+    // ③ 迁移是持久的：换一个实例（走一次真实的按需加载）读回新形态
     const rebooted = new SyncClipboardHub(createDoState({ [AUTH_RATE_LIMIT_STORAGE_KEY]: persisted }, {}), env);
     const after = await rebooted.fetch(
       new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, { method: 'POST', body: JSON.stringify({ op: 'snapshot', keys: [key] }) }),
     );
-    expect(Object.keys((await after.json<AuthLimitResponseBody>()).blocks)).toEqual([key]);
+    expect((await after.json<AuthLimitResponseBody>()).blocks).toEqual({});
+  });
+
+  it('损坏的快照（没有任何可识别条目）按空表起算，并留下一条可查的告警', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { env } = createEnv();
+    const key = 'ip:203.0.113.53';
+    const hub = new SyncClipboardHub(
+      createDoState({ [AUTH_RATE_LIMIT_STORAGE_KEY]: { garbage: 'not-a-state', n: 1 } }, {}),
+      env,
+    );
+    const res = await hub.fetch(
+      new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, { method: 'POST', body: JSON.stringify({ op: 'snapshot', keys: [key] }) }),
+    );
+    expect((await res.json<AuthLimitResponseBody>()).blocks).toEqual({});
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('authRateLimits'))).toBe(true);
   });
 });
 

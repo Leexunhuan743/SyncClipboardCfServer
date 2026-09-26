@@ -262,6 +262,36 @@ describe('F11 · 清理任务的子请求预算', () => {
     expect(meta[CLEANUP_META_KEYS.lastError]).toBe('');
   });
 
+  it('F2：只有「开始」没有「完成」⇒ 界面能判出上一轮没跑完（轮尾落库失败即等价于被终止）', async () => {
+    // 被平台终止的那一轮到不了轮尾：轮首写了 lastRunAt，而 lastCompletedAt 仍是**上一轮**的值（或不存在）。
+    // 这里用「让轮尾那次 Meta 写失败」复现同一可观测形态 —— 一轮里只有两次 `INSERT INTO Meta`
+    // （轮首 1 行、轮尾 6 行），故按第 2 次注入失败即精确命中轮尾。
+    const f = fixture({ expired: 3, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: 1_000_000, starred: 0, pinned: 0 });
+    captureConsole();
+    let metaWrites = 0;
+    f.failWhen.test = (sql) => {
+      if (!sql.includes('INSERT INTO Meta')) return false;
+      metaWrites += 1;
+      return metaWrites === 2;
+    };
+
+    const result = await cronRun(f);
+
+    const meta = metaRows(f.sqlite);
+    expect(meta[CLEANUP_META_KEYS.lastRunAt], '轮首的「尝试开始」仍在').toBeDefined();
+    expect(meta[CLEANUP_META_KEYS.lastCompletedAt], '轮尾没跑成 ⇒ 没有完成戳').toBeUndefined();
+    expect(result.failures.some((m) => m.includes('meta')), '轮尾落库失败被记为失败').toBe(true);
+  });
+
+  it('F2 阳性对照：轮尾成功 ⇒ 完成戳被写下（与 lastRunAt 同值）', async () => {
+    const f = fixture({ expired: 3, recent: 0, hardDeletable: 0, orphanDirs: 0, maxCount: 1_000_000, starred: 0, pinned: 0 });
+    captureConsole();
+    const result = await cronRun(f);
+    const meta = metaRows(f.sqlite);
+    expect(meta[CLEANUP_META_KEYS.lastCompletedAt]).toBe(meta[CLEANUP_META_KEYS.lastRunAt]);
+    expect(result.failures).toEqual([]);
+  });
+
   it('软删阶段一轮吃下整批 500 条，且完全不碰 R2（不清数据目录）', async () => {
     // 这条守住"500 条/批"能成立的地基：软删每条只花 1 次广播（500 × 1 + 查询 1 ≤ 预算），
     // **不碰 R2** —— 数据目录留到 30 天硬删阶段才按批清扫（ADR D29：回收站要能连数据拿回来）。
@@ -300,18 +330,28 @@ describe('F11 · 清理任务的子请求预算', () => {
     captureConsole();
 
     const first = await cronRun(f);
-    expect(first.expired, '首批吃满批上限 500 条（501 条 × 4 KB 已远超 256 KiB 预算）').toBe(500);
+    // F1 的判据：**首批不再按 batchLimit（500）取**，而是先用 firstBatchLimit 探路、第二批起按实测均值
+    // 收窄 ⇒ 4 KB 行的一轮被压在「预算 / 行大小」量级，而不是先把 ~2 MB 拉进内存再截断。
+    expect(first.expired, '4 KB 行的一轮必须远小于 500（旧的"首批固定 500 条"已被字节预算挡住）').toBeLessThan(200);
+    expect(first.expired, '但至少要吃下探路的那一批').toBeGreaterThanOrEqual(5);
     expect(first.truncated, '被截断的阶段必须是保留期阶段').toContain('retention');
     expect(Number(metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention])).toBeGreaterThan(0);
     expect(first.failures).toEqual([]);
 
-    const second = await cronRun(f);
-    expect(second.expired, '下一轮吃下剩余 1 条并收敛（字节预算不会造成永久漏删）').toBe(1);
+    // 多轮收敛：字节预算只影响吞吐，**不造成永久漏删**（501 条最终都必须被软删）
+    let total = first.expired;
+    let rounds = 0;
+    while (metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention] !== '0' && rounds < 40) {
+      const r = await cronRun(f);
+      expect(r.failures).toEqual([]);
+      total += r.expired;
+      rounds += 1;
+    }
+    expect(total, '501 条全部被软删').toBe(501);
     expect(metaRows(f.sqlite)[CLEANUP_META_KEYS.cursors.retention]).toBe('0');
-    expect(second.failures).toEqual([]);
   });
 
-  it('Meta 键集合：六个键每轮都写入，游标跨轮累计，收敛后回到 0', async () => {
+  it('Meta 键集合：七个键每轮都写入（含「完成戳」），游标跨轮累计，收敛后回到 0', async () => {
     // 2400 条过期记录：单轮能吃掉约 739 条（批 500 + 余量 239），故需要多轮才收敛 ——
     // 正好覆盖"游标跨轮累计"与"收敛后归零"两条路径。
     const f = fixture({ expired: 2400, recent: 60, hardDeletable: 0, orphanDirs: 0, maxCount: MAX_COUNT });
@@ -320,6 +360,7 @@ describe('F11 · 清理任务的子请求预算', () => {
     const first = await cronRun(f);
     const expectedKeys = [
       CLEANUP_META_KEYS.lastRunAt,
+      CLEANUP_META_KEYS.lastCompletedAt,
       CLEANUP_META_KEYS.lastError,
       ...CLEANUP_PHASES.map((phase) => CLEANUP_META_KEYS.cursors[phase]),
     ].sort();
@@ -333,6 +374,8 @@ describe('F11 · 清理任务的子请求预算', () => {
     const runAt = afterFirst[CLEANUP_META_KEYS.lastRunAt] ?? '';
     expect(runAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(Number.isNaN(Date.parse(runAt))).toBe(false);
+    // 「尝试开始」与「完成」是两个键、同一个值（本轮起点）：界面只认完成戳（F2）
+    expect(afterFirst[CLEANUP_META_KEYS.lastCompletedAt]).toBe(runAt);
     expect(afterFirst[CLEANUP_META_KEYS.lastError]).toBe('');
 
     // 第二轮从上一轮游标继续（累计推进），而不是每轮从头再来

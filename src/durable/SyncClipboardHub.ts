@@ -79,25 +79,35 @@ function isAuthLimitState(value: unknown): value is AuthLimitState {
 }
 
 /**
- * 落盘快照的形状守卫：只认 `{ persistedAt, limits }`，其余（含**上一版的平铺形态**
- * `Record<string, AuthLimitState>`、以及任何损坏值）一律返回 `null`。
+ * 落盘快照的形状守卫 + **旧形态迁移**：认 `{ persistedAt, limits }`，也认**上一版的平铺形态**
+ * `Record<string, AuthLimitState>`（逐条用 `isAuthLimitState` 校验后接收，`persistedAt` 取 0
+ * ⇒ 下一次落盘立刻写成新形态）。其余（损坏值）一律返回 `null` ⇒ 按空表起算。
  *
- * 为什么需要它：形态在本分支里改过一次（旧版直接落平铺表），而 DO 存储里可能还留着旧值 ——
- * 没有守卫时 `Object.entries(saved.limits)` 会抛 `TypeError`，只能靠构造函数里那个
- * `catch {}` 兜住（**结果相同、但错误被静默**）。有了守卫，这条路径的语义是显式的：
- * 「形态不认识 ⇒ 按空表起算」，并且调用处可以据此告警一次。
- * 代价与既有取舍同侧：计数归零最坏等于「多给阈值次失败」；下一次落盘即写回新形态（自愈）。
+ * 为什么旧形态要**迁移**而不是丢弃：master 落的就是平铺表，直接丢弃会让**部署那一刻仍在有效期内的
+ * 封锁与失败计数全部归零**（攻击者只要等到发布窗口就能重来，且慢速试探的进度白攒）。迁移的代价为零 ——
+ * 两条路径读出来的都是同一批 `AuthLimitState`。
+ * 只有「不是对象 / 完全没有可识别的条目」才算损坏：`limits` 为空表与旧形态的空表等价（都按空表起算）。
  */
 function readPersistedAuthLimits(raw: unknown): PersistedAuthLimits | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const v = raw as { persistedAt?: unknown; limits?: unknown };
-  if (typeof v.persistedAt !== 'number') return null;
-  if (typeof v.limits !== 'object' || v.limits === null) return null;
+  // 新形态
+  if (typeof v.persistedAt === 'number' && typeof v.limits === 'object' && v.limits !== null) {
+    return { persistedAt: v.persistedAt, limits: pickAuthLimitStates(v.limits as Record<string, unknown>) };
+  }
+  // 旧形态（平铺表）：键即限速 key，值是 AuthLimitState
+  const legacy = pickAuthLimitStates(v as Record<string, unknown>);
+  if (Object.keys(legacy).length === 0) return null;
+  return { persistedAt: 0, limits: legacy };
+}
+
+/** 从任意字典里挑出形状正确的 `AuthLimitState`（新形态的 `limits` 与旧形态的平铺表共用）。 */
+function pickAuthLimitStates(source: Record<string, unknown>): Record<string, AuthLimitState> {
   const limits: Record<string, AuthLimitState> = {};
-  for (const [key, value] of Object.entries(v.limits as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(source)) {
     if (isAuthLimitState(value)) limits[key] = value;
   }
-  return { persistedAt: v.persistedAt, limits };
+  return limits;
 }
 
 // 长轮询单连接队列上限（F9 第四类封顶）：无上限时一次写可让 N 条连接各积压整条消息

@@ -13065,5 +13065,54 @@ SSE 便宜得多。官方客户端的降级链是 `WS → SSE → 长轮询`，�
 - 全量套件（`wrangler dev --test-scheduled --port 8787` + `BASE=http://127.0.0.1:8787` +
   `--no-file-parallelism`）→ **22 套件 / 468 用例 / 失败 0 / 退出码 0** —— 较 §185 的 465 条 **+3**，正是 §186.4 新增的三条。
   跑前确认只有一个 `wrangler dev`；跑完已停该进程并复查（`.dev.vars` 未打印、未提交）。
+## 187. 合并前审查的三条意见（F1/F2/F3）：逐条核实、修复与回归钉子（2026-09-26）
+
+### 187.1 三条意见的核实结论
+
+| 意见 | 核实（以代码为准） | 处置 |
+|---|---|---|
+| **F1 [P1]** 行字节预算没有约束**首批**清理：首批仍取最多 500 条，500 × 4 KB ≈ 2 MB 一次进内存，持续大行积压仍可能撞 Cron 的 10 ms | **成立**：`drainBatches` 在 `avgRowBytes === 0` 时 `byteLimit` 退化为 `batchLimit`（注释自陈「首批的越界量」），而 §186.4 新增的用例正好量到 `expired = 500`、行字节 ≈ 2 MB | **修**：首批改为只用 `FIRST_BATCH_ROWS = 5` 条探路，取回后按实测均值收窄 |
+| **F2 [P1]** 被中止的清理会显示为「清理正常」：轮首只写 `lastRunAt`、`lastError` 只在轮尾写 ⇒ 被平台终止时 lastError 停在旧空值 | **成立**：V1 `stats.js` 的判据是「`lastError` 为空且 `lastRunAt` 存在 ⇒ 清理正常」；而轮首/轮尾写的是**同一个键、同一个值** ⇒ 界面在原理上无法区分「尝试」与「完成」 | **修**：完成戳独立成键 `cleanup:lastCompletedAt`（轮尾写），界面按「完成戳是否 ≥ 本轮起点」判「正常 / 未完成」 |
+| **F3 [P2]** 部署会清空已有的认证封锁：master 的平铺形态被新读取逻辑拒绝 ⇒ 按空表起算 | **成立**（这正是 §186.4 第 3 条的「按空表起算 + 告警 + 自愈」）：丢弃会让发布窗口内仍在生效的封锁与失败计数归零 | **修**：识别并**迁移**旧形态（逐条校验后接收、`persistedAt = 0`），只有真正损坏的值才按空表起算 |
+
+### 187.2 落地内容
+
+**代码**
+- `src/cleanup.ts`：`BatchPhaseSpec` 加 `firstBatchLimit`；`drainBatches` 首批用 `firstBatchLimit`（软删两阶段 =
+  `FIRST_BATCH_ROWS = 5`，硬删/孤儿保持原上限）；`CLEANUP_META_KEYS` 加 `lastCompletedAt`，**轮尾只写它** +
+  `lastError` + 四个游标（轮首仍写 `lastRunAt`）。
+- `src/durable/SyncClipboardHub.ts`：`readPersistedAuthLimits` 认新形态**与**旧平铺形态（新增
+  `pickAuthLimitStates` 共用形状校验），旧形态 `persistedAt = 0` ⇒ 下一次落盘写回新形态。
+- `src/ui/routes.ts`：`/ui/api/info` 与 `/ui/api/overview` 的 `cleanup` 载荷加 `lastCompletedAt`。
+- 界面：V1 `stats.js`（判据换成完成戳，新增「清理未完成」告警项，文案点明「多为被平台终止」）、
+  V1 `info.js`（「最近一次尝试 / 最近一次完成 / 上次失败」三行）、V2 `drawer.js`（加「上次完成」）。
+
+**测试（本轮 +5）**
+- `test/cleanup-budget.test.ts`：Meta 键集合 6→7（含完成戳与 lastRunAt 同值）；F1 用例改为断言
+  「首批远小于 500（`< 200`，且 ≥ 5）+ 多轮收敛后 **501 条全部被软删**（字节预算不造成永久漏删）」；
+  新增 F2 两条：**轮尾落库失败 ⇒ 没有完成戳**（用「第 2 次 `INSERT INTO Meta` 注入失败」精确命中轮尾）与
+  **轮尾成功 ⇒ 完成戳 = lastRunAt**（正对照）。
+- `test/rate-limit.test.ts`：旧形态用例**翻转**为「迁移」（封锁被采信 + 落成新形态 + 换实例可读回）；
+  新增「损坏值按空表起算 + 告警」。
+
+**文档**：`design.md`（§7.1 清理段、**D42 第 ③ 条**、§13 风险行 —— 后两处原文写的是「按空表起算/首日计数清零」，
+本轮按 F3 改写为「迁移」）、`ui.md`（§3 的 stats.js 行、§5 的 `/ui/api/info` 行）、`protocol.md` §10 的
+保留/清理行、`do-hibernation-plan.md` §8.7(d) 第 3 条。
+
+### 187.3 门禁与真机复验
+
+（本节由本轮门禁跑完后回填）
+- 静态：`tsc --noEmit` **0**；`eslint`（含 `test/manual`）**0**；`node --check` ×4 → **0**。
+- 全量套件（8787 dev server + `BASE` + `--no-file-parallelism`）：**22 套件 / 471 用例 / 失败 0 / 退出码 0**
+  —— 较 §186 的 468 条 **+3**：F2 两条（轮尾落库失败 = 无完成戳；轮尾成功 = 完成戳与 lastRunAt 同值）
+  + F3 一条（损坏值按空表起算并告警）。
+- **浏览器探针**（本轮改了 V1 与 V2 界面 ⇒ DoD 要求）：V1 `probe-ui-v1.mjs` 的 **1440×900 与 390×844**、
+  V2 `probe.mjs --url /ui_v2/app/` 的 **1440×900 与 390×844** —— 四档**全部**
+  `CONSOLE ERRORS none` / `FAILED REQUESTS none` / `findings=0`（V2 为 `problems=0`）/ 退出码 0。
+- **F2 的两条分支在真实浏览器里双向验过**（用隔离 persist 目录起 8788 的 dev server，避免污染本地库）：
+  · 只有「尝试戳」、`lastCompletedAt: null` ⇒ 统计条渲染 **「清理未完成」（warn）** 并带解释 title
+    （`最近一次清理只留下「开始」时间…通常是被平台终止（Cron 预算超限）…`）—— 旧实现这里显示「清理正常」；
+  · 触发一轮 `/__scheduled` 后双戳相等 ⇒ 渲染 **「清理正常」**，title 为「最近一次完成：…」。
+
 
 

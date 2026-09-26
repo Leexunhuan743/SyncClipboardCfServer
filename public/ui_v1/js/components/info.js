@@ -259,7 +259,11 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
     const pending = Object.entries(cursors).filter(([, value]) => Number(value) > 0);
     return section('清理任务', [
       kvList([
-        kvRow('最近一次运行', cleanup?.lastRunAt ? formatAbsolute(cleanup.lastRunAt) : '从未运行（Cron 未触发过）'),
+        kvRow('最近一次尝试', cleanup?.lastRunAt ? formatAbsolute(cleanup.lastRunAt) : '从未运行（Cron 未触发过）'),
+        kvRow(
+          '最近一次完成',
+          cleanup?.lastCompletedAt ? formatAbsolute(cleanup.lastCompletedAt) : '无（上轮没跑到收尾：多为平台终止）',
+        ),
         kvRow('上次失败', cleanup?.lastError ?? '无'),
         kvRow(
           '续跑游标',

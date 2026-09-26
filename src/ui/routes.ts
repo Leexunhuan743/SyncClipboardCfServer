@@ -141,10 +141,13 @@ async function deploymentMeta(
       deleted: ds.stats.deletedCount,
       byType: ds.views.byActive,
     },
-    // 清理可观测性（F11）：lastRunAt=null 说明从来没跑过；lastError=null 说明上轮无失败
+    // 清理可观测性（F11）：lastRunAt=null 说明从来没跑过；lastError=null 说明上轮无失败。
+    // ⚠️ 「跑完了」的判据是 **lastCompletedAt**（轮尾写），不是 lastError 为空 —— 被平台终止的那一轮
+    // 到不了轮尾，lastError 会**停在旧值**（通常是空串），只看它就会把「被终止」显示成「清理正常」。
     // （cleanup 正常时写空串，这里归一化）；游标非 0 = 该阶段本轮没跑完、下轮续跑。
     cleanup: {
       lastRunAt: meta.get(CLEANUP_META_KEYS.lastRunAt) ?? null,
+      lastCompletedAt: meta.get(CLEANUP_META_KEYS.lastCompletedAt) ?? null,
       lastError: lastError === '' ? null : lastError.slice(0, CLEANUP_ERROR_MAX_CHARS),
       cursors: Object.fromEntries(
         CLEANUP_PHASES.map((phase) => [

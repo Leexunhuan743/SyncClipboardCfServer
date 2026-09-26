@@ -47,6 +47,11 @@ const SOFT_DELETE_BATCH_LIMIT = 500;
 // 硬删单批条数：每条成本为 0（不广播，目录由所在批次一次批量删），单轮能吃下的量由
 // MAX_BATCHES_PER_PHASE × 本值决定；单批设上限是为了让「一次 D1 语句 + 一次批量删」的内存有界。
 const HARD_DELETE_BATCH_LIMIT = 1000;
+// 首批条数上限（行大小未知时的小批探路）：见 BatchPhaseSpec.firstBatchLimit。
+// 取 5：最坏单行 ~1 MiB（D1 单值上限）⇒ 首批最坏 ~5 MiB，远低于「500 条 × 1 MiB」的形态；
+// 而小行库的一轮仍能吃下约 9,500 行（20 批里只有第一批受影响）⇒ 吞吐代价可忽略。
+const FIRST_BATCH_ROWS = 5;
+
 // 单阶段批次数上限：防「D1 返回满批却没真正推进」时的死循环。
 const MAX_BATCHES_PER_PHASE = 20;
 // 已删除记录保留期（上游 RemoveOutOfDateDeletedRecords 固定 30 天）
@@ -142,13 +147,17 @@ const RESERVED_AFTER: Record<CleanupPhase, number> = (() => {
 // 清理任务写进 Meta 的键；UI 的 /ui/api/info 只读展示同名键。
 // 六个键每轮运行都会写入，因此 UI 侧可以假定它们恒存在。
 export interface CleanupMetaKeys {
+  /** 本轮**尝试开始**（轮首写；只有它没有完成戳 ⇒ 上一轮没跑完） */
   lastRunAt: string;
+  /** 本轮**成功跑到收尾**（轮尾写）；界面据此判「清理正常」而不是只看 lastError */
+  lastCompletedAt: string;
   lastError: string;
   cursors: Record<CleanupPhase, string>;
 }
 
 export const CLEANUP_META_KEYS: CleanupMetaKeys = {
   lastRunAt: 'cleanup:lastRunAt',
+  lastCompletedAt: 'cleanup:lastCompletedAt',
   lastError: 'cleanup:lastError',
   cursors: {
     retention: 'cleanup:cursor:retention',
@@ -160,6 +169,7 @@ export const CLEANUP_META_KEYS: CleanupMetaKeys = {
 
 const META_KEYS_ALL: string[] = [
   CLEANUP_META_KEYS.lastRunAt,
+  CLEANUP_META_KEYS.lastCompletedAt,
   CLEANUP_META_KEYS.lastError,
   ...CLEANUP_PHASES.map((phase) => CLEANUP_META_KEYS.cursors[phase]),
 ];
@@ -384,6 +394,14 @@ interface BatchPhaseSpec<T extends CleanupRow> {
   batchedCallCost: number;
   /** 单批条数上限 */
   batchLimit: number;
+  /**
+   * **首批**条数上限。首批的行字节数在取回前未知（`estimateRowBytes` 需要行本身），若一上来就按
+   * `batchLimit`（软删 500）取，500 条 × 4 KB 的行就是 ~2 MB 一次进内存 —— 远超 256 KiB 的预算，
+   * 而平台的 Cron CPU 只有 10 ms（**平均**预算，见文件头）。故首批只取 `FIRST_BATCH_ROWS` 条探路：
+   * 取回后 `avgRowBytes` 即已知，第二批起按实测均值收窄（大行被挡住、小行照旧吃满 `batchLimit`）。
+   * 代价：每轮第一批少处理几行 ⇒ 小行库的一轮从约 10,000 行降到约 9,500 行（20 批里只有 1 批受影响）。
+   */
+  firstBatchLimit: number;
   /** 单轮行字节预算（CPU 口径，推导见 SOFT_DELETE_ROW_BYTES_PER_ROUND） */
   rowBytesPerRound: number;
   /** 本批已 materialize 的行字节估算（CPU 口径，同上） */
@@ -415,13 +433,13 @@ async function drainBatches<T extends CleanupRow>(
         : room >= 0
           ? spec.batchLimit
           : 0;
-    // CPU 口径：按**已实测的平均行字节**把这一批压进剩余预算。首批只能用 batchLimit 约束
-    // （行字节数要取回后才知道）；此后每批都按实测均值收窄，于是「500 条 × 1 MiB」这种形态
-    // 从第二批起就被挡住（首批的越界量见 SOFT_DELETE_ROW_BYTES_PER_ROUND 末尾的说明）。
+    // CPU 口径：按**已实测的平均行字节**把这一批压进剩余预算。首批行字节未知 ⇒ 只取
+    // `firstBatchLimit` 条（小批探路，避免 500 条大记录一次进内存）；此后每批都按实测均值收窄。
     const avgRowBytes = processed > 0 ? rowBytes / processed : 0;
     const byteLimit =
       avgRowBytes > 0 ? Math.floor((spec.rowBytesPerRound - rowBytes) / avgRowBytes) : spec.batchLimit;
-    const limit = Math.min(spec.batchLimit, subrequestLimit, byteLimit);
+    const rowCap = batches === 0 ? spec.firstBatchLimit : spec.batchLimit;
+    const limit = Math.min(rowCap, subrequestLimit, byteLimit);
     if (limit < 1) return { processed, batches, truncated: true };
     run.budget.spend(spec.queryCost);
     batches++;
@@ -543,6 +561,7 @@ function cleanRetention(run: CleanupRun, retentionMinutes: number): Promise<Phas
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
+    firstBatchLimit: FIRST_BATCH_ROWS,
     rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateEntityRowBytes,
     fetchBatch: async (limit) => {
@@ -562,6 +581,7 @@ function cleanTrim(run: CleanupRun, maxCount: number): Promise<PhaseOutcome> {
     queryCost: 2 * SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: 0,
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
+    firstBatchLimit: FIRST_BATCH_ROWS,
     rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateEntityRowBytes,
     fetchBatch: async (limit) => {
@@ -585,6 +605,7 @@ function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutco
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: SUBREQUESTS_PER_SWEEP_CALL,
     batchLimit: HARD_DELETE_BATCH_LIMIT,
+    firstBatchLimit: HARD_DELETE_BATCH_LIMIT,
     rowBytesPerRound: HARD_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateKeyRowBytes,
     fetchBatch: async (limit) => {
@@ -706,8 +727,9 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
     //     而看起来一切正常 —— 那正是 F11 的原始形态。有了它，哪怕本轮被终止，lastRunAt 也已经
     //     推进到本轮的起点，「清理到底还在不在跑」在任何时刻都可回答（§9 的「一轮跑不完、
     //     下轮续跑」是设计行为，这里只是把它变得**可见**）。
-    //   · 轮尾那次 = 「本轮**完成**」（值同为本轮起点 startedAt，见收尾落库处）：它只在跑到收尾时
-    //     执行，失败（D1 抖动）也不会抹掉轮首这次写下的值。
+    //   · 轮尾那次 = 「本轮**完成**」，写的是**另一个键** `cleanup:lastCompletedAt`（值同为本轮起点
+    //     startedAt）：界面的判据是「完成戳是否 ≥ 本轮起点」，所以「只有起点、没有完成戳」= 上一轮
+    //     没跑完（被平台终止或中途抛错）。写失败（D1 抖动）也不会抹掉轮首这次写下的值。
     // 成本：+1 次 D1 子请求/轮 = 72 次/天（可忽略；本轮的子请求总数仍远低于 SUBREQUEST_BUDGET）。
     const startedAt = new Date(run.nowMs).toISOString();
     try {
@@ -779,16 +801,15 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       );
     }
 
-    // 收尾落库：六个键每轮都写（UI 据此展示进度与失败）。写失败只记日志/返回值 ——
+    // 收尾落库：`lastCompletedAt`（本轮**完成**）+ `lastError` + 四个游标。写失败只记日志/返回值 ——
     // 此时已无处落库，且不能把错误抛给调用方。
-    // `lastRunAt` 与轮首心跳写的是**同一个值**（本轮起点 startedAt），但语义是「本轮**完成**」：
-    // 只有跑到这里才说明四个阶段都执行过（或被显式关闭/截断），且游标与 lastError 已一起落库。
-    // 被 CPU 终止的那一轮到不了这里，UI 看到的是轮首心跳（「尝试开始」）——两者的区别在
-    // runCleanup 开头的心跳注释里。
+    // ⚠️ 完成戳必须是**独立的键**：轮首写 `lastRunAt`（尝试开始）、轮尾写 `lastCompletedAt`（完成）。
+    // 两者若写同一个键（且写同一个值），界面就无法区分「正在跑 / 被平台终止」与「跑完了」——
+    // 只有起点而没有完成戳 ⇒ 上一轮没跑完，界面据此显示「未完成」而不是「清理正常」。
     try {
       run.budget.spend(SUBREQUESTS_PER_D1_STATEMENT);
       await run.db.setMetaValues({
-        [CLEANUP_META_KEYS.lastRunAt]: startedAt,
+        [CLEANUP_META_KEYS.lastCompletedAt]: startedAt,
         [CLEANUP_META_KEYS.lastError]: run.failures.join('; ').slice(0, META_LAST_ERROR_MAX),
         ...Object.fromEntries(
           CLEANUP_PHASES.map((phase) => [CLEANUP_META_KEYS.cursors[phase], String(run.cursors[phase])]),

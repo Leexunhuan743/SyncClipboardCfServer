@@ -134,6 +134,12 @@ export function createStats() {
           }),
         );
       }
+      // 「清理正常」的判据是**完成戳**（lastCompletedAt，轮尾写），不是"没有错误"：被平台终止的那一轮
+      // （Free 的 Cron 只有 10 ms **平均** CPU）到不了轮尾，lastError 会停在旧值（通常是空串）——
+      // 只看它就会把「被终止」显示成「清理正常」。
+      const attemptMs = cleanup?.lastRunAt ? Date.parse(cleanup.lastRunAt) : NaN;
+      const completedMs = cleanup?.lastCompletedAt ? Date.parse(cleanup.lastCompletedAt) : NaN;
+      const unfinished = Number.isFinite(attemptMs) && !(completedMs >= attemptMs);
       if (cleanup?.lastError) {
         parts.push(
           el('span', {
@@ -142,12 +148,22 @@ export function createStats() {
             title: `清理失败：${cleanup.lastError}（详见「部署信息」→ 清理任务）`,
           }),
         );
-      } else if (cleanup?.lastRunAt) {
+      } else if (unfinished) {
+        parts.push(
+          el('span', {
+            class: 'stats__health-item stats__health-item--warn',
+            text: '清理未完成',
+            title:
+              `最近一次清理只留下「开始」时间（${new Date(attemptMs).toLocaleString('zh-CN')}）、没有「完成」时间：`
+              + '通常是被平台终止（Cron 预算超限），下一轮会从游标续跑。详见「部署信息」→ 清理任务',
+          }),
+        );
+      } else if (Number.isFinite(completedMs)) {
         parts.push(
           el('span', {
             class: 'stats__health-item',
             text: '清理正常',
-            title: `最近一次清理：${new Date(cleanup.lastRunAt).toLocaleString('zh-CN')}`,
+            title: `最近一次完成：${new Date(completedMs).toLocaleString('zh-CN')}`,
           }),
         );
       }

@@ -479,7 +479,12 @@ export function createDrawer(handlers) {
     );
   } else {
     cleanupFacts.append(
-      fact('上次运行', formatAbsolute(cleanup.lastRunAt)),
+      fact('上次尝试', formatAbsolute(cleanup.lastRunAt)),
+      fact(
+        '上次完成',
+        cleanup.lastCompletedAt ? formatAbsolute(cleanup.lastCompletedAt) : '无（上轮没跑到收尾）',
+        cleanup.lastCompletedAt ? undefined : 'warn',
+      ),
       cleanup.lastError
         ? fact('上次错误', cleanup.lastError, 'warn')
         : fact('上次错误', '无'),
