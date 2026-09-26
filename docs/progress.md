@@ -13281,6 +13281,13 @@ SSE ⇒ 代价未知（可能同级）。
 「**文件是对的、新代码却不生效** ⇒ 先怀疑有第二个 dev server，而不是怀疑构建或缓存」。
 清理后重跑，三种传输的建连/断开全部按预期打印（`ws` / `sse` / `lp` 各一组）。
 
-### 190.3 门禁与复验
+### 190.3 门禁与复验（**已并入 `origin/master` 之后的树**）
 
-（本节由本轮门禁跑完后回填）
+- 跑前判据（§190.2）：`netstat -ano | grep 8787 | grep -i listening` → **只有一个 pid**。
+- 静态：`tsc --noEmit` **0**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0**；
+  `node --check test/manual/{probe,probe-ui-v1,states,shoot}.mjs` → **0/0/0/0**。
+- 全量套件（8787 dev server + `BASE` + `--no-file-parallelism`）：**22 套件 / 473 用例 / 失败 0 / 退出码 0**。
+- 浏览器探针四档：V2 `probe.mjs --url /ui_v2/app/` 的 1440×900（CLS **0.0019**）与 390×844（CLS **0.0073**）、
+  V1 `probe-ui-v1.mjs` 的 1440×900 与 390×844 —— **全部**退出码 0、`CONSOLE ERRORS none`、
+  `FAILED REQUESTS none`、`findings/problems` **0**（与并入 master 前的读数同值）。
+- 打点本身在本地 dev server 上实测打印（三种传输各一组 `connect`/`disconnect`，见 §190.1 末）。
