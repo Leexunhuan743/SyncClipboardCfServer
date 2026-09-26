@@ -245,7 +245,7 @@ export class SyncClipboardHub {
         payloads?: unknown[];
       };
       const batch = Array.isArray(payloads) ? payloads : [payload];
-      console.log(`[DO] broadcast ${target} ×${batch.length}, clients=${this.clientCount()}`);
+      console.log(`[DO] broadcast ${target} ×${batch.length}, clients=${this.transportBreakdown()}`);
       for (const item of batch) this.broadcast(target, item);
       return new Response(null, { status: 200 });
     }
@@ -312,6 +312,8 @@ export class SyncClipboardHub {
     // 16,384 字节；且「改完之后不重新序列化就不保留」⇒ 每次触碰都要重写一次。
     server.serializeAttachment({ lastSeen: Date.now() });
     void this.scheduleHeartbeat();
+    // P3 打点：accept 之后再记，`ws:` 计数才含这一条
+    console.log(`[hub] connect transport=ws clients=${this.transportBreakdown()}`);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -359,6 +361,7 @@ export class SyncClipboardHub {
       /* 已关闭 */
     }
     void this.scheduleHeartbeat();
+    console.log(`[hub] disconnect transport=ws reason=close clients=${this.transportBreakdown()}`);
   }
 
   // 错误：与旧的 error 监听器等价（结束该连接 + 重算心跳）。
@@ -369,6 +372,7 @@ export class SyncClipboardHub {
     } catch {
       /* 已关闭 */
     }
+    console.log(`[hub] disconnect transport=ws reason=error clients=${this.transportBreakdown()}`);
   }
 
   // ---------- Server-Sent Events ----------
@@ -385,6 +389,7 @@ export class SyncClipboardHub {
     const sse: SseClient = { id, writer, lastSeen: Date.now(), closed: false };
     this.sseClients.set(id, sse);
     void this.scheduleHeartbeat();
+    console.log(`[hub] connect transport=sse clients=${this.transportBreakdown()}`);
 
     // 立即写一个注释帧：促使头部与首字节尽早下发（部分中间代理会缓冲到首字节）
     void this.writeSseRaw(sse, ': connected\n\n');
@@ -415,6 +420,7 @@ export class SyncClipboardHub {
     if (!sse) return;
     sse.closed = true;
     this.sseClients.delete(id);
+    console.log(`[hub] disconnect transport=sse clients=${this.transportBreakdown()}`);
     try {
       void sse.writer.close();
     } catch {
@@ -435,6 +441,7 @@ export class SyncClipboardHub {
       lp = { id, queue: [], queuedBytes: 0, pending: null, pollSeq: 0, lastSeen: Date.now(), closed: false };
       this.lpClients.set(id, lp);
       void this.scheduleHeartbeat();
+      console.log(`[hub] connect transport=lp clients=${this.transportBreakdown()}`);
       return new Response(null, { status: 200, headers: POLL_HEADERS });
     }
     lp.lastSeen = Date.now();
@@ -484,6 +491,7 @@ export class SyncClipboardHub {
     if (!lp && !this.sseClients.has(id)) {
       lp = { id, queue: [], queuedBytes: 0, pending: null, pollSeq: 0, lastSeen: Date.now(), closed: false };
       this.lpClients.set(id, lp);
+      console.log(`[hub] connect transport=lp clients=${this.transportBreakdown()}`);
     }
     if (lp) lp.lastSeen = Date.now();
     const sse = this.sseClients.get(id);
@@ -515,6 +523,7 @@ export class SyncClipboardHub {
       this.settlePoll(lp, new Response(null, { status: 204 }));
       this.lpClients.delete(id);
       void this.scheduleHeartbeat();
+      console.log(`[hub] disconnect transport=lp reason=delete clients=${this.transportBreakdown()}`);
     }
     const sse = this.sseClients.get(id);
     if (sse) this.closeSseClient(id);
@@ -709,6 +718,22 @@ export class SyncClipboardHub {
     return this.state.getWebSockets().length + this.sseClients.size + this.lpClients.size;
   }
 
+  /**
+   * 传输构成（日志用）：`ws:a sse:b lp:c`。
+   *
+   * 由来（P3 判据，2026-09-26）：Free 计划下 hibernate 能不能生效，取决于**有没有非 WS 连接**——
+   * 真机旁挂实测「长轮询在线 ⇒ duration 满速 103%（收益归零）」「SSE 待判」。而在此之前服务端
+   * **没有任何按传输打点的口**（`clientCount()` 只有总数），生产到底用了哪些传输**无从判定**
+   * （`docs/progress.md` §189.2/§189.4）。这三行日志就是那条判据的数据来源。
+   *
+   * ⚠️ 不落连接 id：SSE/长轮询的 `id` 就是 negotiate 签发的 **connectionToken**，SignalR 传输规范
+   * 明确要求它保密（`docs/do-hibernation-plan.md` 引同款结论）。
+   * ⚠️ `getWebSockets()` 可能仍含 CLOSING 的连接 ⇒ `ws:` 计数略偏高（已知口径差，同 `clientCount()`）。
+   */
+  private transportBreakdown(): string {
+    return `ws:${this.state.getWebSockets().length} sse:${this.sseClients.size} lp:${this.lpClients.size}`;
+  }
+
   /** 安排下一轮心跳 alarm。
    *  **判据必须是平台上的 pending alarm（`getAlarm()`），不能是内存标志**：hibernate 会清空内存态
    *  （每段静默约 10 s），唤醒后内存标志是 false 而平台上 alarm 仍在路上 ⇒ 用内存标志会**重复**
@@ -787,6 +812,7 @@ export class SyncClipboardHub {
         // 挂起的轮询以 204 结束，客户端据此停止轮询而不是继续重试
         this.settlePoll(lp, new Response(null, { status: 204 }));
         this.lpClients.delete(id);
+        console.log(`[hub] disconnect transport=lp reason=idle clients=${this.transportBreakdown()}`);
       }
     }
   }
