@@ -13559,3 +13559,53 @@ the new version.`」与 **32 次**「`Durable Object connection closed because t
 - **M4（`env.ASSETS.fetch` 是否计子请求）**：Workers Logs 的 144 个 key 里无子请求字段，`wrangler tail` 的 JSON
   **无 `subrequests`**，含 `sum.subrequests` 的指标数据集本 token 未授权 ⇒ 三条路都不通，仍只能按官方口径
   （「静态资源请求免费」指**入站**）处理。
+
+## 195. CPU 向优化的精简：撤销同名候选上限、统计回到单一实现、清理字节预算只留有效分支（2026-09-27）
+
+前提变了：§193 的探针实测证明本账号**不在 Free 的 10 ms CPU 档**（单请求可烧 2–3 s 才被 `exceededCpu` 终止），
+而本分支里有多处改动只为"Free 的 10 ms / 子请求上限"而做。用户据 §194 末尾那份"哪些有用/没用/不确定"的清单定案：
+① 撤销 32 条同名候选上限、② 统计只留一份实现、③ 清理的行字节预算删掉**从不生效**的部分并修一个真缺陷、
+④ 其余（写路径哈希拆分、列表 FilePaths 短路等）保留。三处的钉子都在同一轮里补/改（`docs/design.md` D43 是决策记录）。
+
+### 195.1 `/file/{name}` 同名候选不再设上限（撤销 2026-09-25 的"有意偏离"）
+
+- 删 `MAX_TRANSFER_FILE_CANDIDATES`（原 `src/db.ts:169`）与候选 SQL 的 `LIMIT`；`ORDER BY LastAccessed DESC`
+  与预筛的等价判据（`instr`/`substr` 那套，含"D1 的 LIKE 模式 50 字节上限"的来历）**原样保留**。
+- 顺手把 `SELECT *` 收窄成 `SELECT Type, Hash, TransferDataFile`：**不设上限之后**，`*` 会把每行 `Text` 一起读进
+  isolate，而调用方只用这三列（`src/routes/webdav.ts:157-158` 拿它们拼 R2 key 与记录身份）。
+- `docs/protocol.md` §10 那一行从"有意偏离"改写为"**本轮对齐（2026-09-27，ADR D43）**"，保留上游出处
+  （`SyncClipboardController.cs:88-99` → `HistoryService.cs:212-228`）与可达面说明（只有把本服务当
+  **WebDAV 服务器**接入时才走这条路径；官方服务器模式取数据走 `/api/history/{id}/data`）。
+- 回归钉子：`test/fixes.test.ts` 新增「40 条同名记录全部返回且按 LastAccessed 倒序」——旧实现只返回 32 条
+  （`LIMIT` 在 SQL 预筛里），于是"目标不在最近 32 条之内"时**数据在、下载 404**。
+- 生产侧影响面：本轮生产库实测**同名最多的组只有 1 条**、超过 32 条的组 **0 个**（2026-09-27 只读 D1 查询）
+  ⇒ 这条偏离在生产上从未被触发过；撤销它换来"与上游一致"和"少一个能造成 404 的边界"。
+
+### 195.2 统计回到单一实现（撤销 2026-09-25 P1-3 的界面侧组装）
+
+- 删 `statisticsFromViews`（`src/ui/query.ts`）与它在 `test/fixes.test.ts` 里的等价性用例；`UiViewCounts` 随之去掉
+  `active`/`deleted`/`starred` 三个只剩组装用途的字段（`total` 保留：`/ui/api/overview` 的变更信号用它）。
+- `db.statistics()` **不再吃 `totalFileSizeMB`**：体积是 R2 实列的事实、不是 DB 的事实 ⇒ 协议端点与界面两处都能把
+  "R2 列举"与"统计聚合"**并发**起来（`src/routes/history.ts` 的 `/api/history/statistics`、`src/ui/routes.ts` 的
+  `deploymentStats()` 与 `/ui/api/statistics`）。响应形状不变（`totalFileSizeMB` 仍在最后一个键）。
+- 代价：这两条界面路径各多一条同表聚合（`COUNT(*)` + 三个 `SUM(CASE …)`）。`docs/ui-v2-design.md` 的端点成本表
+  本来就这么描述（`storage.totalHistorySize()` + `db.statistics()` + `countByTypeViews()`）⇒ 该表**反倒因此重新准确**，无需改动。
+- 无新增用例：四个计数的可观测面已由 `test/cleanup.test.ts`、`test/protocol.test.ts`、`test/ui.test.ts` 钉住
+  （端点是最终契约）。
+
+### 195.3 清理字节预算：删不生效的分支 + 修「永久 0 进度」
+
+- **删**：硬删阶段的字节预算（`HARD_DELETE_ROW_BYTES_PER_ROUND`、`estimateKeyRowBytes`、每批的字节累加）。
+  它在代码里**从不生效**（该阶段的 `fetchBatch` 忽略 `byteLeft`；一轮的界是
+  `MAX_BATCHES_PER_PHASE × HARD_DELETE_BATCH_LIMIT` = 20,000 条 ≈ 0.6 MB），而原注释写着"积压 20,000 条时它才会先触发"
+  （与代码相反）。`BatchPhaseSpec` 的 `rowBytesPerRound` / `estimateRowBytes` 随之改为可选。
+- **修（真缺陷）**：`rowsWithinBytes` 加 `minTake`，**本轮第一批至少取一条**。旧实现在"单行就超过整个 256 KiB 预算"时
+  返回 0 条 ⇒ `drainBatches` 拿到空批 ⇒ 该阶段每轮 `truncated`、**永远没有进度**（软删永不推进），
+  而 D1 的单行上限够得着这个尺寸。选"第一批破例"而不是"无条件至少一条"，是为了保住既有不变量：
+  单轮 materialize 的正文最多比预算多出**一行**（`test/cleanup-budget.test.ts` 的异构行用例正是钉这条）。
+- 回归钉子：`test/cleanup-budget.test.ts` 新增"单行 512 KiB = 2 × 预算"用例 —— 第一轮必须取到它（旧实现 0 条、
+  永久空转），第二轮把剩下两条小行一次过、三条全部软删。
+- **没做**（与用户指令的差别已当场说明并留证据）：整体删掉清理的字节预算。它同时是"取回字节有界"的**内存**守卫
+  （128 MiB isolate），而被它替换掉的"首批 5 条探路 + 均值外推"正是产生 25× 越界（§188）的那个版本；
+  如果将来要为了减少代码把"扫描 + 删除"两条语句并成一条（`SUM(...) OVER (ORDER BY ...)` 的 CTE 形态），
+  应单独起一轮做（它重写的是两条最危险的 UPDATE）。

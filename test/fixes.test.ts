@@ -12,7 +12,6 @@ import { parseProfileDto, parseHistoryRecordUpdateDto, profileDtoToJson } from '
 import { parseGroupZip, sha256Hex, textProfileHash } from '../src/hash';
 import { addRecordDto, entityToProfileDto, putSyncProfile, ProfileDataInvalidError, IncomingRecord } from '../src/profile';
 import { HistoryDb } from '../src/db';
-import { countByTypeViews, statisticsFromViews } from '../src/ui/query';
 import { ProfileType } from '../src/types';
 import type { HistoryRecordEntity, ProfileDto } from '../src/types';
 import type { R2Storage } from '../src/storage';
@@ -622,6 +621,25 @@ describe('F3 · 历史查找不再被 LIMIT 500 截断', () => {
     const candidates = await db.listTransferFileCandidates('same.bin');
     expect(candidates.map((r) => r.hash)).toEqual(['NEW', 'OLD']); // 倒序、排除不同名
   });
+
+  it('候选数不设上限（2026-09-27 取消 32 条上限）：40 条同名记录全部返回且按 LastAccessed 倒序', async () => {
+    // 旧实现给 SQL 加 `LIMIT 32`（为"每条候选一次 R2 get"的子请求数设界，Free 单次调用 1,000 次），
+    // 代价是"同名超过 32 条、目标不在最近 32 条之内 ⇒ 数据在、下载 404"。这条钉住"全部返回"。
+    const { db } = makeDb();
+    const base = Date.now();
+    for (let i = 0; i < 40; i++) {
+      await db.insert(entity({
+        hash: `H${i}`,
+        text: `t${i}`,
+        transferDataFile: 'many.bin',
+        lastAccessed: base - i * 1000, // i 越大越旧
+      }));
+    }
+    const candidates = await db.listTransferFileCandidates('many.bin');
+    expect(candidates.length).toBe(40);
+    expect(candidates[0]?.hash).toBe('H0');
+    expect(candidates[39]?.hash).toBe('H39');
+  });
 });
 
 describe('F9 · 越界数值不再导致 OFFSET 类型错误', () => {
@@ -732,37 +750,6 @@ describe('F10 · 死连接清理（半开 TCP 不会产生 close/error 事件）
 });
 
 // ============ 保留与清理（cleanup.ts 数据层判别）============
-
-describe('统计口径等价：UI 侧的 statisticsFromViews 与协议端点的 db.statistics', () => {
-  it('四个计数在空库与有数据两种情况下都逐位相同（含已删/收藏/置顶/多类型）', async () => {
-    // 首屏把「官方统计」的四条聚合换成了 countByTypeViews 的同一份 GROUP BY 结果（审计 P1-3）。
-    // 协议端点仍走 db.statistics ⇒ 两条口径必须逐位同值，否则 UI 与协议端会显示不同的数。
-    const { d1, db } = makeDb();
-    const compare = async () => {
-      const views = await countByTypeViews(d1 as unknown as D1Database);
-      const fromViews = statisticsFromViews(views, 0);
-      const fromDb = await db.statistics(0);
-      return { fromViews, fromDb };
-    };
-
-    const empty = await compare();
-    expect(empty.fromViews).toEqual(empty.fromDb); // 空库：四个计数同为 0
-
-    await db.insert(entity({ hash: 'S1', type: ProfileType.Text }));
-    await db.insert(entity({ hash: 'S2', type: ProfileType.File, transferDataFile: 's2.bin', filePaths: ['s2.bin'] }));
-    await db.insert(entity({ hash: 'S3', type: ProfileType.Image, transferDataFile: 's3.png', filePaths: ['s3.png'] }));
-    await db.insert(entity({ hash: 'S4', type: ProfileType.Group, filePaths: ['a.txt', 'b.txt'] }));
-    await db.insert(entity({ hash: 'S5', type: ProfileType.Text, isDeleted: true }));
-    await db.insert(entity({ hash: 'S6', type: ProfileType.File, isDeleted: true, stared: true }));
-
-    const filled = await compare();
-    expect(filled.fromViews).toEqual(filled.fromDb);
-    expect(filled.fromDb.totalCount).toBe(6);
-    expect(filled.fromDb.activeCount).toBe(4);
-    expect(filled.fromDb.deletedCount).toBe(2);
-    expect(filled.fromDb.starredCount).toBe(1);
-  });
-});
 
 describe('F18 · 历史保留与清理（对齐上游 HistoryCleaner）', () => {
   const DAY = 24 * 60 * 60 * 1000;

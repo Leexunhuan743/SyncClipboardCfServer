@@ -410,6 +410,34 @@ describe('F11 · 清理任务的子请求预算', () => {
     expect(total, '105 条应全部被软删（不得因预算永久漏删）').toBe(105);
   });
 
+  it('单行就超过整个字节预算：本轮也必须取它一条（否则该阶段每轮 0 条、永远没有进度）', async () => {
+    // 单条正文 512 KiB = 2 × 256 KiB 预算 ⇒ 按预算是"一条都装不下"。旧实现此时返回 0 条 ⇒ 该阶段
+    // `truncated` 每轮常驻、这条记录**永远删不掉**（空转），而 D1 的单行上限够得着这个尺寸。
+    // 现在 `rowsWithinBytes` 的 `minTake` 保证**本轮第一批**至少取一条 ⇒ 一定有进度；
+    // 代价是这一轮 materialize 的正文最多比预算多出这一行（单行无法切分）。
+    const f = fixture({
+      expired: 3,
+      recent: 0,
+      hardDeletable: 0,
+      orphanDirs: 0,
+      maxCount: 1_000_000,
+      expiredSizes: [512 * 1024, 0, 0],
+      starred: 0,
+      pinned: 0,
+    });
+    captureConsole();
+
+    const first = await cronRun(f);
+    expect(first.expired, '超预算的单行必须在本轮被取到（旧实现是 0 条 ⇒ 永久卡住）').toBe(1);
+    expect(first.truncated, '这一行吃光了预算 ⇒ 保留期阶段标记截断').toContain('retention');
+    expect(first.failures).toEqual([]);
+
+    // 剩余两条小行下一轮一次过；两轮内三条必须全部软删（没有"永久 0 进度"）
+    const second = await cronRun(f);
+    expect(second.expired).toBe(2);
+    expect(scalar(f.sqlite, 'SELECT COUNT(*) AS c FROM HistoryRecords WHERE IsDeleted = 1')).toBe(3);
+  });
+
   it('审查 R1 slot 1 · R2 分页逐页记账：页数超预算时中断列举，且不越 800', async () => {
     // 旧实现把整桶列完才一次性 spend(pages) ⇒ 810 页时已发生 810 次调用、记账 818/800 仍写完成戳。
     // 现在**逐页**扣账、付不起就中断；中断一律作废（半个映射会把活目录当孤儿 ⇒ 误删）。

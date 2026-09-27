@@ -281,9 +281,10 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   // GET /api/history/statistics —— 先于 :profileId 注册（Hono 同段静态优先，注册顺序保险）
   app.get('/api/history/statistics', async (c) => {
     const { db, storage } = stores(c);
-    const bytes = await storage.totalHistorySize();
-    const stats = await db.statistics(historySizeMB(bytes));
-    return c.json(stats, 200);
+    // 两条互不依赖（`db.statistics()` 不再吃字节数）⇒ 并发；`totalFileSizeMB` 由 R2 实列补上，
+    // 键序与旧响应一致（`totalFileSizeMB` 仍在最后）。
+    const [bytes, counts] = await Promise.all([storage.totalHistorySize(), db.statistics()]);
+    return c.json({ ...counts, totalFileSizeMB: historySizeMB(bytes) }, 200);
   });
 
   // GET /api/history/{profileId} —— 单条记录元数据

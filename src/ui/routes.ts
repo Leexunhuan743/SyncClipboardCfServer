@@ -26,7 +26,6 @@ import {
   UiQueryError,
   listUiHistory,
   countByTypeViews,
-  statisticsFromViews,
   readChangeMarker,
   readLastModified,
   readActivity,
@@ -75,7 +74,7 @@ function readIntParam(raw: string | null, fallback: number, min: number, max: nu
 }
 
 /**
- * 部署信息的**统计层**：一次 R2 全桶扫描（体积）+ **一条** D1 聚合（按类型 + 全库四个计数）。
+ * 部署信息的**统计层**：一次 R2 全桶扫描（体积）+ 两条 D1 聚合（按类型计数 + 全库四个统计计数）。
  *
  * 为什么单独成层（审计 O-01）：这一层是 `/ui/api/overview` 与 `/ui/api/info` 共同需要的，
  * 而 `overview` 还要在它之上叠元信息。**不能**把它做成 `deploymentInfo` 的必填参数 ——
@@ -83,19 +82,23 @@ function readIntParam(raw: string | null, fallback: number, min: number, max: nu
  * 原先 `overview` 是把这一层跑两遍（自己跑一次 + `deploymentInfo` 内部再跑一次），
  * 于是单次首屏 = 2×R2 全桶列举 + 2×statistics + 2×countByTypeViews。
  *
- * 2026-09-25（审计 P1-3）：这一层原先还要 `db.statistics`（另一条全表聚合）——
- * 那四个计数与 `countByTypeViews` 的分组结果**同源**（见 `statisticsFromViews` 的等价性说明），
- * 现在从同一条 GROUP BY 里算出，D1 语句从 2 条降到 1 条。
+ * 2026-09-25（审计 P1-3）曾把统计的四个计数改由 `countByTypeViews` 的分组结果就地组装
+ * （`Σc` = `COUNT(*)`），省掉一条同表聚合；**2026-09-27（ADR D43）撤回**：同一语义不再留两份实现，
+ * 统计统一走协议端点那条 `db.statistics()`，代价是这条路径多一条全表聚合。
  */
 async function deploymentStats(env: Bindings): Promise<{
   bytes: number;
   stats: HistoryStatisticsDto;
   views: UiViewCounts;
 }> {
-  const { storage } = stores({ env });
-  // R2 列举与 D1 聚合互不依赖 ⇒ 并发（这条路径是首屏必经，别把两次往返串起来）。
-  const [bytes, views] = await Promise.all([storage.totalHistorySize(), countByTypeViews(env.DB)]);
-  return { bytes, stats: statisticsFromViews(views, historySizeMB(bytes)), views };
+  const { storage, db } = stores({ env });
+  // R2 列举与两条 D1 聚合互不依赖 ⇒ 并发（这条路径是首屏必经，别把它们串起来）。
+  const [bytes, views, counts] = await Promise.all([
+    storage.totalHistorySize(),
+    countByTypeViews(env.DB),
+    db.statistics(),
+  ]);
+  return { bytes, stats: { ...counts, totalFileSizeMB: historySizeMB(bytes) }, views };
 }
 
 /**
@@ -773,14 +776,18 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   //                        `totalCount` 的「全库 N 条」）。保留它是因为接口契约与 `test/ui.test.ts`
   //                        在钉这条分法 —— 别按"没人用"删掉。
   guarded.get('/ui/api/statistics', async (c) => {
-    const { storage } = stores(c);
+    const { storage, db } = stores(c);
     const flag = readDeletedFlagOr400(new URL(c.req.url).searchParams);
     if (!flag.ok) return flag.response;
     const deleted = flag.value;
-    // 四个计数与 byType 来自**同一条** GROUP BY（审计 P1-3；等价性见 statisticsFromViews）；
-    // R2 列举与它互不依赖 ⇒ 并发。
-    const [bytes, views] = await Promise.all([storage.totalHistorySize(), countByTypeViews(c.env.DB)]);
-    const stats = statisticsFromViews(views, historySizeMB(bytes));
+    // 四个计数走 `db.statistics()`（与协议端点 `/api/history/statistics` 同一实现，ADR D43）；
+    // byType 来自同一次 GROUP BY。R2 列举与两条 D1 查询互不依赖 ⇒ 并发。
+    const [bytes, views, counts] = await Promise.all([
+      storage.totalHistorySize(),
+      countByTypeViews(c.env.DB),
+      db.statistics(),
+    ]);
+    const stats = { ...counts, totalFileSizeMB: historySizeMB(bytes) };
     // byType 随视图走（工具栏的类型计数必须与列表同源），byTypeActive 恒为活跃口径。
     // 两个 starred 计数**都进响应**（各自是全表聚合，与这次请求的视图无关），由前端按当前
     // 视图取用：统计条「已收藏」那一格与工具栏「收藏」筛选同屏，必须给出同一个数

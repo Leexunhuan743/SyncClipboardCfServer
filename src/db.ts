@@ -160,14 +160,6 @@ export interface DataRecordRow {
   size: number;
 }
 
-// `GET /file/{name}` 的候选扇出上限（常数，不加配置）。依据：调用方对**每条**候选各做一次 R2 get
-// （`src/routes/webdav.ts` 的 GET/HEAD 分支），而 Free 的单次调用上限是 1,000 次「到 Cloudflare
-// 服务」的子请求（Workers limits 的 `#subrequests` 第二行 + 2026-02-11 changelog）——
-// 候选数因此就是 R2 子请求数。正常库（同名文件被反复覆盖上传）同名候选 ≤ 数条，32 远超实际；
-// 超限时 `listTransferFileCandidates` 少返回候选，路由找不到存在的对象 ⇒ 404（与"文件缺失"同一出口）。
-// 这是对上游的**有意偏离**（上游逐条 `File.Exists`，条数无界），登记在 docs/protocol.md §10。
-export const MAX_TRANSFER_FILE_CANDIDATES = 32;
-
 export class HistoryDb {
   constructor(private db: D1Database) {}
 
@@ -322,21 +314,19 @@ export class HistoryDb {
     return (res.results ?? []).map(rowToEntity);
   }
 
-  // 同名传输文件的**候选**（上游 GetRecentTransferFile）：按 LastAccessed 倒序，最多
-  // `MAX_TRANSFER_FILE_CANDIDATES` 条（上限的理由见下面那段）。
+  // 同名传输文件的**候选**（上游 GetRecentTransferFile）：按 LastAccessed 倒序返回**全部**同名记录。
   // 上游的过滤条件是 `basename(TransferDataFile) == fileName && File.Exists(...)`，即
   // **文件不存在时会继续回退到更旧的同名记录**；存在性依赖存储层，故这里只返回候选，
   // 由调用方逐个探测（本实现存储的 TransferDataFile 即文件名，与上游 GetPersistentPath 结果一致）。
   //
-  // ⚠️ **候选数上限**（有意偏离上游，登记在 docs/protocol.md §10）：调用方对**每条**候选各做一次
-  // R2 get（`src/routes/webdav.ts` 的 GET/HEAD `/file/:fileName`），候选数就是 R2 子请求数 ——
-  // Free 的单次调用上限是 1,000 次「到 Cloudflare 服务」的子请求，而候选数由库内容决定、
-  // 本身无界（上游跑在文件系统上，没有子请求配额这回事）。正常库里同名候选只有几条
-  // （同名文件被反复覆盖上传），故取 32 作常数上限；超限时这里少返回候选，调用方找不到存在的对象
-  // ⇒ 落到与「文件缺失」同一条出口（**404**）。上限在 SQL 里生效（预筛的 LIMIT），
-  // 而不是取回后切片 —— 否则内存与 D1 行读都不受约束。
+  // **候选数不设上限**（2026-09-27，ADR D43）：此前取 32 是为"每条候选一次 R2 get"的子请求数设界
+  // （Free 单次调用上限 1,000 次），代价是**同名记录超过 32 条且目标不在最近 32 条之内 ⇒ 数据在、
+  // 下载 404** —— 那是正确性回退，不是性能取舍。现在与上游一致：候选数由库内容决定
+  // （正常库里同名只有几条：同名文件被反复覆盖上传）。曾经的偏离登记已从 docs/protocol.md §10 删除。
+  // 只取调用方要用的三列（`src/routes/webdav.ts` 用它们拼 R2 key 与记录身份）：无上限之后再 `SELECT *`
+  // 会把每行的 Text 一起读进 isolate —— 大文本 × 大量同名 = 白占内存。
   //
-  // ⚠️ **预筛必须与调用方那道 JS 精确过滤等价**，否则 `LIMIT` 会被伪候选吃满、把真候选挤出候选集
+  // ⚠️ **预筛必须与调用方那道 JS 精确过滤等价**，否则 LIMIT 会被伪候选吃满、把真候选挤出候选集
   // （数据在、下载却 404 —— 那是正确性回退，不是性能取舍）。此前预筛只做「后缀相等」，比 JS 的
   // `basename(x) === fileName` **更宽**：`x = 'foo-c.pdf'`、`fileName = 'c.pdf'` 时后缀匹配成立，
   // 而 `basename` 是 `'foo-c.pdf'` ⇒ 它是一条伪候选。现在的判据与 JS 逐位等价：
@@ -358,25 +348,26 @@ export class HistoryDb {
   // （`=` 对 TEXT 是 BINARY，而 LIKE 对 ASCII 不区分大小写）—— 而这里本来就**要与 JS 的 `===` 同侧**，
   // 故 `=` 是正确的选择。候选集的**语义**由调用方的 `basename(...) === fileName` 定义
   // （与上游 `Path.GetFileName(...) == fileName` 同义），预筛与它等价（见上一段）。
-  async listTransferFileCandidates(fileName: string): Promise<HistoryRecordEntity[]> {
+  async listTransferFileCandidates(
+    fileName: string,
+  ): Promise<{ type: ProfileType; hash: string; transferDataFile: string }[]> {
     // 空名：上游 `string.IsNullOrEmpty(fileName)` 直接返回 null（也让 SQL 不碰 substr 的 0 边界）
     if (fileName === '') return [];
     const res = await this.db
       .prepare(
-        `SELECT * FROM HistoryRecords
+        `SELECT Type, Hash, TransferDataFile FROM HistoryRecords
          WHERE UserId = ?1
            AND instr(?2, '/') = 0
            AND (TransferDataFile = ?2
                 OR (substr(TransferDataFile, -length(?2)) = ?2
                     AND (length(TransferDataFile) = length(?2)
                          OR substr(TransferDataFile, -length(?2) - 1, 1) = '/')))
-         ORDER BY LastAccessed DESC
-         LIMIT ?3`,
+         ORDER BY LastAccessed DESC`,
       )
-      .bind(HARD_CODED_USER_ID, fileName, MAX_TRANSFER_FILE_CANDIDATES)
-      .all<DbRow>();
+      .bind(HARD_CODED_USER_ID, fileName)
+      .all<{ Type: number; Hash: string; TransferDataFile: string }>();
     return (res.results ?? [])
-      .map(rowToEntity)
+      .map((r) => ({ type: r.Type as ProfileType, hash: r.Hash, transferDataFile: r.TransferDataFile }))
       .filter((e) => e.transferDataFile !== '' && basename(e.transferDataFile) === fileName);
   }
 
@@ -455,17 +446,18 @@ export class HistoryDb {
     return (res.meta.changes ?? 0) > 0;
   }
 
-  // 统计（上游 GetStatisticsAsync；totalFileSizeMB 由调用方传入 R2 合计值）。
-  // 四个计数**一条聚合查询**出齐：旧实现先把全部行的 Stared/IsDeleted 拉回 JS 再循环，
-  // 而统计在每次页面加载、星标、删除、切视图时都会跑（后端能力评估 §3.1）。
-  // 语义与原实现逐条对齐：starred 在**整个结果集**上累加，不区分已删/活跃。
+  // 统计（上游 GetStatisticsAsync）。四个计数**一条聚合查询**出齐：旧实现先把全部行的
+  // Stared/IsDeleted 拉回 JS 再循环，而统计在每次页面加载、星标、删除、切视图时都会跑
+  // （后端能力评估 §3.1）。语义与原实现逐条对齐：starred 在**整个结果集**上累加，不区分已删/活跃。
+  // 体积（`totalFileSizeMB`）**不在这里给**：它是 R2 实列的事实，调用方自己
+  // `{ ...counts, totalFileSizeMB: historySizeMB(bytes) }` 补上 —— 于是它仍能与 R2 列举并发，
+  // 不必为了拿字节数把两条往返串起来。
   //
-  // ⚠️ **唯一的调用方是协议端点 `/api/history/statistics`**（`src/routes/history.ts`）。界面侧
-  // （`/ui/api/statistics`、`/ui/api/info`、`/ui/api/overview`）不再调它：它本来就要跑一条
-  // `GROUP BY Type, IsDeleted, Stared`（`src/ui/query.ts` 的 `countByTypeViews`），四个计数从那份
-  // 结果集里 `Σc` 就能算出（同一份数据上逐位相同，证明见 `statisticsFromViews`），
-  // 再打一条同表的全表聚合是纯浪费（审计 P1-3）。协议端点因此**原样不动**。
-  async statistics(totalFileSizeMB: number): Promise<HistoryStatisticsDto> {
+  // 调用方 = 协议端点 `/api/history/statistics`（`src/routes/history.ts`）**与界面**
+  // （`/ui/api/statistics`、`/ui/api/overview`）。界面 2026-09-25 曾改由 `countByTypeViews` 的
+  // 分组结果就地组装这四个计数（省掉一条同表聚合，审计 P1-3）；2026-09-27 按 ADR D43 撤回，
+  // 同一语义只留这一份实现 —— 多打的那条聚合换来"界面与协议不会各算各的"。
+  async statistics(): Promise<Omit<HistoryStatisticsDto, 'totalFileSizeMB'>> {
     const res = await this.db
       .prepare(
         `SELECT
@@ -482,7 +474,6 @@ export class HistoryDb {
       starredCount: res?.starred ?? 0,
       deletedCount: res?.deleted ?? 0,
       activeCount: res?.active ?? 0,
-      totalFileSizeMB,
     };
   }
 

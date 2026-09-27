@@ -85,17 +85,18 @@ const DELETED_RETENTION_DAYS = 30;
 //     ≈ 70 KB ⇒ 条数上限先起作用；同样给 256 KiB 是**统一的兜底**（积压 20,000 条时它才会先触发）。
 // 预算怎么才能真正**硬**约束住（2026-09-26 第二轮审查后定稿）：软删/条数上限两阶段每批先跑一条只读的
 // `length(Text)` 扫描（db.scanSoftDeleteCandidateBytes，列顺序与删除语句的 ORDER BY 逐字一致）量出候选逐行
-// 字节，再按前缀和定量 —— 于是"取回的字节"不依赖行大小是否均匀。**硬删/孤儿阶段不扫**：候选行只 `RETURNING
-// (Type, Hash)`，构造上就小，条数上限即可。仍无解的只剩「单条记录自带 1 MiB 内联文本」（单行就超预算，
-// 扫描后只取它一条）。曾经的"首批 5 条探路 + 按已处理均值收窄"已被删除：均值会被"先小后大"骗过，
-// 实测单轮 6,553,600 字节 = 25 × 预算（`progress.md` §188）。
+// 字节，再按前缀和定量 —— 于是"取回的字节"不依赖行大小是否均匀。**硬删/孤儿阶段不扫、也不设字节预算**：
+// 候选行只 `RETURNING (Type, Hash)`，一轮的上限（MAX_BATCHES_PER_PHASE × HARD_DELETE_BATCH_LIMIT = 20,000 条）
+// 也只有约 0.6 MB，条数上限先起作用。曾经的"首批 5 条探路 + 按已处理均值收窄"已被删除：均值会被
+// "先小后大"骗过，实测单轮 6,553,600 字节 = 25 × 预算（`progress.md` §188）。
+// **本轮第一批至少取一条**（`rowsWithinBytes` 的 `minTake`）：单行就超过整个预算时若一条都不取，
+// 该阶段会每轮 0 条、永远没有进度（D1 单行上限够得着 256 KiB 的预算）。本轮已有产出之后不再破例，
+// 于是单轮 materialize 的正文最多比预算多出**一行**。
 const SOFT_DELETE_ROW_BYTES_PER_ROUND = 256 * 1024;
-const HARD_DELETE_ROW_BYTES_PER_ROUND = 256 * 1024;
 
 // 一行记录在 CPU 口径下的**估算**字节数（口径见上面）：固定部分（列名 + 定长列）用常数近似。
 // 它是预算的**权重**而不是精确计量 —— 只要求随行字节成比例地收紧，不要求逐字节吻合。
 const ENTITY_ROW_FIXED_BYTES = 256; // RETURNING * 的固定部分（16 个列名 + 数字/定长列）
-const KEY_ROW_FIXED_BYTES = 64; // RETURNING Type, Hash 的固定部分（真实值 ≈28 B，保守取 2 倍）
 
 // ===== 子请求记账模型 =====
 // 每个外部调用 = 1 次子请求：D1 语句、R2 调用、DO fetch 各计一次。
@@ -381,19 +382,15 @@ function estimateEntityRowBytes(rows: HistoryRecordEntity[]): number {
   return bytes;
 }
 
-/** 硬删批（`RETURNING Type, Hash`）的行字节估算：每行只有两个短列。 */
-function estimateKeyRowBytes(rows: { hash: string }[]): number {
-  let bytes = 0;
-  for (const r of rows) bytes += KEY_ROW_FIXED_BYTES + r.hash.length;
-  return bytes;
-}
-
-/** 按剩余字节预算从候选尺寸里取出**能装下**的前缀条数（`sizes` 已按清理顺序排列）。 */
-function rowsWithinBytes(sizes: number[], byteLeft: number): number {
+/** 按剩余字节预算从候选尺寸里取出**能装下**的前缀条数（`sizes` 已按清理顺序排列，调用方保证非空）。
+ *  `minTake`（0 或 1）= 至少要取的条数：**本轮第一批传 1** —— 否则"单行就超过整个预算"时该阶段每轮取回
+ *  0 条、永远没有进度（`truncated` 常驻，软删永不推进）；本轮已有产出之后传 0 ⇒ 超预算即停，
+ *  单轮 materialize 的正文因此不会比预算多出"一行"以上。 */
+function rowsWithinBytes(sizes: number[], byteLeft: number, minTake: number): number {
   let sum = 0;
   let k = 0;
   for (const s of sizes) {
-    if (sum + s > byteLeft) break;
+    if (k >= minTake && sum + s > byteLeft) break;
     sum += s;
     k += 1;
   }
@@ -410,16 +407,20 @@ interface BatchPhaseSpec<T extends CleanupRow> {
   batchedCallCost: number;
   /** 单批条数上限 */
   batchLimit: number;
-  /** 单轮行字节预算（CPU 口径，推导见 SOFT_DELETE_ROW_BYTES_PER_ROUND） */
-  rowBytesPerRound: number;
-  /** 本批已 materialize 的行字节估算（CPU 口径，同上） */
-  estimateRowBytes(rows: T[]): number;
+  /** 单轮行字节预算（CPU 口径，推导见 SOFT_DELETE_ROW_BYTES_PER_ROUND）。
+   *  只有能逐行量出候选字节的阶段（软删的 retention / trim）才给；硬删阶段的行只有 key，
+   *  构造上就小，一轮的条数上限本身已经是它的界（见 SOFT_DELETE_ROW_BYTES_PER_ROUND 的注释）。 */
+  rowBytesPerRound?: number;
+  /** 本批已 materialize 的行字节估算（CPU 口径，同上）。与 `rowBytesPerRound` 成对出现。 */
+  estimateRowBytes?(rows: T[]): number;
   /**
    * 取一批候选。`hasMore` 必须按**实际生效的条数**判定，否则会把"候选已取完"误判成"被截断"。
    * `byteLeft` = 本阶段**剩余**的行字节预算（CPU 口径）：有逐行字节取数手段的阶段（软删两条路径）
    * 必须据此把这一批实际 materialize 的量压在预算内；硬删/孤儿阶段的候选行只有 key（构造上就小），可忽略。
+   * `firstOfRound` = 这是本阶段本轮的第一批 ⇒ 字节预算连**单条**候选都装不下时也必须取一条
+   * （见 `rowsWithinBytes`）：否则该阶段每轮 0 条、永远不会推进。
    */
-  fetchBatch(limit: number, byteLeft: number): Promise<{ rows: T[]; hasMore: boolean }>;
+  fetchBatch(limit: number, byteLeft: number, firstOfRound: boolean): Promise<{ rows: T[]; hasMore: boolean }>;
   /** 本批的收尾动作：软删广播变更，硬删清扫数据目录（两侧语义见上面记账模型） */
   applyBatch(rows: T[]): Promise<void>;
 }
@@ -454,11 +455,15 @@ async function drainBatches<T extends CleanupRow>(
     if (limit < 1) return { processed, batches, truncated: true };
     run.budget.spend(spec.queryCost);
     batches++;
-    const { rows, hasMore } = await spec.fetchBatch(limit, Math.max(0, spec.rowBytesPerRound - rowBytes));
+    // 没给字节预算的阶段（硬删）传 0：它的 `fetchBatch` 不看这两个参数。
+    const firstOfRound = rowBytes === 0;
+    const byteLeft =
+      spec.rowBytesPerRound === undefined ? 0 : Math.max(0, spec.rowBytesPerRound - rowBytes);
+    const { rows, hasMore } = await spec.fetchBatch(limit, byteLeft, firstOfRound);
     await spec.applyBatch(rows);
     run.budget.spend(rows.length * spec.costPerRecord);
     processed += rows.length;
-    rowBytes += spec.estimateRowBytes(rows);
+    rowBytes += spec.estimateRowBytes?.(rows) ?? 0;
     // 空批 = 候选取完**或**被字节预算挡住：两种情况下这一批都不再推进 ⇒ 本轮到此为止
     // （`hasMore` 区分二者：前者不算 truncated）。
     if (rows.length === 0) return { processed, batches, truncated: hasMore };
@@ -586,11 +591,10 @@ function cleanRetention(run: CleanupRun, retentionMinutes: number): Promise<Phas
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
     rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateEntityRowBytes,
-    fetchBatch: async (limit, byteLeft) => {
+    fetchBatch: async (limit, byteLeft, firstOfRound) => {
       const sizes = await run.db.scanSoftDeleteCandidateBytes(cutoffMs, limit, ENTITY_ROW_FIXED_BYTES);
       if (sizes.length === 0) return { rows: [], hasMore: false }; // 没有候选 ⇒ 收工（不算截断）
-      const take = rowsWithinBytes(sizes, byteLeft);
-      if (take < 1) return { rows: [], hasMore: true }; // 连一条都装不下 ⇒ 预算挡住，本轮收工（truncated）
+      const take = rowsWithinBytes(sizes, byteLeft, firstOfRound ? 1 : 0);
       const rows = await run.db.softDeleteExpiredRecords(cutoffMs, run.nowMs, take);
       // 扫描被 limit 截断 ⇒ 后面可能还有候选；或本次因预算少取 ⇒ 也还有候选
       return { rows, hasMore: sizes.length === limit || sizes.length > take };
@@ -610,15 +614,14 @@ function cleanTrim(run: CleanupRun, maxCount: number): Promise<PhaseOutcome> {
     batchLimit: SOFT_DELETE_BATCH_LIMIT,
     rowBytesPerRound: SOFT_DELETE_ROW_BYTES_PER_ROUND,
     estimateRowBytes: estimateEntityRowBytes,
-    fetchBatch: async (limit, byteLeft) => {
+    fetchBatch: async (limit, byteLeft, firstOfRound) => {
       const overage = (await run.db.countActiveRecords()) - maxCount;
       if (overage <= 0) return { rows: [], hasMore: false };
       const cap = Math.min(overage, limit);
       const sizes = await run.db.scanSoftDeleteCandidateBytes(null, cap, ENTITY_ROW_FIXED_BYTES);
       // 可裁的（非收藏/非置顶）已耗尽 ⇒ **收工**（即使 active 仍超上限）：否则该阶段会永远"有更多"
       if (sizes.length === 0) return { rows: [], hasMore: false };
-      const take = rowsWithinBytes(sizes, byteLeft);
-      if (take < 1) return { rows: [], hasMore: true }; // 连一条都装不下 ⇒ 预算挡住，本轮收工（truncated）
+      const take = rowsWithinBytes(sizes, byteLeft, firstOfRound ? 1 : 0);
       const rows = await run.db.trimToMaxCount(take, run.nowMs);
       // 实际删到少于请求条数 ⇒ 可裁的（非收藏/非置顶）已耗尽，即使 active 仍超上限也**必须收工**：
       // 否则收藏/置顶占满配额时该阶段会永远"有更多"，每轮空转并把 truncated 永远挂在结果里。
@@ -636,9 +639,7 @@ function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutco
     queryCost: SUBREQUESTS_PER_D1_STATEMENT,
     batchedCallCost: SUBREQUESTS_PER_SWEEP_CALL,
     batchLimit: HARD_DELETE_BATCH_LIMIT,
-    rowBytesPerRound: HARD_DELETE_ROW_BYTES_PER_ROUND,
-    estimateRowBytes: estimateKeyRowBytes,
-    // 候选行只 RETURNING Type/Hash（构造上就小）⇒ 不看字节预算
+    // 候选行只 RETURNING Type/Hash（构造上就小）⇒ 不给字节预算，一轮的界就是条数上限
     fetchBatch: async (limit, _byteLeft) => {
       const rows = await run.db.hardDeleteOldDeletedRecords(cutoffMs, limit);
       return { rows, hasMore: rows.length === limit };
