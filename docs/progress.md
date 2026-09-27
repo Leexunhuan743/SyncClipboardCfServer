@@ -13421,8 +13421,11 @@ SSE ⇒ 代价未知（可能同级）。
 15. **Paid 档位下清理预算是否过保守** —— 256 KiB 是按 Free 的 10 ms 定的，无法分档 ⇒ 未测。
 
 **③ 仍未排查的线上异常（已登记）**
-16. `scriptThrewException`：5 天 81 次（**09-26 仅 1 次**）—— 根因未查。
-17. `alarm` 调用数与 `rowsWritten` 的口径差（5,783/天 vs 364/天）—— 未解释。
+16. ~~`scriptThrewException`：5 天 81 次（**09-26 仅 1 次**）—— 根因未查。~~ ⇒ **§194.1 已查明**：
+    就是**我们自己的部署**掐断在线 WS（75 次「This script has been upgraded…」+ 32 次「DO connection closed
+    because the object was reset.」）⇒ 部署的必然副作用，非缺陷。
+17. ~~`alarm` 调用数与 `rowsWritten` 的口径差（5,783/天 vs 364/天）—— 未解释。~~ ⇒ **§194.2 已解释**：
+    `rowsWritten` 是 **D1** 的列（DO 数据集连这个字段都没有）⇒ 与 DO 的 alarm 次数不可比。
 
 > **2026-09-27 追记**：其中 **#4（档位）**、**#5/#6 的实质（哈希路径真实 CPU）**、**#9（D1 语句上限）** 已由
 > 探针 Worker 实测关闭，**#10/#14 部分关闭**（边缘侧证据见 §193）；**#7、#8** 仍读不到（缺 Workers 分析权限）。
@@ -13495,3 +13498,51 @@ SSE ⇒ 代价未知（可能同级）。
 - R2 Class A/B 构成、Worker / D1 逐日指标：仍需 Workers 分析权限。
 - **Paid 档下清理预算是否过保守**：§193.1 已隐含（该账号 CPU 上限 ≫ 10 ms）⇒ 256 KiB/轮/阶段确实偏保守，
   但"该调到多少"仍无实测依据（改动需另立方案，不在本轮）。
+
+## 194. 继续测试：两条老异常的根因、生产运行时自证、边缘 `webSocketError` 仍未观测（2026-09-27）
+
+承 §193。本轮全部只读 + 一次探针重部署（版本 `e122c696`，测毕已删、URL 复查 404）；**生产未动**。
+
+### 194.1 老异常 #1（`scriptThrewException`）根因：**就是我们自己的部署**
+
+生产 Workers Logs 近 7 天按 `$workers.outcome` / `$metadata.error` 分组：
+
+| outcome | 次数 |
+|---|---|
+| ok | 167,790 |
+| **exception** | **130** |
+| canceled / responseStreamDisconnected | 870 / 80 |
+
+异常文本只有两类占绝大多数：**75 次**「`This script has been upgraded. Please send a new request to connect to
+the new version.`」与 **32 次**「`Durable Object connection closed because the object was reset.`」（其余 4 次
+`Network connection lost.`）⇒ **部署新版本会掐断在线的 WS 连接**（客户端随后重连）⇒ **不是代码缺陷**，是部署的必然
+副作用。此前把它当"未解异常"，只是因为没去看错误**文本**（只看了计数）。
+
+### 194.2 老异常 #2（`alarm` vs `rowsWritten`）是**口径错位**，不是缺陷
+
+`durableObjectsInvocationsAdaptiveGroups` **没有** `rowsWritten` 字段（查询返回 `unknown field "rowsWritten"`）
+⇒ 当年那个 `rowsWritten = 364/天` 来自 **D1** 数据集（`d1AnalyticsAdaptiveGroups`），拿来和 **DO 的 alarm 次数**比是
+两套子系统（`setAlarm` 写的是 DO 存储行，不进 D1 的行计数）⇒ **该异常关闭**。
+
+### 194.3 生产运行时的自证（`wrangler tail`，字段：`wallTime/cpuTime/outcome/scriptVersion/logs/exceptions`）
+
+- `scriptVersion.id = fae78414-…` ⇒ 与 `wrangler deployments list` 的当前版本**逐字相同** ⇒ 「生产是最新版」在运行时侧
+  也成立（此前只有部署日志与配置侧证据）。
+- 顺带量到一条真实客户端请求：`PROPFIND /`（`cf-connecting-ip 203.10.99.12`，JP）⇒ **CPU 1 ms / 墙钟 36 ms**
+  ⇒ 与 §193.1 的 ~2–3 s 上限相差**三个数量级** ⇒ §192.2「余量极大、量不出收益」再添一根钉子。
+
+### 194.4 边缘 `webSocketError` **仍未观测到**（本轮又试两种触发）
+
+探针重部署后在同一批连接上试了 **协议违规帧**（保留 opcode 3）与 **1.5 MiB 超大帧**（超过 1 MiB 入站上限）
+⇒ 探针日志里**只有** `[probe] ws-close code=1006 reason=WebSocket disconnected without sending Close frame`（3 次），
+**没有** `[probe] ws-error`。⇒ **本地 miniflare 会派发 `webSocketError`（1002/Unknown opcode 3），真实边缘不会**
+（改走 `webSocketClose(1006)`）。对生产的影响：`webSocketError` 只是兜底（只有 `ws.close()`），真正的收尾在
+`webSocketClose`（显式回帧）与静默回收里 ⇒ **不构成风险**，但"边缘是否派发"仍是**未知**（已登记）。
+
+### 194.5 本轮仍读不到的
+
+- **DO 逐时/逐日 `duration`（收益曲线）**：本 token 自 02:13Z 起对 `durableObjectsPeriodicGroups` 返回
+  **`authorization denied`**（同一 token 在 01:5x 还能读）⇒ 复看曲线需要带 `Account Analytics Read` 的 token。
+- **M4（`env.ASSETS.fetch` 是否计子请求）**：Workers Logs 的 144 个 key 里无子请求字段，`wrangler tail` 的 JSON
+  **无 `subrequests`**，含 `sum.subrequests` 的指标数据集本 token 未授权 ⇒ 三条路都不通，仍只能按官方口径
+  （「静态资源请求免费」指**入站**）处理。
