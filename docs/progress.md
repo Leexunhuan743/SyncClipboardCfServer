@@ -13423,3 +13423,75 @@ SSE ⇒ 代价未知（可能同级）。
 **③ 仍未排查的线上异常（已登记）**
 16. `scriptThrewException`：5 天 81 次（**09-26 仅 1 次**）—— 根因未查。
 17. `alarm` 调用数与 `rowsWritten` 的口径差（5,783/天 vs 364/天）—— 未解释。
+
+> **2026-09-27 追记**：其中 **#4（档位）**、**#5/#6 的实质（哈希路径真实 CPU）**、**#9（D1 语句上限）** 已由
+> 探针 Worker 实测关闭，**#10/#14 部分关闭**（边缘侧证据见 §193）；**#7、#8** 仍读不到（缺 Workers 分析权限）。
+
+## 193. 探针 Worker 实测：账号 CPU 档位、哈希路径真实 CPU、D1 语句上限、WS 三路径（2026-09-26/27）
+
+用户要求「能测但没测的都部署一个 Worker 测掉」。本轮在**独立探针 Worker**（`syncc-probe-tests`，独立 DO 命名空间、
+不绑 R2、无 Cron）上跑完，**测毕已删除**（URL 复查 404、D1 已删）；脚本留在 `%TEMP%/cf-probe/`
+（`src/index.js` + `wrangler.toml` + `driver.mjs` + `logs.mjs`/`logs2.mjs`，可复跑）。
+**生产 `syncclipboard-cf-server` 全程未动**（复查 `/api/version` 401、`/ui_v1/` 200 照常）。
+
+### 193.1 账号 CPU 档位：**不是 Free 的 10 ms 档**（本轮最重的一条）
+
+方法：`/cpu?n=<迭代数>` 按**固定迭代数**烧 CPU，再读平台自己的 `$workers.cpuTimeMs`。
+⚠️ 先说两次失败的尝试：按毫秒烧的版本**根本不退出** —— Workers 里 `Date.now()` 被按请求冻结，
+而 **`performance.now()` 在同步忙等中也不前进** ⇒ 三个按毫秒的请求都跑到被平台掐断、各记 **2,010 ms CPU**。
+
+| 迭代数 | 平台记账 CPU | 结果 |
+|---|---|---|
+| 1 M | **23 ms** | ok |
+| 5 M | 78 ms | ok |
+| 20 M | 165 ms | ok |
+| 50 M | 429 ms | ok |
+| 100 M | 1,562 ms | ok |
+| 150 M / 250 M | — | ok（墙钟 1,482 / 2,390 ms） |
+| 350 M | — | **503 `exceededCpu`** |
+| （按毫秒的死循环） | 2,010 ms | **`exceededCpu`** ×3 |
+
+⇒ 单请求可烧到 **≈2–3 s CPU** 才被终止；**Free 的平均预算是 10 ms**，而 1 M 迭代（23 ms）已是它的两倍多
+⇒ **该账号不运行在 Free 的 CPU 档上**。含义：D40/D41 里按 Free 10 ms 取的保守值（48 MiB 请求体上限的论证、
+清理 256 KiB/轮/阶段、rollover 说明）在这台账号上**偏保守**；Hibernation 省下的 duration 也主要是**省钱**
+（Paid 每月含 1M GB-s），而不是"从超配额里抢救"。计划档的**官方名称**仍未读到（`/subscriptions` 403）。
+
+### 193.2 写路径哈希的真实 CPU（平台口径，真实边缘）
+
+同一份 payload：**旧路径（同一份 content 摘要两次 + profile 一次）vs 新路径（各一次）**。
+
+| 请求 | 平台记账 CPU |
+|---|---|
+| `/hash-legacy?mb=4` | **37 ms** |
+| `/hash-new?mb=4` | **11 ms** |
+
+⇒ 4 MiB 省 **26 ms**（线性外推 48 MiB ≈ **310 ms CPU** = Free 10 ms 档的 30 倍）。本地 workerd 上的读数同量级
+（4 MiB 25→11、16 MiB 90→44、24 MiB 130→65 ms），且两条路径的 profile 哈希**逐位相同**（`30f38d0423e8`）⇒ 等价 ✓。
+**这是 §192.2「量不出收益」里唯一被量出来的那一项。**
+
+### 193.3 D1 单次调用语句数：**50 不是约束**
+
+`/d1?n=` 一次 `DB.batch()` 塞 N 条语句：20 / 40 / **50** / 60 / 100 / 200 / **400** **全部 200 ok**（45 ms @400）
+⇒ 「Free 每次调用 50 条」对该账号不适用（与 changelog 的 1,000 一致）⇒ 审计 **M2 关闭**。
+
+### 193.4 WS 三条路径与「普通 class 按名分派」
+
+| 场景 | 本地 miniflare | 真实边缘 |
+|---|---|---|
+| 正常关闭 | `ws-close code=1000`（×25） | `ws-close code=1000 reason=probe done`（×16） |
+| **协议违规**（保留 opcode 3 的畸形帧） | **`ws-error: WebSocket protocol error; 1002; Unknown opcode 3`** | **`ws-close code=1006 reason=WebSocket disconnected without sending Close frame`**（**未**派发 `webSocketError`） |
+| 并发 25 条 WS | `ws:25` ⇒ 全关后 `ws:0` | `ws:25` ⇒ 全关后 **`ws:1`** ⇒ **`getWebSockets()` 含 CLOSING 的口径差在边缘复现**（§8.2 末的已知偏差） |
+
+⇒ ① **普通 class（不 `extends DurableObject`）在真实边缘确实被按名分派**（`webSocketClose` 被调到）—— 此前只有本地证据；
+② `webSocketError` 在边缘**仍未观测到**（协议违规走 close 1006）⇒ 该路径边界依旧只有本地证据；
+③ 「一唤醒就全体掉线」的前提（`getWebSockets()` 含 CLOSING）在边缘**实测成立**。
+
+### 193.5 仍然读不到 / 测不了的
+
+- **`env.ASSETS.fetch()` 是否计子请求（审计 M4）**：Workers Logs 的 keys 里**没有**子请求字段（139 个 key，
+  只有 `$workers.cpuTimeMs` / `wallTimeMs`），而含 `sum.subrequests` 的 `workersInvocationsAdaptive`
+  **本 token 未授权** ⇒ 只能按官方口径（"静态资源请求免费"指**入站**）处理。
+- 账号计划的**官方名称**（`/accounts/{id}/subscriptions` → 403）。
+- R2 Class A/B 构成、Worker / D1 逐日指标：仍需 Workers 分析权限。
+- **Paid 档下清理预算是否过保守**：§193.1 已隐含（该账号 CPU 上限 ≫ 10 ms）⇒ 256 KiB/轮/阶段确实偏保守，
+  但"该调到多少"仍无实测依据（改动需另立方案，不在本轮）。
