@@ -1059,3 +1059,75 @@ describe('平台级约束：文件名 / 搜索串不能再把 D1 拖成 500', ()
     expect((await q('x'.repeat(48))).status).toBe(200);
   });
 });
+
+describe('下载路径：编码敏感的名字（2026-10-03）', () => {
+  it('F36 · 下载路径（客户端 DownloadFileAsync）：编码敏感的名字必须能原样取回，头值合法且带 content-length', { timeout: 60_000 }, async () => {
+    // 客户端下载走 `WebDavAdapter.DownloadFileAsync` → `GetFile("file/" + Uri.EscapeDataString(fileName))`
+    //（.NET 的 `EscapeDataString` 与 `encodeURIComponent` 对下面这些字符等价）⇒ 服务端必须在**解码后**的
+    // 名字上找到记录、把字节原样送回。F34 只钉了 PROPFIND/DELETE 的往返，**下载**这条（客户端真正取数据的
+    // 路径）此前没有编码敏感名字的用例。
+    const cases: { name: string; content: Buffer }[] = [
+      { name: `dl-cjk 空格-${RUN}.bin`, content: Buffer.from(`cjk-${RUN}`) },
+      { name: `dl-plus+plus-${RUN}.bin`, content: Buffer.from(`plus-${RUN}`) },
+      { name: `dl-hash#and?q-${RUN}.bin`, content: Buffer.from(`hash-${RUN}`) },
+      { name: `dl-中%文-${RUN}.bin`, content: Buffer.from(`pct-${RUN}`) },
+      // CRLF：写路径不拦控制字符（既有坏数据也必须可下载）⇒ 头值必须靠编码兜住（F5 的机制，这里覆盖
+      // **另一个**出口 `/file/{name}`）
+      { name: `dl-crlf\r\ninjected-${RUN}.bin`, content: Buffer.from(`crlf-${RUN}`) },
+      // 内联白名单里的类型：不得加强制下载（上游根本不给 disposition）
+      { name: `dl-inline 文-${RUN}.txt`, content: Buffer.from(`inline-${RUN}`) },
+    ];
+
+    for (const { name, content } of cases) {
+      // ① 暂存 → ② 用 `/SyncClipboard.json` 落库（与客户端同一条链：WebDAV 上传 + 设当前剪贴板）
+      const staged = await req(`/file/${encodeURIComponent(name)}`, { method: 'PUT', body: content });
+      expect(staged.status, `暂存 ${JSON.stringify(name)}`).toBe(200);
+      const hash = sha256(`${name}|${sha256(content)}`);
+      const put = await req('/SyncClipboard.json', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'File', hash, text: name, hasData: true, dataName: name, size: content.length }),
+      });
+      expect(put.status, `落库 ${JSON.stringify(name)}`).toBe(200);
+
+      // ③ `GET /file/{name}`（客户端的下载路径）
+      const dl = await req(`/file/${encodeURIComponent(name)}`);
+      expect(dl.status, `下载 ${JSON.stringify(name)}`).toBe(200);
+      expect(Buffer.from(await dl.arrayBuffer()).toString(), '字节必须原样').toBe(content.toString());
+      // ⚠️ 实测发现（2026-10-03，裸 `node:http` 请求）：**可压缩类型**（`.txt` → `text/plain`）只在客户端
+      // **宣告** `Accept-Encoding: gzip` 时才被边缘 gzip（此时 `content-length` 换成 `transfer-encoding: chunked`）；
+      // 不发就不压缩（原字节 + `content-length`）。官方 .NET 客户端**不发** Accept-Encoding
+      //（`HttpClientHandler.AutomaticDecompression` 默认 `None`）⇒ 不受影响；本测试的 `fetch` 默认会发，
+      // 故断言按"要么定长、要么 gzip 分块"写，且**始终校验解码后的字节**（下一行）。
+      // 另：`cache-control: no-transform` 在边缘**不**抑制 gzip（已实测并撤回那一行）。
+      if (dl.headers.get('content-encoding') === 'gzip') {
+        expect(dl.headers.get('content-length'), 'gzip 时平台会去掉 content-length').toBeNull();
+      } else {
+        expect(dl.headers.get('content-length'), '/file 侧带 content-length（fileHeaders）').toBe(String(content.length));
+      }
+      const fileCd = dl.headers.get('content-disposition') ?? '';
+      expect(fileCd, '头值里不得出现裸 CR/LF/NUL').not.toMatch(/[\r\n\u0000]/);
+      if (name.endsWith('.txt')) {
+        expect(dl.headers.get('content-type')).toBe('text/plain');
+        expect(fileCd, '.txt 在内联白名单里 ⇒ 不加强制下载').toBe('');
+      } else {
+        expect(dl.headers.get('content-type')).toBe('application/octet-stream');
+        expect(fileCd.startsWith('attachment;')).toBe(true);
+      }
+
+      // ④ `/api/history/{id}/data`：同一份字节 + 传输数据哈希回带 + **content-length**
+      // 长度：**两侧都带** —— 上游 `File(stream, …)` 是 `FileStreamResult`（自动写）；本实现在这条路由上
+      // **没有**显式写（试过：实测平台对 R2 的**定长流**会自己补 Content-Length ⇒ 那行是多余的，已撤）。
+      // 断言留着，因为它是客户端算进度的输入，也是"不要把它换成 TransformStream"的护栏（那会变 chunked）。
+      const data = await req(`/api/history/File-${hash}/data`);
+      expect(data.status, `/data ${JSON.stringify(name)}`).toBe(200);
+      expect(Buffer.from(await data.arrayBuffer()).toString(), '/data 字节必须原样').toBe(content.toString());
+      expect(data.headers.get('content-length'), '/data 必须声明长度（客户端用它算进度）').toBe(String(content.length));
+      expect(data.headers.get('x-syncclipboard-transfer-data-hash'), '传输数据哈希回带（客户端增量校验）').toBe(
+        sha256(content),
+      );
+      expect(data.headers.get('content-type')).toBe('application/octet-stream');
+      expect(data.headers.get('content-disposition') ?? '', '头值里不得出现裸 CR/LF/NUL').not.toMatch(/[\r\n\u0000]/);
+    }
+  });
+});

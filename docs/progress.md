@@ -14044,3 +14044,60 @@ hibernate 后的连接集合）。结论：除握手校验外**逐项一致**（
   还原后 `sha256sum src/db.ts` = `5fb13674…`、`src/serialization.ts` = `54e291a0…`，两者与破坏前**逐字节相同**
   （所以它们都不在本轮的改动清单里）。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 203. 下载路径：编码敏感名字的下载闭环 + 两处「平台行为」实测登记（2026-10-03）
+
+本轮扫描对象 = **下载路径**（`/api/history/{id}/data`、`/file/{name}`、UI 数据端点）的
+Content-Type / Content-Disposition / 哈希回带 / Range / 422-404 映射。结论：**逐项一致**（203.1），
+本轮补的是**缺的那条闭环覆盖**（203.2）与两处**实测出来的平台事实**（203.3）——后者都推翻了我的假设，
+因此**没有留下任何代码改动**（`git diff src/` 干净）。
+
+### 203.1 对照结果：一致项（含既有覆盖）
+
+| 判据 | 上游 | 本实现 | 既有钉子 |
+|---|---|---|---|
+| `/data` 无数据 → 404；有数据取不到 → **422** + ProblemDetails `code=history_data_invalid` | ✓（3.3.0 #413） | 同（同状态码、同键集） | `protocol` / `dto-validation`（F5 组） |
+| `/data` 回带 `X-SyncClipboard-Transfer-Data-Hash`（仅合法才发） | ✓ | 同（迁移前旧记录不带 ⇒ 客户端跳过校验） | `dto-validation` |
+| `/data` 的 Content-Type | 按扩展名（`FileExtensionContentTypeProvider`） | 恒 `application/octet-stream` + `nosniff` + `attachment` | §10 已登记（安全加固） |
+| `/file/{name}` 只按历史查找 + 逐个候选回退 | ✓ | 同 | `fix-regressions`（长名字那条） |
+| Range | 两条协议路径都不支持（`File(bytes, …)` 默认 `EnableRangeProcessing=false`） | 同（有意忽略） | `fix-regressions:792` 有断言 |
+| UI 数据端点的 Range（206 / 416 / 后缀区间 / 零长对象 / 尾越界收窄） | 不适用（本站自有面） | 完整实现 | `ui.test.ts` 的 Range 组（7 条） |
+| 出口头值编码（CR/LF/NUL/CJK） | ASP.NET 不加 disposition | 统一编码（ASCII 兜底 + RFC 5987） | `dto-validation` 的 F5 组 |
+
+### 203.2 本轮补的覆盖：F36（下载闭环）
+
+`test/fix-regressions.test.ts` 新增 —— 用 6 个编码敏感名字（空格+CJK、字面 `+`、`#`/`?`、`%`、**CRLF**、
+内联白名单里的 `.txt`）走**客户端的下载链**（暂存 → `/SyncClipboard.json` 落库 →
+`GET /file/{EscapeDataString(name)}`），断言：200 + 字节**逐字相同** + `content-length` + 头值无裸控制字符 +
+`.txt` 不加 `attachment`（内联白名单）而 `.bin` 加；并对同一条记录断言 `/api/history/{id}/data` 的
+字节 / `content-length` / 哈希回带。此前 F34 只钉了 PROPFIND/DELETE 的往返，**下载**这条（客户端真正
+取数据的路径）没有编码敏感名字的用例。
+
+### 203.3 两处实测（都推翻了我的假设 ⇒ 不留代码改动）
+
+- **`/data` 的 `content-length` 不需要显式写**：我先按"上游 `FileStreamResult` 会写、本实现是 chunked"
+  加了一行 `/data` 的 `content-length`，随后**把它置为不生效重跑 F36 ⇒ 断言仍通过** —— 说明平台对 R2 的
+  **定长流**自己就补 `Content-Length`（裸 `node:http` 实测 `/data` → 200、`content-length: 300`，与上游一致）。
+  ⇒ 那一行是多余的，**已撤回**。
+  （顺带纠正 §199.1 的一句口径：`fileHeaders` 确实显式设了 `content-length`，但 `/file/{name}` 侧能观察到它
+  并不依赖这一行；对**可压缩类型**它还会被边缘的 gzip 换成分块，见下条。）
+- **可压缩类型的边缘 gzip 只在客户端宣告 `Accept-Encoding` 时发生**：`.txt` 附件在**裸 `node:http`**
+  （不发 `Accept-Encoding`）下返回**原字节 + `content-length`**；带 `Accept-Encoding: gzip` 时才变成
+  `content-encoding: gzip` + `transfer-encoding: chunked`。官方 .NET 客户端**不发** Accept-Encoding
+  （`HttpClientHandler.AutomaticDecompression` 默认 `None`，两处 handler 都只看 `Proxy`）⇒ 不受影响。
+  另试过用 `cache-control: no-transform`（RFC 9110 §5.2.2.4「中介 MUST NOT 施加转换」）抑制它：
+  **实测无效**（边缘照样 gzip）⇒ 同样撤回。
+  两条都已写进 `docs/protocol.md` §10（一条新行 + `/data` 行的补句）。
+
+### 203.4 门禁（2026-10-03，本轮）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 = **0 错**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`）：
+  **22 个套件 / 492 个用例全过**、退出码 0（99.46 s；比 §202.3 多 1 条 = 本轮 F36）。
+  套件数与资源数不变 ⇒ 现状文档计数无需改（`test/docs.test.ts` 绿）。
+- **本轮 `src/` 零改动**（`git diff src/` 为空）：两处试验（`/data` 的 `content-length`、
+  `cache-control: no-transform`）都被实测判定为"多余/无效"并逐字节撤回 —— 判别力证据正是
+  "撤回后 F36 仍通过"（说明平台本就提供该头）。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
