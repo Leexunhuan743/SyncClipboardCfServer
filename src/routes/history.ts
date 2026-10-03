@@ -23,7 +23,7 @@ import { broadcast } from '../hub';
 import { applyHistoryUpdate, clearAllHistory } from '../historyOps';
 import { parseBoundary, parseMultipart, MultipartResult } from '../multipart';
 import { drainRequestBody } from '../auth';
-import { maxRequestBodyBytes, readBodyCapped } from '../requestLimits';
+import { maxRequestBodyBytes, readBodyCapped, readBodyTextCapped } from '../requestLimits';
 
 const UNPROCESSABLE_ENTITY = 422;
 
@@ -461,12 +461,12 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let dto;
     try {
-      const body = await readBodyCapped(c.req.raw, maxRequestBodyBytes(c.env));
-      if (body === null) {
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) {
         await drainRequestBody(c.req.raw);
         return new Response('Payload Too Large', { status: 413 });
       }
-      dto = parseHistoryRecordUpdateDto(new TextDecoder().decode(body));
+      dto = parseHistoryRecordUpdateDto(text);
     } catch {
       return c.text('Bad Request', 400);
     }

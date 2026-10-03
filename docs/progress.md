@@ -14163,3 +14163,90 @@ Content-Type / Content-Disposition / 哈希回带 / Range / 422-404 映射。结
   还原后逐字节核对：`src/auth.ts` / `src/ui/session.ts` 的 sha256 与破坏前一致、`git diff src/` 为空。
   ②的结论值得记一句：`atob` 虽然对空白宽容，但**到不了**这里 —— `.trim()` 确实承重。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 205. 请求体护栏：UI 面 JSON 写端点存在 **chunked 绕过**（无 `content-length` ⇒ 预检看不见），9 处读取统一收口（2026-10-03）
+
+扫描对象 = 「把整包读进内存」的那条链：入口的 F9 `content-length` 预检、`readBodyCapped` 的读取层上限、
+落库前按对象实际大小的 `PayloadTooLargeError`、`drainRequestBody` 的各提前返回点。
+**结论：协议面三层到齐；UI 面缺了第二层** —— 这是本轮修掉的**真缺陷**。
+
+### 205.1 缺陷：UI 写端点用平台原生读取，`content-length` 预检对 chunked **完全无效**
+
+`src/index.ts` 的 F9 预检只读 `content-length`；`readBodyCapped` 的注释早就写明
+「chunked / HTTP/2 无长度头的请求会整条绕过它」。但**只有协议面**把 handler 里的整包读取换成了它：
+
+| 端点 | 修复前的读取 | 有上限？ |
+|---|---|---|
+| `PUT /SyncClipboard.json` | `c.req.text()` | **无** |
+| `PATCH /api/history/{type}/{hash}` | `readBodyCapped` | 有 |
+| `POST /api/history`、`/query` | `readBodyCapped`（multipart/urlencoded） | 有 |
+| `POST /ui/api/history`、`/batch-update`、`/batch-purge`、`/clear`、`/batch-meta` | `c.req.json()` | **无** |
+| `PUT /ui/api/settings` | `c.req.json()` | **无** |
+| `PATCH /ui/api/history/{type}/{hash}` | `c.req.text()` | **无** |
+
+平台单请求体上限是 **100 MiB**（上游更是 `int.MaxValue`：`Web.cs:25` 的
+`KestrelServerOptions.Limits.MaxRequestBodySize = int.MaxValue`，`HistoryController.cs:142` 的
+`[RequestFormLimits(ValueLengthLimit = int.MaxValue, MultipartBodyLengthLimit = long.MaxValue)]`），
+而 isolate 只有 **128 MiB** ⇒ 一条**不带 `content-length`** 的 chunked 请求把 90 MiB JSON 发到
+`POST /ui/api/history`，预检看不见、handler 又照单全收：isolate 被撑爆，**同一 isolate 上并发中的
+其它请求一起 503**（比"这次上传失败"严重）。这些端点在鉴权之后，所以实际风险面是
+「凭据泄漏后的放大器」，但代价是每个请求 90 MiB 内存 ⇒ 一律封顶。
+
+### 205.2 修法：新增 `readBodyTextCapped`，9 处走同一条上限
+
+`src/requestLimits.ts` 新增文本入口（与 `readBodyCapped` 同一条上限、同一个 `limit` 参数）：
+
+```ts
+export async function readBodyTextCapped(raw: Request, limit: number): Promise<string | null> {
+  const bytes = await readBodyCapped(raw, limit);
+  return bytes === null ? null : new TextDecoder().decode(bytes);
+}
+```
+
+- **返回 `null` 只表示"超限"**：读取层的正常路径永不解析出 `null`（JSON/文本都是字符串），
+  所以调用方一句 `if (text === null) return 413` 即可 —— 也正因为如此，**刻意没有**再包一层
+  `readBodyJsonCapped`（那会让"超限"与"字面 `null` 载荷"两个语义撞在一起）。
+- **超限分支已经排空过请求体**（`readBodyCapped` 内部对超限调用 `drainRequestBody`）⇒ 调用方不必重复排空。
+- 9 处调用点：`src/ui/routes.ts` ×6（UI PATCH、`POST /ui/api/history`、`/batch-update`、`/batch-purge`、
+  `/clear`、`/batch-meta`）、`src/ui/maintenance.ts` ×1（`PUT /ui/api/settings`）、
+  `src/routes/webdav.ts` ×1（`PUT /SyncClipboard.json`）、`src/routes/history.ts` ×1（协议 PATCH 顺带换到同一入口）。
+
+### 205.3 覆盖与判别力（都实测过）
+
+- `test/rate-limit.test.ts` 的 F9 组新增两条：**chunked 超限 → 413**（`POST /ui/api/history`、
+  `/batch-update`、`PUT /ui/api/settings`、协议 `PATCH`）与**chunked 未超限 → 照常落到业务判定**
+  （`400 {error:'items_required'}`，证明不是"一律 413"）。用 `new ReadableStream(...)` + `duplex: 'half'`
+  构造，并显式断言该请求**没有** `content-length`（否则这条用例什么也没测）。
+- **判别力**（把生产代码局部破坏后单跑，均转红，随后逐字节还原）：
+  ① `readBodyTextCapped` 改成 `raw.arrayBuffer()`（等于没有上限）⇒ `POST /ui/api/history` 得 **400**；
+  ② `maintenance.ts` 的 settings 读取换回 `c.req.json()` ⇒ `PUT /ui/api/settings` 得 **400**。
+  还原后三个 `src/` 文件与破坏前 sha256 一致。
+- **真实请求（workerd，不是进程内 stub）**：dev server 用 `--var MAX_REQUEST_BODY_BYTES:1048576` 起在 8791：
+  - `node:http` 发**不带 `content-length`**（即 chunked）的正文 —— 1.5 MiB →
+    `PATCH /api/history/Text/<hash>` 得 **413 `Payload Too Large`**；对照 0.5 KiB → **400 `Bad Request`**。
+  - 裸 socket，`Content-Length` **恰好等于**上限（1,048,576）→ **400**（不是 413 ⇒ 判据是 `>` 而非 `>=`，
+    与 `readBodyCapped` 的 `total > limit` 一致）。
+  - 裸 socket，**谎报** `Content-Length`（声明 1 KiB、实写 1.5 MiB）→ 服务端按 HTTP/1.1 的 framing
+    只消费声明的 1 KiB（其余字节被当作"下一个请求"，服务端第二条同样得到 400 ⇒ 证明它确实只读了 1 KiB），
+    故**谎报得不到**"让服务端读走超过上限的体"；真正按实际字节计数的护栏是读取层那一层。
+  - ⚠️ 正文很大时服务端会在客户端写完前定案并重置连接 ⇒ 客户端可能先看到 `ECONNRESET` 而不是响应，
+    这是"服务端提前回绝"的正常表现，不是缺陷；官方客户端在 HTTP/1.1 下带 `Content-Length`、浏览器
+    `fetch` 也带，故正常路径不触发。
+
+### 205.4 顺带修掉的一条**假绿**断言
+
+F9 的「按 content-length 快速 413」用例里，PATCH 那条写的是 `/api/history/Text-<hash>`（**单段**），
+而真实路由是 `/api/history/:type/:hash`（**两段**）⇒ 预检照样 413，但**路由其实从未命中**
+（用例假绿、也没在测 PATCH 端点）。已改成两段形态并加注说明。
+
+### 205.5 门禁（2026-10-03，本轮）
+
+- `tsc --noEmit` 0 错；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` 0 告警；
+  `node --check` ×4 = 0 错。
+- 全量套件（dev server 8787 + `--no-file-parallelism`）：**22 个套件 / 497 个用例全过**、退出码 0
+  （101.41 s；比 §204.4 多 2 条 = 本轮那两条）。套件数与资源数不变 ⇒ 现状文档计数无需改。
+- 上游侧基线**逐个打开源码**确认：`Web.cs:25` 的 `int.MaxValue`、
+  `HistoryController.cs:142-143` 的 `[RequestFormLimits(...)]` + `[DisableFormValueModelBinding]`、
+  `:154` 的 `new MultipartReader(boundary, Request.Body, 10 * 1024)`（分界串读取上限；本实现对应
+  `MAX_BOUNDARY_LENGTH = 70`，按 RFC 2046 取更严的值）。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。

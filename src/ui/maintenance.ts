@@ -12,6 +12,7 @@ import { basename } from '../db';
 import { stores } from '../stores';
 import { historyKey } from '../storage';
 import { drainRequestBody } from '../auth';
+import { maxRequestBodyBytes, readBodyTextCapped } from '../requestLimits';
 import { toIso } from '../serialization';
 import { isValidProfileHash, ProfileType } from '../types';
 import { truncateText } from './query';
@@ -119,7 +120,10 @@ export function createUiMaintenanceRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let body: unknown;
     try {
-      body = await c.req.json();
+      // 整包读的一律走 capped（F9 预检只信 content-length，chunked 会绕过它）
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return new Response('Payload Too Large', { status: 413 });
+      body = JSON.parse(text) as unknown;
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }

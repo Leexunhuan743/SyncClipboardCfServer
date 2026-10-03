@@ -509,7 +509,9 @@ describe('F9 请求体上限（413）', () => {
     const cases: Array<{ method: string; path: string }> = [
       { method: 'PUT', path: '/SyncClipboard.json' },
       { method: 'POST', path: '/api/history' },
-      { method: 'PATCH', path: '/api/history/Text-0123456789ABCDEF0123456789ABCDEF' },
+      // 路由是 `/api/history/:type/:hash`（两段）——早前这里写成单段 `Type-Hash` 形态，
+      // 预检照样 413，但**路由其实没命中**（找不到这条端点的用例会假绿）
+      { method: 'PATCH', path: '/api/history/Text/0123456789ABCDEF0123456789ABCDEF' },
       // 暂存端点本身是流式的，但它一起限：否则"流式暂存大对象 + 小 JSON 提交"会绕过
       // 请求头预检，让落库那步在 arrayBuffer() 处 OOM（真实护栏见 src/profile.ts）
       { method: 'PUT', path: '/file/big.bin' },
@@ -564,6 +566,85 @@ describe('F9 请求体上限（413）', () => {
       }),
     );
     expect(otherRoute.status).toBe(401); // 同 path 但方法不在列表 → 不限体量
+  });
+
+  // ---- 2026-10-03 补：chunked（无 content-length）→ 预检看不见，只能靠整包读取那层兜 ----
+  //
+  // 这一组是 §205 那条修复的钉子。修复前 UI 面的写端点直接 `c.req.json()`
+  // （平台原生读取，**无上限**）⇒ 下面第一、二条会各自返回 200/400 而**不是** 413，
+  // 且 isolate 已经把那 4 MiB 读进内存（上限被调成 1 MiB 时就是超限）。
+  it('chunked 的 UI 写端点（无 content-length）在读取层被封顶：413 而不是整包读入', async () => {
+    // 判据的判别力已实测：把 requestLimits.ts 的 `readBodyTextCapped` 改成直接
+    // `raw.arrayBuffer()`（= 没有上限），本用例即转红（POST /ui/api/history 得 400）；
+    // 把 maintenance.ts 的 settings 读取换回 `c.req.json()`，settings 断言转红（得 400）。
+    // 真实请求侧另有一次 workerd 验证：dev server 用 `--var MAX_REQUEST_BODY_BYTES:1048576`
+    // 起在 8791，用 node:http 发 chunked 的 1.5 MiB 正文 →
+    // `PATCH /api/history/Text/<hash> 413 Payload Too Large`（对照：0.5 KiB → 400 Bad Request）。
+    // 同一台服务器上还用裸 socket 量了两条边界（见 progress.md §205.3）：
+    // `Content-Length` **恰好等于**上限 → 400（不是 413，即边界是 `>`）；**谎报** `Content-Length`
+    // （声明 1 KiB、实写 1.5 MiB）→ 服务端按 framing 只消费声明的 1 KiB（多余字节成了"下一个请求"），
+    // 不可能靠谎报把超限的体喂进去。
+    const oneMiB = 1024 * 1024;
+    const { env } = createEnv(undefined, { MAX_REQUEST_BODY_BYTES: String(oneMiB) });
+    const ctx = createCtx();
+    const chunkedJson = (path: string, method: string, body: string) =>
+      new Request(`https://sync.example.com${path}`, {
+        method,
+        headers: { authorization: basic(USER, PASS), 'content-type': 'application/json' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(body));
+            controller.close();
+          },
+        }),
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' });
+    const oversize = `{"text":"${'x'.repeat(oneMiB + 1024)}"}`;
+    // 无 content-length（流式 body）——预检看不到体量，只有读取层能拦
+    expect(chunkedJson('/ui/api/history', 'POST', oversize).headers.get('content-length')).toBeNull();
+
+    const created = await fetchWorker(env, ctx, chunkedJson('/ui/api/history', 'POST', oversize));
+    expect(created.status, 'POST /ui/api/history').toBe(413);
+
+    const batched = await fetchWorker(
+      env,
+      ctx,
+      chunkedJson('/ui/api/history/batch-update', 'POST', `{"items":["${'y'.repeat(oneMiB)}"]}`),
+    );
+    expect(batched.status, 'POST /ui/api/history/batch-update').toBe(413);
+
+    const settings = await fetchWorker(env, ctx, chunkedJson('/ui/api/settings', 'PUT', oversize));
+    expect(settings.status, 'PUT /ui/api/settings').toBe(413);
+
+    // 协议面的 PATCH 同样（它此前已用 readBodyCapped，本轮只是换成同一条文本入口）
+    const patched = await fetchWorker(
+      env,
+      ctx,
+      chunkedJson('/api/history/Text/0123456789ABCDEF0123456789ABCDEF', 'PATCH', oversize),
+    );
+    expect(patched.status, 'PATCH /api/history/{type}/{hash}').toBe(413);
+  });
+
+  it('chunked 但未超限：照常走到业务判定（证明上条不是"一律 413"）', async () => {
+    const oneMiB = 1024 * 1024;
+    const { env } = createEnv(undefined, { MAX_REQUEST_BODY_BYTES: String(oneMiB) });
+    const ok = await fetchWorker(
+      env,
+      createCtx(),
+      new Request('https://sync.example.com/ui/api/history/batch-update', {
+        method: 'POST',
+        headers: { authorization: basic(USER, PASS), 'content-type': 'application/json' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{}'));
+            controller.close();
+          },
+        }),
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' }),
+    );
+    expect(ok.status, '未超限的 chunked 请求应落到既有校验分支（items 缺失 → 400）').toBe(400);
+    expect(await ok.json()).toEqual({ error: 'items_required' });
   });
 });
 

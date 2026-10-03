@@ -106,3 +106,29 @@ export async function readBodyCapped(raw: Request, limit: number): Promise<Uint8
   }
   return out;
 }
+
+/**
+ * 读请求体文本的**唯一**入口：与 `readBodyCapped` 同一条上限，返回 `null` = 超限。
+ *
+ * 为什么是独立函数（而不是在每个调用点 inline 那三行）：**9 处调用点**必须同款处理
+ * `null`（直接回 413）与"已经排空过"这两个约定，inline 出去必然漂移。
+ *
+ * 为什么需要它（2026-10-03 补）：入口的 F9 预检与各 handler 的 `readBodyCapped`
+ * 只覆盖了**协议面**的写端点。UI 面的 JSON 写端点（`/ui/api/history`、`/batch-update`、
+ * `/batch-purge`、`/clear`、`/batch-meta`、`/ui/api/settings`）此前一律直接 `c.req.json()`
+ * / `c.req.text()` —— 那是平台 `Request` 的原生读取，**没有任何上限**：一条 chunked 请求
+ * （不带 `content-length`，预检看不见）发 90 MiB JSON 就能把整个 isolate 撑爆，后果与
+ * `requestLimits.ts` 顶部记的那条一样（并发中的其它请求一起 503）。这些端点都在鉴权之后，
+ * 所以实际风险面是"凭据泄漏后的放大器"，但代价是每个请求 90 MiB 内存 ⇒ 一律封顶。
+ *
+ * 返回 `null` 时**已经**把请求体排空（`readBodyCapped` 内部对超限分支做了 drain），
+ * 调用方据此直接回 413 即可；**不要在调用方再调一次 drainRequestBody**（重复排空无害，
+ * 但那是多余的读）。
+ */
+export async function readBodyTextCapped(
+  raw: Request,
+  limit: number,
+): Promise<string | null> {
+  const bytes = await readBodyCapped(raw, limit);
+  return bytes === null ? null : new TextDecoder().decode(bytes);
+}

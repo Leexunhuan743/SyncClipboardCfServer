@@ -190,7 +190,7 @@ SyncClipboardCfServer/
 │   ├── env.ts                  # 绑定类型（D1/R2/HUB/Vars/Secrets）
 │   ├── auth.ts                 # Basic Auth 校验、凭据校验、请求体排空
 │   ├── rateLimit.ts            # 认证失败限速：isolate 内存快路径 + DO 权威计数（F7）
-│   ├── requestLimits.ts        # 请求体上限与 loopback 判定（F8/HSTS 与 F9 共用）
+│   ├── requestLimits.ts        # 请求体上限的**唯一**读取入口（预检 + readBodyCapped/readBodyTextCapped）与 loopback 判定（F8/HSTS 与 F9 共用）
 │   ├── pathCase.ts             # 协议路径**字面段**大小写归一（对齐 ASP.NET 路由；2026-09-15 A/B 后补救）
 │   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时四个挂载点（/ui*、/ui_v1*、/ui_v2*、/ui_shared*）全 404、根路径不跳转
 │   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
@@ -436,6 +436,20 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
   64 还留出离平台 100 MiB 的 36 MiB 余量。
 - **残留风险**（登记见 §13）：预算是**按请求**算的，两个**同时进行**的大 Group 上传理论上仍可能顶穿
   128 MiB。单客户端同步场景不会出现；要做全局串行需 isolate 级信号量。
+
+**上限在三处强制，缺一处就漏（2026-10-03 补齐第三处）**：
+
+| 层 | 位置 | 覆盖 | 漏掉会怎样 |
+| --- | --- | --- | --- |
+| ① 请求头预检 | `src/index.ts` 的 F9 中间件（按 `content-length`） | 协议面写端点 + `/ui/api/login` + `PUT /file/*` | — |
+| ② 整包读取 | `readBodyCapped` / `readBodyTextCapped`（`src/requestLimits.ts`） | 所有把 body 读进内存的 handler | **chunked 请求（无 `content-length`）整条绕过 ①** ⇒ 一个 90 MiB 的 JSON 就能打爆 isolate，并发中的其它请求一起 503 |
+| ③ 对象实际大小 | `src/profile.ts` 的 `PayloadTooLargeError` | 落库前按暂存对象的 `size` | ① 预检也可被绕过：`PUT /file/{name}` 是流式的，先暂存 100 MB、再用小 JSON 提交 |
+
+②的**唯一入口**（2026-10-03 起）：`readBodyTextCapped`（文本/JSON）与 `readBodyCapped`（字节，
+multipart/urlencoded 用）。**新增任何"把整包读进内存"的端点都必须走它们** —— UI 面的
+`POST /ui/api/history`、`/batch-update`、`/batch-purge`、`/clear`、`/batch-meta`、`/ui/api/settings`、
+`PATCH /ui/api/history/{type}/{hash}` 与协议面 `PUT /SyncClipboard.json`、`PATCH /api/history/{type}/{hash}`
+此前直接调 `c.req.json()` / `c.req.text()`（平台原生读取，**无上限**），见 `progress.md` §205。
 
 **为什么不做流式上传**（结论留档，详见 `docs/progress.md` §48.4）：字节从来不进 D1（D1 只有元数据行，
 数据体在 R2），且 `PUT /file/{name}`（暂存）与所有下载**已经是流式**；瓶颈只在"提交"两步，而它们必须整包读，

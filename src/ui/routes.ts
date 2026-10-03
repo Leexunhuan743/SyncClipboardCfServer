@@ -18,7 +18,7 @@ import { applyHistoryUpdate, clearAllHistory, purgeTrash } from '../historyOps';
 import { broadcastMany } from '../hub';
 import { entityToDtoWire } from '../serialization';
 import { addRecordDto } from '../profile';
-import { maxRequestBodyBytes, readBodyCapped } from '../requestLimits';
+import { maxRequestBodyBytes, readBodyCapped, readBodyTextCapped } from '../requestLimits';
 import { textProfileHash } from '../hash';
 import { broadcast } from '../hub';
 import { ProfileType } from '../types';
@@ -432,7 +432,9 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
 
     let parsed: HistoryRecordUpdateDto;
     try {
-      parsed = parseHistoryRecordUpdateDto(await c.req.text());
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return new Response('Payload Too Large', { status: 413 });
+      parsed = parseHistoryRecordUpdateDto(text);
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
@@ -512,7 +514,10 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let body: unknown;
     try {
-      body = await c.req.json();
+      // 整包读的一律走 capped（F9 预检只信 content-length，chunked 会绕过它）
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return new Response('Payload Too Large', { status: 413 });
+      body = JSON.parse(text) as unknown;
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
@@ -587,7 +592,10 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let body: unknown;
     try {
-      body = await c.req.json();
+      // 整包读的一律走 capped（F9 预检只信 content-length，chunked 会绕过它）
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return new Response('Payload Too Large', { status: 413 });
+      body = JSON.parse(text) as unknown;
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
@@ -672,7 +680,10 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let body: unknown;
     try {
-      body = await c.req.json();
+      // 整包读的一律走 capped（F9 预检只信 content-length，chunked 会绕过它）
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return new Response('Payload Too Large', { status: 413 });
+      body = JSON.parse(text) as unknown;
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
@@ -725,7 +736,9 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let scope: unknown;
     try {
-      scope = ((await c.req.json()) as { scope?: unknown })?.scope;
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return new Response('Payload Too Large', { status: 413 });
+      scope = ((JSON.parse(text) as { scope?: unknown }) ?? {})?.scope;
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
@@ -882,7 +895,10 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let body: unknown;
     try {
-      body = await c.req.json();
+      // 整包读的一律走 capped（F9 预检只信 content-length，chunked 会绕过它）
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return new Response('Payload Too Large', { status: 413 });
+      body = JSON.parse(text) as unknown;
     } catch {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }

@@ -10,7 +10,7 @@ import { ProfileType, ProfileDto, isValidProfileHash } from '../types';
 import { broadcast } from '../hub';
 import { multistatusXml, xmlResponse } from '../webdavXml';
 import { isUiEnabled } from '../uiEnabled';
-import { maxRequestBodyBytes } from '../requestLimits';
+import { maxRequestBodyBytes, readBodyTextCapped } from '../requestLimits';
 import { contentTypeOf, fileHeaders } from '../contentTypes';
 import { stores } from '../stores';
 
@@ -118,7 +118,10 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
     const { db, storage } = stores(c);
     let dto: ProfileDto;
     try {
-      dto = parseProfileDto(await c.req.text());
+      // 整包读也要过体量上限：F9 预检只信 content-length，chunked 请求会绕过它
+      const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
+      if (text === null) return c.text('Payload Too Large', 413);
+      dto = parseProfileDto(text);
     } catch {
       return c.text('Invalid JSON body', 400);
     }
