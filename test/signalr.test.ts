@@ -134,3 +134,73 @@ describe('SignalR 兼容 Hub', () => {
     await connection.stop();
   });
 });
+
+// ===== 握手校验（2026-10-03）：协议/版本不支持时必须**显式拒** =====
+// 客户端只在收到 `error` 时才认"握手失败" —— 实测本仓 dev 依赖的 `@microsoft/signalr`
+// （`dist/esm/HubConnection.js` 的 `_processHandshakeResponse`）把 `responseMessage.error` 抛成
+// `Server returned handshake error: …`（.NET 客户端同构）。不拒的话，只说 MessagePack 的客户端会
+// **以为握手成功**、随后在每一帧上报解析错误（症状是"连上了但一直掉"）。
+describe('SignalR 握手校验：协议/版本（原始 WS，不用客户端库的判断）', () => {
+  const RS = '\u001e';
+  const WS_BASE = BASE.replace(/^http/, 'ws');
+
+  // negotiate 拿 connectionToken（v1 形态；本实现让 connectionId 与 token 同值，两者都可作 ?id=）
+  async function negotiateToken(): Promise<string> {
+    const res = await fetch(`${BASE}/SyncClipboardHub/negotiate?negotiateVersion=1`, {
+      method: 'POST',
+      headers: { Authorization: AUTH },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { connectionToken?: string; connectionId?: string };
+    return body.connectionToken ?? body.connectionId ?? '';
+  }
+
+  function rawHandshake(
+    token: string,
+    handshake: Record<string, unknown>,
+    { expectClose = true }: { expectClose?: boolean } = {},
+  ): Promise<{ frames: string[]; closed: boolean }> {
+    const { promise, resolve } = Promise.withResolvers<{ frames: string[]; closed: boolean }>();
+    const frames: string[] = [];
+    const done = (): void => resolve({ frames, closed: true });
+    const ws = new WebSocket(`${WS_BASE}/SyncClipboardHub?id=${token}`);
+    // ⚠️ 用 `addEventListener`，**不是** `ws.onmessage = …`：本仓库的类型面是 Workers 的 `WebSocket`
+    //    （只有 addEventListener / send / close），而运行时这里是 undici 的 WHATWG WebSocket —— 两者都支持。
+    ws.addEventListener('message', (event) => {
+      frames.push(typeof event.data === 'string' ? event.data : '');
+      if (!expectClose) ws.close();
+    });
+    ws.addEventListener('close', done);
+    ws.addEventListener('error', done);
+    ws.addEventListener('open', () => ws.send(JSON.stringify(handshake) + RS));
+    // 兜底（真实时钟，故意）：这是**真实跨进程 WS**（undici ↔ workerd/DO 平台时钟），假时钟替代不了；
+    // 它的唯一用途是把"服务端没关闭连接"报成 closed=false 的断言失败，而不是挂到 vitest 超时。
+    setTimeout(() => resolve({ frames, closed: false }), 15_000);
+    return promise;
+  }
+
+  it('不支持的协议 ⇒ 回 {"error":…} 帧并**关闭**连接（上游 SendHandshakeError 同形）', { timeout: 60_000 }, async () => {
+    const token = await negotiateToken();
+    const { frames, closed } = await rawHandshake(token, { protocol: 'messagepack', version: 1 });
+    const joined = frames.join('');
+    expect(joined, '必须回一个带 error 的握手响应').toContain('"error"');
+    expect(joined).toContain("Requested protocol 'messagepack' is not available.");
+    expect(closed, '拒绝后必须关闭连接').toBe(true);
+  });
+
+  it('版本非「≥1 的整数」⇒ 同样拒绝（version=0）', { timeout: 60_000 }, async () => {
+    const token = await negotiateToken();
+    const { frames, closed } = await rawHandshake(token, { protocol: 'json', version: 0 });
+    const joined = frames.join('');
+    expect(joined).toContain('"error"');
+    expect(joined).toContain("does not support version 0 of the 'json' protocol");
+    expect(closed).toBe(true);
+  });
+
+  it('version=2 **接受**（不写死等值：实测 @microsoft/signalr 8.0.7 的 JsonHubProtocol.version 是 2）', { timeout: 60_000 }, async () => {
+    const token = await negotiateToken();
+    const { frames } = await rawHandshake(token, { protocol: 'json', version: 2 }, { expectClose: false });
+    expect(frames.join(''), '合法握手必须回 {}（带 RS）').toContain('{}');
+    expect(frames.join('')).not.toContain('"error"');
+  });
+});

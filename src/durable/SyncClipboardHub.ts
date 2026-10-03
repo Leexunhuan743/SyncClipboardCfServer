@@ -21,7 +21,15 @@
 // ⚠️ 两种 API **不可并用**：`acceptWebSocket` 之后 `addEventListener` 收不到事件。
 // ⚠️ SSE 与长轮询**仍是**不可 hibernate 的（活着的 `writer` / 未兑现的 `pending` 无法迁移）
 // ⇒ 有这两类连接在线时，本对象照样全程计费。这是已知且已登记的边界（D42）。
-import { parseClientMessage, handshakeResponse, invocationMessage, closeMessage, pingMessage } from './signalr';
+import {
+  parseClientMessage,
+  handshakeResponse,
+  handshakeRejection,
+  handshakeErrorResponse,
+  invocationMessage,
+  closeMessage,
+  pingMessage,
+} from './signalr';
 import {
   basicAuthUsername,
   checkBasicAuth,
@@ -146,6 +154,13 @@ interface SseClient {
   lastSeen: number;
   closed: boolean;
 }
+
+// 客户端消息的处理结果（`replyToClientMessage` 的返回值；三种传输共用，语义见那里的注释）
+type ClientReply =
+  | { kind: 'none' }
+  | { kind: 'send'; text: string }
+  | { kind: 'close' }
+  | { kind: 'reject'; text: string };
 
 // 限速端点的请求体解析（body 是内部调用方构造的，但仍按不可信输入做形状校验）
 function readAuthLimitOp(body: unknown): 'report' | 'snapshot' | 'clear' | null {
@@ -324,25 +339,17 @@ export class SyncClipboardHub {
     ws.serializeAttachment({ lastSeen: Date.now() });
     const text = typeof message === 'string' ? message : '';
     const reply = this.replyToClientMessage(text);
-    if (reply === 'close') {
+    if (reply.kind === 'none') return;
+    try {
+      // 'close' = 客户端发来 Close（回一帧 Close）；'reject' = 握手协议/版本不支持（回 `error` 帧）
+      ws.send(reply.kind === 'close' ? closeMessage() : reply.text);
+      if (reply.kind !== 'send') ws.close();
+    } catch {
+      // 连接集合由平台代管 ⇒ 这里只需结束这条连接（旧实现是从内存 Map 里删掉）
       try {
-        ws.send(closeMessage());
+        ws.close();
       } catch {
         /* 已关闭 */
-      }
-      ws.close();
-      return;
-    }
-    if (reply !== null) {
-      try {
-        ws.send(reply);
-      } catch {
-        // 连接集合由平台代管 ⇒ 这里只需结束这条连接（旧实现是从内存 Map 里删掉）
-        try {
-          ws.close();
-        } catch {
-          /* 已关闭 */
-        }
       }
     }
   }
@@ -497,9 +504,10 @@ export class SyncClipboardHub {
     const sse = this.sseClients.get(id);
     if (sse) sse.lastSeen = Date.now();
 
-    const text = await request.text();
-    const reply = this.replyToClientMessage(text);
-    if (reply === 'close') {
+    const reply = this.replyToClientMessage(await request.text());
+    if (reply.kind === 'close' || reply.kind === 'reject') {
+      // 握手被拒：**先**把 `error` 帧投给该连接的接收通道（挂起中的长轮询会就地拿到它），再按"服务端关闭"收尾
+      if (reply.kind === 'reject') this.deliverTo(id, reply.text);
       this.closeSseClient(id);
       if (lp) {
         lp.closed = true;
@@ -507,9 +515,9 @@ export class SyncClipboardHub {
       }
       return new Response(null, { status: 200 });
     }
-    if (reply !== null) {
+    if (reply.kind === 'send') {
       // 同步返回给发起方（HTTP 200），同时把握手响应投递到该连接的接收通道
-      this.deliverTo(id, reply);
+      this.deliverTo(id, reply.text);
     }
     return new Response(null, { status: 200 });
   }
@@ -532,19 +540,27 @@ export class SyncClipboardHub {
 
   // ---------- 消息语义（三种传输共用）----------
 
-  // 返回要回送的内容；'close' 表示客户端要求关闭；null 表示无需回应
-  private replyToClientMessage(text: string): string | 'close' | null {
+  // 返回要回送的内容：
+  //   none   —— 无需回应（Ping / Invocation / 无法识别）
+  //   send   —— 回一帧文本（握手成功 `{}`）
+  //   close  —— 客户端要求关闭（回一帧 Close 再关）
+  //   reject —— 握手声明的协议/版本不支持：回 `error` 帧再关（**不回** Close 帧，与上游同形）
+  private replyToClientMessage(text: string): ClientReply {
     const msg = parseClientMessage(text);
     switch (msg.kind) {
-      case 'handshake':
-        return handshakeResponse();
+      case 'handshake': {
+        const reason = handshakeRejection(msg.protocol, msg.version);
+        return reason === null
+          ? { kind: 'send', text: handshakeResponse() }
+          : { kind: 'reject', text: handshakeErrorResponse(reason) };
+      }
       case 'close':
-        return 'close';
+        return { kind: 'close' };
       case 'ping':
       case 'unknown':
       case 'invocation':
         // 官方客户端纯监听：无服务端 RPC，忽略
-        return null;
+        return { kind: 'none' };
     }
   }
 

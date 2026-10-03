@@ -11,6 +11,9 @@ export interface ParsedClientMessage {
   kind: 'handshake' | 'ping' | 'close' | 'invocation' | 'unknown';
   target?: string;
   arguments?: unknown[];
+  /** kind === 'handshake'：请求里的 `protocol` / `version`（非字符串 / 非数字则为 undefined） */
+  protocol?: string;
+  version?: number;
 }
 
 // 客户端 → 服务端：
@@ -26,7 +29,11 @@ export function parseClientMessage(text: string): ParsedClientMessage {
     return { kind: 'unknown' };
   }
   if (typeof msg.protocol === 'string') {
-    return { kind: 'handshake' };
+    return {
+      kind: 'handshake',
+      protocol: msg.protocol,
+      version: typeof msg.version === 'number' ? msg.version : undefined,
+    };
   }
   switch (msg.type) {
     case SIGNALR_PING:
@@ -44,6 +51,39 @@ export function parseClientMessage(text: string): ParsedClientMessage {
 //   握手成功响应：{}\x1e
 export function handshakeResponse(): string {
   return '{}' + RECORD_SEPARATOR;
+}
+
+// ===== 握手校验（`docs/protocol.md` §10 的 SignalR 行）=====
+
+/** 服务端唯一支持的协议名（比较**大小写不敏感**，与 ASP.NET 的 `HubProtocolResolver` 同侧）。 */
+export const SUPPORTED_PROTOCOL = 'json';
+
+/**
+ * 判断握手请求是否可接受：接受返回 null，否则返回要回给客户端的 `error` 文案。
+ * 为什么必须判（而不是"一律回 `{}`"）：**客户端只在收到 `error` 时才认"握手失败"** —— 实测本仓
+ * dev 依赖的 `@microsoft/signalr`（`dist/esm/HubConnection.js` 的 `_processHandshakeResponse`）
+ * 把 `responseMessage.error` 抛成 `Server returned handshake error: …`（.NET 客户端同构）。
+ * 不判的话，一个只会说 MessagePack 的客户端会**以为握手成功**，随后在每一帧上报解析错误
+ * （症状是"连上了但一直掉"），而上游（ASP.NET `HubConnectionHandler`）是回 `{"error":…}` 并关闭连接。
+ * 版本只做「**≥ 1 的整数**」门槛，**不**照 `IsVersionSupported(v) => v == Version` 写死等值：
+ * 实测 `JsonHubProtocol.version` 在 `@microsoft/signalr@8.0.7` 里是 **2**（老客户端发 1）
+ * ⇒ 写死等值会把本仓测试用的这条客户端直接拒掉。
+ * ⚠️ 下面两句错误文案按 ASP.NET Core 的常规措辞（**无法从本仓代码核实** ⇒ 标 [推断]）；
+ * "回 error 帧并关闭"这一**行为**是核实的（客户端代码 + 上游 handler 的职责）。
+ */
+export function handshakeRejection(protocol: string | undefined, version: number | undefined): string | null {
+  if (protocol === undefined || protocol.toLowerCase() !== SUPPORTED_PROTOCOL) {
+    return `Requested protocol '${protocol ?? ''}' is not available.`;
+  }
+  if (version === undefined || !Number.isInteger(version) || version < 1) {
+    return `The server does not support version ${version ?? 0} of the '${protocol}' protocol.`;
+  }
+  return null;
+}
+
+/** 带 `error` 字段的握手响应（客户端据此判失败，见 `handshakeRejection`）。 */
+export function handshakeErrorResponse(reason: string): string {
+  return JSON.stringify({ error: reason }) + RECORD_SEPARATOR;
 }
 
 // 广播 Invocation：{"type":1,"target":"...","arguments":[...]}\x1e

@@ -13942,3 +13942,58 @@ the new version.`」与 **32 次**「`Durable Object connection closed because t
   （`expected 't' to be ''`）本身就是缺陷证据"坏值被原样透出"；还原后 `src/serialization.ts`
   逐字节相同（sha256 `54e291a0…`）。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 201. SignalR 握手校验：不支持的协议/版本必须显式拒（2026-10-03）
+
+本轮扫描对象 = **SignalR 边界**（握手、三传输的 200/204/挂起上限/队列上限、token TTL、静默回收、
+hibernate 后的连接集合）。结论：除握手校验外**逐项一致**（201.1），本轮补上握手这一处（201.2）。
+
+### 201.1 对照结果：一致项
+
+| 判据 | 上游 | 本实现 |
+|---|---|---|
+| 协议面 | `AddSignalR()` 只注册 JSON（`Web.cs:38`）；`MapHub<SyncClipboardHub>(HubPath)` | 只说 JSON ✓（三传输的 `transferFormats` 逐字对齐，见 `protocol.md` §6） |
+| 客户端方法 | `ISyncClipboardClient`：`RemoteProfileChanged` / `RemoteHistoryChanged` | 同（`invocationMessage(target, [payload])`） |
+| 传输协商 | WebSockets → SSE → LongPolling（ASP.NET 固定表与顺序） | 同（`AVAILABLE_TRANSPORTS`） |
+| 长轮询语义 | 首个 GET 立即返回；无消息则挂起；服务端关闭 → **204**（.NET 客户端把 204 当优雅收尾并停止轮询） | 同（`handleLongPoll`：`closed ⇒ 204`、挂起上限 25 s ≪ 客户端 100 s 超时） |
+| SSE 语义 | `Content-Type: text/event-stream` + `data:` 帧 | 同（另加首个注释帧促首字节、`x-accel-buffering: no`） |
+| 心跳 / 静默 | KeepAliveInterval 15 s、ClientTimeoutInterval 30 s（框架主动断开静默客户端） | 15 s alarm ping + 60 s 静默回收（> 客户端 ServerTimeout 的 2 倍，避免误杀空闲连接） |
+| 连接标识 | ASP.NET 的 `connectionId`（无 TTL 概念） | 自绘 `connectionToken`（TTL 10 min，恰覆盖 negotiate→连接窗口；v0 客户端的 `connectionId` 与它**同值** ⇒ 两种形态都能过 DO 鉴权） |
+| 鉴权 | hub 类级 `[Authorize]`（三传输都要求 Basic） | DO 内校验：签发的 token **或** Basic 凭据（等价物） |
+| 队列上限 | 无（连接状态在内存里，客户端不发就积压） | `MAX_QUEUED_MESSAGES`/`BYTES` ⇒ 超限按"服务端关闭"（204）收尾（CF 侧护栏，已登记） |
+| hibernate | 不适用（长驻进程） | WS 走 Hibernation API ⇒ 连接集合由平台代管，唤醒后 `getWebSockets()` 仍完整；SSE/LP 不可迁移 ⇒ 有这两类在线时全程计费（D42 已登记） |
+
+### 201.2 本轮补齐：握手校验（协议名 + 版本门槛）
+
+- **问题**：`{"protocol":"messagepack","version":1}` 此前一律回 `{}` ⇒ 客户端**以为握手成功**，
+  随后每一帧都按 MessagePack 解析 JSON 帧 ⇒ 解析报错/掉线（症状是"连上了但一直掉"）。
+  上游 ASP.NET 对不可用协议是回 `{"error":…}` 并关闭连接。
+- **可核实的依据**：客户端**只在收到 `error` 时才认握手失败** —— 实测本仓 dev 依赖
+  `@microsoft/signalr`（`dist/esm/HubConnection.js:521-527`）把 `responseMessage.error` 抛成
+  `Server returned handshake error: …`（.NET 客户端同构）。
+- **修法**：`src/durable/signalr.ts` 的 `parseClientMessage` 带出 `protocol`/`version`；新增
+  `handshakeRejection` / `handshakeErrorResponse`；DO 的 `replyToClientMessage` 改成判别式结果
+  （`none` / `send` / `close` / `reject`）：`reject` 在 WS 上回 `error` 帧后关连接，
+  在长轮询/SSE 上**先**把 `error` 帧投给该连接的接收通道（挂起的轮询会就地拿到），再按 204 收尾。
+- **版本刻意不写死等值**：实测 `JsonHubProtocol.version` 在 `@microsoft/signalr@8.0.7` 里是 **2**
+  （老客户端发 1），若照 ASP.NET 的 `IsVersionSupported(v) => v == Version` 写死，会把本仓测试用的
+  这条客户端直接拒掉 ⇒ 只做「≥ 1 的整数」门槛。两句错误文案标 `[推断]`（ASP.NET 常规措辞，
+  无法从本仓代码核实原文；"回 error 帧并关闭"这一**行为**是核实的）。
+- **钉子**（`test/signalr.test.ts` 新增一组，原始 WS、不用客户端库的判断）：① `messagepack` ⇒
+  必须回含 `error` 的帧且连接被关闭；② `version=0` ⇒ 同样拒；③ `version=2` ⇒ **接受**
+  （防"写死等值"这类过度收紧）。
+- **判别力**：把 `handshakeRejection` 暂时置为恒 `null` ⇒ ①②红（服务端回的正是 `{}\u001e` = 旧行为）、
+  ③仍绿；还原后 `sha256sum src/durable/signalr.ts` = `e7b7a814…`，与改动后**逐字节相同**。
+- 文档：`docs/protocol.md` §10 新增一行「SignalR 握手」。
+
+### 201.3 门禁与判别力（2026-10-03，本轮）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 = **0 错**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`）：
+  **22 个套件 / 488 个用例全过**、退出码 0（98.73 s；比 §200.3 多 3 条 = 本轮握手用例，
+  时长增加主要来自 signalr 套件那条 35 s 心跳用例）。
+- 判别力：见 201.2 末 —— `handshakeRejection` 置恒 `null` 时 ①② **红**（服务端回的正是 `{}\u001e`，
+  即旧行为）、③（version=2 必须接受）**仍绿**；第 ③ 条正是防"把版本写死等值"这类过度收紧的对照。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
