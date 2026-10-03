@@ -14,9 +14,11 @@ import { maxRequestBodyBytes } from '../requestLimits';
 import { contentTypeOf, fileHeaders } from '../contentTypes';
 import { stores } from '../stores';
 
+// 上游的 `InvalidFileName` 口径：只拒 `\` 与 `/`，其余交给文件系统（`SyncClipboardController.cs:24-27`）。
 function invalidFileName(name: string): boolean {
   return name.includes('\\') || name.includes('/');
 }
+
 
 export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
@@ -167,7 +169,19 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   app.put('/file/:fileName', async (c) => {
     const { storage } = stores(c);
     const fileName = c.req.param('fileName')!;
-    if (invalidFileName(fileName)) {
+    // 写入侧额外拒含 **NUL** 的名字（GET/DELETE 不收紧，保持上游口径）。
+    // 上游对它是**未处理异常**：`Path.Combine` + `FileStream` 遇到非法路径字符 ⇒ 抛 ⇒ 控制器兜底 **500**
+    // （`SyncClipboardController.cs:107-122` 只拦 `\` 与 `/`），而 NUL 这个名字在本实现里**确实能到达**
+    // handler —— 实测 `PUT /file/a%00b.txt` 到得了（URL 解析不会归一化它），落到 R2 上会成为一个
+    // 带 NUL 的键。判据与 zip 条目名的 `assertSafeEntryName` 同一套（那里拒 NUL 是因为文件系统会截断；
+    // 这里是为了不制造"上游拒、我们收"的新分叉），并给可诊断的 400 而不是 500。
+    // ⚠️ 不要把 `.`/`..` 也加进来（试过，2026-10-03 撤回）：**平台在 Worker 之前就把点段归一化了** ——
+    // 实测原始请求（`node:http`，不经 URL 库）`PUT /file/..`、`/file/.`、`/file/%2E%2E`、`/file/%2E`
+    // 全部落到别处（`/` 或 `/file/`）→ **404**，连 handler 都进不来 ⇒ 那种名字根本存不进 R2，
+    // 也就不存在"客户端 `PreciseDelete` 删不掉"的泄漏（见 `docs/protocol.md` §10 与 `progress.md` §199）。
+    // 可达性：官方客户端发的是 `EscapeDataString(Path.GetFileName(localPath))`（真实文件名），
+    // 而任何文件系统都不允许含 NUL 的文件 ⇒ 不可达，属"更严但不伤兼容"的入口校验。
+    if (invalidFileName(fileName) || fileName.includes('\0')) {
       return c.text('Bad Request', 400);
     }
     const body = c.req.raw.body ?? new ReadableStream<Uint8Array>({

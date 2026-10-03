@@ -3,6 +3,7 @@
 import { describe, expect, it, beforeAll } from 'vitest';
 import { createHash } from 'node:crypto';
 import { assertWritableTarget } from './support/target-guard';
+import http from 'node:http';
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787';
 
@@ -27,6 +28,30 @@ async function req(path: string, init: RequestInit = {}) {
     ...init,
     headers: { Authorization: AUTH, ...(init.headers ?? {}) },
   });
+}
+
+// **不经过 URL 解析**的原始请求（`node:http` 直接发 path 串）：`file/..` 与 `file/%2E%2E` 会被任何
+// 符合规范的 URL 库归一化成 `/`（WHATWG 与 .NET 的 `Uri` 一致），只有原始请求才能把这类路径送到服务端。
+// 这本身是"可达性"的证据：官方客户端（.NET Uri）连发都发不出去。
+function rawRequest(method: string, rawPath: string, body = ''): Promise<number> {
+  const { hostname, port } = new URL(BASE);
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const r = http.request(
+    {
+      hostname,
+      port: port || '80',
+      method,
+      path: rawPath,
+      headers: { Authorization: AUTH, 'content-length': String(Buffer.byteLength(body)) },
+    },
+    (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    },
+  );
+  r.on('error', reject);
+  r.end(body);
+  return promise;
 }
 
 // 手工组 multipart（.NET HttpClient 风格：无引号 name=；data 部分带 filename）
@@ -507,6 +532,97 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     expect(responses.length).toBeGreaterThanOrEqual(2); // 目录自身 + 至少一个对象
     // 每个 response 都应带 propstat/status（客户端按 propstat 取属性）
     expect(body.match(/<D:propstat>/g)?.length).toBe(responses.length);
+  });
+
+  it('F34 · 暂存区 PreciseDelete 闭环：PROPFIND 的 href 必须能被客户端解回原名、并逐个删掉', async () => {
+    // 官方客户端的清理链（`WebDavAdapter.CleanupTempFilesPreciselyAsync`）：
+    //   PROPFIND file/ (Depth 1) → `XmlDocument.LoadXml` → 每个 `<D:response>` 取 href → 剥掉
+    //   BaseAddress 前缀与请求路径（这里 base = '/'、路径 = 'file'）→ `Trim('/')` → `Delete(node.FullPath)`
+    //   ——**FullPath 是 href 去掉前导 '/' 的「未解码」相对路径**。
+    // 即：本实现编码出的 href 必须能被 .NET 的 `HttpUtility.UrlDecode` 原样解回文件名，且把解回的相对
+    // 路径再发回来时打到同一个键。此前只钉了「207 + body 里有 href」（F25），**闭环本身没有钉子** ——
+    // 而闭环失败的后果正是注释里写的"清理静默失效、暂存区无限累积"。
+    // ⚠️ `HttpUtility.UrlDecode` 会把**字面** `+` 解成空格 ⇒ 名字里的 '+' 必须被百分号编码
+    //（本实现用 `encodeURIComponent`，满足）。
+    const clientDecode = (s: string): string => decodeURIComponent(s.replace(/\+/g, ' '));
+    const names = [
+      `loop-${RUN}.bin`,
+      `中文 空格 100%.bin`,
+      `plus+plus-${RUN}.txt`,
+      `hash#and?q-${RUN}.txt`,
+      `amp&amp-${RUN}.txt`,
+    ];
+    for (const name of names) {
+      const up = await req(`/file/${encodeURIComponent(name)}`, { method: 'PUT', body: Buffer.from(`stage::${name}`) });
+      expect(up.status, `前置：PUT ${name}`).toBe(200);
+    }
+
+    const listForClient = async (): Promise<{ fullPath: string; name: string; isFolder: boolean }[]> => {
+      const res = await req('/file', { method: 'PROPFIND', headers: { Depth: '1' } });
+      expect(res.status).toBe(207);
+      const body = await res.text();
+      const out: { fullPath: string; name: string; isFolder: boolean }[] = [];
+      for (const m of body.matchAll(/<D:response>([\s\S]*?)<\/D:response>/g)) {
+        const block = m[1]!;
+        const href = /<D:href>([^<]*)<\/D:href>/.exec(block)?.[1] ?? '';
+        // 客户端（`WebDavBase.GetFolderSubList`）的两条规则，逐字移植：
+        //   ① `relativePath` = href 剥掉 BaseAddress 路径前缀（这里 Prefix = '/'）后 Trim('/')
+        //      ⇒ **保留 `file/` 段**；它成为 `WebDavNode.FullPath`，`Delete(node.FullPath)` 用的就是它。
+        //   ② `subName` = relativePath 再切掉请求路径（'file'）；空 subName 的条目（目录自身）被跳过。
+        const relativePath = href.replace(/^\//, '').replace(/\/+$/, '');
+        const subName = (relativePath.startsWith('file') ? relativePath.slice('file'.length) : relativePath).replace(
+          /^\/+|\/+$/g,
+          '',
+        );
+        if (subName === '') continue;
+        out.push({ fullPath: relativePath, name: clientDecode(subName), isFolder: block.includes('<D:collection/>') });
+      }
+      return out;
+    };
+
+    const listed = await listForClient();
+    // ⚠️ 不断言"列表只包含这 5 个"：`file/` 是**共享**暂存区，别的套件与历史运行会留下对象
+    //（本文件的 F25 就留了一个 `propfind-*.bin` 不删 —— 那正是"客户端不清理就堆积"的真实形态）。
+    // 本用例只对**自己上传的名字**负责，故断言"包含我的 5 个"+"删完后我的 5 个都不在"。
+    expect(listed.map((e) => e.name), 'PROPFIND 必须列出刚上传的 5 个名字，且逐字相同（编码可往返）').toEqual(
+      expect.arrayContaining([...names]),
+    );
+    expect(listed.filter((e) => names.includes(e.name)).some((e) => e.isFolder), '暂存对象不该被标成集合').toBe(false);
+
+    for (const entry of listed.filter((e) => names.includes(e.name))) {
+      // 两次删除：第 2 次钉幂等（客户端在整目录 DELETE 失败后会逐条删，重复清理是常态）
+      for (const round of [1, 2]) {
+        const del = await req(`/${entry.fullPath}`, { method: 'DELETE' });
+        expect(del.status, `DELETE ${entry.fullPath}（第 ${round} 次）`).toBe(200);
+      }
+    }
+    const after = await listForClient();
+    expect(after.map((e) => e.name).filter((n) => names.includes(n)), '清理后这 5 个不该再被列出').toEqual([]);
+  });
+
+  it('F35 · `/file/{name}` 的入口校验：NUL 与编码斜杠 → 400；`.`/`..` 由**平台**归一化 ⇒ 到不了 handler', async () => {
+    // ① 点段：**平台（workerd / 边缘的 URL 解析）在 Worker 之前就归一化** —— 用原始请求（`node:http`，
+    //    不经 URL 库）实测：`/file/..` 与 `/file/%2E%2E` 变成 `/`、`/file/.` 与 `/file/%2E` 变成 `/file/`
+    //    ⇒ Hono 兜底 **404**，连 handler 都进不来 ⇒ 这类名字**根本存不进 R2**。
+    //    ∠ 推论：客户端 `PreciseDelete` 删不掉 `file/..` 的那种泄漏**不可能发生**（曾按该假设在写入侧
+    //    加过 `.`/`..` 拒绝，实测后撤回 —— 见 `progress.md` §199.2）。
+    for (const p of ['/file/..', '/file/%2E%2E']) {
+      expect(new URL(p, 'http://x/').pathname, `${p} 的归一化目标`).toBe('/');
+      expect(await rawRequest('PUT', p, 'x'), `${p} 应被平台归一化后落到 404`).toBe(404);
+    }
+    for (const p of ['/file/.', '/file/%2E']) {
+      expect(new URL(p, 'http://x/').pathname, `${p} 的归一化目标`).toBe('/file/');
+      expect(await rawRequest('PUT', p, 'x'), `${p} 应被平台归一化后落到 404`).toBe(404);
+    }
+    // ② 这两个**不**被 URL 归一化 ⇒ 真能到达 handler，出口必须拦（上游对 NUL 是未处理异常 500）
+    expect((await req(`/file/a%00b-${RUN}.txt`, { method: 'PUT', body: 'x' })).status, 'NUL → 400').toBe(400);
+    expect((await req(`/file/a%2Fb-${RUN}.txt`, { method: 'PUT', body: 'x' })).status, '编码斜杠（路由解码成 /）→ 400').toBe(400);
+    // 阳性对照：点开头的隐藏文件、名字中间带点 —— 照旧收下（判据不能写成"含点就拒"）
+    for (const ok of [`.hidden-${RUN}.txt`, `a..b-${RUN}.txt`]) {
+      const put = await req(`/file/${encodeURIComponent(ok)}`, { method: 'PUT', body: 'x' });
+      expect(put.status, `${ok} 应被接受`).toBe(200);
+      await req(`/file/${encodeURIComponent(ok)}`, { method: 'DELETE' }); // 收尾
+    }
   });
 
   it('F27 · 请求体必须是 JSON 对象（上游 [FromBody] 反序列化失败 → 400）', async () => {

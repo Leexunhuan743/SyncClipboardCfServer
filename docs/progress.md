@@ -13816,3 +13816,69 @@ the new version.`」与 **32 次**「`Durable Object connection closed because t
   还原两行后 `sha256sum src/cleanup.ts` = `85c011f3…`，与破坏前**逐字节相同**（`src/cleanup.ts` 因此
   不在本轮的改动清单里）。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 199. 暂存区 `/file/*` 与 WebDAV `PreciseDelete` 链路：闭环钉子 + 写入侧名字加固（2026-10-03）
+
+本轮扫描对象 = **`/file/*` 五条路由 + 客户端 `PreciseDelete` 清理链**（上游 `SyncClipboardController.cs:24-122`
+与客户端 `WebDavAdapter.CleanupTempFilesPreciselyAsync` / `WebDavBase.GetFolderSubList`/`Delete` 对读）。
+
+### 199.1 对照结果
+
+- **路由与语义一致**：`PROPFIND /`（本实现 207 multistatus，上游 200 空体 —— 已登记，客户端两处按 2xx 判定）、
+  `PROPFIND|MKCOL /file`（幂等，客户端 `InitializeAsync` 的 `CreateDirectory` 只判 2xx）、
+  `DELETE /file`（`SafeDeleteFolder` 吞异常 → 200 ↔ 本实现 `clearTempFolder` 同样吞）、
+  `GET|HEAD /file/{name}`（**只按历史查找、不读暂存区**；逐个候选回退到第一个真实存在的对象）、
+  `PUT /file/{name}`（覆盖写、不校验内容）、`invalidFileName` 口径（拒 `\`/`/`）。
+- **消费面契约（客户端代码逐条核对）**：`GetFile` 走 `EnsureSuccessStatusCode` + 读 `Content.Headers.ContentLength`
+  （本实现 `fileHeaders` 显式给 `content-length`）；`Delete`/`DirectoryDelete` 都 `EnsureSuccessStatusCode`
+  （故 `DELETE /file/{name}` 必须 2xx ⇒ 本实现恒 200 幂等，已登记）；`PutFile` 用可寻址流 ⇒ Content-Length 存在
+  ⇒ 本实现 F9 的 content-length 预检对官方客户端**总是生效**（超 48 MiB 早拦，不用等流完）。
+- **不构成的差异**：上游无 `GET /file/`（目录）语义（本实现 404 ✓ 已由既有用例钉住）；`Range` 两边都不支持
+  （上游 `File(bytes, …)` 默认 `enableRangeProcessing: false`）；暂存对象两边都**没有 TTL**（靠客户端
+  `DeletePreviousFilesOnPush` 的清理，本实现多一个 `DELETE /file/{name}` 让 `PreciseDelete` 真正生效 —— 已登记）。
+
+### 199.2 本轮修复：补上闭环钉子；写入侧只加固 NUL（附一次**自我订正**）
+
+- **闭环钉子（F34）**：`test/fix-regressions.test.ts` 新增 —— 上传 5 个"编码敏感"的名字
+  （普通 / 中文+空格+`%` / 字面 `+` / `#` 与 `?` / `&`），然后**逐字移植客户端 `WebDavBase.GetFolderSubList`
+  的两条规则**解析 `PROPFIND /file` 的 href：① `relativePath` = href 剥掉 BaseAddress 路径前缀（'/'）后
+  `Trim('/')` ⇒ **保留 `file/` 段**（它才是 `WebDavNode.FullPath`，`Delete(node.FullPath)` 用的就是它）；
+  ② `subName` = relativePath 再切掉请求路径（'file'），空 subName（目录自身）跳过；解码语义 = .NET
+  `HttpUtility.UrlDecode`（`decodeURIComponent(s.replace(/\+/g, ' '))` —— 注意它把**字面** `+` 解成空格，
+  故名字里的 `+` 必须被百分号编码，本实现用 `encodeURIComponent` 满足）。
+  断言：解回的名字与上传的**逐字相同** → 逐个 `DELETE`（连做两次，钉幂等）→ 这 5 个不再被列出。
+  此前只有 F25「207 + body 里有 href」，**闭环本身没有钉子**，而闭环失败的后果正是"暂存区无限累积"。
+  ⚠️ 断言刻意是**包含**而非等集：`file/` 是共享暂存区，F25 自己就留下一个 `propfind-*.bin` 不删 ——
+  那正是"客户端不清理就堆积"的真实形态。
+- **写入侧加固（只留 NUL）**：`src/routes/webdav.ts` 的 PUT 分支额外拒含 **NUL** 的名字 → **400**
+  （上游对它是未处理异常 → 500）。实测 `PUT /file/a%00b.txt` **能到达 handler**（`%00` 不被 URL 归一化），
+  落到 R2 上会成为一个带 NUL 的键 ⇒ 拒掉它，判据与 zip 条目名的 `assertSafeEntryName` 同一套。
+  `GET`/`DELETE` 不跟着收紧（保持上游口径，收紧只会凭空造出上游没有的 400）。
+- **自我订正（同一轮内，实测推翻假设）**：最初还按"`. `/`..` 会被收下、而客户端永远删不掉它（相对 URI 被
+  归一化成 `/`）"的判断，在写入侧一并拒了 `.`/`..`。用 `node:http` 发**原始请求**（不经 URL 库）打到本地
+  dev server 实测：`PUT /file/..`、`/file/.`、`/file/%2E%2E`、`/file/%2E` **全部 404** —— 平台
+  （workerd / 边缘的 URL 解析）在 Worker **之前**就把点段归一化掉了，`/file/..`→`/`、`/file/.`→`/file/`
+  ⇒ 它们**连 handler 都进不来**，那种键根本存不进 R2。⇒ 假设不成立、那段是**不可达的死防御**，已撤回
+  （仅保留 NUL 一侧）。留下的 F35 用例把**实测到的**平台行为钉住：点段 → 404、`%00`/`%2F` → 400、
+  阳性对照 `.hidden-x.txt`/`a..b-x.txt` → 200（判据不能写成"含点就拒"）。
+  教训：**"某个输入能到达 handler"本身要实测**，不能从 HTTP 语义推——平台可能在代码之前改写请求。
+  测试为此新增 `rawRequest()` 助手（`node:http`，专供"URL 层到不了"的场景）。
+- `docs/protocol.md` §10 新增一行登记（含两侧可达性：上游 Kestrel 不归一化路径 ⇒ `.`/`..` 在上游可达
+  （raw 客户端能造出 500），在本实现不可达）。
+
+### 199.3 门禁与判别力（2026-10-03，本轮）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 = **0 错**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`）：
+  **22 个套件 / 483 个用例全过**、退出码 0（76.12 s；比 §198.3 多 2 条 = 本轮 F34/F35）。
+  套件数与资源数不变 ⇒ 现状文档计数无需改（`test/docs.test.ts` 绿）。
+- 本轮的**判别力证据不是"跑绿"，而是三次真实的红**（每次都对应代码里的事实，而不是测试写得松）：
+  ① F34 首版断言"列表恰好等于我上传的 5 个" ⇒ 实测列出 **6** 个（本文件 F25 早先留下的 `propfind-*.bin`
+     不删）⇒ 改成"包含我的 + 删完我的都不在"，并把"`file/` 是共享暂存区、客户端不清理就堆积"写进注释；
+  ② F34 移植的客户端规则首版把 `file/` 段一起剥掉了 ⇒ `DELETE /amp%26…` 得到 **404**
+     （`Delete(node.FullPath)` 用的是**保留 `file/`** 的相对路径）⇒ 修正为"relativePath 保留 `file/`、
+     subName 另算"；
+  ③ F35 首版断言 `PUT /file/..` → 400 ⇒ 实测 **404** ⇒ 推翻"能到 handler"的前提、撤回死防御（见 199.2）。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
