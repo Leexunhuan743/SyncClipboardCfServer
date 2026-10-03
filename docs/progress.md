@@ -13997,3 +13997,50 @@ hibernate 后的连接集合）。结论：除握手校验外**逐项一致**（
 - 判别力：见 201.2 末 —— `handshakeRejection` 置恒 `null` 时 ①② **红**（服务端回的正是 `{}\u001e`，
   即旧行为）、③（version=2 必须接受）**仍绿**；第 ③ 条正是防"把版本写死等值"这类过度收紧的对照。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 202. PATCH/POST 的版本与时间戳判定：真值表 + 闭区间边界 + 409 payload 形状（2026-10-03）
+
+本轮扫描对象 = **`PATCH /api/history/{type}/{hash}` 与 `POST /api/history` 的 `ShouldUpdate`/Version 语义、
+409 payload、乐观锁、批量端点**（上游 `HistoryHelper.cs` + `HistoryService.Update` /
+`UpdateExistingRecordDto` / `UpdateEntityFields` 对读本实现 `db.shouldUpdate` / `updateHistory` / `insert`
++ `historyOps`）。
+
+### 202.1 对照结果：一致项（含两处"反直觉但正确"的语义）
+
+| 判据 | 上游 | 本实现 |
+|---|---|---|
+| 判定式 | `gap = \|new − old\|`；`gap <= 5min ⇒ newVersion >= oldVersion`；否则 `newLastModified >= oldLastModified`（`HistoryHelper.cs:5-28`） | 逐字同构（`src/db.ts` 的 `shouldUpdate`） |
+| 两个反直觉分支 | ① 窗口内**只看版本**（时间戳再新也不作数）；② 窗口外**只看时间戳**（版本再高也不作数） | 同 |
+| 缺省填充 | `dto.Version ??= existing.Version + 1`；`dto.LastModified ??= UtcNow` | 版本同；时间戳改 `max(now, 现有+1)`（**本轮登记**，见 `protocol.md` §10 新行） |
+| 冲突（409） | `!ShouldUpdate ⇒ (false, FromEntity(existing))` ⇒ 409 + `ToUpdateDto`（六键 starred/pinned/isDelete/version/lastModified/lastAccessed，**服务器当前值**） | 同（键序与 camelCase 逐字对齐；客户端 `RemoteHistoryConflictException(serverDto)` 依赖它回写本地） |
+| 已删记录的恢复守卫 | `IsDelete=false && IsDeleted && TransferDataFile 非空 ⇒ (null,null)` ⇒ 404 | 已按 ADR D29 移除（数据保留 ⇒ 恢复应当成功，已登记） |
+| POST 既有记录 | `ShouldUpdateExistingRecord = existing.IsDeleted \|\| ShouldUpdate(…)`；`incoming.Version = max(incoming.Version, existing.Version+1)`；`UpdateEntityFields` 只拷 CreateTime/LastAccessed/LastModified/Stared/Pinned/Version/IsDeleted（**不**拷 Text/Size/TransferDataFile/Hash） | 同（`profile.addRecordDto` 的既有分支 + `db.insert` 的冲突合并） |
+| 乐观并发 | 无（`SaveChangesAsync` 无条件覆盖） | `updateEntityIfVersion`（`WHERE ID=? AND Version=?`）+ `(UserId,Type,Hash)` 唯一索引 ⇒ 同一个 409 出口（已登记为**有意义偏离**） |
+| 批量端点 | 无对应物（上游只有单条 PATCH） | `/ui/api/history/batch-update`（≤100 条/次）逐条走**同一** `applyHistoryUpdate`、广播合并成一次（D33）、部分失败按"已生效/未生效"报（D27）—— 本站界面自己的面，不动协议语义 |
+
+### 202.2 本轮补的钉子
+
+- `test/fixes.test.ts`：`shouldUpdate` 的**真值表**（9 例）—— 四象限 + **闭区间边界**（`gap == 5min` 仍走版本
+  分支；`+1ms` 就换到时间戳分支）+ 绝对值方向 + "时间戳新但仍在窗口内、版本更低 ⇒ 仍冲突"这条反直觉格。
+  此前只钉了两格（`dto-validation` 的窗口内版本更低、`protocol` 的窗口外时间戳倒退）。
+- `test/dto-validation.test.ts`：**409 payload 的契约** —— 窗口内版本相等 ⇒ 200；版本更低 ⇒ 409 且 body 是
+  **服务器当前值**（六键齐备、`starred` 是服务器的 `true` 而非请求里的 `false`）、冲突请求不留任何改动。
+  此前只有 `protocol.test.ts` 的 `toHaveProperty('starred')`，键集与取值都没钉。
+- `docs/protocol.md` §10 新增一行登记 `lastModified` 缺省值的偏离（`max(now, 现有+1)` vs `UtcNow`，
+  含"为什么必须单调"的推导与可达性：官方客户端恒自带六字段 ⇒ 协议面不可达）。
+
+### 202.3 门禁与判别力（2026-10-03，本轮）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 = **0 错**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`）：
+  **22 个套件 / 491 个用例全过**、退出码 0（90.80 s；比 §201.3 多 3 条 = 本轮真值表 2 条 + 409 payload 1 条）。
+  套件数与资源数不变 ⇒ 现状文档计数无需改（`test/docs.test.ts` 绿）。
+- **判别力（两处各打一处"差一/换源"的破坏，都当场红）**：
+  ① `shouldUpdate` 的 `gap <= TH` 改成 `gap < TH` ⇒ 真值表里「时间戳新 5 分钟但仍在窗口内 ⇒ 仍由版本决定（冲突）」
+     翻成 `expected true to be false`（**恰好边界那一格就是为这类差一准备的**）；
+  ② `updateDtoToJson` 删掉 `isDelete` 键 ⇒ 409 payload 的键集断言红（`expected [ Array(5) ] to deeply equal [ …(6) ]`）。
+  还原后 `sha256sum src/db.ts` = `5fb13674…`、`src/serialization.ts` = `54e291a0…`，两者与破坏前**逐字节相同**
+  （所以它们都不在本轮的改动清单里）。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。

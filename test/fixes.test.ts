@@ -11,7 +11,7 @@ import { parseMultipart } from '../src/multipart';
 import { classifyStoredProfile, parseProfileDto, parseHistoryRecordUpdateDto, profileDtoToJson } from '../src/serialization';
 import { parseGroupZip, sha256Hex, textProfileHash } from '../src/hash';
 import { addRecordDto, entityToProfileDto, putSyncProfile, ProfileDataInvalidError, IncomingRecord } from '../src/profile';
-import { HistoryDb } from '../src/db';
+import { HistoryDb, shouldUpdate } from '../src/db';
 import { ProfileType } from '../src/types';
 import type { HistoryRecordEntity, ProfileDto } from '../src/types';
 import type { R2Storage } from '../src/storage';
@@ -1269,5 +1269,32 @@ describe('D29 · POST /api/history 的软删同样保留数据（三条写路径
       bucket.objects.has(`history/File_POST1/${name}`),
       '数据必须留下 —— 修复前这里被 DeleteProfileDataIfNeed 等价逻辑删掉，回收站里那条就永远没有数据了',
     ).toBe(true);
+  });
+});
+
+// ===== 版本/时间戳判定（上游 `HistoryHelper.ShouldUpdate`）的真值表 + 阈值**闭区间**边界 =====
+// 为什么值得一组：`PATCH` 的 409/200 全由它决定，而既有用例只覆盖了"窗口内版本更低 ⇒ 409"
+// （`dto-validation`）与"窗口外时间戳倒退 ⇒ 409"（`protocol`）两格，**四象限与边界都没钉**。
+// 语义的两半都很反直觉，且正是客户端"删不掉/改不动"那类事故的来源：
+//   · 窗口内（gap ≤ 5min）**只看版本**，时间戳再新也不作数（版本低就是冲突）；
+//   · 窗口外（gap > 5min）**只看时间戳**，版本再高也不作数。
+describe('shouldUpdate：四象限与 5 分钟阈值的闭区间边界（上游 HistoryHelper.cs:5-28）', () => {
+  const T = 1_700_000_000_000;
+  const MIN = 60_000;
+  const TH = 5 * MIN;
+
+  it('窗口内只看版本（时间戳无关）；恰好在 5 分钟上仍走版本分支', () => {
+    expect(shouldUpdate(5, 5, T, T), '版本相等 ⇒ 更新').toBe(true);
+    expect(shouldUpdate(5, 6, T, T), '版本更高 ⇒ 更新').toBe(true);
+    expect(shouldUpdate(5, 4, T, T), '版本更低 ⇒ 冲突').toBe(false);
+    expect(shouldUpdate(5, 4, T, T + TH), '★ 时间戳新 5 分钟，但仍在窗口内 ⇒ 仍由版本决定（冲突）').toBe(false);
+    expect(shouldUpdate(5, 4, T, T - 1 * MIN), '取绝对值：早 1 分钟同样在窗口内 ⇒ 仍由版本决定').toBe(false);
+    expect(shouldUpdate(5, 5, T, T + TH), '★ 恰好 5 分钟（闭区间，gap <= th）⇒ 版本分支').toBe(true);
+  });
+
+  it('窗口外只看时间戳（版本无关）；越过阈值 1ms 就换分支', () => {
+    expect(shouldUpdate(5, 4, T, T + TH + 1), '★ 多 1ms ⇒ 改由时间戳决定（时间戳前进 ⇒ 更新）').toBe(true);
+    expect(shouldUpdate(5, 999, T, T - TH - 1), '时间戳倒退 ⇒ 冲突（版本再高也不作数）').toBe(false);
+    expect(shouldUpdate(5, 4, T, T + 20 * MIN), '时间戳前进 ⇒ 更新').toBe(true);
   });
 });

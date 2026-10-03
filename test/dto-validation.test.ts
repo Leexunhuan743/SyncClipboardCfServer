@@ -658,3 +658,42 @@ describe('GET /SyncClipboard.json：存储值字段类型不符 ⇒ 降级为空
   });
 });
 
+// ============================================================ PATCH 的 409 payload（2026-10-03）
+// 官方客户端**依赖**这个 payload：`OfficialAdapter.UpdateHistoryAsync` 收到 409 会把 body 反序列化成
+// `HistoryRecordUpdateDto` 并抛 `RemoteHistoryConflictException(serverDto)`，`HistorySyncer.SyncOneAsync`
+// 据此把服务器值回写本地（并发冲突收敛）。故"六个键齐备 + 值是**服务器当前值**"是契约，不是实现细节。
+// 既有用例只断言了 `toHaveProperty('starred')`（`protocol.test.ts`），键集与取值都没钉。
+describe('PATCH 冲突：409 payload 是服务器当前值（HistoryRecordUpdateDto 六键）', () => {
+  it('窗口内版本相等 ⇒ 200；版本更低 ⇒ 409 + 六键 payload（且不改动记录）', async () => {
+    const h = makeHarness();
+    const hash = await createTextRecord(h, 'conflict-payload');
+    const before = await readVersion(h, hash);
+
+    // ① 版本**相等**：窗口内 `newVersion >= oldVersion` 成立 ⇒ 更新成功
+    const ok = await send(h.history, h.env, `/api/history/Text/${hash}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ starred: true, version: before.version }),
+    });
+    expect(ok.status, '窗口内版本相等必须 200').toBe(200);
+
+    // ② 版本**更低**（时间戳同窗）⇒ 409，且 payload 是服务器当前值
+    const conflict = await send(h.history, h.env, `/api/history/Text/${hash}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ starred: false, version: before.version - 1 }),
+    });
+    expect(conflict.status, '窗口内版本更低必须 409').toBe(409);
+    const payload = (await conflict.json()) as Record<string, unknown>;
+    expect(Object.keys(payload).sort(), 'payload 必须是 HistoryRecordUpdateDto 的六个键').toEqual(
+      ['isDelete', 'lastAccessed', 'lastModified', 'pinned', 'starred', 'version'].sort(),
+    );
+    expect(payload.starred, '值是**服务器的** true，而不是请求里的 false').toBe(true);
+    expect(payload.version, 'payload 的版本是服务器当前版本').toBe(before.version);
+    expect(payload.isDelete).toBe(false);
+
+    // ③ 冲突请求不得留下任何改动
+    expect(await readVersion(h, hash)).toMatchObject({ starred: true, version: before.version });
+  });
+});
+
