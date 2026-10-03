@@ -109,8 +109,12 @@ const EMPTY_SHA256 = 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B78
 // 从 zip 字节解析条目集合并计算哈希（服务端校验路径，等价"解压后遍历文件系统"）
 // - 目录条目：显式（name 以 '/' 结尾）+ 从文件路径推导的隐式父目录（C# 解压会创建目录并计入）
 // - 防穿越：条目名不得解析到解压根之外（上游 ExtractArchiveEntriesAsync 校验）
-// - 同名重复条目：上游解压是「首次写入优先」（FileMode.CreateNew + File.Exists 跳过），
-//   而 fflate 默认「后者覆盖」。这里显式跳过同名后续条目，与上游保持同一语义（F12）。
+// - 同名重复条目：上游**在这一档是失败**（不是"首次写入优先"）—— `ExtractArchiveEntriesAsync` 用
+//   `FileMode.CreateNew` 落盘（`GroupProfile.cs:662`），第二条同名条目抛 `IOException`，而
+//   `HistoryService.SaveTransferDataAsync` 只捕 `InvalidDataException`/`InvalidOperationException`
+//   （`:457-466`）⇒ 冒到控制器兜底 `catch (Exception)`（`HistoryController.cs:194-197`）⇒ **500**。
+//   fflate 默认是「后者覆盖」，本实现显式跳过同名后续条目（= 首见优先）⇒ 这类 zip 会**被收下**，
+//   属**有意偏离（更宽容）**，登记在 `docs/protocol.md` §10。
 // - 解压上限（F9）：改用流式 Unzip（旧实现 unzipSync 会按声明尺寸一次性分配并全量解压），
 //   每收到一块解压结果就累计并检查上限，超限抛出 InvalidGroupDataError。
 // - 解压预算**随请求体收缩**（2026-09-15）：zip 的压缩体在解压期间一直存活（`contents` 与
@@ -123,6 +127,17 @@ export function groupZipDecompressionCap(zipBytes: Uint8Array): number {
   // 下限 1 MiB：理论上不会走到（请求体可调到的**上**上限 64 MiB < 预算 96 MiB ⇒ 余量恒 ≥ 32 MiB），
   // 留下它只为防止将来有人把上限调到预算之上时出现"预算为 0 ⇒ 任何 zip 都报错"这种难查的形态。
   return Math.max(1 * 1024 * 1024, Math.min(GROUP_ZIP_MAX_TOTAL_BYTES, remaining / 2));
+}
+
+// 条目名的**文件系统语义**归一：连续斜杠折叠为一个。
+// 为什么必须有：上游算哈希走的是「解压落盘 → 枚举目录树」（`GroupProfile.cs:631-674` → `:167-181`），
+// 而 `Path.GetFullPath` 与内核都把 `a//b.txt` 当作 `a/b.txt` ⇒ 树里的条目名**永远是单斜杠**。
+// 不折叠时，含 `a//b.txt` 的 zip 两侧都会**接受**、却对同一个文件夹算出不同 hash 与不同 `filePaths`
+// （2026-10-03 对齐；此前既未登记也不等价 —— 见 `docs/progress.md` §197）。
+// ⚠️ **`topLevel` 不归一**：上游那一步用的是原始条目名（`GroupProfile.cs:666-670` 的
+// `entry.FullName.TrimEnd('/')`），本项目 `test/hash.test.ts` 的 `a//` 用例钉的正是这个口径。
+function normalizeEntryName(name: string): string {
+  return name.replace(/\/{2,}/g, '/');
 }
 
 export async function parseGroupZip(
@@ -146,7 +161,8 @@ export async function parseGroupZip(
       throw new InvalidGroupDataError(`Transfer data contains more than ${GROUP_ZIP_MAX_ENTRIES} entries`);
     }
     if (seenNames.has(file.name)) {
-      // 同名重复条目：保留首个（上游首次写入优先）。不调用 start() 即不解压该条目。
+      // 同名重复条目：保留首个，不调用 start()（= 不解压该条目）。上游在这一档是 **500**
+      // （见上方 parseGroupZip 的注释与 `docs/protocol.md` §10）；本实现选择收下 —— 有意偏离（更宽容）。
       return;
     }
     seenNames.add(file.name);
@@ -212,24 +228,33 @@ export async function parseGroupZip(
 
   const fileEntries: GroupEntrySpec[] = [];
   const dirSet = new Set<string>();
+  // 归一后的条目名去重集（同一路径在文件系统上只能有一个条目 —— 见 normalizeEntryName）
+  const seenEntryNames = new Set<string>();
 
   for (const rawName of names) {
-    const isDirEntry = rawName.endsWith('/');
+    // ① 先按**文件系统语义**折叠连续斜杠（见 normalizeEntryName）；
+    // ② 再按归一后的名字**首次优先**去重：`a/b.txt` 与 `a//b.txt` 在文件系统上是同一个文件 ⇒ 树里只有一条。
+    const name = normalizeEntryName(rawName);
+    if (seenEntryNames.has(name)) continue;
+    seenEntryNames.add(name);
+
+    const isDirEntry = name.endsWith('/');
     if (isDirEntry) {
-      assertSafeEntryName(rawName);
-      dirSet.add(rawName);
+      assertSafeEntryName(name);
+      dirSet.add(name);
       continue;
     }
     // 文件条目：校验路径合法（无 .. 段、不以 / 开头、非绝对路径）
-    assertSafeEntryName(rawName);
+    assertSafeEntryName(name);
+    // 内容按**原始**条目名索引（解压回调以原始名入表；同名去重也在那一侧按原始名做过一次）
     const meta = entryHashes.get(rawName);
     if (!meta) {
       // 条目数据流未正常结束（截断/畸形 zip）——不接受半个条目
       throw new InvalidGroupDataError(`Transfer data is invalid with entry: ${rawName}`);
     }
-    fileEntries.push({ name: rawName, isDir: false, contentHash: meta.hash, contentLength: meta.length });
+    fileEntries.push({ name, isDir: false, contentHash: meta.hash, contentLength: meta.length });
     // 推导隐式父目录（逐级；C# 解压会创建目录并在哈希重算时计入）
-    const segments = rawName.split('/');
+    const segments = name.split('/');
     segments.pop(); // 去掉文件名
     let acc = '';
     for (const seg of segments) {

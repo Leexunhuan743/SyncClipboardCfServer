@@ -13704,3 +13704,62 @@ the new version.`」与 **32 次**「`Durable Object connection closed because t
   （`test/docs.test.ts` 绿）。
 - **未跑**：`test/manual/probe*.mjs`。DoD 第 5 条只对"改前端"生效，本轮没碰 `public/` 下任何文件 ⇒ 不适用
   （前端逻辑的既有覆盖 `test/ui-logic.test.ts` / `ui-contract.test.ts` 已随全量套件通过）。
+
+## 197. Group 上传：条目名连续斜杠归一（对齐上游的「解压后走树」）+ 两处「上游行为」表述订正（2026-10-03）
+
+本轮是「单功能扫描 → 立即修复」的一轮：扫描对象 = **Group（文件夹）上传的 zip 解析与哈希一致性**
+（上游 `GroupProfile.cs` 全链 × `src/hash.ts`）。扫描结论：核心算法（条目集合、哈希行格式、排序键、
+`totalSize`、顶层判定、路径穿越、0 字节、截断判定）**逐条一致**；另发现 1 处**漏对齐**（本节 197.1）
+与 3 处**表述与上游代码不符**（197.2），后者结论不变、依据与推论改对。
+
+### 197.1 条目名连续斜杠归一（`//` → `/`）
+
+- **问题**：上游算哈希走「解压落盘 → 枚举目录树」（`GroupProfile.cs:631-674` → `:167-181`），
+  而 `Path.GetFullPath`/内核把 `a//b.txt` 视作 `a/b.txt` ⇒ 树里的条目名**永远单斜杠**；
+  本实现此前按 zip 里的**原始**名字入哈希 ⇒ 含 `a//b.txt` 的 zip **两侧都接受、却算出不同 hash 与不同
+  `filePaths`**。这类「都接受但不等价」不能用「合理偏移」解释（它不是平台取舍，是漏了对齐），
+  且它只在"第三方工具造的 zip"上出现（官方客户端写入侧恒单斜杠：`GroupProfile.cs:503/512`）。
+- **修法**：新增 `normalizeEntryName()`（`\/{2,}/ → '/'`）；构造条目集合前**先归一、再按归一后的名字
+  首见优先去重**（`a/b.txt` 与 `a//b.txt` 在文件系统上只能是同一个文件）。
+  `topLevel`/`text` **不**归一 —— 上游那一步用的是**原始**条目名（`GroupProfile.cs:666-670` 的
+  `entry.FullName.TrimEnd('/')`），`test/hash.test.ts` 的 `a//` 用例钉的正是它。
+- 回归钉子（`test/hash.test.ts` 的 `parseGroupZip` 一组两条）：① `a//b.txt + a//` 与 `a/b.txt + a/` 的
+  **条目集 / totalSize / hash 必须全等**（并断言 `topLevel` 仍为 `['a']`）；② `a/b.txt` 与 `a//b.txt` 并存
+  ⇒ 只留一条、内容取**首个**（= 上游"若能落盘"时树里的那一份）。
+- 反向验证：把归一与「归一后去重」暂时置为不生效 ⇒ 两条新用例红（详见 197.3 的读数）；
+  还原后逐字节相同（sha256 比对）。
+
+### 197.2 三处「上游行为」表述订正（结论不变、依据改对）
+
+- **事实**：上游对**重复文件条目**是**失败**，不是「首次落盘优先」—— `ExtractArchiveEntriesAsync` 用裸的
+  `FileMode.CreateNew` 落盘（`GroupProfile.cs:662`），第二条同名条目抛 `IOException`，而
+  `HistoryService.SaveTransferDataAsync` 只捕 `InvalidDataException`/`InvalidOperationException`
+  （`:457-466`）⇒ 冒到 `HistoryController.Put` 的兜底 `catch (Exception)`（`:194-197`）⇒ **500**
+  （`The file '…' already exists.`）。上游基线里**没有** `File.Exists` 跳过那一步。
+- 订正三处：
+  · `src/hash.ts` 的 `parseGroupZip` 文档注释与解压回调内注释：原写「上游解压是「首次写入优先」
+    （FileMode.CreateNew + File.Exists 跳过）…与上游保持同一语义」→ 改为「上游在这一档是 500；本实现
+    收下（首见优先），属**有意偏离（更宽容）**」。
+  · `docs/protocol.md` §10 的「Group zip 的重复条目」行：原写「上游内容首次落盘优先、条目列表不去重
+    ⇒ 计入 hash/size 两次、两侧必然不同」并引用 `:644-648`（那几行实际是路径守卫）—— 上游在这一档
+    **根本不产出 hash**，故「两侧 hash 不同」不成立；改为上述真实链路 + 「本实现更宽容（且与上游"若能落盘"
+    的那一份等价）」。同表「第三方畸形 zip」行补上本轮对齐的**连续斜杠**、**空名字条目**（可构造，
+    fflate 实测原样保留 ⇒ 本实现收下、上游 500）、**非 UTF-8 标志名字**（本实现 latin1 回退 vs 上游强制
+    UTF-8 ⇒ 该一档 hash 不同，不修）三项形态与「官方客户端不可达」判据。
+  · `README.md` 的「已知限制 → 第三方工具造的畸形压缩包」行：原写「重复条目会重复计入体积」（同样不成立），
+    改为「重复条目/`a` 与 `a/` 冲突 → 上游 500；本实现按文件系统语义只算一次」。
+- 另修一处**行号漂移**：§10 的「Group zip 条目名含 `.` 段」行原引用 `src/hash.ts:239`，按本仓库既有教训
+  （引用改按**名字**）改为 `src/hash.ts` 的 `assertSafeEntryName`。
+
+### 197.3 门禁（2026-10-03，本轮修复）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 个 `test/manual/*.mjs` **0 错**。
+- 全量套件：`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`
+  ⇒ **22 个套件 / 479 个用例全过**、退出码 0（77.94 s；比 §196.6 多出的 2 条正是本轮新增的 Group 用例）。
+  套件数与资源数不变 ⇒ 现状文档里的计数无需改（`test/docs.test.ts` 绿）。
+- 反向验证（判别力）：把 `normalizeEntryName` 暂时置为恒等 ⇒ 新增的两条用例**恰好红**
+  （`2 failed | 15 passed`，其余套件不受影响）；还原后 `sha256sum src/hash.ts` = `f74c7dc1…`，
+  与改动后、破坏前**逐字节相同**。
+- **未跑**：`test/manual/probe*.mjs`。本轮未碰 `public/` 下任何文件 ⇒ DoD 第 5 条不适用。

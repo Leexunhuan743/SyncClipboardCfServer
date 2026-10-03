@@ -146,4 +146,32 @@ describe('parseGroupZip', () => {
     expect(entries.some((e) => e.name === 'sub/' && e.isDir)).toBe(true);
   });
 
+  // 2026-10-03（`progress.md` §197）：条目名的**文件系统语义**归一。
+  // 上游算哈希走的是「解压落盘 → 枚举目录树」，所以树里的名字永远是单斜杠；本实现此前按 zip 里的
+  // **原始**名字入哈希 ⇒ 含连续斜杠的 zip **两侧都接受、却对同一个文件夹算出不同 hash**。
+  // 这类"都接受但不等价"比已登记的偏移更危险（它不是取舍，是漏了对齐），故必须有钉子。
+  it('连续斜杠按文件系统语义折叠：`a//b.txt` 与 `a/b.txt` 的条目集/总量/哈希必须完全相同', async () => {
+    const messy = zipSync({ 'a//': new Uint8Array(0), 'a//b.txt': strToU8('hello') });
+    const clean = zipSync({ 'a/': new Uint8Array(0), 'a/b.txt': strToU8('hello') });
+
+    const m = await parseGroupZip(messy);
+    const c = await parseGroupZip(clean);
+
+    expect(m.entries.map((e) => e.name).sort()).toEqual(['a/', 'a/b.txt']);
+    expect(m.entries.map((e) => e.name).sort()).toEqual(c.entries.map((e) => e.name).sort());
+    expect(m.totalSize).toBe(c.totalSize);
+    expect(await groupHashFromEntries(m.entries)).toBe(await groupHashFromEntries(c.entries));
+    // 顶层判定**不**归一（上游那一步用的是原始条目名）：`a//` TrimEnd 后不含 '/' ⇒ 仍是顶层
+    expect(m.topLevel).toEqual(['a']);
+  });
+
+  it('归一后重名只留一条（`a/b.txt` 与 `a//b.txt` 在文件系统上是同一个文件，首见优先）', async () => {
+    const zip = zipSync({ 'a/b.txt': strToU8('FIRST'), 'a//b.txt': strToU8('SECOND') });
+    const { entries, totalSize } = await parseGroupZip(zip);
+    const files = entries.filter((e) => !e.isDir);
+    expect(files.map((e) => e.name)).toEqual(['a/b.txt']);
+    // 首见优先 = 上游"若能落盘"时树里会有的那一份内容
+    expect(files[0]!.contentHash).toBe(await sha256Hex(strToU8('FIRST')));
+    expect(totalSize).toBe(5);
+  });
 });
