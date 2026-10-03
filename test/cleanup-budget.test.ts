@@ -710,3 +710,37 @@ describe('关闭成因的措辞（reason= 指的必须是真正的来源）', ()
     expect(lineOf(logs.lines, 'trim')).not.toContain('reason=');
   });
 });
+
+// ===== 条数上限（trim）的**边界**：上游 SetRecordsMaxCount 的两侧 =====
+// 为什么补这一组：既有用例只覆盖"maxCount 远小于 active"的饱和档（`maxCount: 400`），边界两侧
+// 从没被钉过。上游判据是 `count <= maxCount → break` + `take = min(BatchSize, count - maxCount)`
+// （`HistoryManagerHelper.cs:27-37`）⇒「active == max」必须**一条都不删**、「== max+1」必须**恰好删 1 条**。
+// 这两条对客户端可观测（记录会从列表里消失），错一侧就是"差一删/漏删"。
+describe('条数上限（trim）的边界：== maxCount 不删 / == maxCount + 1 只删最旧的一条', () => {
+  it('active == maxCount ⇒ 一条都不删（严格边界：`count <= maxCount` 即停）', async () => {
+    // recent 的时间戳是 now ⇒ 保留期阶段（env = 60 分钟）命不中；收藏/置顶置 0 ⇒ active 恰为 5 条
+    const f = fixture({ expired: 0, recent: 5, hardDeletable: 0, orphanDirs: 0, maxCount: 5, starred: 0, pinned: 0 });
+    captureConsole();
+
+    const result = await cronRun(f);
+
+    expect(result.trimmed, 'active == max 时不该软删任何记录').toBe(0);
+    // 软删**不删行**（行留到 30 天硬删）⇒ 行数不变、IsDeleted 全为 0
+    expect(scalar(f.sqlite, 'SELECT COUNT(*) AS c FROM HistoryRecords')).toBe(5);
+    expect(scalar(f.sqlite, 'SELECT SUM(IsDeleted) AS c FROM HistoryRecords')).toBe(0);
+  });
+
+  it('active == maxCount + 1 ⇒ 恰好软删 1 条，且按 MAX(LastModified,LastAccessed)+ID 取最旧那条', async () => {
+    const f = fixture({ expired: 0, recent: 5, hardDeletable: 0, orphanDirs: 0, maxCount: 4, starred: 0, pinned: 0 });
+    captureConsole();
+
+    const result = await cronRun(f);
+
+    expect(result.trimmed, 'excess = count - max = 1 ⇒ 只删 1 条').toBe(1);
+    expect(scalar(f.sqlite, 'SELECT SUM(IsDeleted) AS c FROM HistoryRecords')).toBe(1);
+    // 5 条的 LastModified/LastAccessed 全等（fixture 用同一个 now）⇒ 排序键同值 ⇒ 由确定性 tiebreak
+    // （`ORDER BY … ASC, ID ASC`）决定：最早插入的 REC0 被软删。
+    // 上游同值时次序未指定（SQLite 实际多半按 rowid），本实现把它定死 ⇒ 删哪一条可复现。
+    expect(scalar(f.sqlite, "SELECT IsDeleted AS c FROM HistoryRecords WHERE Hash = 'REC0'")).toBe(1);
+  });
+});

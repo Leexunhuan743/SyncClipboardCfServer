@@ -546,6 +546,14 @@ export class HistoryDb {
   // 同一个 `QueryDeleteOrderBy` = MAX(LastModified, LastAccessed)）。**单份 SQL 两种形态**：
   // `?2 IS NULL` 时不做保留期过滤（trim），否则按过期时间过滤（retention）—— 占位符编号因此
   // 不随形态漂移，软删判据（豁免列 + 排序键）只此一份，将来加豁免列不会漏改一条路径。
+  // ⚠️ 两处与上游的**语义边界**（2026-10-03 逐行核对；行为等价，写下来免得以后被"顺手改"掉）：
+  //   · 上游的**计数与候选查询不带 UserId 过滤**（`HistoryManagerHelper` 的 `QueryCount` /
+  //     `QueryToDeleteByOverCount` 只过滤 IsDeleted/Stared/Pinned，且 `HistoryDbContext.OnModelCreating`
+  //     里**没有** `HasQueryFilter`）；本实现一律按 `default_user` 收窄。本仓库全链路恒用
+  //     `HARD_CODED_USER_ID` ⇒ 单用户部署下等价，多用户表里本实现更严格。
+  //   · 排序键上游只有 `MAX(LastModified, LastAccessed)`（同值时次序**未指定**，SQLite 实际多半按
+  //     rowid）；本实现补 `ID ASC` 作确定性 tiebreak（方向与 rowid 一致）⇒ 同一库上两侧删的**条数**
+  //     相同（都是 excess），只有"同值时删哪一条"被本实现定死、可复现。
   private async softDeleteOldest(
     userId: string,
     cutoffMs: number | null,

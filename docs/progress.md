@@ -13763,3 +13763,56 @@ the new version.`」与 **32 次**「`Durable Object connection closed because t
   （`2 failed | 15 passed`，其余套件不受影响）；还原后 `sha256sum src/hash.ts` = `f74c7dc1…`，
   与改动后、破坏前**逐字节相同**。
 - **未跑**：`test/manual/probe*.mjs`。本轮未碰 `public/` 下任何文件 ⇒ DoD 第 5 条不适用。
+
+## 198. 保留与清理的执行边界：逐项核对（含 trim 边界的两条新钉子）（2026-10-03）
+
+本轮扫描对象 = **保留期（retention）/ 条数上限（trim）/ 30 天硬删 / 孤儿目录** 四类清理的**执行边界**。
+结论：**语义逐项一致**（按上游 `HistoryManagerHelper.cs:11-102`、`HistoryService.cs:535-591`/`:657-702`/`:704-739`
+与 `src/cleanup.ts`/`src/db.ts` 逐条对照）；顺带把两条**此前没写下来的语义边界**钉进代码注释与 §10，
+并补上"边界两侧"的回归用例（此前只覆盖饱和档）。
+
+### 198.1 对照结果（一致项，含易错点）
+
+| 判据 | 上游 | 本实现 |
+|---|---|---|
+| 超量计算与边界 | `count = COUNT(!IsDeleted)`；`count <= maxCount → break`；`take = min(500, count - maxCount)`（`:27-37`） | `overage = countActiveRecords() - maxCount`；`overage <= 0 → 收工`；`cap = min(overage, limit)`（`cleanup.ts` 的 `cleanTrim`） |
+| 豁免列 | `!Stared && !Pinned && !IsDeleted`（`HistoryService.cs:599`） | `IsDeleted = 0 AND Stared = 0 AND Pinned = 0`（`db.ts` 的 `softDeleteOldest`） |
+| 保留期谓词 | `LastModified < cutoff && LastAccessed < cutoff`（**两个都要**，`:568`） | 同（`?2 IS NULL OR (LastModified < ?2 AND LastAccessed < ?2)`） |
+| 排序键 | `MAX(LastModified, LastAccessed)` 升序（`:600`） | 同 + `ID ASC`（确定性 tiebreak，见 198.2） |
+| 软删效果 | `IsDeleted=true`、`Version++`、`LastModified=now`（`MarkForDeletionAsync`） | `IsDeleted = 1, Version = Version + 1, LastModified = ?3` |
+| 软删广播 | `OnRecordDeletedAsync` → 逐条 `RemoteHistoryChanged` | `broadcastRecords` 逐条、失败隔离 |
+| 软删是否动数据 | 立即 `DeleteProfileDataIfNeed`（删工作目录） | **不删**（ADR D29，已登记） |
+| 硬删窗口/效果 | `IsDeleted && LastModified < now-30d` → 真 `DELETE` + 删目录，**不广播** | 同（`DELETED_RETENTION_DAYS = 30`、`RETURNING Type,Hash` + 批次清扫、不广播） |
+| 硬删是否豁免收藏/置顶 | **不豁免**（谓词里没有 Stared/Pinned） | 同（不加豁免） |
+| `0` 语义 | `SetRecordsMaxCount(0)`/`RemoveOutOfRetentionRecords(0)` 都**立即返回**（0 = 不限制） | `disabledReason`：retention/trim 的生效值 `<= 0` ⇒ 该阶段 `status=disabled`（等价，且把成因写进日志 `reason=`） |
+| 周期 | 保留期+条数 10 分钟、硬删 12 小时、孤儿 12 小时 | Cron 每 20 分钟一次做四类（已登记） |
+| 孤儿判定 | 目录名 `Split('_',2)` + `Enum.TryParse`，无记录或 `IsDeleted` ⇒ 删（`:714-738`） | R2 目录键 `{Type}_{hash}/` 与**全表**（含已删）记录集合求差集（D29 的必然推论，已登记；F33 修过键形式不同构） |
+
+### 198.2 两条此前没写下来的**语义边界**（本轮补登记，行为不变）
+
+- **上游的清理计数/候选查询不带 UserId 过滤**：`QueryCount` / `QueryToDeleteByOverCount` 只过滤
+  `IsDeleted`/`Stared`/`Pinned`，且 `HistoryDbContext.OnModelCreating`（`:38-55`）**没有** `HasQueryFilter`
+  ⇒ 条数上限与保留期在上游是**全表**口径。本实现一律按 `HARD_CODED_USER_ID` 收窄。本仓库全链路恒用
+  单一 user id ⇒ 单用户部署等价；多用户表里本实现更严格。已加进 `src/db.ts` 的 `softDeleteOldest` 注释
+  与 `docs/protocol.md` §10（新行）。
+- **排序键的同值次序**：上游只有 `MAX(LastModified, LastAccessed)`（同值时次序未指定，SQLite 实际多半按
+  rowid）；本实现补 `ID ASC` ⇒ 同一库上**删的条数相同**（都是 excess），只有"同值时删哪一条"被定死、可复现。
+- 回归钉子（`test/cleanup-budget.test.ts` 新增一组，in-process + node:sqlite 真 SQL）：
+  ① `active == maxCount` ⇒ `trimmed == 0` 且 `SUM(IsDeleted) == 0`（严格边界）；
+  ② `active == maxCount + 1` ⇒ `trimmed == 1`，且被软删的正是同值下最早插入的那条（`REC0`，ID tiebreak）。
+  既有用例只覆盖"maxCount 远小于 active"的饱和档（`maxCount: 400`），边界两侧此前无钉子。
+
+### 198.3 门禁与判别力（2026-10-03，本轮）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 = **0 错**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`）：
+  **22 个套件 / 481 个用例全过**、退出码 0（79.20 s；比 §197.3 多 2 条 = 本轮的 trim 边界用例）。
+  套件数与资源数不变 ⇒ 现状文档计数无需改（`test/docs.test.ts` 绿）。
+- **判别力（逐条证明）**：上游那对判据的"差一"形态是**两行**（`count <= maxCount → break` 与
+  `take = count - maxCount`）。只把 `cap` 改成 `overage + 1` ⇒ 第 2 条红（第 1 条被 `overage <= 0`
+  的守卫挡在前面、仍绿）；再把守卫改成 `overage < 0` ⇒ **两条都红**（`2 failed | 16 passed`）。
+  还原两行后 `sha256sum src/cleanup.ts` = `85c011f3…`，与破坏前**逐字节相同**（`src/cleanup.ts` 因此
+  不在本轮的改动清单里）。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
