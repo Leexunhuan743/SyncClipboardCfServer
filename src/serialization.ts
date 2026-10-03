@@ -189,19 +189,47 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
   if (parsed === null) return 'null-dto';
   // 数组 / 标量：`Deserialize<ProfileDto>` 抛 JsonException → catch 分支
   if (typeof parsed !== 'object' || Array.isArray(parsed)) return 'corrupt';
-  const type = (parsed as Record<string, unknown>).type;
-  // 键缺失 → Type 取默认 Text（不抛错）；数字 → JsonStringEnumConverter 接受整数枚举值
-  if (type === undefined) return 'ok';
-  if (typeof type === 'number') return Number.isInteger(type) ? 'ok' : 'corrupt';
-  // 字符串必须是合法枚举名（大小写不敏感，与 JsonStringEnumConverter 一致；数字串亦可）
-  if (typeof type !== 'string') return 'corrupt';
-  if (parseProfileType(type) === undefined) return 'corrupt';
-  // Hash 同样要能安全使用：它参与 R2 key 构造（见 types.isValidProfileHash）。含路径分隔符的
-  // 存储值若原样返回，客户端会用同一规则构造本地路径 → 抛异常/产生非法路径。视同损坏并降级。
-  const hash = (parsed as Record<string, unknown>).hash;
-  if (hash === undefined || hash === null) return 'ok';
-  if (typeof hash !== 'string') return 'corrupt';
-  return isValidProfileHash(hash) ? 'ok' : 'corrupt';
+  const obj = parsed as Record<string, unknown>;
+
+  // ① Type：键缺失 → STJ 用默认 Text（不抛错）；数字 → JsonStringEnumConverter 接受整数枚举值；
+  //    字符串必须是合法枚举名（大小写不敏感，与 JsonStringEnumConverter 一致；数字串亦可）。
+  const type = obj.type;
+  if (type !== undefined) {
+    if (typeof type === 'number') {
+      if (!Number.isInteger(type)) return 'corrupt';
+    } else if (typeof type !== 'string') {
+      return 'corrupt';
+    } else if (parseProfileType(type) === undefined) {
+      return 'corrupt';
+    }
+  }
+
+  // ② Hash：既要类型对，也要能安全参与 R2 key 构造（见 types.isValidProfileHash）——含路径分隔符的
+  //    存储值若原样返回，客户端会用同一规则构造本地路径 → 抛异常/产生非法路径。视同损坏并降级。
+  //    ⚠️ 这两条**不能**被 Type 的判定短路：`{"hash":"A/B"}`（**没有 type 键**）同样是坏值 ——
+  //    此前 `type === undefined` 直接 return 'ok'，把这种值放了过去（与 F31 那条同类，2026-10-03 修）。
+  const hash = obj.hash;
+  if (hash !== undefined && hash !== null) {
+    if (typeof hash !== 'string') return 'corrupt';
+    if (!isValidProfileHash(hash)) return 'corrupt';
+  }
+
+  // ③ **其余字段的类型**也必须过 STJ 的模型绑定：`ProfileDto` 是 `Text`/`Hash`(string)、
+  //    `HasData`(bool)、`DataName`/`TransferDataHash`(string?)、`Size`(long?)。类型不符 ⇒ 上游
+  //    `Deserialize<ProfileDto>` 抛 JsonException → catch → 空 TextProfile（同步继续）；
+  //    本实现若不拦，坏值会**原样发给客户端** → `ReadFromJsonAsync<ProfileDto>` 抛异常 →
+  //    **剪贴板同步中断**（本段开头写的目标正是"不把坏 JSON 发给客户端"）。
+  //    可达性：CF 自己的写入路径永远产出规范形状 ⇒ 只有"库被外部改坏/迁移工具写错"才谈得上
+  //    （与 ② 的 hash 支同一场景），而那一档的代价是同步整体停摆，值得逐字段判死。
+  for (const value of [obj.text, obj.dataName, obj.transferDataHash]) {
+    if (value !== undefined && value !== null && typeof value !== 'string') return 'corrupt';
+  }
+  if (obj.hasData !== undefined && typeof obj.hasData !== 'boolean') return 'corrupt';
+  const size = obj.size;
+  if (size !== undefined && size !== null && (typeof size !== 'number' || !Number.isSafeInteger(size))) {
+    return 'corrupt';
+  }
+  return 'ok';
 }
 
 // 字段的 JSON 类型必须与上游 `[FromBody] ProfileDto` 的模型绑定同口径：类型不符在

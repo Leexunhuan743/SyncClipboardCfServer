@@ -8,7 +8,7 @@ import { zipSync, strToU8, Zip, ZipPassThrough } from 'fflate';
 import { createSqliteD1, readSchemaSql, type SqliteD1 } from './support/d1-sqlite';
 
 import { parseMultipart } from '../src/multipart';
-import { parseProfileDto, parseHistoryRecordUpdateDto, profileDtoToJson } from '../src/serialization';
+import { classifyStoredProfile, parseProfileDto, parseHistoryRecordUpdateDto, profileDtoToJson } from '../src/serialization';
 import { parseGroupZip, sha256Hex, textProfileHash } from '../src/hash';
 import { addRecordDto, entityToProfileDto, putSyncProfile, ProfileDataInvalidError, IncomingRecord } from '../src/profile';
 import { HistoryDb } from '../src/db';
@@ -257,6 +257,35 @@ describe('F30 · 存储的当前 profile 损坏时优雅降级（对齐上游 Ge
 
     // null-dto：文本为字面 `null` → `Deserialize(...) ?? new ProfileDto()`
     expect(classifyStoredProfile('null')).toBe('null-dto');
+  });
+
+  it('F30 续（2026-10-03）：**其余字段类型不符**也判 corrupt（否则坏值原样发给客户端 ⇒ ReadFromJsonAsync 抛异常）', async () => {
+    // 每个都是"能解析成对象、但 STJ 绑不进 `ProfileDto`"的形状 ⇒ 上游 `Deserialize` 抛 → catch → 空 TextProfile
+    for (const raw of [
+      JSON.stringify({ type: 'Text', text: 123 }),
+      JSON.stringify({ type: 'Text', text: [1, 2] }),
+      // 字符串不是 bool —— 正是当年把"没有数据"判成"有数据"的那种形态（见 serialization.ts 的注释）
+      JSON.stringify({ type: 'Text', hasData: 'false' }),
+      JSON.stringify({ type: 'Text', hasData: null }),
+      JSON.stringify({ type: 'Text', dataName: 7 }),
+      JSON.stringify({ type: 'Text', size: 'big' }),
+      JSON.stringify({ type: 'Text', size: 1.5 }),
+      JSON.stringify({ type: 'Text', transferDataHash: 5 }),
+    ]) {
+      expect(classifyStoredProfile(raw), raw).toBe('corrupt');
+    }
+    // 合法形状（含 null、键缺失、以及 `long?` 允许的 0）不受影响
+    for (const raw of [
+      JSON.stringify({ type: 'Text', hash: 'H', text: 't', hasData: false, dataName: null, size: 0 }),
+      JSON.stringify({ type: 'Text', text: null, dataName: null, transferDataHash: null, size: null }),
+      JSON.stringify({ type: 'Text' }),
+    ]) {
+      expect(classifyStoredProfile(raw), raw).toBe('ok');
+    }
+    // ⚠️ **键缺失的 type 不能短路 hash 的校验**：`{"hash":"A/B"}` 与 F31 那条是同一类坏值
+    //（修前 `type === undefined` 直接 return 'ok'，把这种值放了过去）
+    expect(classifyStoredProfile(JSON.stringify({ hash: 'A/B' }))).toBe('corrupt');
+    expect(classifyStoredProfile(JSON.stringify({ hash: 'H' }))).toBe('ok');
   });
 
   it('corrupt → 空 TextProfile dto（hash=SHA256("")、size:0）；null → hash="" 且省略 size 键', async () => {

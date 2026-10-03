@@ -132,7 +132,7 @@
 | 情形 | 上游代码路径 | 响应体（wire） |
 |---|---|---|
 | 文件不存在 | `new TextProfile(string.Empty).ToProfileDto()` | `{"type":"Text","hash":"<SHA256("")>","text":"","hasData":false,"dataName":null,"size":0}` |
-| 反序列化**抛错**（`[]`／标量／非法枚举名／非整数数字 type） | `catch` → 同上 | 同上（`size:0` 必现） |
+| 反序列化**抛错**（`[]`／标量／非法枚举名／非整数数字 type／**字段类型不符**：`size:"big"`、`hasData:"false"`、`text:[]`、`dataName:7`…） | `catch` → 同上 | 同上（`size:0` 必现） |
 | 反序列化得 **null**（文本为字面 `null`） | `?? new ProfileDto()` | `{"type":"Text","hash":"","text":"","hasData":false,"dataName":null}`（**`size` 键省略**：`Size` 为 `long?` 且 null） |
 
 注意两者的 `hash` 不同：空 `TextProfile` 的 hash 是 `SHA256("")`，而 `new ProfileDto()` 的 `Hash` 是默认空串。
@@ -140,7 +140,14 @@
 
 本实现把当前 profile 存在 D1 `Meta` 表（不存在 = 上游「文件不存在」），
 并用 `classifyStoredProfile` 复刻另外两个出口的判定，避免把损坏值原样发给客户端
-（客户端 `ReadFromJsonAsync` 会抛异常 → 剪贴板同步中断）。
+（客户端 `ReadFromJsonAsync` 会抛异常 → 剪贴板同步中断）。判据按 **STJ 的模型绑定口径**逐字段对齐：
+`Type`（枚举名/整数/键缺失）、`Hash`（含分隔符视同损坏 —— 客户端会用同一规则构造本地路径）、
+`Text`/`DataName`/`TransferDataHash`（`string?`）、`HasData`（`bool`）、`Size`（`long?`，整数且安全）。
+⚠️ 两个边界：① `Hash` 的校验**不被** `Type` 的判定短路（`{"hash":"A/B"}` 无 `type` 键同样是坏值）；
+② `ok` 出口返回的是 **Meta 里的原文**（不是重新序列化）⇒ 多余键与 `"hash":null` 这类形状会原样透出
+（上游会重新序列化 ⇒ 丢掉多余键）；只有带外改坏的库才会出现这种值（本实现自己的写入恒为规范形状）。
+另：`{"type":"Unknown"}`/`{"type":"None"}` 在**读取**侧算 `ok`（STJ 能绑，与上游一致）；
+它们在**写入**侧是 400（上游 `Profile.Create` 抛 `NotSupportedException` ⇒ 500）⇒ 只能由带外写入产生。
 
 > **当前 profile 与历史记录相互独立**：`Meta.current_profile` 保存的是该 ProfileDto 的**副本**，
 > 且**只**由 `PUT /SyncClipboard.json` 的写路径（`saveCurrentProfileJson`）更新；

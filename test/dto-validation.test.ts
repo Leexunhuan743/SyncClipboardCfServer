@@ -634,3 +634,27 @@ describe('上游判定的分支与位置：拒绝条件（size）与判定顺序
     }
   });
 });
+
+// ============================================================ 当前 profile 的存储值被改坏（2026-10-03）
+// `classifyStoredProfile` 的 HTTP 级出口：坏值必须降级成"空 TextProfile"，而不是原样发给客户端
+//（客户端的 `ReadFromJsonAsync<ProfileDto>` 会抛异常 ⇒ 剪贴板同步中断）。
+// 存储值只可能被"库被外部改坏/迁移写错"弄坏 —— CF 自己的写入路径永远产出规范形状。
+describe('GET /SyncClipboard.json：存储值字段类型不符 ⇒ 降级为空 TextProfile', () => {
+  it('`size` 是字符串（STJ 绑不进 `long?`）⇒ 空档响应，且**不是**把坏值透传出去', async () => {
+    const h = makeHarness();
+    h.exec(
+      `INSERT INTO Meta (Key, Value) VALUES ('current_profile', '{"type":"Text","hash":"AAAA","text":"t","size":"big"}')`,
+    );
+    const res = await send(h.webdav, h.env, '/SyncClipboard.json');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { type: string; hash: string; text: string; hasData: boolean; size: number };
+    expect(body.type).toBe('Text');
+    expect(body.text).toBe('');
+    expect(body.hasData).toBe(false);
+    expect(body.size, '空档的 size 是 0，而不是坏值里的 "big"').toBe(0);
+    expect(body.hash, '空档的 hash = SHA256("")（上游 TextProfile(string.Empty).ToProfileDto()）').toBe(
+      await sha256Hex(''),
+    );
+  });
+});
+

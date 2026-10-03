@@ -13882,3 +13882,63 @@ the new version.`」与 **32 次**「`Durable Object connection closed because t
      subName 另算"；
   ③ F35 首版断言 `PUT /file/..` → 400 ⇒ 实测 **404** ⇒ 推翻"能到 handler"的前提、撤回死防御（见 199.2）。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 200. 当前 Profile 全流程：存储值判据补全（逐字段类型 + hash 不被 type 短路）（2026-10-03）
+
+本轮扫描对象 = **`PUT`/`GET /SyncClipboard.json` 全流程**（上游 `SyncClipboardController.cs:124-266` 的
+`GetSyncProfile` / `PutSyncProfile` / `CreateAndSaveNewProfile` / `SetTransferData` /
+`SaveAndNotifyCurrentProfile` + `Profile.Create` + `ImageTool`，对读本实现 `routes/webdav.ts` +
+`profile.ts` + `serialization.ts`）。
+
+### 200.1 对照结果：一致项
+
+| 判据 | 上游 | 本实现 |
+|---|---|---|
+| 三个降级出口 | 文件不存在 → 空 `TextProfile`；反序列化抛错 → 同上；文本为 `null` → `new ProfileDto()` | 同（`classifyStoredProfile` + `webdav.ts` 三个出口；`hash`/`size` 键的取舍逐字对齐） |
+| 类型提升 File→Image | `ImageTool.FileIsImage` = `Path.GetExtension` + **OrdinalIgnoreCase** 比对 `.jpg/.jpeg/.gif/.bmp/.png`（`ImageTool.cs:5-19`） | `resolveCreateProfileType` = 最后一个 `.` 之后**小写**比对同一张表 ⇒ 逐例等价（`a.PNG`→Image；`x.`、`a.png/`、`v1.0/f`→File；`.jpg`→Image） |
+| Image 的哈希 / Size / 落库 | `ImageProfile : FileProfile` **只覆盖 `Type`**（`ImageProfile.cs:6-21`）⇒ 与 File 同算法、同 Persist | 本实现 File/Image 共用一条路径（`validateAndPersistData`）⇒ 等价 |
+| 复用分支（hash 命中且未删） | 刷 `LastAccessed`/`LastModified`、`Version++`、广播 history + profile、**不读上传的数据**（暂存对象留着） | 同（"暂存对象留在 `file/`"这一副作用就是 §199 的 F34 看到的形态） |
+| 命中**已删**记录 | `GetExistingProfileAsync` 过滤 `IsDeleted` ⇒ 走创建分支 ⇒ `AddProfile` 复活（`IsDeleted=false`、`Version++`、内容字段覆盖） | 同（`addProfile` + `mergeExistingProfile`） |
+| `DataName` 缺失 / 暂存对象缺失 | 400 `DataName cannot be null or empty when HasData is true` / 404 `Transfer data file not found` | 同（文案逐字） |
+| 校验失败文案 | `Hash is not match data.` / `Inline data does not match the profile hash.` | 同 |
+| 落盘后暂存被消费 | `File.Move`（暂存消失） | 读 R2 → 写 `history/` → 删暂存（已登记：R2 无 move/rename） |
+| 写当前 profile 的时机 | 只在 `SaveAndNotifyCurrentProfile`；各删除路径都不动它 | 同 |
+| 广播 | 复用/复活 `RemoteHistoryChanged` + 始终 `RemoteProfileChanged` | 同 |
+| `Unknown`/`None`（写入） | `Profile.Create` 抛 `NotSupportedException` → 未处理 ⇒ **500** | `parseProfileDto` 抛 ⇒ **400**（同类已登记） |
+
+### 200.2 本轮修复：`classifyStoredProfile` 两处判据补全
+
+- **问题 ①（缺字段类型校验）**：该函数此前只校验 `type` 与 `hash`。存储值"是对象、`type` 合法、但别的字段类型
+  不符"时（`size:"big"`、`hasData:"false"`、`text:[]`、`dataName:7`、`transferDataHash:5`…）它判 `ok`
+  ⇒ 把坏值**原样发给客户端** ⇒ 客户端 `ReadFromJsonAsync<ProfileDto>` 抛异常 ⇒ **剪贴板同步中断**。
+  上游对同一档是 `Deserialize` 抛 `JsonException` → catch → **空 TextProfile**（同步继续）⇒ 这一档本实现比上游更糟，
+  且与本文件自己写下的目标（"不把坏 JSON 发给客户端"）相反。
+- **问题 ②（`type` 键缺失短路了 hash 校验）**：`if (type === undefined) return 'ok';` 直接早退 ⇒ `{"hash":"A/B"}`
+  （**无 `type` 键**）被放过 —— 与 F31 修过的那类是同一个坏值（客户端拿含分隔符的 hash 构造本地路径会抛）。
+- **修法**：`src/serialization.ts` 的 `classifyStoredProfile` 改成**线性判据**（不再早退）：
+  ① `Type`（枚举名 / 整数 / 键缺失）→ ② `Hash`（类型 + `isValidProfileHash`）→ ③ 其余字段类型
+  （`Text`/`DataName`/`TransferDataHash` 为 `string?`、`HasData` 为 `bool`、`Size` 为 `long?` 且整数安全）。
+  口径 = **STJ 的模型绑定**（"上游 `Deserialize` 会抛"的那些形状），**不是**语义合法性 ——
+  故 `{"type":"Unknown"}` 在读取侧仍算 `ok`（STJ 能绑，与上游一致）。
+- 钉子：`test/fixes.test.ts` 的 F30 组新增 8 个 corrupt 形状 + 3 个合法形状（含 `null` 与键缺失）+ 两条对照
+  （`{"hash":"A/B"}` 无 `type` ⇒ corrupt / `{"hash":"H"}` ⇒ ok）；`test/dto-validation.test.ts` 新增 **HTTP 级**用例 ——
+  直接往 `Meta` 写 `{"type":"Text","hash":"AAAA","text":"t","size":"big"}`，`GET /SyncClipboard.json`
+  必须回**空档**（`size:0`、`hash=SHA256("")`），而不是把坏值透传。
+- **判别力（实测）**：把新判据暂时置为不生效（插入 `if (obj.type === undefined) return 'ok';` 与提前 `return 'ok';`）
+  ⇒ 两条新用例红，HTTP 那条的失败信息本身就是证据：`expected 't' to be ''`（= 坏值被原样透出）；
+  还原后 `sha256sum src/serialization.ts` = `54e291a0…`，与改动后、破坏前**逐字节相同**。
+- 文档：`docs/protocol.md` §4.0 的降级表补上"字段类型不符"这一类，并把判据口径与三个边界
+  （hash 不被短路、`ok` 出口返回原文而非重新序列化、`Unknown`/`None` 在读写两侧的不同口径）写进同节说明。
+
+### 200.3 门禁与判别力（2026-10-03，本轮）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 = **0 错**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`）：
+  **22 个套件 / 485 个用例全过**、退出码 0（76.19 s；比 §199.3 多 2 条 = 本轮的两条新用例）。
+  套件数与资源数不变 ⇒ 现状文档计数无需改（`test/docs.test.ts` 绿）。
+- 判别力：见 200.2 末 —— 把新判据暂时置为不生效时**两条新用例都红**，其中 HTTP 那条的失败信息
+  （`expected 't' to be ''`）本身就是缺陷证据"坏值被原样透出"；还原后 `src/serialization.ts`
+  逐字节相同（sha256 `54e291a0…`）。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
