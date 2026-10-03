@@ -263,6 +263,16 @@ export async function putSyncProfile(
 ): Promise<HistoryRecordEntity> {
   const now = Date.now();
 
+  // 上游 3.3.0 #413：`TransferDataHash` 只能在 `hasData=true` 时声明，否则是自相矛盾的请求。
+  // ⚠️ **位置与上游一致：在既有记录复用分支之前**（上游 `SyncClipboardController.cs:178-181` 在
+  // `:183-193` 的 `GetExistingProfileAsync` 之前）。此前这条检查放在复用分支**之后** ⇒ 同一个
+  // 「命中既有记录 + hasData=false + 带 transferDataHash」的请求：上游 400，本实现 200（静默复用）。
+  // 官方客户端不会发这种组合（`ProfileDto.ToProfileDto` 里 `TransferDataHash` 仅在 hasData 时非 null），
+  // 但它是可观测的协议面行为，不该与上游分叉。
+  if (!dto.hasData && dto.transferDataHash !== null && dto.transferDataHash !== undefined) {
+    throw new BadRequestError('TransferDataHash cannot be set when HasData is false');
+  }
+
   // GetExistingProfileAsync 分支：命中且未删除 → 复用记录
   if (dto.hash) {
     const existing = await db.getByTypeAndHash(dto.type, dto.hash);
@@ -280,10 +290,6 @@ export async function putSyncProfile(
   // CreateAndSaveNewProfile 分支：上游 `Profile.Create(dto)` 会把 File+图片扩展名提升为 Image，
   // 落库类型随之改变；但上面的既有记录查询用的是 **原始 dto.Type**（上游 GetExistingProfileAsync
   // 在 Create 之前调用），故这里只在创建分支使用提升后的类型。
-  // 上游 3.3.0 #413：`TransferDataHash` 只能在 `hasData=true` 时声明，否则是自相矛盾的请求。
-  if (!dto.hasData && dto.transferDataHash !== null && dto.transferDataHash !== undefined) {
-    throw new BadRequestError('TransferDataHash cannot be set when HasData is false');
-  }
   const createDto: ProfileDto = { ...dto, type: resolveCreateProfileType(dto) };
   let persisted: PersistedData | null = null;
   if (dto.hasData) {
@@ -706,12 +712,18 @@ async function isLocalDataValid(
 }
 
 // 严格校验（上游 `IsLocalDataValid(quick: false)`，仅服务于「POST 新建记录、无 data」这一处）。
-// 语义按上游 3.3.0：Text = 内联全文哈希必须等于声明 Hash；File/Image/Group 没有可用的本地数据
-// （新建记录此时还没有数据文件）⇒ false。
+// 语义按上游 3.3.0，判据是**两条**（`TextProfile.IsLocalDataValid(false)` → `IsInMemoryTextValid`）：
+//   ① `HasTransferData = TransferDataFile 非空 || Size > Text.Length` 为真 ⇒ 直接 false ——
+//      「声称正文比内联文本更长」却没有数据文件，说明 `text` 只是截断预览（`_fullText is null`）；
+//   ② 否则内联全文哈希必须等于声明 Hash。**空 hash 视为有效**：上游是 `Hash is not null &&
+//      !SHA256Same(...)` 才判失败（服务端会为它算哈希，见 F11；这也是 PUT {"size":5} 这类
+//      "无 hash 的 inline Text"能落库的前提）。
+// 本函数只服务「无 data 的新建」这一处，`TransferDataFile` 恒为 `''` ⇒ ① 只剩 `Size > Text.Length`
+// 这一半可能为真。`Size` 与 `.length` 同为 UTF-16 码元计数，与 C# `string.Length` 同口径。
+// File/Image/Group 没有内联数据（新建记录此时也还没有数据文件）⇒ 一律 false。
 async function isLocalDataValidStrict(entity: HistoryRecordEntity): Promise<boolean> {
   if (entity.type !== ProfileType.Text) return false;
-  // 上游 `IsInMemoryTextValid`：`Hash is not null && !SHA256Same(...)` 才判失败 ⇒ **空 hash 视为有效**
-  // （服务端会为它计算哈希，见 F11；这也正是 PUT {"size":5} 这类"无 hash 的 inline Text"能落库的前提）。
+  if (entity.size > entity.text.length) return false;
   if (!entity.hash) return true;
   return hashEquals(await textProfileHash(entity.text), entity.hash);
 }

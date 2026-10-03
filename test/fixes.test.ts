@@ -1108,14 +1108,18 @@ describe('F19 · Text transfer data 语义对齐上游（复用文件名 / Size 
   });
 
   it('size > 文本长度但无 transfer data → 拒绝（上游 3.3.0 #413 起文案为 Local data is missing…）', async () => {
-    // 上游 `IsLocalDataValid(false)` 的 HasTransferData（Size > Text.Length）为真而文件不存在 ⇒ 拒绝。
+    // 上游 `IsLocalDataValid(false)` 的 `HasTransferData`（`Size > Text.Length`）为真而文件不存在 ⇒ 拒绝。
     // 文案随 3.3.0 从 `Needs tranfer data.` 换成 `Local data is missing or does not match the profile hash.`
     //（`Needs tranfer data.` 只保留在「既有记录、无 data」的 EnsureExistingRecordData 路径上）。
+    // ⚠️ **判别力**：hash 必须是**截断文本自己的**哈希。此前写 `sha256('anything')`，于是这条用例
+    // 实际由「哈希不匹配」分支拒绝、`size` 那一支**从未被执行**（而 `src/profile.ts` 当时也确实
+    // 没有那一支 —— 测试名声称的分支在代码里不存在）。改成匹配 hash 后，唯一能拒绝它的就是 size 分支。
     const db = new FakeDb();
+    const text = 'short';
     await expect(
       addRecordDto(
         db as never, new FakeR2() as unknown as R2Storage,
-        incoming({ type: ProfileType.Text, hash: sha256('anything'), text: 'short', size: 99999 }),
+        incoming({ type: ProfileType.Text, hash: sha256(text), text, size: text.length + 1 }),
         null, silentNotify,
       ),
     ).rejects.toThrow(/Local data is missing or does not match the profile hash/);

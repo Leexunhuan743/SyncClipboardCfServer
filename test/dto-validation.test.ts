@@ -528,3 +528,109 @@ describe('historySizeMB：两位小数 + 「非零不得显示成 0」的地板'
     expect(historySizeMB(1024 * 1024 * 3.14159), '两位小数').toBe(3.14);
   });
 });
+
+// ============================================================ 上游判定的**分支与位置**（2026-10-03）
+// 一组两条，都是「上游判据的分支/位置与本实现分叉」，因此用例必须能**区分分支** ——
+// 不能靠"另一个分支恰好也会拒绝"通过（这正是 test/fixes.test.ts 那条 size 用例修复前的形态：
+// 名字写的是 size 分支，实际由哈希分支拒绝，于是 size 分支在代码里缺失也照样绿）。
+//   ① POST 无 data 的 inline Text：上游 `TextProfile.IsLocalDataValid(false)` 的拒绝条件是**两条**，
+//      除「内联哈希 == 声明 Hash」外还有 `HasTransferData = Size > Text.Length` ⇒ 拒绝；
+//   ② PUT 的 `hasData=false` + `transferDataHash` 矛盾检查必须在**既有记录复用分支之前**
+//      （上游 `SyncClipboardController.cs:178-181` 在 `:183-193` 的 GetExistingProfileAsync 之前）。
+describe('上游判定的分支与位置：拒绝条件（size）与判定顺序（复用分支之前）', () => {
+  // 不带 data 部分的 multipart —— 官方客户端对 inline Text 发出去的正是这个形态。
+  // 本文件的 `multipart()` 恒追加 data 部分，故这里另起一个（复用它的编码写法）。
+  function formOnly(fields: Record<string, string>): { body: Uint8Array; contentType: string } {
+    const boundary = 'dto-branch-boundary';
+    const chunks: Uint8Array[] = [];
+    for (const [k, v] of Object.entries(fields)) {
+      chunks.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name=${k}\r\n\r\n${v}\r\n`));
+    }
+    chunks.push(enc.encode(`--${boundary}--\r\n`));
+    return { body: concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
+  }
+
+  function textForm(hash: string, text: string, size: number): { body: Uint8Array; contentType: string } {
+    const now = new Date().toISOString();
+    return formOnly({
+      hash,
+      type: 'Text',
+      text,
+      size: String(size),
+      version: '0',
+      isDeleted: 'false',
+      createTime: now,
+      lastModified: now,
+      lastAccessed: now,
+    });
+  }
+
+  it('POST：内联哈希**吻合**但 size > 文本长度且无 data → 400（修复前 200：落库一条正文被截断、size 更大的记录）', async () => {
+    const h = makeHarness();
+    const text = 'truncated-preview';
+    // ★ hash 用**内联文本自己**的哈希：哈希分支不再会拒绝它 ⇒ 唯一可能拒绝它的就是 size 分支
+    const { body, contentType } = textForm(await sha256Hex(text), text, text.length + 4096);
+    const res = await send(h.history, h.env, '/api/history', {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body,
+    });
+    expect(res.status, '上游 HasTransferData（Size > Text.Length）为真且无数据文件 ⇒ 拒绝').toBe(400);
+    expect(await res.text()).toBe('Local data is missing or does not match the profile hash.');
+
+    // 对照（判别性）：同一条记录 size == 文本长度时必须仍然收下 —— 官方客户端对 inline Text 就是这个形态
+    const okForm = textForm(await sha256Hex(text), text, text.length);
+    const ok = await send(h.history, h.env, '/api/history', {
+      method: 'POST',
+      headers: { 'content-type': okForm.contentType },
+      body: okForm.body,
+    });
+    expect(ok.status, 'size == 文本长度是合法形态，不得被这条新判据误伤').toBe(200);
+  });
+
+  it('PUT：命中既有记录 + hasData=false + transferDataHash → 400（修复前 200：被复用分支先接走）', async () => {
+    const h = makeHarness();
+    const text = 'branch-order';
+    const hash = await sha256Hex(text);
+    const put = (extra: Record<string, unknown>) =>
+      send(h.webdav, h.env, '/SyncClipboard.json', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'Text', hash, text, hasData: false, size: text.length, ...extra }),
+      });
+
+    // 前置：先落一条同 hash 的 inline Text 记录（此后这个 hash 就"命中既有记录"）
+    expect((await put({})).status, '前置：建同 hash 的记录').toBe(200);
+
+    const conflict = await put({ transferDataHash: 'A'.repeat(64) });
+    expect(conflict.status, '矛盾请求不得因为"恰好命中既有记录"而被放行').toBe(400);
+    expect(await conflict.text()).toBe('TransferDataHash cannot be set when HasData is false');
+
+    // 对照：不带该字段的同一请求仍走复用分支（200）—— 证明上面的 400 来自新位置，而不是"复用被禁掉了"
+    expect((await put({})).status).toBe(200);
+  });
+
+  it('query：时间字段解析不了 → 该条件被忽略（状态码不变），但必须留下 [HISTORY QUERY] 信号', async () => {
+    const h = makeHarness();
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      const { body, contentType } = formOnly({ Page: '1', Types: 'All', ModifiedAfter: 'not-a-date' });
+      const res = await send(h.history, h.env, '/api/history/query', {
+        method: 'POST',
+        headers: { 'content-type': contentType },
+        body,
+      });
+      // 状态码**有意**保持 200（忽略而非 400，理由见 docs/protocol.md §10 的「query 的时间字段无法解析」行）
+      expect(res.status).toBe(200);
+      expect(warnings.join('\n'), '丢掉的过滤条件必须留痕，否则与"范围内没有记录"同形').toMatch(
+        /\[HISTORY QUERY\] drop ModifiedAfter: not-a-date/,
+      );
+    } finally {
+      console.warn = original;
+    }
+  });
+});

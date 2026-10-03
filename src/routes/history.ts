@@ -86,10 +86,21 @@ function formGet(form: MultipartResult, key: string): string | null {
   return form.get(key);
 }
 
-function parseDateOrNull(s: string | null): Date | null {
+// 时间字段：解析不了时**忽略该项**（有意偏离：上游 `[FromForm] DateTimeOffset?` 绑定失败是 400；
+// 取舍与代价见 docs/protocol.md §10 的「query 的时间字段无法解析」一行 —— 返 400 会让客户端
+// 整轮历史同步失败，而忽略只让该条件失效）。
+// ⚠️ 但"忽略"必须留痕：丢掉的过滤条件与"范围内确实没有记录"在响应上**同形**，不留日志就只能靠
+// 比对两次请求才能发现（客户端侧的表现是「增量同步莫名空一轮」）。故这里打一条 warn；状态码不变。
+// 值由客户端给定 ⇒ 压成单行并截断（同 cleanup.ts 的 recordFailure：多行会打散结构化日志）。
+// 时间串不是剪贴板正文，进日志无隐私问题。
+function parseDateOrNull(s: string | null, fieldName: string): Date | null {
   if (s === null || s === '') return null;
   const ms = Date.parse(s);
-  return Number.isNaN(ms) ? null : new Date(ms);
+  if (Number.isNaN(ms)) {
+    console.warn(`[HISTORY QUERY] drop ${fieldName}: ${s.replace(/\s+/g, ' ').trim().slice(0, 80)}`);
+    return null;
+  }
+  return new Date(ms);
 }
 
 // 上游 [FromForm] 的 `bool?`/`bool` 模型绑定：值为空 → null（bool?）/默认值；
@@ -131,9 +142,9 @@ function parseQueryForm(form: MultipartResult): HistoryQueryDto {
     parseBoolOrNull(formGet(form, 'SortByLastAccessed'), 'SortByLastAccessed') === true;
   return {
     page,
-    before: parseDateOrNull(formGet(form, 'Before')),
-    after: parseDateOrNull(formGet(form, 'After')),
-    modifiedAfter: parseDateOrNull(formGet(form, 'ModifiedAfter')),
+    before: parseDateOrNull(formGet(form, 'Before'), 'Before'),
+    after: parseDateOrNull(formGet(form, 'After'), 'After'),
+    modifiedAfter: parseDateOrNull(formGet(form, 'ModifiedAfter'), 'ModifiedAfter'),
     types,
     // 超长会让 D1 的 LIKE 直接报错（未处理的 500）⇒ 在入口按字节校验并回 400。
     searchText: normalizeSearchText(formGet(form, 'SearchText')),

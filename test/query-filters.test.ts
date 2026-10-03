@@ -1,13 +1,18 @@
 // `/api/history/query` 过滤与排序语义的端到端验证
 //
 // 为什么需要：此前只覆盖了「非法值 → 400」（F9/F27），**过滤与排序本身从未端到端断言**，
-// 而官方客户端的历史 UI 直接依赖它们：
-//   SearchText    → 搜索框
-//   Starred       → 星标筛选
-//   Types         → 类型筛选
-//   SortByLastAccessed → 排序切换
-//   Before/After  → 时间范围分页（HistorySyncer.FetchRemoteRangeAsync）
-//   ModifiedAfter → **增量同步**（SyncAllAsync(_lastSyncTime) 只拉 LastModified >= 上次同步时间的记录）
+// 而它们是协议面契约（第三方客户端、以及未来可能出现的客户端历史页都会用到）。
+// 各字段的**可达面**（2026-10-03 按上游基线 `984d3463` 源码逐处核对 —— 别按"官方客户端天天在用"
+// 给这些用例排优先级，那样会把有限的判别力花在今天发不出去的字段上）：
+//   ModifiedAfter → **唯一**由官方客户端发出的过滤条件：增量同步
+//                   `SyncAllAsync(_lastSyncTime)`（`UserServices/ClipboardService/HistoryService.cs:215`）
+//                   只发 `Page` + `ModifiedAfter`
+//   SearchText / Starred / Types / SortByLastAccessed / Before / After
+//                 → 当前基线**无客户端路径**：官方客户端历史页的筛选/搜索/排序走**本地库**
+//                   （`ViewModels/HistoryViewModel.cs:1268` → `historyManager.GetHistoryAsync`），
+//                   而唯一会传这些字段的 `HistorySyncer.SyncRangeAsync`（`HistorySyncer.cs:43-75`）
+//                   在整仓**无调用方**。故本套件钉的是**服务端语义本身**（协议契约 + 不得回归），
+//                   而不是"客户端正在依赖"。注释此前写成"官方客户端的历史 UI 直接依赖它们"，与上游代码不符。
 //
 // 隔离方式：每条记录 text 带唯一 RUN 标记，断言时先按标记筛出本次记录再判断顺序/有无。
 // 不用 SearchText 做隔离，否则 SearchText 一旦失效会连带掩盖其它过滤器的断言。

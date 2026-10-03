@@ -13609,3 +13609,98 @@ the new version.`」与 **32 次**「`Durable Object connection closed because t
   （128 MiB isolate），而被它替换掉的"首批 5 条探路 + 均值外推"正是产生 25× 越界（§188）的那个版本；
   如果将来要为了减少代码把"扫描 + 删除"两条语句并成一条（`SUM(...) OVER (ORDER BY ...)` 的 CTE 形态），
   应单独起一轮做（它重写的是两条最危险的 UPDATE）。
+
+## 196. 上游判定的三处补正：`size` 分支、判定位置、丢弃过滤条件的可观测性（2026-10-03）
+
+起因是一次**只读代码**的上游（基线 `984d3463`）逐处对照评估：把本实现的协议面判据与上游源码逐条对齐，
+落出三条「上游有这一支、这里没有」的分叉（与 CF 平台约束那几类应有偏移不同）。三条都按**回到上游判据与位置**修，
+不新增策略；另订正两处**文档/注释与上游代码不符**的表述。两条"决定不做"记录在 `design.md` D44/D45。
+
+### 196.1 `POST /api/history` 无 data 的 inline Text：补齐 `Size > Text.Length` 那一支
+
+- 上游 `TextProfile.IsLocalDataValid(false)`（`TextProfile.cs:87-138` → `IsInMemoryTextValid`）的拒绝条件是**两条**：
+  ① `HasTransferData = TransferDataFile 非空 || Size > Text.Length` 为真；② 否则内联哈希 == 声明 Hash。
+  `src/profile.ts` 的 `isLocalDataValidStrict` 此前**只有 ②**（同文件的 `isLocalDataValid`（quick 版，服务
+  EnsureExistingRecordData）两条本来都有 —— 这条差异只在新记录路径上）。
+- 后果：「哈希吻合（对**截断文本**）但 `size` 更大、且不带 data」的请求：上游 400，本实现 200 并落库一条
+  `text` 被截断、`size` 更大、`hasData=false` 的记录。官方客户端对 inline Text 恒发 `size == text.Length` ⇒ 不可达，
+  但那是「畸形输入被静默接受」，与 D9（严格复刻）相反。
+- **判别力才是这一节的重点**：`test/fixes.test.ts` 那条用例（`size > 文本长度但无 transfer data → 拒绝`）
+  一直**没有判别力** —— fixture 用 `hash: sha256('anything')` 配 `text: 'short'`，于是它被 ② 拒绝，
+  ① 在代码里**根本不存在**也照样绿（测试名声称的分支 ≠ 实际执行的分支）。改成 `hash: sha256(text)` +
+  `size: text.length + 1` 之后，唯一能拒绝它的就是 ①。
+  注：`progress.md` §7（2026-09-12）那张表的第 3 行写「按上游判定」，当时只落到 quick 版 —— 历史快照按惯例不改，
+  差异在此记明。
+- 回归钉子：`test/dto-validation.test.ts` 新增 HTTP 级「哈希吻合 + size 更大 + 无 data ⇒ 400（文案与上游逐字相同）」
+  与**对照**「size == 文本长度 ⇒ 200」（官方客户端形态不得被这条新判据误伤）。
+- 反向验证（判别力的证据）：把 ① 那一行暂时置为不生效 ⇒ **3 条红**（新增 2 条 + `fixes.test.ts` 那条）、其余 83 条绿；
+  还原后 `sha256sum src/profile.ts` = `f17aa4d5…`，与改前**逐字节相同**。
+
+### 196.2 `PUT /SyncClipboard.json`：矛盾检查回到**既有记录复用分支之前**
+
+- 上游顺序（`SyncClipboardController.cs:158-196`）：`dto == null` → `NormalizeSHA256` →
+  `!HasData && TransferDataHash != null` ⇒ 400 → **才**查既有记录。本实现把这条检查放在复用分支**之后** ⇒
+  「命中既有记录 + hasData=false + 带 transferDataHash」的同一请求：上游 400、本实现 200（静默复用）。
+  官方客户端的 `TransferDataHash` 仅在 `hasData` 时非 null ⇒ 不可达，但位置本身是可观测的协议面行为。
+- 回归钉子：`test/dto-validation.test.ts` 新增「先建同 hash 记录 → 再发矛盾请求 ⇒ 400 + 上游文案」+ **对照**
+  （去掉 `transferDataHash` 的同一请求仍 200 ⇒ 证明 400 来自新位置，而不是"复用被禁掉了"）。
+- 反向验证同 196.1（同一次置为不生效 ⇒ 该用例红 ⇒ 还原 ⇒ sha256 与改前相同）。
+
+### 196.3 query 的时间字段：语义不动 + 补可观测性 + 订正被实测推翻的理由
+
+- **语义不动是结论，不是偷懒**：客户端发的是**按客户端区域性**格式化的 `DateTimeOffset.ToString()`
+  （本机 zh-CN 实测 `2026/10/3 19:02:03 +08:00`；`OfficialAdapter.cs:267-269`），
+  两侧都只能用「某个固定的**非客户端**区域性」去解析。2026-10-03 逐串对照（V8 `Date.parse` × .NET `DateTimeOffset.Parse`）：
+
+  | 线值 | V8 `Date.parse` | .NET（invariant / en-US / zh-CN） | .NET（de-DE / fr-FR） |
+  |---|---|---|---|
+  | `2026/10/3 19:02:03 +08:00` | 2026-10-03T11:02:03Z | 同左 | 同左 |
+  | `10/3/2026 7:02:03 PM +08:00` | 2026-10-03T11:02:03Z | 同左 | 同左 |
+  | `03.10.2026 19:02:03 +08:00`（de-DE 形态） | **2026-03-10** | **2026-03-10** | 2026-10-03（读对） |
+  | `2026年10月3日 19:02:03 +08:00` | **NaN** | 2026-10-03（读对） | 同左 |
+
+  ⇒ ① 点分日期的日/月互换**两侧同侧**（本实现 == invariant/en-US/zh-CN 区域性的上游）；
+  ② 唯一「上游会用上过滤、本实现忽略」的档是 .NET 认、V8 不认的形态 ⇒ 与已登记的「忽略」偏离同类（`docs/protocol.md` §10）。
+  该行原文写着「`Date.parse` 可覆盖 zh-CN/en-US/de-DE 等」，**被上表推翻**（de-DE 会被读成 3 月 10 日）；
+  影响面原文只写「多取一页」，实际还有「被读成未来时间 ⇒ 该轮增量同步一条都取不到」这一档（两侧都如此）——
+  本轮连同实测表一起订正。
+- **补可观测性**：`parseDateOrNull` 现在打 `[HISTORY QUERY] drop <字段>: <值>`（压单行、截 80 字符；时间串不是剪贴板正文）。
+  状态码仍是 200 + 忽略 —— 「条件被丢掉」与「范围内确实没有记录」在响应上同形，不留痕就只能靠比对两次请求才能发现。
+  README 的「常见日志标识」补了这条。
+- 回归钉子：`test/dto-validation.test.ts` 新增「`ModifiedAfter=not-a-date` ⇒ 200（状态码不变）+ 必须出现该 warn」
+  （临时替换 `console.warn` 收集）。
+
+### 196.4 订正两处「客户端在依赖」的错误表述
+
+- `test/query-filters.test.ts` 的文件头与 `docs/design.md` 的套件清单都写着这些过滤器「官方客户端的历史 UI 直接依赖它们」。
+  按上游基线源码逐处核对**不成立**：客户端历史页的筛选/搜索/排序走**本地库**（`ViewModels/HistoryViewModel.cs:1268` →
+  `historyManager.GetHistoryAsync`），唯一会传这些字段的 `HistorySyncer.SyncRangeAsync`（`HistorySyncer.cs:43-75`）
+  在整仓**无调用方**；远程列表的唯一活路径是 `SyncAllAsync(_lastSyncTime)`
+  （`UserServices/ClipboardService/HistoryService.cs:215`），即**只发 `Page` + `ModifiedAfter`**。
+  两处已改写为「服务端语义契约 + 各字段可达面」，免得下一位按错误前提排优先级。
+  （`GET /api/history/statistics` 与 `DELETE /api/history/clear` 同理：客户端一次都不调。）
+
+### 196.5 文档同步与未做项
+
+- `docs/protocol.md`：§3.4 的时间字段例外补 warn 口径；§4.1 改成 4 步（矛盾检查是第 2 步，与上游同序）；
+  §5.1 的无 data 严格校验改成「两条判据」；§10 新增两行「本轮对齐」+ 订正时间字段那一行（含实测表）；
+  §10 的 404 行号按本工作区校正（`routes/history.ts` 的 309/322/326/477）。`README.md`：日志标识补 `[HISTORY QUERY]`。
+- **未做**（`design.md` D45）：把 query 的搜索从 `LIKE` 换成 `instr` 以解除 `SearchText` 的 48 字节上限。
+  它能修长搜索（>16 个汉字），但会丢掉 `%`/`_` 的通配语义 —— 那是**上游行为**，改了就是新的有意偏离；
+  且协议面与界面面两条路径的守卫/用例都要一起动。属「要不要做超集」的独立决策。
+- **未做**（`design.md` D44）：点分日期改 day-first —— 见 196.3 的实测，那会**主动偏离**上游。
+- 旧审计文档（`AUDIT-*.md`、`free-plan-audit.md`、`backend-gaps.md`、`security-fix-plan.md` 等）里的
+  `src/profile.ts:<行号>`、`src/routes/history.ts:<行号>` 引用**保持原样**：它们是带日期的分析快照，
+  本轮改动会让其中一部分偏移（`profile.ts` 净 +5～+13 行、`routes/history.ts` 净 +11 行）——
+  按本仓库惯例（历史快照不做"顺手校准"）不改，以本节为口径。
+
+### 196.6 门禁（2026-10-03）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 个 `test/manual/*.mjs` **0 错**。
+- 全量套件：先起 `wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1`，再
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`
+  ⇒ **22 个套件 / 477 个用例全过**、退出码 0（79.17 s）。套件数与资源数不变 ⇒ 现状文档里的计数无需改动
+  （`test/docs.test.ts` 绿）。
+- **未跑**：`test/manual/probe*.mjs`。DoD 第 5 条只对"改前端"生效，本轮没碰 `public/` 下任何文件 ⇒ 不适用
+  （前端逻辑的既有覆盖 `test/ui-logic.test.ts` / `ui-contract.test.ts` 已随全量套件通过）。

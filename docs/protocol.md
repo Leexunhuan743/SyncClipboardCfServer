@@ -88,7 +88,9 @@
 `Types` 的取值与 `Enum.TryParse<ProfileTypeFilter>` 一致：枚举名（大小写不敏感）、逗号组合、**或数字**；
 数字与名称混用（如 `Text,5`）解析失败 → 400。`Page < 1` 由控制器钳为 1（非 400）。
 **时间字段是例外**：`Before`/`After`/`ModifiedAfter` 解析不了时本实现**忽略该项**而非 400（有意偏离，
-理由与影响见 §10 的「query 的时间字段无法解析」一行）。
+理由、实测对照与影响面见 §10 的「query 的时间字段无法解析」一行），并打一条
+`[HISTORY QUERY] drop <字段>: <值>` 的 warn（值压成单行、截断 80 字符）——「条件被丢掉」与
+「范围内确实没有记录」在响应上同形，不留痕就只能靠比对两次请求才能发现。
 媒体类型不在上面这套绑定语义内：`POST /api/history/query` 只受 `[FromForm]` 约束，没有 `[Consumes]`，
 故 multipart 与 `application/x-www-form-urlencoded` 都接受（见 §5.1 末）。
 
@@ -150,7 +152,12 @@
 ### 4.1 PUT /SyncClipboard.json 精确流程
 
 1. body 为 null → 400 `"dto cannot be null"`。
-2. `hash` 非空白 → 查历史（`Type + Hash`，忽略大小写，且 **!IsDeleted**）：
+2. `!dto.HasData && dto.TransferDataHash != null` → 400 `"TransferDataHash cannot be set when HasData is false"`
+   （上游 3.3.0 #413；`transferDataHash` 的值**形状**错误更早一步就被 JSON 绑定判为 400，见 §2）。
+   ⚠️ **位置**：上游这条检查在既有记录查询**之前**（`SyncClipboardController.cs:178-181` 先于
+   `:183-193` 的 `GetExistingProfileAsync`）—— 2026-10-03 对齐：此前本实现把它放在复用分支之后，
+   于是「命中既有记录 + hasData=false + 带 transferDataHash」的同一请求上游 400、本实现 200（静默复用）。
+3. `hash` 非空白 → 查历史（`Type + Hash`，忽略大小写，且 **!IsDeleted**）：
    - 命中 → 更新：`LastAccessed = LastModified = now`，`Version++`；广播 `RemoteHistoryChanged(记录 dto)`；
      写当前 profile（用记录 dto）并广播 `RemoteProfileChanged`；返回 200。
    - 未命中 → 进入新建/复活流程（`CreateAndSaveNewProfile`）：
@@ -171,7 +178,7 @@
           File/Image = `dto.Size`（缺失时回落实字节数）；Group = 解压后条目长度之和。
         - 广播 `RemoteHistoryChanged(记录 dto)`。
      f. 写当前 profile（该记录 dto）→ 广播 `RemoteProfileChanged(记录 dto)` → 200。
-3. `hash` 为空 → 直接走 2 的未命中流程（不查历史）。
+4. `hash` 为空 → 直接走 3 的未命中流程（不查历史）。
 
 > 注意：Text 无数据文件时跳过 b/c/d；`GetSyncProfile` 命中历史后返回的 dto 中 `dataName` 为持久化后的文件名。
 
@@ -275,8 +282,11 @@ public static string GetWorkingDirName(ProfileType type, string hash)
     - 返回服务器当前记录 dto（200）。
   - 记录不存在：
     - 有 data → 写 `history/…` 并校验（`SaveTransferDataAsync`，校验失败 → **422**，见 §8.3；成功后用持久化结果回填实体字段）。
-    - **无 data → 严格校验**（上游 3.3.0 #413 把 `IsLocalDataValid(true)` 收紧为
-      `IsLocalDataValid(false)`：Text = 内联全文哈希 == 声明 hash；File/Image/Group 没有内联数据 ⇒ 一律拒绝），
+    - **无 data → 严格校验**（上游 3.3.0 #413 把 `IsLocalDataValid(true)` 收紧为 `IsLocalDataValid(false)`）。
+      Text 的判据是**两条**（`TextProfile.IsInMemoryTextValid`）：① `HasTransferData`（= `TransferDataFile`
+      非空 `||` `Size > Text.Length`）为真 ⇒ 拒绝 —— 记录声称正文更长却没有数据文件，说明 `text` 只是
+      截断预览；② 否则内联全文哈希必须等于声明 hash（**空 hash 视为有效**）。File/Image/Group 没有内联
+      数据（新建记录此时也还没有数据文件）⇒ 一律拒绝。
       失败 → 400 `"Local data is missing or does not match the profile hash."`（**旧文案 `Needs tranfer data.`
       只保留在「既有记录、无 data」的 EnsureExistingRecordData 路径上**）。
     - 入库、广播、返回记录 dto（200）。
@@ -490,7 +500,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | `PUT /SyncClipboard.json` 的数据落盘方式 | `File.Move`（**不读数据**，常数内存、瞬时完成） | 读入内存（`arrayBuffer()`）→ 重传到 `history/` 新 key（R2 **无 move/rename**） | 峰值内存 ≈ 文件大小，且多一次 R2 读+写。客户端默认上限 20MB，实测 20/60MB 通过；若把客户端上限提到 ~50MB 以上需留意 Workers 128MB 内存 |
 | `POST /api/history` 的 body 处理 | `MultipartReader` **流式**（`[DisableFormValueModelBinding]` + `[RequestFormLimits]`），data 段直接抄到磁盘 | 整体读入内存后解析（`c.req.arrayBuffer()`） | 同上：峰值内存 ≈ 请求体大小。实测 20MB 通过 |
 | POST 路径 `size` 口径 | Text=声明值、File/Image=实际字节、Group=条目和 | 同左 | — |
-| query 的时间字段无法解析（如 `Before=not-a-date`） | 表单绑定失败 → 400 | **忽略该过滤条件**（等价于上游 POST 元数据路径的 `TryParse` 失败回退） | 有意偏离：客户端时间串带偏移（`DateTimeOffsetPattern = 短日期 + 长时间 + zzz`，见 .NET `DateTimeFormatInfo.DateTimeOffsetPattern`），`Date.parse` 可覆盖 zh-CN/en-US/de-DE 等；若某文化串两边都解析不了，返 400 会让客户端历史同步**整轮失败**，而忽略只会让增量过滤退化为「多取一页」 |
+| query 的时间字段无法解析（如 `Before=not-a-date`） | 表单绑定失败 → 400 | **忽略该过滤条件**（等价于上游 POST 元数据路径的 `TryParse` 失败回退），并打一条 `[HISTORY QUERY] drop <字段>: <值>` 的 warn（值压成单行、截断 80 字符；2026-10-03 补可观测性 —— 「条件被丢掉」与「范围内确实没有记录」在响应上同形） | 有意偏离。客户端时间串**按客户端区域性**格式化（`DateTimeOffsetPattern` = 短日期 + 长时间 + zzz），故两侧都只能用「某个固定的**非客户端**区域性」去解析。**2026-10-03 实测**（V8 `Date.parse` × .NET `DateTimeOffset.Parse`，逐串各跑一遍）：ISO、zh-CN（`2026/10/3 19:02:03 +08:00`）、en-US（`10/3/2026 7:02:03 PM +08:00`）两侧一致；**点分日期（`03.10.2026 …`，de-DE 形态）两侧都按美式读成 3 月 10 日** —— 本实现与 invariant/en-US/zh-CN 区域性的上游**同侧**，只有 day-first 区域性的上游（实测 de-DE/fr-FR）读对；另外 .NET 接受一些 V8 不认的形态（如 `2026年10月3日 19:02:03 +08:00`）⇒ 那一档上游会用上过滤、本实现忽略。影响面：**官方客户端唯一会发的时间字段是 `ModifiedAfter`**（增量同步，`UserServices/ClipboardService/HistoryService.cs:215`），返 400 会让整轮同步失败，而忽略最多让该轮退化成「取最新一页」（下次同步自动纠正），且丢弃有 warn 可查 |
 | `GET /file/{name}` 内部异常（非「文件名非法」） | `catch (Exception)` → **400** + 异常消息（`GetFileFromFolder`） | 500（异常上抛到运行时） | 客户端对两者都只走 `EnsureSuccessStatusCode` 的失败分支；把内部故障报成 400 会误导排障，故有意保留 500 |
 | hash 含路径分隔符（`/` 或 `\`） | `Profile.GetWorkingDirName` 抛 `ArgumentException`（未捕获 → 500） | 写路径入口 → **400**（`Hash contains invalid path characters`）；存储值分类视同损坏 → 降级为空 TextProfile | 可诊断的 400 优于 500；且杜绝「入库一条 hash 含 `/` 的记录并被设为当前 profile」（该记录会被推给客户端，而客户端本地用同一规则构造路径会抛异常） |
 | hash 含分隔符的**平台差异** | Windows：`DirectorySeparatorChar='\'`、`Alt='/'` → 两者都拒；Linux：两者都是 `/` → 只拒 `/`，**允许 `\`** | 两平台一致地拒绝两者 | 严格超集；跨平台行为一致，官方客户端恒发 SHA256 hex（永不触发） |
@@ -506,7 +516,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | Basic 密码含冒号 | `Split(':')` 截断 → 校验失败（401） | 取首个冒号后全部 → 可用 | 更宽容；从官方服务器迁移的用户不受影响 |
 | `WWW-Authenticate` | `Basic realm="SyncClipboard"` | 逐字一致 | — |
 | MIME 表与附件加固 | 仅 `Content-Type`；可渲染类型不额外处置 | **默认-deny 内联白名单**：只有图片（除 svg）、`text/plain`、`text/csv`、`text/markdown`、`application/json`、`application/pdf` 允许内联，其余一律 `attachment`；HTML/XML 家族**按后缀判定**（含 `+xml`）另加 CSP 沙箱 | **有意加固偏离**（不止"表更大"）：判据从"枚举 4 项可渲染类型"改成后缀判定，因为换表当天 `.xml` 会变成 `text/xml` 而旧枚举恰好删过它（`AUDIT-redundancies` D-03）—— 只换表会把已修的存储型 XSS 链重新打开。读数见 `progress.md` §106 |
-| `404` 的**响应体** | `NotFound()` → **空体** | 5 处 `text/plain` 的 `Not Found`（`src/routes/webdav.ts:163`、`src/routes/history.ts:297/310/314/465`） | 客户端只判 `HttpStatusCode.NotFound` ⇒ 不可见（**分支前既有**，本轮补登记） |
+| `404` 的**响应体** | `NotFound()` → **空体** | 5 处 `text/plain` 的 `Not Found`（`src/routes/webdav.ts:163`、`src/routes/history.ts:309/322/326/477`） | 客户端只判 `HttpStatusCode.NotFound` ⇒ 不可见（**分支前既有**，本轮补登记；行号按 2026-10-03 的工作区校正） |
 | `GET /SyncClipboard.json` **降级出口**的 Content-Type | 三个出口一律 `application/json; charset=utf-8` | `ok` 出口带 charset；`null-dto`/`missing` 两个降级出口**不带**（`src/routes/webdav.ts:88-90`/`:105-107`，逐字保留 Hono `c.json` 的取值） | `ReadFromJsonAsync` 两者都接受 ⇒ 不可见（**分支前既有**，本轮补登记） |
 | `POST /api/history` 的媒体类型 | 显式 `[Consumes("multipart/form-data")]`（`HistoryController.cs:141`）⇒ 非 multipart 在模型绑定**之前**被拒 → **415** | 同（`src/routes/history.ts` 的 `parseFormBody(c, false)`；提前返回前先排空请求体） | **本轮对齐**（此前本实现一律回 400）。客户端按状态码分支，故必须一致 |
 | `POST /api/history/query` 的媒体类型 | 只有 `[FromForm]`（`HistoryController.cs:100`）、无 `[Consumes]` ⇒ multipart 与 `application/x-www-form-urlencoded` **都接受** | 同（`parseFormBody(c, true)`：urlencoded 走 `URLSearchParams`，字段名同样大小写不敏感） | **本轮补齐**。官方客户端发 multipart，两条路径都不受影响 |
@@ -531,6 +541,8 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 
 | 超范围 `Type`（≥6，经数字入口入库）的**序列化** | `JsonStringEnumConverter` 对未定义值写**数字**（如 `6`）（推断，未实测） | 一律写 `"None"`（`src/serialization.ts:60-69`） | 官方客户端恒发枚举名 ⇒ 不可达；两条写路径都接受数字 type（`0..INT32_MAX`），只有「先前用数字造出过这种行」才谈得上可见 |
 | 浏览器导航 `GET /` 的 **302** | 无此分支（`/` 只按 WebDAV 探活） | `Accept: text/html` 且界面开启时 302 `/ui_v1/`（**登记在 §4 的端点表，此处仅为「§10 是差异唯一登记处」补一条指引**；客户端 `Test()`/`GetFolderSubList()` 都是 PROPFIND，不可达） | 见左栏 |
+| `POST /api/history` **无 data 的 inline Text** 判据 | `TextProfile.IsLocalDataValid(false)` 是**两条**：① `HasTransferData`（`TransferDataFile` 非空 \|\| `Size > Text.Length`）为真 ⇒ 拒绝；② 否则内联哈希 == 声明 Hash（`TextProfile.cs:87-138`） | 同左（2026-10-03 补齐 ①；此前只有 ② ⇒ 「哈希吻合但 size 更大、无 data」的请求：上游 400、本实现 200 并落库一条正文被截断、size 更大的记录） | **本轮对齐**。官方客户端对 inline Text 恒发 `size == text.Length` ⇒ 不可达。该分支的用例此前**无判别力**（`test/fixes.test.ts` 那条的 hash 同时不匹配 ⇒ 实际由 ② 拒绝，① 在代码里缺失也照样绿），现已改成只可能由 ① 拒绝，另在 `test/dto-validation.test.ts` 加了 HTTP 级判别用例 |
+| `PUT /SyncClipboard.json` 的 `hasData=false` + `transferDataHash` 矛盾检查**位置** | 在既有记录查询**之前**（`SyncClipboardController.cs:178-181` 先于 `:183-193` 的 `GetExistingProfileAsync`） | 同左（2026-10-03 把检查移到复用分支之前；此前「命中既有记录 + hasData=false + 带 transferDataHash」：上游 400、本实现 200（静默复用）） | **本轮对齐**。官方客户端的 `TransferDataHash` 仅在 `hasData` 时非 null（`ProfileDto.ToProfileDto`）⇒ 不可达 |
 
 ## 11. 参考实现对照表
 
