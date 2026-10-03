@@ -487,4 +487,63 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
     const script = read('tools/migrate-d1.mjs');
     expect(script).toContain("const DB = 'DB'");
   });
+
+  it('迁移的 ALTER DDL 与 schema.sql 的列定义**同一事实**（加了列/改了默认值必须两处同步）', () => {
+    // 这是本仓库"同一个事实存在两处"清单里**唯一还没被判据看着**的一处：
+    // 新库由 `CREATE TABLE` 建列、老库由 `ALTER TABLE … ADD COLUMN` 加列 —— 两边必须是同一列，
+    // 否则新库与老库**结构不同**，而 DDL 本身两边都能跑过（不报错），只在别处冒出来：
+    //   · `NOT NULL DEFAULT ''` 是 SQLite 对 ADD COLUMN 的硬要求（非空列必须带默认值）；
+    //   · 少了 `DEFAULT ''`，老库的新列默认 NULL、新库是 ''，同一行在不同库上读出来不同值；
+    //   · 默认值不一致（`DEFAULT ''` vs `DEFAULT 'x'`）是纯静默漂移，什么都不报。
+    // tools/migrate-d1.mjs 的注释已经写着"必须与 schema.sql 逐字一致"，但没有判据 —— 靠人记。
+    // （仓库文件是 CRLF ⇒ 按行/正则抽取前先归一，见上面那条守卫的同一教训。）
+    const script = read('tools/migrate-d1.mjs').replace(/\r\n/g, '\n');
+    const schema = read('schema.sql').replace(/\r\n/g, '\n');
+
+    // 抽取**每一条**迁移（不是只第一条）：将来加第二条 ADD COLUMN 时，它同样必须与 schema.sql 同源。
+    // 一条迁移在源码里是 `{ table: '…', column: '…', ddl: "ALTER TABLE …" }` 三行，故按出现顺序配对。
+    const entries = [
+      ...script.matchAll(/table:\s*'([^']+)'[\s\S]*?column:\s*'([^']+)'[\s\S]*?"(ALTER TABLE[^"\n]+)"/g),
+    ].map((m) => ({ table: m[1]!, column: m[2]!, ddl: m[3]! }));
+
+    // 抽取器自检：没抽到就说明文件结构变了，下面的断言会退化成"空集合全过"
+    expect(
+      entries.length,
+      '抽不到任何一条迁移（抽取器失效；迁移条数应 ≥1）',
+    ).toBeGreaterThan(0);
+    expect(entries.length, '抽取到的迁移条数与源码里的 MIGRATIONS 条目数对不上').toBe(
+      (script.match(/table:\s*'/g) ?? []).length,
+    );
+
+    for (const { table, column, ddl } of entries) {
+      // ① 结构：DDL 必须就是 `<表> ADD COLUMN` 形态（不是 CREATE/RENAME/别的表的列）
+      const prefix = `ALTER TABLE ${table} ADD COLUMN `;
+      expect(ddl.startsWith(prefix), `${table}.${column} 的 DDL 形态不对：${ddl}`).toBe(true);
+      expect(ddl, `DDL 必须加的是同名表上的那一列（${table}.${column}）`).toContain(` ${column} `);
+
+      // ② 交叉核对：DDL 的**列定义段**与 schema.sql 里该列的定义**逐字一致**
+      const migratedDef = ddl.slice(prefix.length);
+      const body = schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\);`));
+      expect(body, `schema.sql 里找不到表 ${table}`).not.toBeNull();
+      const schemaLine = body![1]!
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => new RegExp(`^"?${column}"?\\s`).test(l));
+      expect(schemaLine, `schema.sql 里找不到列 ${table}.${column}`).toBeDefined();
+      const schemaDef = schemaLine!.split('--')[0]!.trim().replace(/,$/, '');
+      expect(schemaDef.length, '抽取器的正向证据：schema 列定义不该是空串').toBeGreaterThan(20);
+
+      expect(
+        migratedDef,
+        `${table}.${column} 的迁移列定义与 schema.sql 不一致 —— 新库/老库会结构不同，且 DDL 不会报错：\n` +
+          `  migrate: ${migratedDef}\n  schema : ${schemaDef}`,
+      ).toBe(schemaDef);
+
+      // ③ 非空列必须带默认值：SQLite 的 ADD COLUMN 直接拒绝 `NOT NULL` 而不给 `DEFAULT`
+      //    （那条错误会让 CI 的迁移步骤红、挡住部署 —— 但那时是在部署链路上才发现）
+      expect(migratedDef, `${table}.${column}：ADD COLUMN 出现 NOT NULL 却没有 DEFAULT ⇒ SQLite 会拒绝`).toMatch(
+        /NOT NULL DEFAULT/,
+      );
+    }
+  });
 });

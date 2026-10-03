@@ -14392,3 +14392,65 @@ F9 的「按 content-length 快速 413」用例里，PATCH 那条写的是 `/api
 - 全量套件（dev server 8787 + `--no-file-parallelism`）：**22 个套件 / 501 个用例全过**、退出码 0
   （90.84 s；比 §206.4 的 499 多 2 条 = 本轮新增的两个用例）。套件数与资源数不变。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 208. 部署/运维面：四处开关已被守卫覆盖，唯独「迁移 DDL ↔ schema.sql 同一事实」靠人记（2026-10-03）
+
+扫描对象 = 部署与运维面：`.dev.vars.example` / CI / `README` 的开关清单、CI 的资源解析（D1 按名解析
+与 `database_id` 注入）、迁移链（`schema.sql` + `tools/migrate-d1.mjs` + CI 步骤顺序）、
+部署后冒烟（只读）、DO 的长驻运维面（已在 §195/D42 登记）。
+
+### 208.1 逐项对照结果
+
+| 面 | 判据 | 结论 |
+|---|---|---|
+| 开关四处一致 | `test/docs.test.ts` 的「部署开关清单」组**双向**比对 `.dev.vars.example` ↔ `deploy.yml` 的 `vars:` 名单 ↔ `README` 开关表（含 `D1_DATABASE_ID`/`D1_BOOTSTRAP`） | **已有**（2026-09-21 加；注释记着"README 曾漏 4 个 `AUTH_RATE_LIMIT_*`"） |
+| `wrangler.toml` 的 `[vars]` | 只有 4 个**默认值**语义的项在列（`UI_ENABLED`/`MAX_SAVED_HISTORY_COUNT`/`HISTORY_RETENTION_MINUTES`/`VERSION`）；限速四参数与 `MAX_REQUEST_BODY_BYTES` 由 CI 注入 | **有意如此**（它们是部署期决定的，写进仓库会造成"改了这里就生效"的错觉），README 开关表已标注 |
+| CI 取值校验 | `resolve_bool` / `resolve_int` 逐个带默认值与上下限，越界**硬失败**（exit 1）；下限为 0 的两项有注释说明"0 = 不限制"的上游语义 | **已有** |
+| D1 寻址与顺序 | 三处一律按 **binding 名 `DB`**，且 `Migrate D1` **先于** `Deploy Worker` | **已有守卫**（步骤顺序 + `d1 execute DB` 形态 + 脚本里的 `const DB = 'DB'`） |
+| 部署后冒烟 | 全**只读**（未认证 401 / 已认证版本串比对 / statistics JSON / `GET /SyncClipboard.json` / 界面四挂载点按 `UI_ENABLED` 断言 200 或 404），**绝不** PUT 当前剪贴板 | **已有**（注释记着"旧版挂在从未设置的变量上 ⇒ 一直静默跳过"的修复） |
+| 凭据同步 | `Sync Basic Auth credentials` 的 `if` 只能写在 shell 里（`secrets` 上下文不许出现在 step `if`）——注释逐字记着 `4551c16` 连续四次推送**一次都没部署**的事故 | **已有** |
+| 迁移工具行为 | 幂等（`PRAGMA table_info` 先查）、`--remote` 横幅前缀可解析、ALTER 后**复查**；本地实跑 → `already present`、退出码 0 | **已有**（`parseD1Output` 三形态单测 + 步骤存在/顺序/寻址用例） |
+
+### 208.2 本轮补的缺口：迁移 DDL 与 `schema.sql` 是同一事实的两处，但**只有注释提醒**
+
+`tools/migrate-d1.mjs` 的注释写着「DDL 必须与 schema.sql 里该列的写法**逐字一致**」，
+但此前**没有任何判据**看着这一对：新库由 `CREATE TABLE` 建列、老库由 `ALTER TABLE … ADD COLUMN` 加列，
+不一致时 **DDL 自己不会报错**（两条都能跑过），后果是**新库与老库结构不同**：
+
+- 丢了 `DEFAULT ''` ⇒ 老库那列默认 NULL、新库是 `''`，同一行在不同库上读出不同值；
+- 默认值不一致（`''` vs `'unknown'`）⇒ 纯静默漂移，哪里都不报；
+- 加错列名 ⇒ 新代码写的列在老库里仍不存在，**每次写库失败**；
+- `NOT NULL` 少了 `DEFAULT` ⇒ SQLite 直接拒绝 `ADD COLUMN`（在部署链路上才发现）。
+
+**修法**：`test/docs.test.ts` 的迁移守卫组新增一条用例，**逐条**读 `MIGRATIONS` 的
+`{table, column, ddl}`，与 `schema.sql` 里该列的列定义段**逐字比对**，并断言三件事：
+① DDL 是 `<表> ADD COLUMN` 形态且加的是同名表的该列；② 列定义段与 schema 逐字一致；
+③ `NOT NULL` 必须带 `DEFAULT`。抽取器带"抽到了几条"的自检（与源码里 `table:` 出现次数相等），
+避免结构变了以后退化成空集合假绿。
+
+### 208.3 判别力（四个变体，全部转红，随后逐字节还原）
+
+| 变体 | 结果 |
+|---|---|
+| 丢掉 `DEFAULT ''`（`NOT NULL` 无默认值） | **RED**（列定义与 schema 不一致） |
+| 默认值改成 `'unknown'` | **RED**（同上） |
+| 加错列（`column: 'TransferDataMd5'`） | **RED**（DDL 必须加同名表上的那一列） |
+| DDL 形态改成 `CREATE` | **RED**（抽不到任何一条迁移 ⇒ 抽取器自检生效） |
+
+基线 GREEN、四个变体 RED、还原后 `tools/migrate-d1.mjs` 的 sha256 与破坏前一致。
+
+### 208.4 顺带实测的运维面事实
+
+- `node tools/migrate-d1.mjs --local` 在本地库上真实跑通：`HistoryRecords.TransferDataHash
+  already present`、退出码 **0**（幂等路径确实走 `PRAGMA` 分支，不是 ALTER）。
+- 本机**没有 .NET SDK**（只有运行时，上游要 10.0.302）⇒ 部署链的上游侧对照仍不可做（§206.3 已记）。
+- `README` 的「升级与数据备份」补了一段**维护纪律**（新增列必须同时改 `schema.sql` 的 `CREATE TABLE`
+  与 `MIGRATIONS`、两边逐字一致、非空列必须带 `DEFAULT`），并指向本轮新增的守卫。
+
+### 208.5 门禁（2026-10-03，本轮）
+
+- `tsc --noEmit` 0 错；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` 0 告警；
+  `node --check` ×4 = 0 错。
+- 全量套件（dev server 8787 + `--no-file-parallelism`）：**22 个套件 / 502 个用例全过**、退出码 0
+  （比 §207.5 的 501 多 1 条 = 本轮新增的迁移 DDL 守卫）。套件数与资源数不变。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。

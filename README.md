@@ -217,6 +217,11 @@ Cloudflare 默认分配的 `*.workers.dev` 域名在部分国内运营商网络�
     用 `node tools/migrate-d1.mjs --remote`（幂等，可重复执行；`--local` 修本地库）——
     ⚠️ `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 只对新库生效，**老库加列必须跑迁移脚本**，否则
     新代码的每次写库都会因缺列失败。
+    > **给改代码的人**（不是部署步骤，是维护纪律）：新增一列要**同时**改两处 —— `schema.sql` 的
+    > `CREATE TABLE`（管新库）与 `tools/migrate-d1.mjs` 的 `MIGRATIONS`（管老库），且两边的列定义要
+    > **逐字一致**；非空列在 `ADD COLUMN` 里必须带 `DEFAULT`（SQLite 的硬要求）。这两处不一致时
+    > DDL 自己不会报错，只会让新库与老库结构不同 —— 所以 `test/docs.test.ts` 有一条守卫逐条比对
+    > 两边的列定义（2026-10-03 补；此前只靠那句注释提醒）。
   - GitHub Actions 部署：在你的 Fork 仓库页面点击「Sync fork」同步上游更新，推送到 master 分支后会自动触发重新部署（CI 已内置迁移步骤，部署前自动执行）。
 - **数据备份**：剪贴板历史保存在 D1 数据库中，可通过官方命令导出本地 SQL 备份：
   ```bash
