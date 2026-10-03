@@ -1068,6 +1068,29 @@ describe('F20 · 借鉴同类项目审计的加固（原型链 / 配置诊断 / 
     const utf8Header = 'Basic ' + Buffer.from('用户:密码', 'utf8').toString('base64');
     expect(checkBasicAuth(utf8Env, hdr(utf8Header))).toBe(true);
   });
+
+  it('checkBasicAuth 的解析边界：token 两侧空白、口令含冒号、空段（逐条都有出处）', async () => {
+    const { checkBasicAuth } = await import('../src/auth');
+    const env = { USERNAME: 'user', PASSWORD: 'pa:ss' } as never;
+    const hdr = (v: string) => new Request('https://x/', { headers: { Authorization: v } });
+    const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+
+    // 口令含冒号：上游 `Split(':')` 只取 `credentials[1]` ⇒ 第二段之后被丢掉（这种口令用不了）；
+    // 本实现取**首个冒号之后全部** ⇒ 可用。这是已登记的"更宽容"超集，这里把它钉住（别被"对齐上游"改回去）。
+    expect(checkBasicAuth(env, hdr('Basic ' + b64('user:pa:ss')))).toBe(true);
+    expect(checkBasicAuth(env, hdr('Basic ' + b64('user:pa')))).toBe(false); // 少一段不算命中
+
+    // token 两侧空白：上游 `authHeader["Basic ".Length..].Trim()`，本实现同样 trim ——
+    // 双空格形态（`Basic  <b64>`）在两边都通；头值**两端**的空白在 Headers 层就被裁掉，到不了解析器。
+    expect(checkBasicAuth(env, hdr('Basic  ' + b64('user:pa:ss')))).toBe(true);
+
+    // 空段一律不通过（":" = 空用户 + 空口令；`safeEqual('' , 'user')` 靠长度不同短路）
+    expect(checkBasicAuth(env, hdr('Basic ' + b64(':')))).toBe(false);
+    expect(checkBasicAuth(env, hdr('Basic ' + b64('user:')))).toBe(false);
+    expect(checkBasicAuth(env, hdr('Basic ' + b64(':pa:ss')))).toBe(false);
+    // 只有 scheme、没有 token
+    expect(checkBasicAuth(env, hdr('Basic'))).toBe(false);
+  });
 });
 
 describe('F19 · Text transfer data 语义对齐上游（复用文件名 / Size / FilePaths / 有效性）', () => {

@@ -14101,3 +14101,65 @@ Content-Type / Content-Disposition / 哈希回带 / Range / 422-404 映射。结
   `cache-control: no-transform`）都被实测判定为"多余/无效"并逐字节撤回 —— 判别力证据正是
   "撤回后 F36 仍通过"（说明平台本就提供该头）。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 204. 鉴权面：Basic 解析边界 + 会话 `exp` 服务端强制（两条判别性覆盖，代码零改动）（2026-10-03）
+
+扫描对象 = 鉴权面：Basic 头解析边界、401/429 的状态码与头、UI 会话 Cookie（签名/属性/过期）、
+来源校验（F4）、弱凭据开关（F1）。**结论：无须改代码**（`git diff src/` 为空）；既有覆盖已经很宽
+（见下表），本轮补的是两条**此前只有结构、没有判别力**的用例，并把一处**不可达**的宽松差异写进 §10。
+
+### 204.1 逐项对照（含既有钉子）
+
+| 判据 | 上游 | 本实现 | 既有钉子 |
+|---|---|---|---|
+| scheme 大小写 | `StartsWith("basic", OrdinalIgnoreCase)` | 同 | `fixes.test.ts`（单测）+ `fix-regressions.test.ts:381`（走 HTTP 发 `basic `） |
+| 口令**含冒号** | `Split(':')` 只取 `[1]` ⇒ 第二段之后被丢（这类口令用不了） | 取首个冒号**之后全部** ⇒ 可用（已登记的宽松超集） | **本轮新增** |
+| 非 base64 / 无冒号 / `Basic` 后无空格 | 未捕获异常 ⇒ **500** | **401** | §10 第 536 行（2026-09-15 A/B）+ `fixes.test.ts` 的 `!!!not-base64!!!` |
+| 非 ASCII 凭据 | `Encoding.UTF8.GetString` | 同（`atob` → 字节 → `TextDecoder('utf-8')`，绕开 atob 的 latin1） | `fixes.test.ts`（CJK 口令/用户名） |
+| 空段（`":"` / `user:` / `:pass`） | `credentials[0]/[1]` 与配置不等 ⇒ 401 | 同（`safeEqual` 长度不同即 false） | **本轮新增** |
+| token 两侧空白 | 切片后 `Trim()` | 同（`slice(space+1).trim()`） | **本轮新增**（双空格形态） |
+| `Basic` + **制表符** | **接受**（定长切 6 字符，不要求字面空格） | **401** | §10 第 536 行（**本轮补写**；不可达） |
+| 401 的 `WWW-Authenticate` | 有（challenge） | 协议面同；**UI 面刻意不带**（否则浏览器弹原生凭据框） | `fixes.test.ts`（用 entries 查）+ `fix-regressions.test.ts:397` + `ui.test.ts:186`（UI 面须为 null） |
+| 比较是否短路 | 常量时间 `FixedTimeEquals` | 同（`safeEqual` 两项比完再合并） | `fixes.test.ts` F20 组 |
+| 未配置凭据 | 无此态（appsettings 有默认值） | **500 fail-closed** + 可诊断文案 | `fixes.test.ts` + `rate-limit.test.ts:308` + `hardening.test.ts` G2 |
+| 弱凭据 | — | 默认只告警（`x-credential-warning: weak` + console 一条）；`ENFORCE_STRONG_CREDENTIALS=true` ⇒ 500 | `rate-limit.test.ts:318`（含阳性对照：强凭据**没有**该头） |
+| 认证失败限速（429 + `Retry-After`） | 无 | DO 状态机：IP 维 + 凭据维、15 分钟窗口、成功即清零、封锁期内正确凭据也拒、UI 登录同一套、hub(DO) 内同样、4 个开关可覆盖/非法回落 | `rate-limit.test.ts`（900+ 行，含窗口过期与阈值被覆盖后的边界） |
+| 会话 Cookie | 无（上游无 Web 界面） | 无状态签名（HMAC-SHA256；HKDF 从 `PASSWORD` 派生）：**先验签再解析载荷**、`exp` 在签名内、HttpOnly + SameSite=Strict + 仅 https 加 Secure | `ui.test.ts`（登录/登出/篡改签名首字符）+ `hardening.test.ts` G1/G2 |
+| 来源校验（F4） | — | `Origin` host ≠ 请求 host ⇒ 403；`Sec-Fetch-Site: cross-site` ⇒ 403；无 `Origin` 放行（非浏览器客户端） | `fixes.test.ts` 的 F4 组 |
+
+### 204.2 本轮补的两条覆盖
+
+1. **Basic 解析边界**（`test/fixes.test.ts` F20 组内新增一条）：口令含冒号（外加"少一段"的反例）、
+   双空格 token（`trim()` 承重）、`":"`/`user:`/`:pass` 三个空段、只有 scheme 没有 token。
+   **为什么值得钉**：这几条都压在 `parseBasicCredentials` 的相邻分支上 —— 把 `trim()`、
+   `slice(sep + 1)` 或 `if (!isAuthConfigured)` 任一处「顺手简化」，都会静默改变**凭据接受面**
+   （放松 = 认证被绕过的风险，收紧 = 用户突然登不上），而此前只有一条 `user:pass` 的直路被覆盖。
+2. **会话 `exp` 的服务端强制**（`test/hardening.test.ts` 新增 G7 组）：**同一条签名管线**只改 `exp`
+   —— 已过 ⇒ `null`，在未来 ⇒ 有会话（阳性对照），载荷形状不对（缺 `u`、`exp` 非数值）同样拒。
+   **为什么值得钉**：24h TTL 的承诺此前只有"篡改签名被拒"这一侧；把 `readSession` 里
+   `payload.exp <= Date.now()` 整行删掉，**全量套件仍然全绿** ⇒ 会话永不失效（与文档承诺相反）。
+
+### 204.3 看了但**不改**的两处（记录判断，不留代码）
+
+- **`exp: NaN` / `Infinity` 会被当作"永不过期"**（`typeof NaN === 'number'` ⇒ 跳过 `<=` 判定）。
+  可达性 = 只有**持有签名密钥（即口令本身）**的人能签出这种载荷，而此人本来就能签任意有效期的会话
+  ⇒ TTL 并不是对它的防线 ⇒ **不是缺陷**；改成 `Number.isFinite` 属零收益收紧（本仓库"最简即默认"）。
+- **限速的 IP 维度取 `CF-Connecting-IP`**（并在缺头时回落）——与 F7 注释一致，属部署面假设，
+  不影响协议对齐；相应风险已在 §10 第 538 行（未知路径也计入失败预算）登记。
+
+### 204.4 门禁（2026-10-03，本轮）
+
+- `tsc --noEmit` **0 错**；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` **0 告警**；
+  `node --check` × 4 = **0 错**。
+- 全量套件（`wrangler dev --test-scheduled --port 8787 --ip 127.0.0.1` +
+  `BASE=http://127.0.0.1:8787 node node_modules/vitest/vitest.mjs run --no-file-parallelism`）：
+  **22 个套件 / 495 个用例全过**、退出码 0（比 §203.4 多 3 条 = 本轮 F20 组 1 条 + G7 组 2 条）。
+  套件数与资源数不变 ⇒ 现状文档计数无需改（`test/docs.test.ts` 绿）。
+- **本轮 `src/` 零改动**，但两条新用例的**判别力逐条实测过**（`tmp/neg204/` 的临时脚本，用完即删）：
+  对生产代码做四处局部破坏 —— ① `slice(sep + 1)` → `slice(sep)`（冒号被吃进口令）、② token 的
+  `.trim()` → 去掉、③ 删掉 `payload.exp <= Date.now()`、④ 形状校验只留 `u`（`exp` 非数值可过）——
+  每一处都让对应新用例转红（`-t` 过滤单跑，均 `1 failed`；③的报错是
+  `AssertionError: 过期会话必须被拒: expected { username: 'syncuser' } to be null`）。
+  还原后逐字节核对：`src/auth.ts` / `src/ui/session.ts` 的 sha256 与破坏前一致、`git diff src/` 为空。
+  ②的结论值得记一句：`atob` 虽然对空白宽容，但**到不了**这里 —— `.trim()` 确实承重。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。

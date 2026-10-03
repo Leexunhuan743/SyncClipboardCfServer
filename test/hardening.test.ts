@@ -82,6 +82,41 @@ describe('G1 · 改口令后旧会话立即失效（派生密钥按口令值缓�
   });
 });
 
+// G7：会话的 24h TTL 由**服务端**强制（`exp` 在签名载荷里），不只是 Cookie 的 `Max-Age` 浏览器属性。
+// 只测「篡改签名被拒」（ui.test.ts）时，把 `readSession` 的 exp 判定整段删掉也能全绿 ——
+// 于是会话永不失效，而文档承诺的是 24h。这里用同一条签名管线只改 `exp` 来钉住它。
+describe('G7 · 会话过期由服务端 `exp` 强制', () => {
+  const configured = { USERNAME: 'syncuser', PASSWORD: 'correct-horse-battery-staple' } as Bindings;
+
+  it('exp 已过 → null；exp 在未来 → 接受（阳性对照在同一条管线上）', async () => {
+    const expired = await forgeSessionCookie(configured.PASSWORD, {
+      u: 'syncuser',
+      exp: Date.now() - 1,
+    });
+    expect(await readSession(configured, cookieRequest(expired)), '过期会话必须被拒').toBeNull();
+
+    const valid = await forgeSessionCookie(configured.PASSWORD, {
+      u: 'syncuser',
+      exp: Date.now() + 60_000,
+    });
+    expect(await readSession(configured, cookieRequest(valid)), '差异只有 exp，故上条不是"一律 null"')
+      .not.toBeNull();
+  });
+
+  it('载荷形状不对（缺 u / exp 非数值）也拒 —— 验签通过不等于可以当会话用', async () => {
+    const noUser = await forgeSessionCookie(configured.PASSWORD, {
+      exp: Date.now() + 60_000,
+    } as never);
+    expect(await readSession(configured, cookieRequest(noUser))).toBeNull();
+
+    const stringExp = await forgeSessionCookie(configured.PASSWORD, {
+      u: 'syncuser',
+      exp: 'never',
+    } as never);
+    expect(await readSession(configured, cookieRequest(stringExp))).toBeNull();
+  });
+});
+
 describe('G6 · SearchText 上限（按字节）', () => {
   it('48 字节通过、49 字节与多字节超限被拒', () => {
     const ok = 'x'.repeat(MAX_SEARCH_BYTES);
