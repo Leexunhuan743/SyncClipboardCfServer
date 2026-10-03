@@ -153,6 +153,45 @@ describe('路径字面段大小写（对齐 ASP.NET Core 路由）', () => {
     expect(((await negotiate.json()) as { negotiateVersion?: number }).negotiateVersion).toBe(1);
   });
 
+  it('HTTP：尾斜杠在**分派层**也被容忍（hub 的两条分派此前直接比较 pathname）', async () => {
+    // 修复前 `/SyncClipboardHub/negotiate/` 掉进 Hono 兜底 404：入口那两条 `url.pathname ===` 是
+    // 精确比较，而 Hono 的 `strict:false` 只管它自己注册的路由 ⇒ 与 ASP.NET"忽略尾斜杠"不符。
+    // 客户端 `AdjustDirectoryUrl` 只给目录 URL 加 `/`，negotiate 不带 `/` ⇒ 不可达，
+    // 但属同一类容错（同一份归一函数现在覆盖三条分派）。
+    const slashed = await fetch(`${BASE}/SyncClipboardHub/negotiate/?negotiateVersion=1`, {
+      method: 'POST',
+      headers: { Authorization: AUTH },
+    });
+    expect(slashed.status, 'negotiate 带尾斜杠').toBe(200);
+    const slashedBody: unknown = await slashed.json();
+    expect(
+      typeof slashedBody === 'object' && slashedBody !== null && 'connectionToken' in slashedBody,
+      '带尾斜杠的 negotiate 必须签发 token（与不带斜杠同一条分支）',
+    ).toBe(true);
+
+    const both = await fetch(`${BASE}/SYNCCLIPBOARDHUB/NEGOTIATE/?negotiateVersion=1`, {
+      method: 'POST',
+      headers: { Authorization: AUTH },
+    });
+    expect(both.status, '大小写 + 尾斜杠 同时变形').toBe(200);
+
+    const hub = await req('/SyncClipboardHub/');
+    expect(hub.status, 'hub 连接路径带尾斜杠').toBe(200);
+  });
+
+  it('HTTP：字面段**输给**取值段（上游同一前缀下的裁决）—— GET /api/history/clear → 400', async () => {
+    // 上游 HistoryController 只有 `[HttpGet("{profileId}")]` 与 `[HttpGet("statistics")]`（两者同前缀）：
+    // `clear` 不是 GET 的字面路由 ⇒ 走 {profileId} 解析 ⇒ 400，且消息逐字相同。
+    // 本实现同答 —— **不要**为了"看起来更整齐"给 clear/query 补一条 GET 字面路由（那会偏离上游）。
+    const clear = await req('/api/history/clear');
+    expect(clear.status, 'clear 不是 GET 的字面路由').toBe(400);
+    expect(await clear.text()).toBe("Invalid profileId format. Expected format: 'Type-Hash'");
+
+    // 同一族里 statistics 是**字面**路由 ⇒ 大小写变体也照样命中（上游同）
+    const stats = await req('/api/history/STATISTICS');
+    expect(stats.status).toBe(200);
+  });
+
   // 守卫：新增端点若引入新的字面段而忘记登记进归一表，这条会红（否则就是"静默地只有部分段不区分大小写"）
   it('守卫：协议面每个字面段都被归一表覆盖', () => {
     const probe = new Hono();

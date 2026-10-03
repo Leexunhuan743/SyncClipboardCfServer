@@ -271,8 +271,14 @@ export default {
       return uiDisabledResponse(true);
     }
 
+    // `url.pathname` 是**精确**比较，而 Hono 的 `strict: false` 只对它自己的路由生效 ⇒ 这两条
+    // 分派必须先做同一个尾斜杠归一，否则 `/SyncClipboardHub/negotiate/`、`/SyncClipboardHub/`
+    // 会掉进 Hono 兜底 404（实测；ASP.NET 路由忽略尾斜杠，故那是偏差）。归一函数复用
+    // `normalizePath`（与限速中间件同一份实现，避免"某处记得归一、某处忘了"）。
+    const hubPath = normalizePath(url.pathname);
+
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）
-    if (url.pathname === `${HUB_PATH}/negotiate`) {
+    if (hubPath === `${HUB_PATH}/negotiate`) {
       const denied = authFailure(env, request, ctx);
       if (denied) {
         await drainRequestBody(request);
@@ -289,7 +295,7 @@ export default {
     // Hub 连接：全部转发 DO。鉴权在 DO 内完成——校验 negotiate 登记的 connectionToken，
     // 或接受直接携带有效 Basic 凭据的请求（上游 hub 类级 [Authorize] 的等价物，F1）。
     // 覆盖三种传输：WS 升级、SSE 的 GET、长轮询的 GET/POST/DELETE。
-    if (url.pathname === HUB_PATH) {
+    if (hubPath === HUB_PATH) {
       return forwardToHub(env, request);
     }
 

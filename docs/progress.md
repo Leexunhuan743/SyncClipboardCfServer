@@ -14250,3 +14250,78 @@ F9 的「按 content-length 快速 413」用例里，PATCH 那条写的是 `/api
   `:154` 的 `new MultipartReader(boundary, Request.Body, 10 * 1024)`（分界串读取上限；本实现对应
   `MAX_BOUNDARY_LENGTH = 70`，按 RFC 2046 取更严的值）。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 206. 路由容错：分派层的尾斜杠漏了一处（hub），并把字面段/取值段的裁决逐条实测（2026-10-03）
+
+扫描对象 = 路径归一与路由容错：`pathCase.ts` 的字面段归一表、Hono 各 `new Hono({ strict: false })` 的
+尾斜杠容忍、入口里**绕过 Hono** 的那几条按字面量分派的路径、以及「字面段 vs 取值段」的裁决。
+**结论：字面段大小写与尾斜杠在主面都已对齐；本轮修掉分派层漏掉的一处**，并把三类边界实测留档。
+
+### 206.1 缺陷：`/SyncClipboardHub/negotiate/` 掉进 Hono 兜底 404
+
+入口有两条**不经 Hono**、直接按字面量分派的路径（SignalR negotiate 与 hub 连接），用的是
+`url.pathname === …`（**精确**比较）。而 `strict: false` 只对 Hono **自己注册的**路由生效 ⇒
+`/SyncClipboardHub/negotiate/` 与 `/SyncClipboardHub/` 会掉到 Hono 兜底 **404**，
+而 ASP.NET 路由忽略尾斜杠（本仓库 §10 那条「路由容错」行的既定口径）。
+修法：这两条分派复用限速中间件已有的 `normalizePath`（同一个实现，避免"某处记得归一、某处忘了"）。
+
+实测（8787）：
+
+| 请求 | 修复前 | 修复后 |
+|---|---|---|
+| `POST /SyncClipboardHub/negotiate` | 200 | 200 |
+| `POST /SyncClipboardHub/negotiate/` | **404** | **200**（签发 token） |
+| `POST /SYNCCLIPBOARDHUB/NEGOTIATE/`（大小写+斜杠） | **404** | **200** |
+| `GET /SyncClipboardHub/` | **404** | **200** |
+
+**可达性：不可达**（客户端 `AdjustDirectoryUrl` 只给**目录** URL 追加 `/`，negotiate 与 hub 连接都不带斜杠）
+—— 属"同一类容错的最后一格"，不是故障面。判别力已实测：把 `hubPath` 退回 `url.pathname` ⇒
+新用例红（`expected 404 to be 200`），还原后 `src/index.ts` 与破坏前 sha256 一致。
+
+### 206.2 逐条实测矩阵（对 §10 已登记偏差的复测）
+
+**大小写（字面段）**：`/API/version`、`/api/VERSION`、`/Api/Version`、`/SYNCCLIPBOARD.JSON`、
+`/syncclipboard.Json`、`/API/HISTORY/STATISTICS`、`/SYNCCLIPBOARDHUB/NEGOTIATE` **全 200** ⇒ 与上游一致。
+
+**尾斜杠**：`/api/version/`、`/SyncClipboard.json/`、`/api/history/statistics/`、`PROPFIND /FILE/`、
+`MKCOL /FILE/`、`/ui/api/login/` **全部命中**；`/ui/api/session` → `/UI/API/SESSION` 404（界面/API
+命名空间**不**做大小写归一 —— 已登记的"只修协议面"）。**双斜杠仍 404**（Hono 只忽略一个尾斜杠），
+已作为已知不对齐登记进 §10（不可达）。
+
+**方法不匹配**：`POST /api/version`、`DELETE /api/version`、`PUT /api/history`、`GET /file/`、
+`POST /api/history/clear`、`GET /api/history/statistics/x`、`POST /api/history/Statistics` **一律 404**，
+**响应里没有 `Allow` 头** ⇒ 与已登记的「Hono 兜底 404（上游 405 + `Allow: GET, PROPFIND`）」口径一致，
+本轮实测复现（并确认**不是** 405），那条登记无需改。
+⚠️ 这也是本轮的一条**方法论纠正**：我一开始把「`GET /api/history/clear` → 400」当成"路由优先级缺陷"，
+查上游源码后才发现 `HistoryController` 只有 `[HttpGet("{profileId}")]` 与 `[HttpGet("statistics")]`
+（**没有** GET 的 `clear`/`query` 字面路由）⇒ 上游对 `GET /api/history/clear` 同样是【400、文案逐字相同】，
+本实现**完全一致**。**不要**为它补一条字面路由（那才会偏离上游）。
+
+### 206.3 本轮的边界与不足（如实记）
+
+- **上游服务端的 A/B 实测**：上游 `global.json` 要 .NET SDK **10.0.302**，本机只有**运行时**
+  （`Microsoft.AspNetCore.App 10.0.8` 等）、**没有 SDK** ⇒ 本轮**无法起上游做新对照**。
+  故 206.2 里"上游如何"一律来自**上游源码**（`SyncClipboardController.cs:47-95` 的
+  `[HttpGet("api/time")]` / `[HttpGet("api/version")]` / `[AcceptVerbs("PROPFIND")] [Route("")]` /
+  `[AcceptVerbs("PROPFIND","MKCOL")] [Route("file")]` / `[HttpDelete("file")]`、
+  `HistoryController.cs:27/50/99/140/310/338/347`）与 §10 里**已注明实测量**的旧记录；
+  凡本轮未实测的，正文都写明来源（未冒充实测）。
+- **未测**：ASP.NET 对双斜杠/点段的精确行为（未实测，故 §10 那条只写"ASP.NET 忽略任意个尾斜杠"这一
+  由框架语义推出的结论，并标出这是**推断**而非实测）。
+- `/api/history/text-abc`（**取值**段用小写类型名）→ 404：与本实现"类型枚举大小写不敏感"不矛盾 ——
+  400 那句是**格式**判定（必须 `Type-Hash` 两段），单段输入根本没进到枚举解析 ⇒ 与 §10 那条
+  （`profileId` 里的枚举大小写）测的不是同一件事。
+
+### 206.4 门禁（2026-10-03，本轮）
+
+- `tsc --noEmit` 0 错；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` 0 告警；
+  `node --check` ×4 = 0 错。
+- 全量套件（dev server 8787 + `--no-file-parallelism`）：**22 个套件 / 499 个用例全过**、退出码 0
+  （92.47 s；比 §205.5 多 2 条 = 本轮新增的两条用例）。套件数与资源数不变。
+- ⚠️ **本轮的一次事故（如实记）**：我用探针扫"方法不匹配"时打了 `DELETE /api/history/clear`，
+  它**真的执行了清空** —— **本地 dev D1**（`.wrangler/state`）的 17,619 条记录被删。
+  **生产未受影响**（探针只打 `127.0.0.1`，本轮未部署）。测试套件**不依赖**库里既有数据
+  （`test/ui.test.ts` 明确"任何断言都不依赖库里既有数据"），故未影响门禁；但教训是
+  **扫方法矩阵时不要真发破坏性请求**（`DELETE /file/*`、`DELETE /api/history/clear` 都在我的矩阵里，
+  前者也是"无论存在与否都 200"）。此后该类端点只用**不存在的名字**或改用只读方法。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
