@@ -14325,3 +14325,70 @@ F9 的「按 content-length 快速 413」用例里，PATCH 那条写的是 `/api
   **扫方法矩阵时不要真发破坏性请求**（`DELETE /file/*`、`DELETE /api/history/clear` 都在我的矩阵里，
   前者也是"无论存在与否都 200"）。此后该类端点只用**不存在的名字**或改用只读方法。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 207. UI 面 20 端点契约：逐条实测 + 补上「列表正文截断」在 SQL 层的空缺（2026-10-03）
+
+扫描对象 = `/ui/api/*` 的全部 20 条端点（清单 = `test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`，
+它同时是"新增端点必须登记"的守卫）与 `docs/ui.md` §5 表里逐条写明的状态码/错误键。
+
+### 207.1 逐条实测（真实 dev server，非破坏性）
+
+用 `node:http`/`fetch` 逐条打**拒绝路径与只读路径**（**不发**任何会改数据或清空的请求 —— 上一轮
+的 `DELETE /api/history/clear` 教训），结果与 §5 表**逐条一致**：
+
+| 类别 | 实测 |
+|---|---|
+| 列表参数 | `pageSize=0` → 200 且 `pageSize` 钳到 **1**；`pageSize=501` → 200 且钳到 **500**（上限，`UI_MAX_PAGE_SIZE`）；`search` 49 字节 → **400** `SearchText must be at most 48 bytes`；`after=abc` → **400** `Invalid after value: abc` |
+| 单条 / 数据 | 非法/不存在的 id → **404** `not_found`；`/data` 不存在 → 404（`?download=1` 同）；`notahex` 形态 → 404（不是 400） |
+| PATCH | `{}`（无受支持字段）→ **400** `no_supported_field`；`{` 非法 JSON → **400** `invalid_request` |
+| 新建文本 | 非 JSON → **415** `unsupported_media_type`；`{}` / `{text:1}` → **400** `text_required` |
+| 批量 | 空 items → **400** `items_required`；101 条 → **400** `too_many_items`（batch-update / batch-meta / batch-purge **三处同答**）；用不存在的 id → batch-meta `{items:[]}`、batch-purge `{purged:0,failed:1}`（**不是** 500） |
+| settings | 两个字段都不给 → **400** `invalid_request` |
+| activity | `days=91`（> `ACTIVITY_MAX_DAYS=90`）/ `days=0` / `days=abc` / `tz=9999` → **400** `invalid_range` |
+| 只读面 | session / statistics / overview / info / poll / integrity / activity / history → 200，形状与 §5 表一致 |
+| 缓存头 | **全部** `/ui/api/*` JSON 响应 `cache-control: no-store`；未知路由也一样 |
+| 未知路由 | `/ui/api/nope` → **404 `{"error":"not_found"}`（JSON，不是 HTML）** |
+
+### 207.2 本轮补的缺口：列表正文截断只在**前端单测**里存在，SQL 层那条路无断言
+
+`text` 截断（`UI_LIST_TEXT_LIMIT = 500`）与 `textTruncated` 是**服务端契约**：**8 个前端文件**
+（V1 的 `api.js`/`main.js`/`components/*` 与 V2 的 `api.js`/`boot.js`/`ui/row.js`）按它决定
+"要不要先取全文再复制" —— 判错就会让用户复制到被砍过一半的内容。而此前：
+
+- `test/ui-logic.test.ts` 只钉了**前端**的归一化（`textTruncated: 'yes'` → 布尔），
+- 真实路由走的是 `src/ui/query.ts` 的 **SQL 层截断**（`substr(Text, 1, 501)` +
+  `length(Text) AS TextFullLength`）与 `toItem()` 的 `textTruncated: (row.TextFullLength ?? item.text.length) > UI_LIST_TEXT_LIMIT`
+  —— 这段**一条断言都没有**（把它改成用截断后的 `text.length` 判定，全量套件照样全绿，
+  而长文本会被误报成"没截断"）。
+
+补的三条（`test/ui.test.ts` 的「列表正文截断」组，走**真实路由**）：
+
+1. >500 码元 ⇒ `text.length === 500` 且 `textTruncated === true`，且截断结果是原文**前缀**；
+2. ≤500 码元 ⇒ 正文原样且 `textTruncated === false`（否则界面白发一次全文请求）；
+3. **边界**：恰好 500 码元 ⇒ **不**算截断（判据是 `> 500` 而非 `>= 500`）；
+   外加反向证据：**单条端点回完整正文**（列表被截断 ⇒ 界面的"取全文"必须真的能取到），
+   二者不互补时那条路径就是死路。
+
+### 207.3 判别力（逐条实测，破坏 → 红 → 逐字节还原）
+
+- ①`toItem` 的 `textTruncated` 退回 `item.text.length > LIMIT`（丢掉 SQL 长度列）⇒
+  第 1 条红（`expected false to be true`）；
+- ②判据由 `> 500` 改成 `>= 500` ⇒ 第 3 条红（`恰好等于上限不得判为截断: expected true to be false`）。
+  还原后 `src/ui/query.ts` 与破坏前 **sha256 一致**。
+
+### 207.4 覆盖清点的结论（哪些已有、哪些本轮补）
+
+已有钉子（本轮逐条确认，**不重复写**）：`too_many_items`（batch-update）、batch-meta 的 100 条边界
+（含 100 条一条不少 + 101 条 400）、`no-store` 的六条路径 + 数据端点例外（`private, max-age=60`）、
+`invalid_scope`（clear）、`unsupported_media_type`、`not_found`、`data_missing`、`invalid_request`、
+`pageSize` 上限、Range（206/416/回退）、batch-purge 的 `purged`/`failed`、完整性自检的字段自洽、
+`/ui/api/info` 的 retention 来源字段，以及裸 `/ui/api` 的 JSON 404（`ui-guard` 的进程内用例）。
+本轮**只补了 207.2 缺口**；其余逐条实测为一致，**无代码改动**（`git diff src/` 只有本节无涉）。
+
+### 207.5 门禁（2026-10-03，本轮）
+
+- `tsc --noEmit` 0 错；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` 0 告警；
+  `node --check` ×4 = 0 错。
+- 全量套件（dev server 8787 + `--no-file-parallelism`）：**22 个套件 / 501 个用例全过**、退出码 0
+  （90.84 s；比 §206.4 的 499 多 2 条 = 本轮新增的两个用例）。套件数与资源数不变。
+- **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。

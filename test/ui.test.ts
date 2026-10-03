@@ -35,6 +35,8 @@ const MARK = `ui-test-${RUN}`;
 const SORT_MARK = `ui-sort-${RUN}`;
 const SORT_SHORT = `${SORT_MARK}-a`;
 const SORT_LONG = `${SORT_MARK}-b${'x'.repeat(32)}`;
+// 列表正文截断用例的标记：同样**不含** MARK 子串（`search=MARK` 的既有断言假定只命中一条）
+const TRUNC_MARK = `ui-trunc-${RUN}`;
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex').toUpperCase();
 
 // 会话 Cookie 的极简 jar：解析 Set-Cookie、按名字存取、Max-Age=0 视为删除。
@@ -312,6 +314,61 @@ describe('UI API 列表（分页/过滤/搜索/排序白名单）', () => {
       partialBody.items.some((i) => i.hash === mainHash),
       'search 部分子串必须命中（LIKE %text%）',
     ).toBe(true);
+  });
+
+  // 列表正文截断（`UI_LIST_TEXT_LIMIT = 500` + `textTruncated`）是**服务端**契约：
+  // 8 个前端文件按 textTruncated 决定「要不要先取全文再复制」（否则用户复制到被砍过的正文），
+  // 而截断本身发生在 SQL 层（`substr(Text, 1, 501)`）+ `length(Text) AS TextFullLength`。
+  // 此处只从 API 面钉住它；`truncateText` 的字素簇口径归 `test/ui-logic.test.ts`（两版 format.js）。
+  it('列表正文截断：>500 码元时截到 500 且 textTruncated=true；≤500 时原样且 false', async () => {
+    // 标记刻意**不含** MARK 子串（与 SORT_MARK 同规矩）：`search=MARK` 的既有用例
+    // 断言的是「只命中本 describe 的那一条」，多写几条含 MARK 的记录会把它们打红。
+    const long = `${TRUNC_MARK}-long-${'z'.repeat(600)}`; // 明显超过 500 码元
+    const short = `${TRUNC_MARK}-short`; // 远小于 500
+    const longHash = await putText(long);
+    const shortHash = await putText(short);
+
+    const res = await req(`/ui/api/history?search=${encodeURIComponent(TRUNC_MARK)}&pageSize=500`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      items: { hash: string; text: string; textTruncated: boolean }[];
+    };
+    const byHash = new Map(body.items.map((i) => [i.hash, i]));
+    const longItem = byHash.get(longHash);
+    const shortItem = byHash.get(shortHash);
+    expect(longItem, '长文本记录必须在列表里').toBeDefined();
+    expect(shortItem, '短文本记录必须在列表里').toBeDefined();
+
+    expect(longItem!.textTruncated, '超过 500 码元 ⇒ textTruncated 必须为 true').toBe(true);
+    expect(longItem!.text.length, '截断后的正文必须是 500 码元').toBe(500);
+    expect(long, '夹具本身要真的超过阈值').toHaveLength(600 + `${TRUNC_MARK}-long-`.length);
+    expect(longItem!.text, '截断结果必须是原文的前缀').toBe(long.slice(0, 500));
+
+    expect(shortItem!.textTruncated, '未超阈值 ⇒ 必须为 false（否则界面会白发一次全文请求）').toBe(false);
+    expect(shortItem!.text, '未超阈值时正文原样').toBe(short);
+
+    // 反向证据：单条端点带**完整正文**（列表被截断，故必须靠它取全文）——
+    // 二者若不互补，界面的「取全文再复制」就是一条死路。
+    const one = await req(`/ui/api/history/Text/${longHash}`);
+    expect(one.status).toBe(200);
+    const oneItem = (await one.json()) as { text: string };
+    expect(oneItem.text, '单条端点必须回完整正文').toBe(long);
+  });
+
+  it('边界：恰好 500 码元不截断（判据是 `> 500` 而不是 `>=`）', async () => {
+    // 500 是**协议上限**（约束 JSON 体积），不是展示口径 —— 差一格就会让恰好 500 的记录
+    // 被标成"需要取全文"，界面每次复制都多一次请求。
+    const prefix = `${TRUNC_MARK}-edge-`;
+    const exact = prefix + 'e'.repeat(500 - prefix.length);
+    expect(exact, '夹具必须是恰好 500 码元').toHaveLength(500);
+    const hash = await putText(exact);
+
+    const res = await req(`/ui/api/history?search=${encodeURIComponent(TRUNC_MARK)}&pageSize=500`);
+    const body = (await res.json()) as { items: { hash: string; text: string; textTruncated: boolean }[] };
+    const item = body.items.find((i) => i.hash === hash);
+    expect(item, '恰好 500 码元的记录必须在列表里').toBeDefined();
+    expect(item!.textTruncated, '恰好等于上限不得判为截断').toBe(false);
+    expect(item!.text, '恰好等于上限时正文原样').toBe(exact);
   });
 
   it('page 超出范围：items 为空但 total 不变', async () => {
