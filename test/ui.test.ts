@@ -371,6 +371,56 @@ describe('UI API 列表（分页/过滤/搜索/排序白名单）', () => {
     expect(item!.text, '恰好等于上限时正文原样').toBe(exact);
   });
 
+  // **星平面字符**（emoji 等：1 码点 = 2 UTF-16 码元）—— 判据与切分必须同一个单位。
+  // 为什么非要有这组：SQL 侧是**码点**口径（`length(Text)`、`substr(Text,1,501)`），若 JS 侧按
+  // **码元**切，纯 emoji 正文会被切到 500 码元（= 250 个 emoji）却因 `length(Text)=300 ≤ 500`
+  // 报 `textTruncated=false` ⇒ 前端据此认定正文完整、跳过取全文 ⇒ 用户复制/预览/下载拿到**半截**
+  // （审计 R2#8）。⚠️ **只用 ASCII/BMP 夹具测不出这个分歧**（两种口径同值）—— 必须含星平面字符，
+  // 否则这条判据的回归无人能发现（验证单元 V2 实测：把判据改回 `item.text.length`，纯 ASCII 用例
+  // 仍全绿）。判据：**实际切分了 ⇔ textTruncated === true**。
+  it('星平面字符（emoji）：切分与判据同口径 —— 「切了 ⇔ textTruncated=true」', async () => {
+    // ⚠️ 夹具必须**每次运行唯一**（加 RUN 标记）：纯 emoji 的正文会与历史运行/探针留下的同 hash
+    // 记录相撞，PUT 变成"更新既有记录"，其 version 已被抬高 ⇒ 收尾 PATCH 拿 409（套件的
+    // afterAll 会因此报"清理失败"）。
+    // 构造：`<标记>-` + emoji。码点 300 那一档总码点仍 ≤ 500（按码点**不该**切）、总码元 > 500
+    // （按码元**会**切）—— 正是两种口径分叉的那一格。
+    const prefix = `${TRUNC_MARK}-astral-`;
+    const emoji = prefix + '😀'.repeat(300);
+    const emojiOver = prefix + '😀'.repeat(501);
+    expect([...emoji].length, '300 emoji 档：总码点必须 ≤ 500（按码点不该切）').toBeLessThanOrEqual(500);
+    expect(emoji.length, '300 emoji 档：总码元必须 > 500（按码元会切）').toBeGreaterThan(500);
+
+    const hashEmoji = await putText(emoji);
+    const hashOver = await putText(emojiOver);
+
+    const res = await req(`/ui/api/history?search=${encodeURIComponent(TRUNC_MARK)}&pageSize=500`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: { hash: string; text: string; textTruncated: boolean }[] };
+    const found = new Map(body.items.map((i) => [i.hash, i]));
+
+    const a = found.get(hashEmoji);
+    expect(a, '300 emoji 档的记录必须在列表里').toBeDefined();
+    expect([...a!.text].length, '码点 ≤ 500 ⇒ 不得切分（切了就是按码元误切）').toBe([...emoji].length);
+    expect(a!.text, '未切分时必须原样').toBe(emoji);
+    expect(
+      a!.textTruncated,
+      '未切分 ⇒ textTruncated 必须为 false；若为 true，说明判据与切分口径不一致',
+    ).toBe(false);
+
+    const b = found.get(hashOver);
+    expect(b, '501+ emoji 档的记录必须在列表里').toBeDefined();
+    expect([...b!.text].length, '码点 > 500 ⇒ 必须切到恰好 500 码点').toBe(500);
+    expect(b!.textTruncated, '切分了 ⇒ 必须报 true（否则前端会跳过取全文、用户拿到半截内容）').toBe(true);
+    // 不许切出半个代理对
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(lone.test(b!.text), '截断结果不得含孤立代理位').toBe(false);
+
+    // 反向证据：单条端点回**完整**正文（列表被切了，界面必须能靠它取全文）
+    const one = await req(`/ui/api/history/Text/${hashOver}`);
+    expect(one.status).toBe(200);
+    expect(((await one.json()) as { text: string }).text, '单条端点必须回完整 emoji 正文').toBe(emojiOver);
+  });
+
   it('page 超出范围：items 为空但 total 不变', async () => {
     // 用标记做隔离：此时记录已存在（上一用例创建），total 稳定为 1
     const page1 = await req(`/ui/api/history?search=${encodeURIComponent(MARK)}&page=1`);

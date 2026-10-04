@@ -153,6 +153,26 @@ describe('路径字面段大小写（对齐 ASP.NET Core 路由）', () => {
     expect(((await negotiate.json()) as { negotiateVersion?: number }).negotiateVersion).toBe(1);
   });
 
+  it('HTTP：negotiate 只接受 POST（非 POST → 405；对齐上游 HttpConnectionDispatcher）', async () => {
+    // 审计 R3#1（2026-10-04）：修复前 6 个非 POST 方法全部 200 且签发并登记 connectionToken，
+    // 上游一律 405（真 A/B：v3.2.0 发布件 + ASP.NET Core 8 运行时）。
+    for (const method of ['GET', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']) {
+      const res = await fetch(`${BASE}/SyncClipboardHub/negotiate?negotiateVersion=1`, {
+        method,
+        headers: { Authorization: AUTH },
+      });
+      expect(res.status, `${method} negotiate 必须 405`).toBe(405);
+      expect(await res.text(), `${method} 不得签发 token`).not.toContain('connectionToken');
+    }
+    // 正向对照：POST 仍 200 + token（这条需要真 DO，故在 dev server 侧）
+    const ok = await fetch(`${BASE}/SyncClipboardHub/negotiate?negotiateVersion=1`, {
+      method: 'POST',
+      headers: { Authorization: AUTH },
+    });
+    expect(ok.status, 'POST 是正常路径').toBe(200);
+    expect(await ok.text()).toContain('connectionToken');
+  });
+
   it('HTTP：尾斜杠在**分派层**也被容忍（hub 的两条分派此前直接比较 pathname）', async () => {
     // 修复前 `/SyncClipboardHub/negotiate/` 掉进 Hono 兜底 404：入口那两条 `url.pathname ===` 是
     // 精确比较，而 Hono 的 `strict:false` 只管它自己注册的路由 ⇒ 与 ASP.NET"忽略尾斜杠"不符。
@@ -176,7 +196,11 @@ describe('路径字面段大小写（对齐 ASP.NET Core 路由）', () => {
     expect(both.status, '大小写 + 尾斜杠 同时变形').toBe(200);
 
     const hub = await req('/SyncClipboardHub/');
-    expect(hub.status, 'hub 连接路径带尾斜杠').toBe(200);
+    // **2026-10-04 订正**：此前这里断言 200（"尾斜杠也被容忍"）—— 那其实把**有缺陷的行为**写成了契约：
+    // 无 id 会被转发给 DO 并以空 id 建连接（审计 R3#2）。现在的正确语义是 400（`Connection ID required`，
+    // 对齐上游），尾斜杠本身仍被容忍（它命中了 hub 分派、只是缺 id）；带 id 的尾斜杠形态另见
+    // test/rate-limit.test.ts 的「无 id 的 hub 连接 → 400」与 §10 的双斜杠登记。
+    expect(hub.status, 'hub 连接路径带尾斜杠但无 id ⇒ 400（缺 id，不是 404 ⇒ 尾斜杠分派仍然生效）').toBe(400);
   });
 
   it('HTTP：字面段**输给**取值段（上游同一前缀下的裁决）—— GET /api/history/clear → 400', async () => {

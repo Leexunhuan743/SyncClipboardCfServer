@@ -279,10 +279,21 @@ export default {
 
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）
     if (hubPath === `${HUB_PATH}/negotiate`) {
+      // ⚠️ **鉴权必须排在方法判定之前**（2026-10-04，验证单元 V3 的真 A/B 纠正）：
+      // 上游是 hub 类级 `[Authorize]`，无凭据请求**一律 401 + `WWW-Authenticate`**（与方法无关）。
+      // 先判方法会让无凭据的非 POST 变成 405（丢掉 WWW-Authenticate、且绕过认证失败限速）；
+      // 顺序反过来后，两侧对「无凭据 × 任意方法」都是 401。
       const denied = authFailure(env, request, ctx);
       if (denied) {
         await drainRequestBody(request);
         return denied;
+      }
+      // 已通过鉴权后再判方法：上游 `HttpConnectionDispatcher` 只把 negotiate 挂在 POST 上 ⇒ 非 POST **405**
+      // （真 A/B：带凭据时上游 GET/PUT/DELETE/PATCH/OPTIONS/HEAD 全部 405 且不签发 token；
+      //  本实现此前一律 200 并签发+登记 token ⇒ REST 语义被破 + 每次调用 1 次 DO 子请求与 1 条存储写）。
+      if (request.method !== 'POST') {
+        await drainRequestBody(request);
+        return new Response('Method Not Allowed', { status: 405 });
       }
       try {
         return await negotiateResponse(env, request);
@@ -296,6 +307,18 @@ export default {
     // 或接受直接携带有效 Basic 凭据的请求（上游 hub 类级 [Authorize] 的等价物，F1）。
     // 覆盖三种传输：WS 升级、SSE 的 GET、长轮询的 GET/POST/DELETE。
     if (hubPath === HUB_PATH) {
+      // hub 的请求**不进 Hono** ⇒ 协议面那条 F9 中间件管不到它，第一层（content-length 预检）
+      // 必须在这里做；第二层（读取层上限，覆盖 chunked）在 DO 的 `handleClientMessage` 里
+      // （`readBodyTextCapped`）。两层缺一不可：审计 R1#1 就是"两层都缺"的后果。
+      // ⚠️ **不按方法分支**（2026-10-04，验证单元 V1 指出）：只判 POST 会让非 POST 的带体请求
+      // （GET/DELETE 的 CL/chunked 大体量）绕过这一层。上游对任何方法都不设应用层上限（Kestrel
+      // `MaxRequestBodySize=int.MaxValue`），但"预检"这条护栏对本实现是**统一策略**：任何方法
+      // 超限都早退 413（DO 侧对非 POST 走 `drainRequestBody` 流式排空，本就不读进内存）。
+      const declared = Number(request.headers.get('content-length') ?? '0');
+      if (Number.isFinite(declared) && declared > maxRequestBodyBytes(env)) {
+        await drainRequestBody(request);
+        return new Response('Payload Too Large', { status: 413 });
+      }
       return forwardToHub(env, request);
     }
 

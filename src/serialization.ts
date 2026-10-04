@@ -191,12 +191,15 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
   if (typeof parsed !== 'object' || Array.isArray(parsed)) return 'corrupt';
   const obj = parsed as Record<string, unknown>;
 
-  // ① Type：键缺失 → STJ 用默认 Text（不抛错）；数字 → JsonStringEnumConverter 接受整数枚举值；
-  //    字符串必须是合法枚举名（大小写不敏感，与 JsonStringEnumConverter 一致；数字串亦可）。
+  // ① Type：键缺失 → STJ 用默认 Text（不抛错）；数字 → JsonStringEnumConverter 接受**任意 Int32**
+  //    （STJ 对 `int` 目标只拒非整数与越界，**不要求是已定义的枚举值** ⇒ 上游会把 `1e30`/`2.0`/`3e12`
+  //    里能进 Int32 的照单收下）。此前只判 `Number.isInteger`，于是 `1e30` 这类**越 Int32** 的值被判 ok
+  //    并**原样透给客户端** ⇒ 客户端 `ReadFromJsonAsync<ProfileDto>` 抛异常 ⇒ 同步停摆
+  //    （正是本段开头要防的那件事；审计 R6#7，2026-10-04 修）。
   const type = obj.type;
   if (type !== undefined) {
     if (typeof type === 'number') {
-      if (!Number.isInteger(type)) return 'corrupt';
+      if (!Number.isInteger(type) || type < INT32_MIN || type > INT32_MAX) return 'corrupt';
     } else if (typeof type !== 'string') {
       return 'corrupt';
     } else if (parseProfileType(type) === undefined) {
@@ -225,8 +228,18 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
     if (value !== undefined && value !== null && typeof value !== 'string') return 'corrupt';
   }
   if (obj.hasData !== undefined && typeof obj.hasData !== 'boolean') return 'corrupt';
+  //    ⚠️ `Size` 是上游 `long?` ⇒ 有效域是 **Int64**。此前用 `Number.isSafeInteger`（≤2^53）判，
+  //    把 `2^53..2^63-1` 之间的合法 long **误判成 corrupt 并降级为空 profile**（丢数据）。
+  //    改用 Int64 上界（`Number.isInteger` + 绝对值 < 2^63）：既不再误杀合法 long，也**仍然拦住**
+  //    `1e30` 这类越界值（它虽满足 `Number.isInteger`，但远超 `LONG_MAX` ⇒ 上游 STJ 会拒，
+  //    这里也必须拒，否则坏值原样透给客户端）。审计 R6#7，2026-10-04。
   const size = obj.size;
-  if (size !== undefined && size !== null && (typeof size !== 'number' || !Number.isSafeInteger(size))) {
+  const LONG_MAX_EXCLUSIVE = 9.223372036854776e18; // 2^63；JS 在 2^53 以上无整数精度，故用上界而非等值
+  if (
+    size !== undefined &&
+    size !== null &&
+    (typeof size !== 'number' || !Number.isInteger(size) || Math.abs(size) >= LONG_MAX_EXCLUSIVE)
+  ) {
     return 'corrupt';
   }
   return 'ok';

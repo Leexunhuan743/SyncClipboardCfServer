@@ -689,6 +689,110 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
     });
   }
 
+  // ---- hub 转发路径的修复（审计 R1#1/R4#2，2026-10-04）----
+  //
+  // hub 的请求**不进 Hono**（`src/index.ts` 在 `app.fetch` 之前就 `return forwardToHub`）⇒ 协议面那条
+  // F9 中间件与所有 `readBodyCapped` 都够不到它；DO 侧 `handleClientMessage` 此前直接
+  // `await request.text()`（无上限）。实测（修复前）：上限调到 256 KiB 时，`PUT /SyncClipboard.json`
+  // 超限 → 413，而 `/SyncClipboardHub` 的 1/4/20 MiB POST **全部 200**（耗时时长单调增长 ⇒ 读完了整包）。
+  it('hub 消息体受同一上限（content-length 预检 + chunked 读取层，两层都要拦）', async () => {
+    const oneMiB = 1024 * 1024;
+    const { env } = createEnv(undefined, { MAX_REQUEST_BODY_BYTES: String(oneMiB) });
+    const hub = new SyncClipboardHub(createDoState(), env);
+    const uri = 'https://hub/SyncClipboardHub?id=t-cap';
+
+    // ① content-length 形态 → Worker 侧预检
+    const withLen = await hub.fetch(
+      new Request(uri, {
+        method: 'POST',
+        headers: { authorization: basic(USER, PASS), 'content-length': String(oneMiB + 1) },
+        body: 'x',
+      }),
+    );
+    expect(withLen.status, 'hub POST 带 content-length 超限').toBe(413);
+
+    // ② chunked 形态（无 content-length ⇒ 只有读取层能拦）
+    const chunked = await hub.fetch(
+      new Request(uri, {
+        method: 'POST',
+        headers: { authorization: basic(USER, PASS) },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(oneMiB + 1));
+            controller.close();
+          },
+        }),
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' }),
+    );
+    expect(chunked.status, 'hub POST chunked 超限（读取层必须拦）').toBe(413);
+
+    // ③ 正常小握手体不得被误伤
+    const small = await hub.fetch(
+      new Request(uri, {
+        method: 'POST',
+        headers: { authorization: basic(USER, PASS) },
+        body: '{"protocol":"json","version":1}\u001e',
+      }),
+    );
+    expect(small.status, '正常握手 POST 不得被上限误伤').toBe(200);
+  });
+
+  // negotiate 只接受 POST（审计 R3#1，2026-10-04）：修复前 6 个非 POST 方法全部 200 且**签发并登记**
+  // connectionToken（上游一律 405、无 token）⇒ REST 语义被破 + 每次调用 1 次 DO 子请求与 1 条存储写，
+  // 而限速只覆盖认证失败。真 A/B：上游 GET/PUT/DELETE/PATCH/OPTIONS/HEAD 全 405。
+  // ⚠️ **顺序**（验证单元 V3 的真 A/B 纠正）：鉴权必须排在方法判定**之前** —— 上游是 hub 类级
+  // `[Authorize]`，**无凭据**请求一律 401 + `WWW-Authenticate`（与方法/id 无关）。
+  // 先判方法会让无凭据的非 POST 变成 405（丢 WWW-Authenticate、绕过认证失败限速）。
+  // 注意：非 POST 在方法判定处返回 ⇒ 不需要真实 HUB 绑定；正向的 POST 200 + token 需要真 DO，
+  // 那条留在 dev server 侧（test/protocol.test.ts）。
+  it('negotiate：无凭据 → 401（先鉴权）；带凭据的非 POST → 405 且不签发 token', async () => {
+    const { env } = createEnv();
+    const uri = 'https://sync.example.com/SyncClipboardHub/negotiate?negotiateVersion=1';
+
+    // ① 无凭据：任何方法都必须 401 + WWW-Authenticate（对齐上游 hub 类级 [Authorize]）
+    for (const method of ['GET', 'PUT', 'POST', 'DELETE']) {
+      const anon = await fetchWorker(env, createCtx(), new Request(uri, { method }));
+      expect(anon.status, `${method} 无凭据必须 401（不能是 405）`).toBe(401);
+      expect(anon.headers.get('www-authenticate'), `${method} 无凭据必须带 WWW-Authenticate`).toContain('Basic');
+    }
+
+    // ② 带凭据的非 POST：405 + 不签发 token
+    for (const method of ['GET', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']) {
+      const res = await fetchWorker(
+        env,
+        createCtx(),
+        new Request(uri, { method, headers: { authorization: basic(USER, PASS) } }),
+      );
+      expect(res.status, `${method} 带凭据的 negotiate 必须 405`).toBe(405);
+      expect(await res.text(), `${method} 不得签发 token`).not.toContain('connectionToken');
+    }
+  });
+
+  // 无 id 的连接请求 → 400（审计 R3#2，2026-10-04）：修复前会以**空字符串为 id** 继续建连接
+  // （白占 DO 内存 + 1 条存储写入）；`/SyncClipboardHub/` 那种尾斜杠形态正是尾斜杠归一后新放行的入口。
+  // ⚠️ **顺序**（V3 的 A/B 纠正）：同样必须排在**鉴权之后** —— 无凭据请求上游一律 401。
+  it('无 id 的 hub 连接：无凭据 → 401（先鉴权）；带凭据 → 400（对齐上游「Connection ID required」）', async () => {
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+    for (const path of ['/SyncClipboardHub', '/SyncClipboardHub/']) {
+      // ① 无凭据：401（不是 400）
+      const anon = await hub.fetch(new Request(`https://hub${path}`, { method: 'GET' }));
+      expect(anon.status, `${path} 无凭据必须 401`).toBe(401);
+      expect(anon.headers.get('www-authenticate') ?? '', `${path} 无凭据带 WWW-Authenticate`).toContain('Basic');
+
+      // ② 带凭据：400
+      const res = await hub.fetch(
+        new Request(`https://hub${path}`, { method: 'GET', headers: { authorization: basic(USER, PASS) } }),
+      );
+      expect(res.status, `${path} 带凭据但无 id 必须 400`).toBe(400);
+      expect(await res.text()).toContain('Connection ID required');
+    }
+    // 正常路径：带合法 token 仍 200
+    const okRes = await hub.fetch(hubClientRequest('t-ok'));
+    expect(okRes.status, '带合法 id 的连接不受影响').toBe(200);
+  });
+
   async function broadcastTo(hub: SyncClipboardHub, payload: string): Promise<Response> {
     return hub.fetch(
       new Request('https://hub/broadcast', {

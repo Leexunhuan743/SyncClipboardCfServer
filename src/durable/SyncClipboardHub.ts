@@ -39,6 +39,7 @@ import {
   drainRequestBody,
 } from '../auth';
 import { REGISTER_TOKEN_PATH } from '../hub';
+import { maxRequestBodyBytes, readBodyTextCapped } from '../requestLimits';
 import {
   AUTH_RATE_LIMIT_PATH,
   AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES,
@@ -292,6 +293,19 @@ export class SyncClipboardHub {
       return denied;
     }
 
+    // 无 `id` 的连接请求 ⇒ **400**（对齐上游 `HttpConnectionDispatcher` 的
+    // 「Connection ID required」，审计 R3#2，2026-10-04 修）。此前缺 id 时会继续往下走，
+    // 在 id 为空串的情况下**以空 id 建连接**（每次都是同一个连接槽 ⇒ 白占 DO 内存与一条 storage 写入；
+    // `/SyncClipboardHub/` 那种尾斜杠形态正是尾斜杠归一后新放行的入口）。
+    // ⚠️ **必须排在鉴权之后**（2026-10-04，验证单元 V3 的真 A/B 纠正）：上游是 hub 类级 `[Authorize]`，
+    // 无凭据请求一律 **401 + `WWW-Authenticate`**（与 id 有无无关）；先判 id 会让无凭据请求变 400
+    // （丢掉 WWW-Authenticate、且绕过认证失败限速）。
+    // 注意：长轮询客户端**必带** `?id=`（negotiate 签发），故正常路径不受影响。
+    if ((url.searchParams.get('id') ?? '') === '') {
+      await drainRequestBody(request);
+      return new Response('Connection ID required', { status: 400 });
+    }
+
     // WebSocket 升级
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       return this.handleWebSocket(request);
@@ -504,7 +518,13 @@ export class SyncClipboardHub {
     const sse = this.sseClients.get(id);
     if (sse) sse.lastSeen = Date.now();
 
-    const reply = this.replyToClientMessage(await request.text());
+    // 整包读取**必须**过同一上限（F9 的第二层）：hub 的 POST 不进 Hono ⇒ F9 的 content-length
+    // 预检与 `readBodyCapped` 都够不到它，此前这里的 `request.text()` 是**唯一**无上限的整包读取
+    // （审计 R1#1 / R4#2，2026-10-04 修：实测上限设 256 KiB 时，20 MiB 的 POST 仍返回 200）。
+    // 超限时 `readBodyTextCapped` 已把请求体排空，直接回 413。
+    const body = await readBodyTextCapped(request, maxRequestBodyBytes(this.env));
+    if (body === null) return new Response('Payload Too Large', { status: 413 });
+    const reply = this.replyToClientMessage(body);
     if (reply.kind === 'close' || reply.kind === 'reject') {
       // 握手被拒：**先**把 `error` 帧投给该连接的接收通道（挂起中的长轮询会就地拿到它），再按"服务端关闭"收尾
       if (reply.kind === 'reject') this.deliverTo(id, reply.text);

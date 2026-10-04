@@ -545,5 +545,63 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
         /NOT NULL DEFAULT/,
       );
     }
+
+    // ④ **反方向**（2026-10-04 补，审计 R2#4）：schema.sql 里新增的列必须要么有对应迁移、
+    //    要么在下面的白名单里 —— 否则「老库没有这一列」永远没人发现（实测：给 schema.sql 加一列
+    //    后，5 个读 schema 的套件 128 条全绿 exit=0）。这条与上面的 ①②③ 合起来才是双向的。
+    //    白名单：建立**早于**迁移机制存在的历史列（老库靠 CREATE TABLE IF NOT EXISTS 的首次执行
+    //    就已带上，无需 ALTER）。新增列时**不要**往这里加，而应加进 MIGRATIONS。
+    const LEGACY_COLUMNS_WITHOUT_MIGRATION = new Set([
+      'ID',
+      'UserId',
+      'Type',
+      'Text',
+      'Size',
+      'TransferDataFile',
+      'TransferDataSha256',
+      'TransferDataMd5',
+      'FilePaths',
+      'Hash',
+      'CreateTime',
+      'LastAccessed',
+      'LastModified',
+      'Stared',
+      'Pinned',
+      'From',
+      'Tags',
+      'ExtraData',
+      'Version',
+      'IsDeleted',
+    ]);
+    const migrated = new Set(entries.filter((e) => e.table === 'HistoryRecords').map((e) => e.column));
+    const body = schema.match(/CREATE TABLE IF NOT EXISTS HistoryRecords \(([\s\S]*?)\n\);/);
+    expect(body, 'schema.sql 里找不到 HistoryRecords 表').not.toBeNull();
+    const schemaColumns = body![1]!
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '' && !l.startsWith('--'))
+      .map((l) => l.split('--')[0]!.trim().replace(/,$/, ''))
+      .map((l) => l.match(/^"?([A-Za-z_][A-Za-z0-9_]*)"?\s/)?.[1])
+      .filter((c): c is string => typeof c === 'string');
+    expect(schemaColumns.length, '抽取器的正向证据：schema 列数不该太少').toBeGreaterThan(10);
+    const orphan = schemaColumns.filter(
+      (c) => !migrated.has(c) && !LEGACY_COLUMNS_WITHOUT_MIGRATION.has(c),
+    );
+    expect(
+      orphan,
+      'schema.sql 里的这些列既没有对应迁移、也不在历史白名单里 —— ' +
+        '老库不会有它们（`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效），' +
+        '请把它们加进 tools/migrate-d1.mjs 的 MIGRATIONS（而不是白名单）',
+    ).toEqual([]);
+
+    // ⑤ 白名单的**反方向**（2026-10-04 补，验证单元 V2 指出）：白名单里的名字必须在 schema 里真实存在。
+    //    否则删掉一列后白名单留下一条死条目 —— 那条没人守，将来同名的新列会被它**静默放行**
+    //    （V2 实测：把 `Tags` 从 schema 删除而白名单留着，15 passed 未红）。
+    const staleWhitelist = [...LEGACY_COLUMNS_WITHOUT_MIGRATION].filter((c) => !schemaColumns.includes(c));
+    expect(
+      staleWhitelist,
+      '白名单里这些列在 schema.sql 里已不存在 —— 删列时请一并删掉白名单条目' +
+        '（留着会让同名的新列被静默放行、绕过上面的反向检查）',
+    ).toEqual([]);
   });
 });

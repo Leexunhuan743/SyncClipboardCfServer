@@ -166,7 +166,7 @@ flowchart TD
 
 横切约定：
 
-- **缓存**：`/ui/api/*` 的 JSON 一律 `no-store`；唯数据端点自带 `private, max-age=60`（预览/缩略图复用）。
+- **缓存**：`/ui/api/*` 的 JSON 一律 `no-store`；唯数据端点自带 `private, max-age=60`（预览/缩略图复用）。⚠️ **例外不止数据端点**（2026-10-04 订正，见 `docs/ui.md` §5 第 5 条）：补头挂在 Hono 后置中间件上，**在路由之前就返回的响应拿不到它** —— 实测跨站 403（`cross_origin_rejected`）与 `UI_ENABLED=false` 的 JSON 404 两条（均为错误响应、不含用户数据）。
 - **内容类型**：五个写端点只接受 `application/json`，非 JSON → 415（跨站**表单**能直接发 POST 且不过 CORS 预检，而 JSON 必须由脚本构造 ⇒ 这是一层纵深防御）。
 - **来源校验**：`/ui/api/*` 的状态变更方法校验 `Origin` 与 `Sec-Fetch-Site`，外源一律 403。
 - **鉴权靠注册顺序**：守卫以 `use('/ui/api/*')` 在受保护路由**之前**注册；维护端点（`integrity` / `settings`）显式注册在它之后（顺序写反 = 端点照常工作但不再要求凭据，守卫会遍历断言 401）。
@@ -238,7 +238,7 @@ flowchart TD
   - **同名重复条目取首见**（对齐上游"首次写入优先"）；
   - **条目名安全校验一律拒**（不依赖平台）：盘符形态（`C:/…`、`C:\…`）、含反斜杠或 NUL、前导 `/`、以及 `..` / `.` 段；而 `a:b.txt`、`1:30.txt` 这类"第二字符是冒号"的普通名字**接受**。`text` 字段由**顶层条目名**（`TrimEnd('/')` 后不含 `/`）用 `\n` 拼成。
 - **防 Zip 炸弹护栏**：流式解压限制最大体积 64 MiB、条目数 ≤ 1000、单条目解压膨胀比 ≤ 100:1（比值只在单条目解压后 ≥ 8 MiB 时才判定）。
-- **解压预算随 Body 收缩**：`groupZipDecompressionCap(zip) = clamp(96 MiB - zip.length, 1 MiB, 64 MiB)`（`ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB`）。理由是 zip 的压缩体与解压内容在解压期间**同时存活**，两个上限各自贴顶会顶穿 isolate。
+- **解压预算随 Body 收缩**：`groupZipDecompressionCap(zip) = clamp((96 MiB - zip.length) / 2, 1 MiB, 64 MiB)`（`ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB`）。理由是 zip 的压缩体与解压内容在解压期间**同时存活**，且峰值是 **body + 2×解压内容**（条目内容留一份 + fflate 交付/`concatChunks` 各复制一份 ⇒ 预算按 2 分摊），两个上限各自贴顶会顶穿 isolate。⚠️ **2026-10-04 订正**：此前此处（与 `docs/design.md` 同小节）写的是 `clamp(96 - body, …)`（1× 模型），与代码差一倍。
 - **出处**：`src/hash.ts`（`groupZipDecompressionCap`）、`src/requestLimits.ts`。
 
 ---
@@ -416,7 +416,7 @@ flowchart TD
 | **后台清理** | `cleanup.test.ts`, `cleanup-budget.test.ts` | 800 次子请求记账模型、保底配额、游标续跑、孤儿目录回收 |
 | **查询与目标** | `query-filters.test.ts`, `next-target.test.ts` | 复杂组合 SQL 过滤（类型位掩码、排序方向、时间范围）与焦点切换边界测试 |
 | **WebUI 契约** | `ui.test.ts`, `ui-logic.test.ts`, `ui-guard.test.ts`, `ui-input.test.ts`, `ui-contract.test.ts`, `ui-activity.test.ts` | 多列排序、回收站恢复边界、跨版本文案一致性、挂载点动态发现 |
-| **防漂移守卫** | `docs.test.ts` | 只校验**能从文件系统数出来**的量：5 份现状文档（`README.md`/`AGENTS.md`/`docs/design.md`/`docs/ui.md`/`.github/workflows/deploy.yml`）声明的**套件数（22）**、`docs/ui.md` 的**资源数（85）**、以及 `docs/design.md` 的套件清单是否逐个覆盖实际套件。⚠️ **端点表、目录树、挂载点、写库套件名单都不在它管辖内** —— 挂载点由 `ui-guard.test.ts` 动态发现守卫，「写库套件」是各套件自己调用 `assertWritableTarget`（见 §9.3） |
+| **防漂移守卫** | `docs.test.ts` | 只校验**能从文件系统数出来**的量：5 份现状文档（`README.md`/`AGENTS.md`/`docs/design.md`/`docs/ui.md`/`.github/workflows/deploy.yml`）声明的**套件数（22）**、`docs/ui.md` 的**资源数（86）**、以及 `docs/design.md` 的套件清单是否逐个覆盖实际套件。⚠️ **端点表、目录树、挂载点、写库套件名单都不在它管辖内** —— 挂载点由 `ui-guard.test.ts` 动态发现守卫，「写库套件」是各套件自己调用 `assertWritableTarget`（见 §9.3） |
 
 ### 9.3 安全防护网（`test/support/target-guard.ts`）
 7 个写库套件（`protocol`, `fix-regressions`, `transports`, `signalr`, `cleanup`, `query-filters`, `ui`）在文件顶层调用 `assertWritableTarget(BASE)`：目标主机不属于 `127.0.0.1` / `localhost` / `::1` / `[::1]` / `0.0.0.0` **且**未设 `ALLOW_REMOTE_TARGET=1` 时**直接抛错终止**（连 `beforeAll` 都不会执行），杜绝误向线上实例执行测试导致数据损坏。*(出处：`test/support/target-guard.ts`)*
@@ -442,7 +442,7 @@ flowchart TD
 
 ### 10.2 工程红线与规范（`AGENTS.md`）
 1. **代码与文档同改**：责任范围是 `AGENTS.md` §1 那张同步表（**端点表、目录树、令牌表、差异登记表都在守卫之外**，靠人逐行过）。门禁只机械盯住其中一部分：
-   - `test/docs.test.ts` → 套件数（22）、`public/` 资源数（85）、`docs/design.md` 的套件清单；
+   - `test/docs.test.ts` → 套件数（22）、`public/` 资源数（86）、`docs/design.md` 的套件清单；
    - `test/ui-guard.test.ts` → 四个界面挂载点（`/ui`、`/ui_v1`、`/ui_v2`、`/ui_shared`）在三处副本里的一致性（`wrangler.toml` 的 `run_worker_first`、`src/index.ts` 的 `isUiAsset`、`public/_headers` 的规则；挂载点集合从 `public/` **动态发现**）、`/ui/api/*` 端点清单（`EXPECTED_API_ROUTES`，20 条）、V1 与 V2 的 `messages.js` 正文对等、V1 预载清单 == import 闭包、`/ui/api/*` 的注册顺序（未认证一律 401）。
 2. **两套前端定位红线**：`/ui_v1/` 为默认产品面，禁止跨版引用 `/ui_v2/`（V1 自包含）；两版同名的 `messages.js` 正文必须逐字一致（对等守卫断言；文件头**有意不同**）。
 3. **完成定义（DoD，`AGENTS.md` §2 共五条）**：① `tsc --noEmit` 0 错；② eslint 0 告警（范围含 `test/manual`）＋ 4 个 `test/manual/*.mjs` 过 `node --check`；③ 在**端口 8787** 的 dev server 上 **22 个套件全过**；④ §1 同步表逐行核对；⑤ **改前端必须用真实浏览器量一次**（`test/manual/probe.mjs` / `probe-ui-v1.mjs`：零 console 错误、零失败请求）。

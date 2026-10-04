@@ -191,17 +191,26 @@ interface UiCredentials {
   password: string;
 }
 
-async function readCredentials(raw: Request, limit: number): Promise<UiCredentials | null> {
+// 读取结果：`ok` = 解析出的凭据；`too_large` = 超体量上限（**与畸形体区分**，
+// 否则同一个端点对超限会给出 400 而协议面给 413 —— 审计 R1#3，2026-10-04 修）。
+type ReadCredentialsResult =
+  | { kind: 'ok'; credentials: UiCredentials }
+  | { kind: 'too_large' }
+  | { kind: 'invalid' };
+
+async function readCredentials(raw: Request, limit: number): Promise<ReadCredentialsResult> {
   try {
     // 与入口的 login 解析同纪律：整包读取过体量上限（login 免认证，chunked 大 body 会绕过
     // content-length 预检）
     const body = await readBodyCapped(raw, limit);
-    if (body === null) return null;
+    if (body === null) return { kind: 'too_large' };
     const parsed = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
-    if (typeof parsed?.username !== 'string' || typeof parsed.password !== 'string') return null;
-    return { username: parsed.username, password: parsed.password };
+    if (typeof parsed?.username !== 'string' || typeof parsed.password !== 'string') {
+      return { kind: 'invalid' };
+    }
+    return { kind: 'ok', credentials: { username: parsed.username, password: parsed.password } };
   } catch {
-    return null;
+    return { kind: 'invalid' };
   }
 }
 
@@ -280,10 +289,16 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       await drainRequestBody(c.req.raw);
       return Response.json({ error: 'server_not_configured' }, { status: 500 });
     }
-    const credentials = await readCredentials(c.req.raw, maxRequestBodyBytes(c.env));
-    if (!credentials) {
+    const read = await readCredentials(c.req.raw, maxRequestBodyBytes(c.env));
+    if (read.kind === 'too_large') {
+      // 与协议面一致：超体量上限一律 413（修复前这里回 400 invalid_request，
+      // 同一端点对 content-length 超限回 413、对 chunked 超限回 400 ⇒ 审计 R1#3）
+      return new Response('Payload Too Large', { status: 413 });
+    }
+    if (read.kind === 'invalid') {
       return Response.json({ error: 'invalid_request' }, { status: 400 });
     }
+    const credentials = read.credentials;
     if (!verifyCredentials(c.env, credentials.username, credentials.password)) {
       // 不区分「用户名错」与「密码错」
       return Response.json({ error: 'invalid_credentials' }, { status: 401 });

@@ -249,19 +249,51 @@ export interface UiHistoryListItem extends UiHistoryItem {
 
 export const UI_LIST_TEXT_LIMIT = 500;
 
-// 代价极小的截断：先用 slice，再处理代理对边界（半截代理对是非法字符串）。
-// 导出给 `src/ui/maintenance.ts` 的自检摘要复用（此前它复制了一份同名实现，见审计 R-03）。
+// **码点**口径的长度与截断。为什么不用 `String.length`（UTF-16 码元）：
+// SQL 侧的两处都是**码点**口径（`length(Text)` 与 `substr(Text, 1, 501)`），若 JS 侧按码元切，
+// 两者在含星平面字符（emoji 等，1 码点 = 2 码元）的正文上会分叉 —— 400 个 emoji 会被切到
+// 500 码元（= 250 个 emoji）却因 `length(Text)=400 ≤ 500` 报 `textTruncated=false` ⇒ 前端据此
+// 认定正文完整、跳过取全文 ⇒ 复制/预览/下载拿到**半截内容**（审计 R2#8，2026-10-04 修）。
+// 判据与切分量同一个单位，就不会再出现「切了却说不算切」。
+//
+// 代价：`codePointCount` 需要扫一遍字符串。可接受 —— SQL 侧已把正文限到 501 码点，
+// 列表路径每次只扫 ≤501 码点；单条路径（PATCH/POST 回读）每次只扫一条。
+export function codePointCount(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    // 高代理位后面紧跟低代理位 ⇒ 一个星平面字符，只计 1 个码点
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const d = text.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) i++;
+    }
+    n++;
+  }
+  return n;
+}
+
+// 按**码点**截断（绝不切出半个代理对）。导出给 `src/ui/maintenance.ts` 的自检摘要复用。
 //
 // ⚠️ 与前端 `public/ui_v{1,2}/js/format.js` 的 `truncateText` **同名但不同义**，别去"统一"：
-// 那一边量的是**用户看到的字符**（`Intl.Segmenter` 字素簇，emoji 算 1 个），这一边量的是
-// **UTF-16 码元**——因为这里的 500 是**协议上限**（约束 JSON 体积），不是展示口径。
+// 那一边量的是**用户看到的字符**（`Intl.Segmenter` 字素簇，一个家庭 emoji 算 1 个），
+// 这一边量的是**码点** —— 因为这里的 500 是**服务端协议上限**（约束 JSON 体积，且必须与
+// SQL 的 `length()`/`substr()` 同口径），不是展示口径。
 // 差异的登记处是 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3。
 export function truncateText(text: string, limit: number): string {
-  if (text.length <= limit) return text;
-  let cut = text.slice(0, limit);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  return cut;
+  let n = 0;
+  let i = 0;
+  for (; i < text.length && n < limit; n++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const d = text.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        i += 2; // 整个星平面字符一起带走
+        continue;
+      }
+    }
+    i++;
+  }
+  return i >= text.length ? text : text.slice(0, i);
 }
 
 // 实体 → UI 列表项。导出给写路径复用：PATCH 成功后直接回传新条目，
@@ -281,7 +313,7 @@ export function toUiListItem(entity: HistoryRecordEntity): UiHistoryListItem {
   return {
     ...item,
     text: truncateText(item.text, UI_LIST_TEXT_LIMIT),
-    textTruncated: item.text.length > UI_LIST_TEXT_LIMIT,
+    textTruncated: codePointCount(item.text) > UI_LIST_TEXT_LIMIT,
   };
 }
 
@@ -290,9 +322,11 @@ function toItem(row: DbRow & { TextFullLength?: number }): UiHistoryListItem {
   return {
     ...item,
     text: truncateText(item.text, UI_LIST_TEXT_LIMIT),
-    // 截断发生在 SQL 层（substr），这里按完整长度列判定「原文是否超限」，
-    // 不能用截断后的 item.text.length（那会把超长正文误判成没截断）
-    textTruncated: (row.TextFullLength ?? item.text.length) > UI_LIST_TEXT_LIMIT,
+    // 截断发生在 SQL 层（`substr(Text,1,501)`，**码点**口径），这里按完整长度列判定「原文是否超限」，
+    // 不能用截断后的正文长度（那会把超长正文误判成没截断）。
+    // `TextFullLength` 来自 SQL 的 `length(Text)`（码点），与 `codePointCount` 同口径 ——
+    // 两侧必须是**同一个单位**，否则含 emoji 的正文会出现「切了却报 false」（审计 R2#8）。
+    textTruncated: (row.TextFullLength ?? codePointCount(item.text)) > UI_LIST_TEXT_LIMIT,
   };
 }
 

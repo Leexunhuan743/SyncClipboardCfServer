@@ -380,7 +380,7 @@
 |---|---|
 | §3 里构造不出触发路径的两条（260 ms 兜底 drop 的时序、`toolbar.js` 的 `reduce` 拼接） | §9 已降级 |
 | `ui_old/js/components/preview.js` 的「N 个字符」 | 它读的是**服务端 `size` 字段**，不是 `text.length`；改它要动服务端语义 |
-| 服务端 `src/ui/query.ts` 的 `truncateText` | 它按**码元**计的 500 是协议上限（`UI_LIST_TEXT_LIMIT`），与展示层口径不同 —— **不要合并这两个函数** |
+| 服务端 `src/ui/query.ts` 的 `truncateText` | 它按**码元**计的 500 是协议上限（`UI_LIST_TEXT_LIMIT`），与展示层口径不同 —— **不要合并这两个函数** | ⚠️ **2026-10-04 订正**：服务端那侧已从「按码元」改为**按码点**（与 SQL 的 `length()`/`substr()` 同口径 —— 按码元会让 emoji 正文被切却报 `textTruncated=false`，见 `progress.md` §209 与审计 R2#8）；「不要合并两个函数」这条结论不变。|
 | 删掉的是**最后一行**（列表变空）时焦点仍落 `<body>` | `removeItem` 此刻拿不到空状态的主按钮（那要等渲染完成）；V1 有这一档、V2 没有，见 `board.js` 的 `neighborButton` 注释 |
 
 ## 13. 第三轮修复落地（2026-09-19 晚，依据第三方审计报告）

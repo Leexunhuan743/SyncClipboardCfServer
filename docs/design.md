@@ -408,23 +408,27 @@ zip 上传）仍然成功，30 天内**资源超限 0 次** ⇒ 原「有效上�
   "此前用 `slice` 会为整个 body 再复制一份，是峰值内存的主要来源之一"）；
 - R2 写入不做防御性拷贝（`src/storage.ts` 同样记着"此前 `body.slice().buffer` 会为每次上传再复制一份"）；
 - Group（文件夹）上传是唯一例外：**zip 的压缩体在整个解压期间一直存活**（`parseGroupZip` 边解压边把条目
-  内容留在 `contents` 里）⇒ 峰值 ≈ **body + 解压内容**。
+  内容留在 `contents` 里）⇒ 峰值 ≈ **body + 2×解压内容**（条目内容留一份、fflate 交付与 `concatChunks`
+  又各复制一份，故预算按 **2** 分摊 —— `src/hash.ts` 的 `groupZipDecompressionCap` 注释记着这段推导）。
 
 **因此两个上限不能各自贴顶**，改用"一份合计预算 + 动态收缩的解压预算"：
 
 ```
 ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给运行时与并发）
-单请求占用 = body + 解压内容 ≤ 96 MiB
-解压预算   = clamp(96 MiB − body, 1 MiB, GROUP_ZIP_MAX_TOTAL_BYTES 64 MiB)   // src/hash.ts
+单请求占用 = body + 2 × 解压内容 ≤ 96 MiB        // 峰值是 2× 而非 1×，见上一段
+解压预算   = clamp((96 MiB − body) / 2, 1 MiB, GROUP_ZIP_MAX_TOTAL_BYTES 64 MiB)   // src/hash.ts
 ```
 
 | body | 解压预算 |
 | --- | --- |
-| 20 MiB（官方客户端默认上限） | 64 MiB（满额，常规使用**完全不受影响**） |
-| **48 MiB（默认）** | 48 MiB |
-| **64 MiB（上限）** | 32 MiB |
+| 20 MiB（官方客户端默认上限） | 38 MiB（`(96−20)/2`，常规使用充分） |
+| **48 MiB（默认）** | 24 MiB |
+| **64 MiB（上限）** | 16 MiB |
 
-不变式（`test/limits.test.ts` 守卫）：任何允许的 body + 其解压预算 ≤ 96 MiB。
+解压预算按 **2 分摊**（`src/hash.ts` 的 `groupZipDecompressionCap`）：峰值不是「body + 解压」而是
+「body + **2×**解压」—— 条目内容被 `contents` 留存一份，fflate 的交付与 `concatChunks` 又各复制一份。
+
+不变式（`test/limits.test.ts` 守卫）：`body + 2 × 解压预算 ≤ 96 MiB`。
 
 **默认 48 MiB / 上限 64 MiB 的取值依据**（2026-09-15 定稿，沿革 32 → 64 → 48）：
 
@@ -437,13 +441,20 @@ ISOLATE_TRANSFER_BUDGET_BYTES = 96 MiB          // = 128 MiB − 32 MiB（留给
 - **残留风险**（登记见 §13）：预算是**按请求**算的，两个**同时进行**的大 Group 上传理论上仍可能顶穿
   128 MiB。单客户端同步场景不会出现；要做全局串行需 isolate 级信号量。
 
-**上限在三处强制，缺一处就漏（2026-10-03 补齐第三处）**：
+**上限在四处强制，缺一处就漏（2026-10-04 补齐第四处）**：
 
 | 层 | 位置 | 覆盖 | 漏掉会怎样 |
 | --- | --- | --- | --- |
 | ① 请求头预检 | `src/index.ts` 的 F9 中间件（按 `content-length`） | 协议面写端点 + `/ui/api/login` + `PUT /file/*` | — |
-| ② 整包读取 | `readBodyCapped` / `readBodyTextCapped`（`src/requestLimits.ts`） | 所有把 body 读进内存的 handler | **chunked 请求（无 `content-length`）整条绕过 ①** ⇒ 一个 90 MiB 的 JSON 就能打爆 isolate，并发中的其它请求一起 503 |
+| ② 整包读取 | `readBodyCapped` / `readBodyTextCapped`（`src/requestLimits.ts`） | 经 Hono 的、把所有 body 读进内存的 handler；**以及 Durable Object 内的 hub 消息读取** | **chunked 请求（无 `content-length`）整条绕过 ①** ⇒ 一个 90 MiB 的 JSON 就能打爆 isolate，并发中的其它请求一起 503 |
 | ③ 对象实际大小 | `src/profile.ts` 的 `PayloadTooLargeError` | 落库前按暂存对象的 `size` | ① 预检也可被绕过：`PUT /file/{name}` 是流式的，先暂存 100 MB、再用小 JSON 提交 |
+| ④ hub 转发路径 | `src/index.ts`（`content-length` 预检）+ `src/durable/SyncClipboardHub.ts` 的 `handleClientMessage`（读取层） | `POST /SyncClipboardHub` | **hub 的请求不进 Hono** ⇒ ①②都够不到它；一个 chunked 的 100 MiB POST 打爆 isolate（审计 R1#1/R4#2 实测：上限设 256 KiB 时 20 MiB 仍 200） |
+
+> **DO 内另有三处 `request.json()` 不设上限**（`/broadcast`、`/register-token`、`/auth-rate-limit`）——
+> 它们是 **Worker → DO 的内部子请求**（经 `env.HUB` binding），**边缘不可达**：入口只把
+> `HUB_PATH` 与 `HUB_PATH/negotiate` 两条路径转发给 DO，外部请求打这三个路径会落到 Hono 的 404，
+> 不经 DO（2026-10-04 复核，审计 R1）。三条路径的体都由本仓库自己构造（体量恒定且极小），
+> 故**不需要**收口；真要收也只是防御性的。
 
 ②的**唯一入口**（2026-10-03 起）：`readBodyTextCapped`（文本/JSON）与 `readBodyCapped`（字节，
 multipart/urlencoded 用）。**新增任何"把整包读进内存"的端点都必须走它们** —— UI 面的

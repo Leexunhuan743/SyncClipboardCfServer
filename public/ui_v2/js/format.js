@@ -131,7 +131,7 @@ export function dayGroup(iso, now = Date.now()) {
  * 它不可用时（Firefox < 125）退回 `Array.from` 的**码点** —— 组合序列会被数成几段，
  * 但至少切不出半个字符。两者都严格优于按码元切。
  *
- * 注意与服务端 `src/ui/query.ts` 的同名函数**不是一回事**：那个只修代理对边界、按码元计数，
+ * 注意与服务端 `src/ui/query.ts` 的同名函数**不是一回事**：那个按**码点**计数/截断
  * 因为它的 500 是**协议上限**（`UI_LIST_TEXT_LIMIT`）；这里量的是"用户看到的字符"。
  * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3。
  */

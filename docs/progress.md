@@ -14454,3 +14454,99 @@ F9 的「按 content-length 快速 413」用例里，PATCH 那条写的是 `/api
 - 全量套件（dev server 8787 + `--no-file-parallelism`）：**22 个套件 / 502 个用例全过**、退出码 0
   （比 §207.5 的 501 多 1 条 = 本轮新增的迁移 DDL 守卫）。套件数与资源数不变。
 - **未跑**：`test/manual/probe*.mjs`（本轮未碰 `public/` ⇒ DoD 第 5 条不适用）。
+
+## 209. 交叉审计后的修复：hub 面请求体上限（High）+ 4 条 Medium/Low + 7 处文档不实（2026-10-04）
+
+对 §199–§208 那 13 笔提交做了一次**多代理交叉审计**（6 个调查单元 + 2 个盲化复核，方法与证据见
+`.audit-forms-208/report.md`：36 槽、放行裁决 **BLOCKED**）。本节是**修复记录**；审计自身的流程缺陷
+（漫游单元派早了、覆盖缺口、端口复用污染）在报告的过程披露里。
+
+### 209.1 修了什么
+
+| # | 级别 | 缺陷 | 修法 |
+|---|---|---|---|
+| 1 | **High** | **hub 转发路径（含 chunked）绕过全部请求体上限**：`src/index.ts` 在 `app.fetch` 之前就 `return forwardToHub` ⇒ 协议面那条 F9 中间件与 `readBodyCapped` 都够不到它；DO 侧 `request.text()` 无上限。实测（上限设 256 KiB）：`PUT /SyncClipboard.json` 超限 → 413，而 `/SyncClipboardHub` 的 1/4/20 MiB POST **全部 200** | `src/index.ts` 的 hub 分派补 **content-length 预检**（第一层）；`src/durable/SyncClipboardHub.ts` 的 `handleClientMessage` 改用 `readBodyTextCapped`（第二层，覆盖 chunked）⇒ 超限一律 **413** |
+| 2 | Medium | 迁移守卫**单向**：给 `schema.sql` 加列而忘了加迁移时，最接近的守卫仍全绿（实测 15 passed）⇒ 新库/老库结构漂移无人守 | `test/docs.test.ts` 补**反方向**断言：schema 里每列必须要么在 `MIGRATIONS` 里、要么在**历史列白名单**里（白名单只列建表时就有的 20 列） |
+| 3 | Medium | 列表截断判据**码点 vs 码元**矛盾：SQL `substr`/`length()` 按码点、JS `truncateText` 按码元 ⇒ 纯 emoji 正文被切却报 `textTruncated=false` ⇒ 前端跳过取全文、用户复制到半截 | `src/ui/query.ts` 新增 `codePointCount()`，`truncateText` 改为**按码点**切，两处判据改用 `codePointCount` ⇒ 判据与切分同单位 |
+| 4 | Low | `/ui/api/login` 对超限**语义分叉**：content-length 超限 → 413、chunked 超限 → 400 | `readCredentials` 返回 `{kind:'ok'|'too_large'|'invalid'}` ⇒ 超限统一 **413** |
+| 5 | Low | negotiate **不判方法**：6 个非 POST 方法全部 200 且签发并登记 token（上游一律 405） | 非 POST → **405**（在方法判定处返回，不签发 token） |
+| 6 | Low | 无 `id` 的 hub 连接被转发给 DO 并以**空 id 建连接**（上游 400 `Connection ID required`） | 缺 id → **400 `Connection ID required`** |
+| 7 | Low | `classifyStoredProfile` 的 `Type` 数字域过松（`1e30` 判 ok 并原样透给客户端 ⇒ 客户端反序列化抛 ⇒ 同步停摆）、`Size` 过紧（`≥2^53` 误判 corrupt ⇒ 丢数据） | `Type` 加 Int32 边界；`Size` 改用 Int64 上界（`< 2^63`），既不误杀合法 long 也仍拦越界 |
+| 8 | — | `vitest.config.ts` 的 exclude 写死 `.audit-forms/` ⇒ 新审计实例目录 `.audit-forms-208/` 的探针进了产品套件（实测多出 **1 个文件 / 3 条用例**；`HEAD` 的 exclude 只覆盖旧目录 ⇒ 该探针在**修复后的代码上**跑 3 passed，故它不是"5 条必然失败"——见验证单元 V4 的复核） | 改成通配 `**/.audit-forms*/**`（今后的 `.audit-forms-<n>/` 一并覆盖） |
+
+### 209.2 订正的文档不实声明（7 处，由审计 R4 复算 + R3/R6 的真 A/B/源码对照发现）
+
+- `docs/protocol.md` §10「路径字面段」行：原写「双斜杠仍是 404，ASP.NET 忽略任意个」——**与实测相反**。
+  真 A/B（v3.2.0 发布件 + ASP.NET Core 8 运行时）：上游对双斜杠**同样 404**，与本实现逐一相同；
+  **真正**仍存的双斜杠差异只有 `GET //`（上游 404 / 本实现 200 说明页）与 `/ui//`（上游 404 /
+  本实现 307），两者原先都**未登记**。已重写该行并补登记。
+- 同文件 §10「`404` 的响应体」行：引用的 `webdav.ts:163` 已被同轮改动推到 `168` ⇒ 改用**语义锚点**
+  而非裸行号（并注明"行号会漂移"）。
+- 同文件 §10「SignalR 握手」行：上游错误文案原写 `Requested protocol 'X' is not available.` —— 该串在
+  上游两棵源码树里**零命中**（实为 `The protocol 'X' is not supported.`）⇒ 已订正并标注。
+- `docs/design.md` §7.1：新增的「上限在三处强制」表里「②=所有把 body 读进内存的 handler」**不成立**
+  （hub 面在名单外）⇒ 改成**四处**表并单独列出 hub 转发路径（④）。
+- 同文件 §7.1 的「body → 解压预算」表三行**差一倍**（表按 `96−body` 算、代码按 `(96−body)/2` 分摊）
+  ⇒ 改为 38/24/16 MiB，并把不变式写成 `body + 2×解压预算 ≤ 96 MiB`。
+- `docs/ui.md` §5 第 5 条：`/ui/api/*` 的 JSON「**一律** `no-store`」不成立 —— 补头挂在 Hono 后置
+  中间件上，**路由之前就返回的响应拿不到它**（实测：跨站 403 与 `UI_ENABLED=false` 的 JSON 404）；
+  已限定措辞并列明两条例外（2026-10-03 那轮的探针矩阵恰好漏了这两条）。
+- `docs/project-analysis.md` 两处把 `public/` 资源数写成 **85**（实际 86，`docs/ui.md` 也是 86）⇒ 已订正。
+
+### 209.3 覆盖与判别力（都实测过）
+
+- 新增/改动的用例：`test/rate-limit.test.ts` 三条（hub 消息体受同一上限〔CL + chunked 两形态〕、
+  negotiate 非 POST → 405、无 id → 400）；`test/protocol.test.ts` 一条（真 dev server 上的 negotiate
+  405 + POST 200 正向对照）+ **订正一条**（原「`/SyncClipboardHub/` 无 id → 200」把缺陷行为写成了契约，
+  现断言 400）；`test/docs.test.ts` 迁移守卫补**反方向**断言。
+- 判别力实测（命令与输出见审计表单 `R1#1/R2#4/R2#8/R3#1/R3#2` 的 run 记录）：
+  hub 上限：修复前 20 MiB → 200，修复后 → 413 且边界仍是 `>`（limit 放行、limit+1 拒绝）；
+  迁移守卫：schema 单加列 → 红、成对加列 → 绿（阳性对照）；
+  截断：修复后三种 emoji 情形「切了 ⇔ flag=true」全一致（修复前 300 emoji 那格切了却报 false）。
+
+### 209.4 门禁（2026-10-04，本轮）
+
+- `tsc --noEmit` 0 错；`eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual` 0 告警；
+  `node --check` ×4 = 0 错。
+- 全量套件（dev server 8787 + `--no-file-parallelism`）：**22 个套件 / 507 个用例全过**、退出码 0
+  （90.87 s；比 §208.5 的 502 多 4 条 = 本轮新增的 5 条用例 − 1 条被订正的旧用例）。套件数与资源数不变。
+- ⚠️ 中途一次**假失败**：我先把 dev server 以 `--var MAX_REQUEST_BODY_BYTES:262144` 起（为了复现 hub 缺陷），
+  而本机夹具里有 >1 MiB 的上传用例 ⇒ 那些用例正确地拿到 413 而"失败"。换回默认上限后 127/127 全过。
+
+### 209.5 把修复交回**原发现单元**复核（4 个验证代理，2026-10-04）
+
+| 单元 | 判定 | 关键结论 |
+|---|---|---|
+| V1（hub 上限） | **FIXED** | 重跑原始最小复现：修复前 1/4/20 MiB 全 200、修复后全 **413**；**两层各自独立承重**（只留读取层时 chunked 仍被拦）；边界为 `>`；413 后同 isolate 后续请求全 200 |
+| V2（截断+迁移守卫） | **PARTIALLY-FIXED**（已补） | 口径统一与双向守卫都成立；但**我漏了星平面夹具测试** ⇒ 该回归当时无永久判据（它实测：改回码元口径后现有 ASCII 夹具仍全绿）——**已补**（见下） |
+| V3（路由） | **REGRESSION-INTRODUCED**（已修） | **我第一版修复引入新回归**：两处短路（negotiate 405、hub 无 id 400）排在**鉴权之前**，而上游是 hub 类级 `[Authorize]` ⇒ 无凭据请求应 **401 + `WWW-Authenticate`**（与方法/id 无关）——**已修**（短路移后；真 A/B 11 格逐格一致） |
+| V4（文档真实性） | **PARTIALLY-FIXED**（已修） | 数字（38/24/16 MiB、86、22）全部复算一致；但发现 5 处**残留/新引入**的不实——**已逐条修**（见下） |
+
+**V1 的三点处置**：① 非 POST 的 hub 带体请求绕过预检 ⇒ 预检改为**方法无关**（实测四方法超限全 413）；
+② `requestLimits.ts` 注释说"已排空"实为 `cancel()` ⇒ 改写为"两分支处理方式不同、在 workerd 上等价"；
+③ wrangler dev 下 chunked-413 后紧邻请求偶发挂起/500 ⇒ V1 用**裸 workerd** 证明是**开发代理伪影**
+（同现象在修复前基线与未改动的协议面路径上逐字相同），非本修复引入、生产不可见。
+
+**V2 的处置**：补 `test/ui.test.ts` 的「星平面字符（emoji）」用例（断言「切了 ⇔ `textTruncated`」+ 不许切出
+孤立代理位 + 单条端点回完整正文），并**实测判别力**（把 `truncateText` 改回按码元切 ⇒ 红 `expected 263 to be 325`）。
+另补白名单的**反方向**断言（白名单里的列必须在 schema 里存在 —— 实测删 `Tags` 后红），并给封版记录
+`docs/archive/AUDIT-v1-v2-divergence.md` 加订正指针（其"按码元计"的说法已被本轮改成码点）。
+
+**V4 的处置（5 处，均已改）**：① `docs/design.md` 同小节仍有 1× 模型的散文（`clamp(96-body,…)`）⇒ 改为
+`(96-body)/2` 并写明峰值是 `body + 2×解压`；② `docs/project-analysis.md` 的同一公式 ⇒ 同步；③ 同文件
+"`/ui/api/*` 的 JSON 一律 `no-store`" ⇒ 补两条例外；④ `public/ui_v{1,2}/js/format.js` 的注释仍称服务端
+`truncateText`"按码元计数" ⇒ 改为"按**码点**计数/截断"（代码行为本就正确，是注释变假）；⑤ 本节（§209）
+自身三处不实（标题"6 处"→ 7 处、把 R3/R6 的发现误归给 R4、门禁用例数 506 → 507）⇒ 已订正。
+
+**残留（未修，已披露）**：hub 带**未知 id** 时上游 `404 No Connection with that ID` / 本实现 `200`（GET；
+DELETE 还会 500）—— 既有差异、本轮未引入、**未登记**，待下一轮决定「对齐还是登记为有意放宽」。
+上游在 `:8799`（v3.2.0 发布件）仍在运行，供后续复用。
+
+- **DoD 第 5 条（改前端 ⇒ 真实浏览器量一次）**：本轮改了 `public/ui_v1/js/format.js` 与 `public/ui_v2/js/format.js`（注释）⇒ 适用。
+  ⚠️ **`test/manual/probe*.mjs` 在本沙箱跑不起来**：系统 Edge/Chrome 能启动（进程不退出），但**不暴露 DevTools 端点**
+  （实测 4 种 flag 组合 + 4 个端口全部 `fetch failed`），探针因此在 `waitForDevTools` 处退出。
+  改用**内置 browser 工具**（omp 管理的 Chromium）按同样判据量了四档：V1 1440×900、V1 390×844、
+  V2 1440×900、V2 390×844 —— **零 console 错误、零失败请求、`pageOverflowX = 0`**，
+  列表正常渲染（V1 每档 50 行、V2 60 行；V1 的骨架/空态节点存在但不可见 = 渲染完成后被隐藏，属正常）。
+  登录走 `/ui/api/login`（真实 Cookie 流程）。**残留**：未用系统 Chrome 复核（沙箱限制），
+  探针脚本本身未跑通 —— 这是本轮唯一**未能按 DoD 原路径**完成的一条。

@@ -121,9 +121,14 @@ export async function readBodyCapped(raw: Request, limit: number): Promise<Uint8
  * `requestLimits.ts` 顶部记的那条一样（并发中的其它请求一起 503）。这些端点都在鉴权之后，
  * 所以实际风险面是"凭据泄漏后的放大器"，但代价是每个请求 90 MiB 内存 ⇒ 一律封顶。
  *
- * 返回 `null` 时**已经**把请求体排空（`readBodyCapped` 内部对超限分支做了 drain），
- * 调用方据此直接回 413 即可；**不要在调用方再调一次 drainRequestBody**（重复排空无害，
- * 但那是多余的读）。
+ * 返回 `null` 时请求体**已被处理到"可安全提前响应"的状态**，调用方据此直接回 413 即可；
+ * **不要在调用方再调一次 drainRequestBody**（重复排空无害，但那是多余的读）。
+ * ⚠️ **措辞精确**（2026-10-04，验证单元 V1 指出）：两个超限分支的处理方式**不同** ——
+ * ① `content-length` 预检超限走 `drainRequestBody`（**真正读完**再丢弃）；
+ * ② 流式读取中途超限只做 `reader.cancel()`（**不读完**）。在 workerd 上 `cancel()` 之后
+ *    `read()` 立即返回 `done:true`（流已终结），实测四种分支（cancel / 读完丢弃 / drain /
+ *    完全不读）的后继请求**全为 200** ⇒ 两者对"响应先于入站体发出"这个约束**等价**；
+ *    但**不要**把它写成"一律排空"——那是 ② 并不成立的描述。
  */
 export async function readBodyTextCapped(
   raw: Request,
