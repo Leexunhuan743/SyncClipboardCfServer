@@ -1,5 +1,13 @@
 # 图片缩略图 / 悬停预览 —— 评估与待定方案
 
+> **精简介**：2026-10-04 修订（结构性编辑，未重写）；历史版本见
+> `git show <hash>:docs/ui-image-preview-plan.md`：修订前最近一版 `0bf1509`，初版同笔。
+> 本次改了三处：① 补本节；② 修正过时的端点计数（**18 → 19 是当时的数，现在是 20**，见 §2）；
+> ③ 每条事实重新对照当前代码核过（`THUMB_MAX_BYTES = 512 * 1024` 仍在 `row-content.js`；
+> `[images]` binding 仍未加；`/thumb` 端点仍不存在）。
+> **本文件已足够精炼，不需重写** —— 它只有事实表、决策树与清单，没有过程叙述。
+> 以后要"精简文档"时不必再动它，除非事实本身变了。
+>
 > **状态：`plan`（未拍板、代码未动、配置未动）** —— 2026-09-21 记录。
 >
 > 本文只做两件事：**把已核实的事实钉下来**（免得下次重新量一遍），以及**列出待人拍板的选择**。
@@ -33,7 +41,7 @@ V1 的列表里，**图片大于 512 KiB 就没有缩略图**。这不是"可以
 | 悬停浮层**只挂在行内正文**上；图片行悬停出来的是**文件名**，不是图 | `list.js` 的 `tooltip.attach(textEl, …)` + `format.js` 的 `previewText` |
 | CSP：`img-src 'self' data:` ⇒ 同源端点与 `data:` 可用，**`blob:` 不在白名单** | `public/_headers` 的 `/*` 段 |
 | 上传体量上限 `48 MiB`（ceiling 64 MiB）；上游客户端 `MaxFileByte` **默认 20 MB** | `src/requestLimits.ts` |
-| 新增一个 `/ui/api/*` 端点 = 清单 18 → 19，三处要同步 | `test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`、`docs/ui.md` §5、`AGENTS.md` §1 表 |
+| 新增一个 `/ui/api/*` 端点 = 清单 **20 → 21**（2026-09-21 记的是 18，其间端点已增到 20），三处要同步 | `test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`、`docs/ui.md` §5、`AGENTS.md` §1 表 |
 | `/ui/api/*` 中间件默认给 `no-store`；端点可自带 `cache-control` 落在例外里 | `src/ui/routes.ts` 的中间件注释 |
 
 **注意 512 KiB 这个阈值的性质**：`row-content.js` 里给的理由是"R2 透传 ⇒ 一条 32 MiB 的记录就是
@@ -135,7 +143,7 @@ D1 要解决什么？ ──┬─> D3 变体从哪来？ ──> D4 归属/时�
 1. **`wrangler.toml`**：新增 `[images] binding = "IMAGES"`（无 id，CI 的 `sed` 注入不受影响）。
 2. **新端点**：`GET /ui/api/history/:type/:hash/thumb`（建议带 `?w=`），**必须**自带
    `cache-control`（否则落中间件的 `no-store`）+ 自己加体积门（> 20 MB 直接回退到占位）。
-3. **登记三处**：`test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`（18 → 19）、`docs/ui.md` §5 端点表、
+3. **登记三处**：`test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES`（**20 → 21**）、`docs/ui.md` §5 端点表、
    `AGENTS.md` §1 表。
 4. **前端**：`row-content.js` 的 `buildThumb` 分支（去掉 512 KiB 这一档）、`api.js` 的地址构造、
    `.cell-content__thumb` 尺寸；若做悬停，还要给**缩略图元素**挂浮层（现在浮层只挂正文）。

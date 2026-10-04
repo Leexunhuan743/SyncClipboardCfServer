@@ -1,36 +1,46 @@
-# SyncClipboard CfServer — Cloudflare Free 计划适配审计
+# Cloudflare Free 计划适配审计
 
-> 审计对象：**工作区**（HEAD `8b65fe4` + 未提交改动）。审计日期 2026-09-25。
-> 本文**只审计与设计，不改任何代码**；所有 `文件:行` 均为本次实读行号。
-> 平台事实全部来自官方文档（URL + last updated 逐条给出），与仓库内证据**分开标注**：
-> 「文档」= 官方文档，「实测」= 仓库注释里记录过的真实测量，「推断」= 本次静态推导。
-> 凡读不到官方说明的，写「未核实」，不编数字。
+> **精简介**：本节起为 2026-10-04 的整篇重写（原文 632 行）；历史版本见
+> `git show <hash>:docs/free-plan-audit.md`：重写前最近一版 `73fb9c6`，初版见
+> `git show --diff-filter=A --format=%h -- docs/free-plan-audit.md`。
 >
-> ⚠️ **修订 r3（同日，审计过程中）**：并行工作者正在改三个文件（工作区 `M`，未提交），
-> 其中两处正是本文的结论：
-> · `src/hash.ts` + `src/profile.ts` —— 消除「同一份字节 SHA-256 多遍」（本文 P1-1）；
-> · `src/routes/webdav.ts` —— 消除 `c.json(JSON.parse(profileDtoToJson(x)))` 的三重往返（本文 P2-2）。
-> 本文已按**改动后**的工作区重算 §3.1/§3.2、§2.1 与 P0-1/P1-1/P2-2，这三个文件的行号以工作区为准；
-> 其余文件未改动，行号不受影响。**审计对象是工作区，不是 HEAD。**
-
-**一句话结论**：Free 上**先撞的不是子请求，是 10 ms CPU** —— 落库路径对 payload 的 SHA-256
-（`src/profile.ts:164` 等）在 Free 的 CPU 预算下只够约 3–10 MiB，而请求体默认上限是 48 MiB
-（`src/requestLimits.ts:10`）；清理任务（Cron）同样只有 10 ms CPU，现有 800 子请求预算
-**只管子请求、完全不管 CPU**，且平台在 CPU 超限时是**直接终止**（`error 1102`），
-`ctx.waitUntil(runCleanup)` 的 catch 与收尾落库都不会执行 ⇒ 清理可观测面（F11）会重新变黑。
-
-> ⚠️ **修订 r4（2026-09-25，账户实测回填）**：上面的「一句话结论」**已被账户实测推翻一条**。
-> 该账号真实承载过 **15.5 MiB 的 zip 请求体 / 20.36 MiB 的 Group 载荷**（2026-09-24），
-> 单次调用 CPU 达 **633 ms / 712 ms** 仍然成功，30 天内**资源超限 0 次**
-> ⇒ 「Free 上有效上传上限约 3–10 MiB、超过必然 `error 1102`」**不成立**。
-> 根因是本文漏掉的一条官方机制：**rollover CPU time** —— 官方 metrics 页原文「更高的分位可能看起来
-> 超过 CPU 时间上限而不产生调用错误」，limits 页也写「每个 isolate 对偶发越界有内建余量」
-> ⇒ **10 ms 是平均预算，不是单次硬顶**；只有**持续**越界才终止。
-> **本文的静态分析与优先级清单不重写**（它们是带日期的产物；§3 的「必然超 10 ms」是**遍数 × 吞吐假设**的
-> 保守推断，不是实测）。实测数字一律见下方 **§6.1**，完整账户事实（配额消耗、权限边界、查询原文、
-> 账户计划未判定）见 [`docs/free-plan-account-facts.md`](free-plan-account-facts.md)。
+> **这份文件是什么**：把 Free 档的**平台限额事实**、**逐入口的子请求 / CPU 折算**、
+> **优先级清单**摆在一起，用来回答"免费额度到底会不会撞、先撞哪一条"。
+> 计划落地的结论见 [`design.md`](design.md) 的 **D40**；账户实测见
+> [`free-plan-account-facts.md`](free-plan-account-facts.md)。
+>
+> **重写的取舍**：原文是"**带日期的静态审计**"，其中**一条核心结论已被账户实测推翻**（见下 §0），
+> §5 的清单也**已大部分落地**。本版做三件事：
+> ① 把被推翻的结论**从正文移除**，只留正确的（推翻过程见 §0 一行）；
+> ② 把 §5 的清单从"建议"改成"**现状**"（已落地 / 明确不做 / 仍有效）；
+> ③ 保留全部**平台事实表**与**折算表** —— 它们是这份文件唯一不可再生的东西。
+>
+> **证据标注**：`文档` = 官方文档（URL + last updated 逐条给出）；`实测` = 仓库里记录过的真实测量；
+> `推断` = 静态推导。凡读不到官方说明的写「未核实」，不编数字。
 
 ---
+
+## §0 结论（现版）
+
+1. **先撞的不是子请求，也不是 CPU —— 是 DO 的 duration**：一个常驻 WebSocket 会让
+   `SyncClipboardHub` 的 duration 吃掉 Free 日额度（13,000 GB-s）的 **84.5–85.5%**（实测）。
+   这条已按 ADR **D42** 处理（WS 迁 Hibernation API），上线后 duration 降到满额的 **0.08–0.1%**
+   （两次独立全窗读数，见 [`do-hibernation-plan.md`](do-hibernation-plan.md) §4.1）。
+2. **CPU 不是"单次硬顶"**：10 ms 是**平均**预算，平台另有 **rollover CPU time**（官方 metrics 页原文：
+   「更高的分位可能看起来超过 CPU 时间上限而不产生调用错误」）⇒ **偶发越界不报错、持续越界才终止**。
+   本账号实测承载过 **15.5 MiB 的 zip 请求体 / 20.36 MiB 的 Group 载荷**（单次 CPU 633 / 712 ms）且**成功**，
+   30 天内资源超限 **0 次**。
+   ⚠️ **原文的「Free 上有效上传上限约 3–10 MiB、超过必然 `error 1102`」已被这条实测推翻** ——
+   它漏掉的就是 rollover 这一条机制。请求体上限的取值依据是 **isolate 内存**（Free/Paid 同为 128 MiB），
+   不是 CPU（D40 ①）。
+3. **子请求口径**：Free 是 **50 次外部 `fetch` + 1,000 次「到 Cloudflare 服务」**，两者分开计。
+   本仓库**不使用外部 `fetch`**（只有 binding 调用）⇒ W5 在任何入口都不会被撞到；
+   预算按 **1,000** 计（`SUBREQUEST_BUDGET = 800` 的采信是对的）。
+4. **`[limits]` 不要设**：Free 上设 `subrequests` 不能放宽额度，只可能把 internal-services 的 1,000
+   **钳低**（CFG-2 写 "The free account maximum is 50"）；设 `cpu_ms` 只会更早失败。现状没有 `[limits]` 段 —— **这是对的**。
+
+---
+
 
 ## §1 平台限额事实
 
@@ -124,6 +134,9 @@
 ⇒ 结论：**在 Free 上不要设置 `[limits] subrequests`**（不设 = 保持 1,000；设了最坏降到 50）。
 
 ---
+
+---
+
 
 ## §2 每次调用的子请求最坏情况
 
@@ -240,6 +253,9 @@ hardDelete ≤20×1 + orphans 1 + 轮尾 1），DO ≤ 740（retention/trim 的�
 
 ---
 
+---
+
+
 ## §3 CPU（10 ms）热路径
 
 计量单位统一为「**对 payload 字节做了几遍 O(n) 工作**」。SHA-256 的吞吐按乐观 1 GB/s、
@@ -306,6 +322,9 @@ Free 上的有效上传上限从 ~1–3 MiB 抬到 **~3–10 MiB**（仍远低�
 9. `GET /SyncClipboard.json` 的三重 JSON 往返（G，量级为微秒，且已消除）。
 
 ---
+
+---
+
 
 ## §4 每日配额消耗
 
@@ -391,7 +410,17 @@ charges for the entire time the WebSocket is connected**"；脚注 5 —— dura
 
 ---
 
+---
+
+
 ## §5 优先级修复清单（只给方案，不实施）
+
+> **现状（2026-10-04）**：本清单的 **P0 全部已落地**，P1 大部分已落地，P2 见各条。
+> 下面逐条保留原文与**当时的判据**（它们是"为什么这么改"的记录），并在每条开头标出**现状**。
+> 已被 §0 推翻的前提（"Free 上必然 `error 1102`"）在 P0-1 里就地标注，**不再作为行动依据**。
+>
+> 取向约束不变：**优先「不加新配置项也能同时对 Free 与 Paid 正确」的改法**
+> （本仓库新增部署开关要同步四处：`.dev.vars.example` / `deploy.yml` / `README.md` / `wrangler.toml`，且带守卫）。
 
 > 取向约束：**优先「不加新配置项也能同时对 Free 与 Paid 正确」的改法**（本仓库新增部署开关要
 > 同步四处：`.dev.vars.example` / `deploy.yml` / `README.md` / `wrangler.toml`，且带守卫）。
@@ -567,6 +596,9 @@ charges for the entire time the WebSocket is connected**"；脚注 5 —— dura
 
 ---
 
+---
+
+
 ## §6 无法静态判定的部分（必须实测才能定论）
 
 | # | 待定项 | 为什么静态定不了 | 可复现的测量办法 |
@@ -611,6 +643,9 @@ charges for the entire time the WebSocket is connected**"；脚注 5 —— dura
 M5（Cron 是否计入 100k/天）、M8（multipart 边界扫描在 48 MiB 档的耗时）—— 这四项本轮**未取数**。
 
 ---
+
+---
+
 
 ## 附：本次审计的证据边界
 

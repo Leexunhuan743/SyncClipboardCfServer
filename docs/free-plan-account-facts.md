@@ -1,4 +1,20 @@
-# SyncClipboard CfServer — Cloudflare 账户实测事实档案
+# Cloudflare 账户实测事实档案（2026-09-25 取数）
+
+> **精简介**：2026-10-04 补本节（**未重写** —— 本文件是**一手事实档案**，574 行里绝大部分是
+> **查询原文与实测读数**，压缩它们等于销毁证据）；历史版本见
+> `git show <hash>:docs/free-plan-account-facts.md`：修订前最近一版 `73fb9c6`。
+>
+> **这份文件是什么**：这台部署**实际跑在什么账户、消耗了多少配额、有没有撞到过平台上限**的一手记录。
+> 它是 [`free-plan-audit.md`](free-plan-audit.md)（**平台规定是什么**）的**对照面**（**实际发生了什么**）。
+> 两份的分工与冲突处置见 §2.4 的两难论证。
+>
+> **它是快照**：所有数字都是**取数那一刻**的读数，**不是实时值**。
+>
+> **⚠️ 引用时连口径与时点一起引**（本仓库反复踩过这个坑）：本文件的读数分三类 ——
+> **账户级**（配额消耗）、**Worker 级**（某脚本的请求/CPU）、**对象级**（具体记录与字节数）；
+> 三者的窗口与单位各不相同，混用会得出相反结论（§5.4 就是一次真实的更正）。
+
+---
 
 > **这是什么**：`syncclipboard-cf-server` 这个部署**实际跑在什么账户、消耗了多少配额、有没有撞到过平台上限**的
 > 一手事实档案。它是 `docs/free-plan-audit.md`（**文档事实** + 静态推算）的**账户事实**对照面：
@@ -22,6 +38,8 @@
 > `https://dash.cloudflare.com/oauth2/token` 换新（`client_id` 是 wrangler 源码内的**公开**常量）。
 > **未回写该配置文件**（mtime 保持 `2026-09-21 23:31:47 +0800`），且第二次用原 `refresh_token` 刷新仍成功
 > ⇒ 本机登录态未被破坏。所有临时脚本与令牌文件都在仓库外（`%TEMP%`）并**已删除**。
+
+---
 
 ---
 
@@ -105,6 +123,8 @@ VERSION=3.3.0-beta1 | UI_ENABLED=true | HISTORY_RETENTION_MINUTES=0 | MAX_SAVED_
 
 ---
 
+---
+
 ## §2 计划判定
 
 ### 2.1 结论：**无法判定**（缺 Billing Read）
@@ -166,6 +186,8 @@ Paid 只是没调），同样不是判据。
   （官方 limits 页对 rollover 的限定词是 "infrequently runs over the configured limit"）。
 
 ⇒ 本轮文档改写**不需要**先判定计划（判定本身也需要 Billing Read，见 §2.1）。
+
+---
 
 ---
 
@@ -365,6 +387,8 @@ R2（bucket syncclipboard）5 天逐 actionType 合计（原始计数，未按�
 
 ---
 
+---
+
 ## §4 查询原文（可复现）
 
 **REST**（全部 `GET`，`https://api.cloudflare.com/client/v4`，`Authorization: Bearer <本机凭据>`）：
@@ -498,6 +522,8 @@ https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json      
 
 ---
 
+---
+
 ## §5 附带发现
 
 > 以下五条**均未排查、未实施**，只是取数时顺手看到的事实，登记在此备查。
@@ -551,6 +577,8 @@ alarm 会持续唤醒 DO，这也是 §3.5 里 duration 24 小时/天、11,000 G
 线上有 `AUTH_RATE_LIMIT_*` 四个 var 与 `MAX_REQUEST_BODY_BYTES=50331648`，
 而 `wrangler.toml [vars]` 里没有它们 —— 由 CI 的 GitHub 仓库变量注入（§1.3）。
 `MAX_REQUEST_BODY_BYTES` 与 `src/requestLimits.ts:10` 的默认值相同，**无漂移**。
+
+---
 
 ---
 
