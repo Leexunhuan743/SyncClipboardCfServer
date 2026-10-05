@@ -278,7 +278,7 @@ export function codePointCount(text: string): number {
 // 那一边量的是**用户看到的字符**（`Intl.Segmenter` 字素簇，一个家庭 emoji 算 1 个），
 // 这一边量的是**码点** —— 因为这里的 500 是**服务端协议上限**（约束 JSON 体积，且必须与
 // SQL 的 `length()`/`substr()` 同口径），不是展示口径。
-// 差异的登记处是 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3。
+// 两版都按 Unicode 码点处理截断/计数；对应回归测试负责防止退回 UTF-16 码元口径。
 export function truncateText(text: string, limit: number): string {
   let n = 0;
   let i = 0;

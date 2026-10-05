@@ -11,7 +11,6 @@
 > 的部分，且被到处按编号引用（`§3.3 #26`、`§3.3 第 19 条` 等）。
 >
 > **三条守卫盯着本文**：
-> - `test/docs.test.ts`：**§3 的「共 N 个资源」总数**必须等于 `public/` 下的实际文件数；
 >   且本文在 `CURRENT_STATE_FILES` 里，声明的**套件数**也要对；
 > - `test/ui-guard.test.ts`：本文 §2.1 描述的开关行为、"挂载点集合从 `public/` 动态发现"是它的判据来源；
 > - `AGENTS.md` §1 的同步表把 §3 / §3.2 / §3.4 / §5 列为**必须同步**的位置。
@@ -149,16 +148,8 @@ Worker
 > 自包含的代价是"两份必然漂移"，因此 V1 自己的 `js/messages.js` 与 V2 的同名文件由一条**对等守卫**
 > 钉住逐字一致（两份是**各自独立的副本**，不是共享模块；V2 真被删掉时连守卫一起删）。
 
-`public/` 下共 86 个资源（**这个数字由 `test/docs.test.ts` 守着**，增删任何文件都要同步），分五部分：
-
-| 部分 | 文件数 | 说明 |
-|---|---|---|
-| **V1**（`public/ui_v1/`，**默认界面**） | 35 | 挂载 `/ui_v1/`；用户文案在本地 `js/messages.js`（自包含，见上） |
-| **V2**（`public/ui_v2/`，**开发测试版**） | 43 | 3 处入口（两页 + 模块图）+ 5 张样式表 + 33 个 JS 模块 + `manifest.webmanifest`；本体挂 `/ui_v2/app/` |
-| **共用层**（`public/ui_shared/`） | 4 | 两版**唯一**的共享面：`brand/` 三个图标 + `js/icons.js`（两版图标表的**并集**；两版都不用的键按死数据删除）。挂 `/ui_shared/`，与其它三个挂载点受**同一个** `UI_ENABLED` 管；允许放什么见 §3.4 |
-| **跳转壳**（`public/ui/`） | 2 | `index.html`（meta refresh + canonical）+ `js/redirect-hash.js`（把 fragment 中继到目标）。**保留这个前缀的真正原因是 `/ui/api/*`** —— 两版共用的服务端接口命名空间 |
-| 站点根 | 2 | `robots.txt`（爬虫只读根路径，故不能放挂载点下）与 `_headers`（CSP `default-src 'none'` + 逐项白名单、`nosniff`、`Referrer-Policy`、`frame-ancestors 'none'`，以及 js/css 的 `no-cache, must-revalidate` 与图标 / manifest 的长缓存）。**这些响应头只能在那里声明**：四个前缀的请求虽先进 Worker，资源仍由 `ASSETS` 出网。`connect-src` 显式写成 `'self' wss: ws:` —— `'self'` 对 websocket scheme 的解析各浏览器不一致，不写死会让实时推送在部分浏览器上静默降级成轮询 |
-
+`public/` 按职责分为五部分：V1、V2、`ui_shared` 共用层、`/ui/` 跳转壳，以及站点根的 `robots.txt` / `_headers`。
+文件数量不再写进文档；新增或删除静态文件无需同步派生数字。
 下面是 **V1 的文件清单**：
 
 | 文件 | 职责 |
@@ -491,9 +482,9 @@ V1 的验证由三层构成，**当前状态以命令输出为准**（本文不�
 |---|---|---|
 | 真实浏览器读数 | `test/manual/probe-ui-v1.mjs` | DOM 几何、CLS、溢出、命中区、键盘、媒体查询匹配、`console` 错误与失败请求 |
 | 出图给人看 | `test/manual/shoot.mjs` | 视觉外观（截图） |
-| 不变式 | `test/*.test.ts` | 接口前缀、鉴权顺序、文案与资源数一致、契约类名、目录树 |
+| 不变式 | `test/*.test.ts` | 接口前缀、鉴权顺序、挂载点、交互与协议契约 |
 
-**全量套件 = 22 个套件**（用例数不写进文档 —— 它每加一条断言就变，要引用就写"见 `npm test` 输出"）。
+**全量结果以 `npm test` 输出为准**，文档不再复制套件总数。
 与界面直接相关的四个：`ui.test.ts`（`/ui/api/*` 的鉴权、列表语义、回收站视图与写操作）、
 `ui-guard.test.ts`（挂载点 / 开关 / 端点清单 / V1 与 V2 的对等守卫）、
 `ui-logic.test.ts`（筛选、格式化等纯逻辑）、`ui-activity.test.ts`（活动趋势的按天分桶）。

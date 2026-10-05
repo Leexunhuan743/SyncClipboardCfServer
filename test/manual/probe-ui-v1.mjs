@@ -256,7 +256,7 @@ try {
     }
   });
 
-  // ===== 首帧主题脚本的时序（`docs/AUDIT-redundancies.md` §11 #10；本仓库 §94 第 17 行）=====
+  // ===== 首帧主题脚本的时序（回归首帧主题脚本的真实加载时序）=====
   // `theme-init.js` 是 `<head>` 里 **位于样式表之后**的经典阻塞脚本，它那句
   // `getComputedStyle(documentElement).getPropertyValue('--bg')` **到底取不取得到值**，
   // 静态判不了：V2 的注释断言"此刻样式表还没加载、永远停在 HTML 静态值上"，
@@ -590,7 +590,7 @@ try {
           overflow: Math.round(right - cellRect.right),
         };
       })(),
-      // 提示条已于 2026-09-19 随改名一起移除（见 docs/ui-rename-v1-v2.md；progress.md §89 把本项
+      // 提示条已于 2026-09-19 随改名一起移除（目录改名历史见 Git；progress.md §89 把本项
       // 记作"提示条确已移除"的证据）⇒ 这是一条**缺席断言**：恒为 true，若有人把它加回来就变 false。
       // （原来写作「q('.notice-bar') ? !q('.notice-bar').hidden : null」—— 那个 null 既不能区分
       //  "按预期移除"与"选择器打错"，也不再有任何变化空间。）
@@ -1509,7 +1509,7 @@ try {
     }
   }
 
-  // ===== 预览关闭即释放正文（2026-09-20，`docs/archive/AUDIT-v1-v2-divergence.md` §4.2）=====
+  // ===== 预览关闭即释放正文（2026-09-20 回归）=====
   //
   // 缺陷形态：预览对话框是**启动期创建、常驻 `body`** 的节点，关闭时只 `dialog.close()`，
   // 正文（`<pre>` 里的整条全文）与页脚按钮的闭包一直留在 DOM 里，直到**下次打开预览**才被

@@ -430,7 +430,7 @@ CPU 侧另按**行字节**收敛（支配项是字节数而非条数），轮首
   凭据、也不接触线上资源**。`deploy` job `needs: quality`。
 - **防漂移守卫**（`docs.test.ts`）只校验**能从文件系统数出来**的量：5 份现状文档
   （`README.md`/`AGENTS.md`/`docs/design.md`/`docs/ui.md`/`deploy.yml`）声明的套件数与
-  `docs/ui.md` 的资源数、`design.md` 的套件清单、`progress.md` ↔ `progress-index.md` 的逐条一致、
+  部署变量清单、D1 migration/schema 一致性、UI 挂载点与协议不变式，
   界面目录树的模块清单、部署开关的四处清单、D1 迁移 DDL ↔ `schema.sql` 的同源。
   ⚠️ 端点表、令牌表、差异登记表**不在**守卫范围内（靠人逐行过，见 `AGENTS.md` §1）。
 - **完成定义（DoD）**：① `tsc --noEmit` 0 错；② eslint 0 告警 + 4 个 `test/manual/*.mjs` 过

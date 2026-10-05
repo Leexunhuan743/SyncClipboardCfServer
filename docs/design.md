@@ -8,7 +8,7 @@
 > - **为什么这么设计** → §2 的 ADR 表（**46 条，逐字保留** —— 每条都被代码或其它文档按 `D<n>` 引用）；
 > - **东西放在哪** → §4 的目录树（**由 `test/docs.test.ts` 逐项校验**，见 §4 的说明）；
 > - **数据与流程长什么样** → §5–§9；
-> - 逐条协议行为 → [`protocol.md`](protocol.md)；界面 → [`ui.md`](ui.md)；开发过程 → [`progress.md`](progress.md)。
+> - 逐条协议行为 → [`protocol.md`](protocol.md)；界面 → [`ui.md`](ui.md)；历史开发记录 → [`progress.md`](progress.md)（冻结档案，非现行规范）。
 
 ## 1. 项目概述
 
@@ -54,10 +54,10 @@
 | D14 | `motion-web` 技能的取用**限于设计系统与打磨层**，不走它的页面蓝图路径 | 该技能自述范围是创意/营销页并明确排除 dashboard/admin UI，而本界面正落在排除侧。取用其令牌层、组件方言与状态矩阵、生产打磨与动效令牌；不生成 hero/分节文案/编造指标 | 已定（2026-09-13） |
 | D15 | **不实现 `/dav` 前缀别名**（另一个实现 `clipserver` 的端点前缀） | 本项目 WebDAV 端点在站点根，`PROPFIND` 的 `href` 从根计算。让前缀可用必须改写协议输出（href 前缀），为一个迁移便利碰协议保真不值得；迁移只需把客户端地址改成站点根（界面「部署信息」直接给出可复制地址） | 已定（2026-09-13） |
 | D16 | **界面是可关闭的**：`UI_ENABLED`（GitHub 仓库变量，默认开）关闭后三个界面挂载点（`/ui`、`/ui_v1`、`/ui_v2` —— 2026-09-19 改名后是三个，当初是 `/ui` 一个）与 `/ui/api/*` 一律 404，根路径不再跳转；协议面不受影响。实现上必须让界面请求**先进 Worker**（`[assets] binding = "ASSETS"` + `run_worker_first`），否则平台在 Worker 之前就把静态资源托管掉了，开关无从生效 | 只想要"纯协议后端"的使用者（把服务端给别人的场景、不想暴露登录页）应当能一键关掉界面，而不是去改仓库或删资源。**不改协议面**是这个开关的硬边界：官方客户端不碰任何界面挂载点（`/ui*` —— 三个前缀都不碰，原写 `/ui_v2/*` 是 2026-09-19 改名替换打偏的收窄），因此开关对客户端零影响 | 已定（2026-09-15） |
-| D17 (界面定位) | **默认界面 = V1**（`public/ui_v1/`，挂载点 `/ui_v1/`）；站点根 `GET /` 的浏览器分支与 `/ui/` 的跳转壳都指向它。V2（`public/ui_v2/`，本体 `/ui_v2/app/`）降为**开发测试版**，进去后顶栏版本号与登录页副标题都标着"开发测试版" | 用户 2026-09-18 的定位：V1 经过 2026-09-17～18 的多轮完善（密度、移动端、对比度、状态矩阵、按下反馈）后功能与质量都更完整，而 V2 是零构建方案的实验场（新的模块划分、状态矩阵、探针都先在那边试）。**物理目录名不动**：V1 的资源前缀是写死的 `/ui_old/*`（**当时叫这个名** —— `ui_v1` 是 2026-09-19 才改的，见 `docs/ui-rename-v1-v2.md`），把它搬到当时那个默认入口命名空间（`/ui/`）要同时改写全部前缀，而 2026-09-15 的改名事故已经付过一次学费 —— 变的只是入口（**2026-09-19 更新**：物理目录名随后也改了 —— `ui_old`→`ui_v1`、`ui`→`ui_v2`，见 `docs/ui-rename-v1-v2.md`） | 已定（2026-09-18，提交 `f114242`） |
+| D17 (界面定位) | **默认界面 = V1**（`public/ui_v1/`，挂载点 `/ui_v1/`）；站点根 `GET /` 的浏览器分支与 `/ui/` 的跳转壳都指向它。V2（`public/ui_v2/`，本体 `/ui_v2/app/`）降为**开发测试版**，进去后顶栏版本号与登录页副标题都标着"开发测试版" | 用户 2026-09-18 的定位：V1 经过 2026-09-17～18 的多轮完善（密度、移动端、对比度、状态矩阵、按下反馈）后功能与质量都更完整，而 V2 是零构建方案的实验场（新的模块划分、状态矩阵、探针都先在那边试）。**物理目录名不动**：V1 的资源前缀是写死的 `/ui_old/*`（**当时叫这个名** —— `ui_v1` 是 2026-09-19 才改的，见 历史改名记录（见 Git 历史）），把它搬到当时那个默认入口命名空间（`/ui/`）要同时改写全部前缀，而 2026-09-15 的改名事故已经付过一次学费 —— 变的只是入口（**2026-09-19 更新**：物理目录名随后也改了 —— `ui_old`→`ui_v1`、`ui`→`ui_v2`，见 历史改名记录（见 Git 历史）） | 已定（2026-09-18，提交 `f114242`） |
 | D17 (请求体上限) | **请求体上限默认 48 MiB、可调到 64 MiB**；并且**不用两个独立上限**，而是"合计工作集预算 96 MiB + 随请求体动态收缩的 zip 解压预算"（`src/requestLimits.ts`、`src/hash.ts` 的 `groupZipDecompressionCap`） | isolate 内存 128 MiB 被**所有并发请求共享**，而 Group 上传时"压缩体 + 解压内容"同时占内存 ⇒ 两个上限各自贴顶会变成 48+64 甚至 80+64，直接顶穿 isolate（OOM 会让并发中的其他请求一起 503，比 413 严重得多）。默认值贴"实际会发生的大小"（客户端默认 20 MB、线上最大 29.0 MiB），上限贴"能承受的极限"。完整推导见 §7.1。注：历史提交中该决策与上述「界面定位」同获编号 D17，两者按主题并立 | 已定（2026-09-15；沿革 32 → 64 → 48） |
 | D18 | **推送后不等 CI**（2026-09-18 用户要求）：`git push` 成功即**结束这一轮**。**禁止** `gh run watch`、`gh run watch --exit-status` 以及任何"轮询到跑完为止"的等待；要确认它有没有起跑，最多允许**一次**非阻塞快照 `gh run list --limit 1` | 本仓库的质量门在**本地**：D10 的协议级套件 + `npm run check`，且 D11 已规定"推送前跑全量套件且用真门禁"。CI 是**兜底**，不是我的判据；而 `deploy` 作业还要真的部署到 Cloudflare，一趟 2–3 分钟 —— 阻塞等待只是把用户晾在对话里，等一个与本轮结论无关的状态。跑失败不会丢：GitHub 自己会通知，下一次改动也会撞见 | 已定（2026-09-18） |
-| D19 | **两处「清除筛选」一律回到活跃列表**（2026-09-20 定案）：筛选工具条那枚与空状态里那枚都清掉全部条件（**包括「回收站」这个条件**），语义与 V1 同答；`boot.js` 的 `resetFilters({ keepView })` 形参随之删除 | 这两处此前**行为相反**（工具条回活跃、空状态留在回收站 —— 2026-09-18 只改了后者的遗留，见 `AUDIT-commit-9b4cdca.md` §P2 与 `progress.md` §93.4）：同一个名字的按钮，两种后果。不取"留在所在视图"的理由：它要求把「回收站」从"是否处于筛选态"的判据（`isDefaultFilters`）里排除，否则工具条那枚点完**按钮仍在** ⇒ 读起来像没生效；而"清除筛选 = 回到默认"不需要动那套判据，且与 V1 现状一致。真要"只清条件、不换视图"，那是改按钮文案（换个名字）的事，不是同一个按钮两种行为 | 已定（2026-09-20） |
+| D19 | **两处「清除筛选」一律回到活跃列表**（2026-09-20 定案）：筛选工具条那枚与空状态里那枚都清掉全部条件（**包括「回收站」这个条件**），语义与 V1 同答；`boot.js` 的 `resetFilters({ keepView })` 形参随之删除 | 这两处此前**行为相反**（工具条回活跃、空状态留在回收站 —— 2026-09-18 只改了后者的遗留，见 历史审计（见 Git 历史） §P2 与 `progress.md` §93.4）：同一个名字的按钮，两种后果。不取"留在所在视图"的理由：它要求把「回收站」从"是否处于筛选态"的判据（`isDefaultFilters`）里排除，否则工具条那枚点完**按钮仍在** ⇒ 读起来像没生效；而"清除筛选 = 回到默认"不需要动那套判据，且与 V1 现状一致。真要"只清条件、不换视图"，那是改按钮文案（换个名字）的事，不是同一个按钮两种行为 | 已定（2026-09-20） |
 
 | D20 | **测试工具链不引入新依赖**（2026-09-21）：`@cloudflare/vitest-pool-workers` 与 Playwright 各做过一次**有判据的试点**，本轮都**不并入产品树**；同时把 5 份 `node:sqlite` D1 适配器收敛为 `test/support/d1-sqlite.ts` 一份 | 池（vitest 2 能用的最高版是 0.12.x）**自带的引擎是另一个构建**：同一个 LIKE 模式，dev server 报 `LIKE or GLOB pattern too complex: SQLITE_ERROR`，池里连 202 字节都通过 ⇒ 把黑盒套件搬进池，会把「真 D1 才复现」的那一族（§95 修的四处 500 全是这类）**测成绿的**。Playwright 能力上可行（同三个读数逐字节吻合、`Performance.enable` 后能取 §11.2 那四个指标），但替换 4112 行探针属"改门禁工具"级别的独立任务。读数、坑与触发条件见 `progress.md` §105.2–§105.7 | 已定（2026-09-21） |
 
@@ -76,7 +76,7 @@
 | D28 | **长批量在途可中止：确认框的「取消」在途变「中止」，中止点是"批"的边界**（2026-09-21）：`confirm.ask` 在途把取消键改成「中止」并 `abort()` 本次动作的 controller（✕/Esc 仍在途挡住，F2 不变）；`api.js` 的批量循环在**片与片之间**检查 signal，中止时**返回已生效计数而不是抛错**（超时仍抛，用 `error.name` 区分）；文案 `batchAbortedText(已生效)` | 原来不许用户在途关框（F2：关掉会让调用方把"已成功"读成"用户取消"），代价是 300 条的批量中途没法停、只能刷页面（实测 3 批、客户端所见几十秒）。**取舍**：与其"关不掉"，不如给一条**诚实的中止** —— 服务端一次请求内部不会被打断（那 100 条一定跑完），所以中止点天然落在批与批之间，不会出现半条记录；已生效多少如实报出。不改服务端、不改协议（取消只发生在客户端分片循环之间）。单条动作与清空回收站是单次请求，不接这条 | 已定（2026-09-21） |
 | D29 | **回收站改成"真回收站"：软删保留数据，30 天硬删 /「彻底删除」时才清**（2026-09-22，用户在 A/B 之间点选 B）：`historyOps.applyHistoryUpdate` **与 `profile.addRecordDto`（POST 写路径）**都不再在软删时清 R2 目录（后者是**同日审核补上**的：它是上游 `HistoryService.cs:328/387` 的忠实移植，只改 PATCH 会让经 POST 软删的记录进回收站后**没有数据**）；`db.updateHistory` 去掉上游那条「有数据就不许恢复」的守卫；孤儿阶段的参照集从「只算活跃记录」改成「**全部记录含已删**」（`listReferencedWorkingDirs`）；`purgeTrash` / `batch-purge` 删行后各自清扫目录 | **为什么**：上游 `DeleteProfileDataIfNeed`（`HistoryService.cs:80`）让「回收站」对图片/文件变成**单向门** —— 用户的质问正是这个（「图片放进去就回不来，这算哪门子回收站」）。代价逐条算过：① R2 多占 ≤30 天（$0.015/GB/月，「彻底删除」可立刻释放）；② **孤儿阶段的参照集必须一起改** —— 漏了它会每 20 分钟把回收站里的数据删一次（行还在、数据没了，最难看的那种坏法）；③ `PATCH isDelete:false` 对带数据记录从 404 变 200，登记 `protocol.md` §10；④ 「存储占用」不再随删除下降 —— 它本来就是 R2 真实占用，改完反而更诚实。**收益**：图片/文件能真恢复（官方客户端会自动把数据下回来：`RemoteHistoryChanged` 带 DTO，见 `!IsLocalFileReady` 即 `EnqueueDownload`）；界面里「不可恢复」那一整族分支（禁用按钮、`hasData` 预筛、失败文案）全部消失 | 已定（2026-09-22） |
 
-| D30 | **预览框加「编辑」：保存 = 新建一条文本记录（两态机 预览 ⇄ 编辑）**（2026-09-22，用户在 `grilling` 四问里定案）：`Text` 记录的预览页脚最左加「编辑」（`> 1 MiB` 关闭并说明原因），进入后正文换成等宽 `<textarea>`、页脚换「取消 / 保存」；保存调**新端点** `POST /ui/api/history`（`{text}`），服务端走协议同一条写路径 `addRecordDto`、`version` 取 0；**保存后不关框** —— 正文就地换成刚保存的那段、上方一行「已保存为新记录（N 个字符）」，复制/下载跟着屏幕上的文本走；**Esc 在编辑态只退编辑不关框**；内容没变（**行尾归一后**比）就不发请求。**同日自审（读完全部 V1 代码）又收口三条**：保存途中 ✕ 与点背景也关不掉框（提示条压在这个模态之下，在途关框=把失败丢在屏幕外——与 confirm.js 的 F2 同源）；保存成功后对话框**改指向新记录**（头部由 `renderHead()` 单点重画、深链接换成新 hash、后续编辑改的是屏幕上这条）；头部与"已保存"说明的字符数**同源**（服务端的 `size`，即 `docs/archive/AUDIT-v1-v2-divergence.md` §12.2 记过的那条 V1 口径） | **为什么**：文本记录的 `hash = SHA256(utf8(正文))`，改一个字就是**另一条记录**（协议模型里同 hash 才能覆盖），所以"编辑"只能是新建 —— 这也让它天然安全：`addRecordDto` **只广播 `RemoteHistoryChanged`、不碰当前剪贴板**（`notifyProfile` 根本不会被调用），其它设备只是多一条历史，没人被迫换剪贴板。不关框是因为"编辑"的产出（这段新文本）紧接着就要被复制/下载，关掉等于让用户重新找那条新记录（Q3=c）。（曾被考虑的方案：改这条记录的 `text` 列 —— 会让 `hash` 与正文不一致，等于把一条捏造的记录塞进协议模型，否）**上限 1 MiB 而协议是 48 MiB**：限制来自"浏览器 `<textarea>` 装不下几十 MB"，故工具是「下载文本」而不是更大的输入框；两处常量（`src/ui/routes.ts` 的 `UI_TEXT_CREATE_MAX_BYTES` 与 `preview.js` 的 `EDIT_MAX_BYTES`）必须同值。**自审时实测抓到一个真缺陷**：`api.createText` 最初没过 `normalizeItem`，服务端的 `type` 是数字 `0` ⇒ 「文本」那一支全判错（头部显示成字节数、页脚只剩「下载」、深链接也不换）—— 边界归一化这条纪律对**新增端点**同样成立 | 已定（2026-09-22） |
+| D30 | **预览框加「编辑」：保存 = 新建一条文本记录（两态机 预览 ⇄ 编辑）**（2026-09-22，用户在 `grilling` 四问里定案）：`Text` 记录的预览页脚最左加「编辑」（`> 1 MiB` 关闭并说明原因），进入后正文换成等宽 `<textarea>`、页脚换「取消 / 保存」；保存调**新端点** `POST /ui/api/history`（`{text}`），服务端走协议同一条写路径 `addRecordDto`、`version` 取 0；**保存后不关框** —— 正文就地换成刚保存的那段、上方一行「已保存为新记录（N 个字符）」，复制/下载跟着屏幕上的文本走；**Esc 在编辑态只退编辑不关框**；内容没变（**行尾归一后**比）就不发请求。**同日自审（读完全部 V1 代码）又收口三条**：保存途中 ✕ 与点背景也关不掉框（提示条压在这个模态之下，在途关框=把失败丢在屏幕外——与 confirm.js 的 F2 同源）；保存成功后对话框**改指向新记录**（头部由 `renderHead()` 单点重画、深链接换成新 hash、后续编辑改的是屏幕上这条）；头部与"已保存"说明的字符数**同源**（服务端的 `size`，即 历史 V1/V2 审计（见 Git 历史） §12.2 记过的那条 V1 口径） | **为什么**：文本记录的 `hash = SHA256(utf8(正文))`，改一个字就是**另一条记录**（协议模型里同 hash 才能覆盖），所以"编辑"只能是新建 —— 这也让它天然安全：`addRecordDto` **只广播 `RemoteHistoryChanged`、不碰当前剪贴板**（`notifyProfile` 根本不会被调用），其它设备只是多一条历史，没人被迫换剪贴板。不关框是因为"编辑"的产出（这段新文本）紧接着就要被复制/下载，关掉等于让用户重新找那条新记录（Q3=c）。（曾被考虑的方案：改这条记录的 `text` 列 —— 会让 `hash` 与正文不一致，等于把一条捏造的记录塞进协议模型，否）**上限 1 MiB 而协议是 48 MiB**：限制来自"浏览器 `<textarea>` 装不下几十 MB"，故工具是「下载文本」而不是更大的输入框；两处常量（`src/ui/routes.ts` 的 `UI_TEXT_CREATE_MAX_BYTES` 与 `preview.js` 的 `EDIT_MAX_BYTES`）必须同值。**自审时实测抓到一个真缺陷**：`api.createText` 最初没过 `normalizeItem`，服务端的 `type` 是数字 `0` ⇒ 「文本」那一支全判错（头部显示成字节数、页脚只剩「下载」、深链接也不换）—— 边界归一化这条纪律对**新增端点**同样成立 | 已定（2026-09-22） |
 
 | D31 | **对话框的高度由**外壳**管，正文是唯一的收缩者**（2026-09-22，自审实测后定）：`.dialog` 自身是 `display:flex; flex-direction:column`，页眉/页脚 `flex:none`，正文 `flex:1 1 auto; min-height:0`；高度上限**不自写**，沿用原生 `<dialog>` 的 UA `max-height: calc(100% - 6px - 2em)` | **为什么**：原生 `<dialog>` 超出高度时**只裁框、不压内容** —— 实测 390×360 视口下编辑态多一条错误说明时页脚落到 ~381（越出 21px），保存/取消被推到视口外。改成 flex 列之后，「视口够高 = 内容多高就多高」「视口不够 = 正文变矮并内部滚动」是同一条机制的两端，页眉页脚永远在视野里。**被否的方案**：给每个对话框各写一个 `max-height`（各自算一遍 chrome 高度，加一处内容就要重算一次，且三个对话框会算出三个口径）；给编辑态单独写 `max-height: calc(100vh - 180px)`（`180px` 是个量出来的魔数，换主题字号就失效）。**编辑框的高度**顺势改成 `height:40vh; min-height:0`：它是"理想高度"而非下限，空间不够时先让位给错误说明与页脚（优先级：页脚 > 错误说明 > 编辑框多高），实测 390×360 下编辑框自动收到 98px、错误说明与页脚都完整可见。⚠️ **2026-09-22 修订**：那条 `height:40vh` 已撤 —— 编辑框改为**取正文区此刻的高度**并随输入长高、封顶与正文区同一个值（`min(64vh, 620px)`；用户两问："编辑和预览的高度为什么差别那么大、为什么不复用一下"＋"短文本上编辑时随输入长高"）。D31 关于"外壳管高度、正文是唯一收缩者"的部分**不变**；新规则的实测与代价见 `docs/ui.md` §8 与 `progress.md` §150.9。⚠️ 随之必须**显式写回** UA 那条 `dialog:not([open]) { display: none }`（作者规则会盖掉 UA 规则）；漏了它的那一次由探针的 `PRVCLOSE`/`AUDIT` 抓到（关掉的对话框不再隐藏、正文也不再释放，见 `progress.md` §131.1） | 已定（2026-09-22） |
 
@@ -97,9 +97,9 @@
 
 | D38 | **V1 列表结果必须与当前查询同属一份状态**（2026-09-23）：筛选、排序、翻页及浏览器后退/前进共用 `applyFilters()`；成员资格改变时清空跨页选择。请求期间暂留变淡的旧行作视觉占位，但表格与批量操作条为 `inert`；新查询失败后改为持续的错误态并收起旧行，同一查询的后台刷新失败则保留旧行。列表、统计、轮询的失联来源分别登记，只有本链路恢复才能清除自己的失败状态 | 旧实现的 `popstate` 绕过选区清理：回收站选中 1 条后退回历史，批量条仍写「已选 1 条」而当前页 0 行勾选。列表请求失败时 URL/筛选控件已经切到新视图，旧行仍显示在它下面；成功的统计请求还能清掉列表失败的横幅。两条浏览器复现见 `progress.md` §170。保持请求期间的旧行可避免瞬间空白，但它们不能在新条件下继续接收操作 | 已定（2026-09-23） |
 | D39 | **V1 的「N 个字符」只报用户可见字符数**（2026-09-23）：预览头部、复制与编辑保存提示在正文 ≤20,000 UTF-16 码元时统一用 `charCount()`；更大的正文不展示字符数（头部写「长文本」），避免同步扫描阻塞预览与操作反馈。`messages.js` 两版正文保持逐字一致，`textSavedNote(null)` 表示省略数字 | 服务端 `size = dto.text.length` 是 UTF-16 码元数，10 个 emoji 会报 20 个「字符」；V1 原先头部和保存提示取 `size`、复制提示取字素簇数，同屏互相矛盾。直接给所有大文本跑 `Intl.Segmenter` 又会给 1 MiB 预览增加约 169ms 主线程工作。按长度分档保留短文本的准确性，同时让大文本优先流畅显示。历史上「头部有意使用 size」的决定见归档审计 §12.2，本条自此取代它 | 已定（2026-09-23；静态改动，运行验证留给用户手动完成） |
-| D40 | **Free 计划适配：10 ms CPU 是平均预算（平台有 rollover）、`[limits]` 不要设、清理按 CPU 收敛**（2026-09-25，审计轮；**同日按账户实测修订 ①**）：① 请求体上限的**默认值不动**，**部署到 Free 时也不要调小** —— 48 MiB 是 isolate 内存维度（Free/Paid 同为 128 MiB）的结论；原「推算有效上限约 3–10 MiB、建议先设 `2 MiB`」**已被账户实测推翻**（本账号真实承载过 15.5 MiB 的 zip 请求体 / 20.36 MiB 的 Group 载荷，单次调用 CPU 达 ~0.7 s 仍成功，30 天 0 次资源超限；见 `docs/free-plan-account-facts.md`）；② `wrangler.toml` **不加 `[limits]` 段** —— Free 上 `subrequests` 不能放宽额度，只可能把「到 Cloudflare 服务」的 1,000 次/调用钳低，而清理的 800 次预算正建立在那 1,000 之上；③ 清理任务（Cron）在 Free 上按**慢收敛**对待：单轮工作量由**子请求预算 + CPU 行字节预算**（256 KiB/轮/阶段，按实测行字节动态收敛，**不是平坦条数**）双重收敛；万一整轮仍被平台终止，**轮首心跳**（进入 `runCleanup` 先写一次 `cleanup:lastRunAt`）让「被终止」可见而不再静默 | 依据：`docs/free-plan-audit.md` §1（限额事实 + 子请求口径裁定：Free = 50 次外部 `fetch` + 1,000 次到 Cloudflare 服务）、§3（落库路径的 SHA-256/解压是 CPU 主导项）、§5（P0-1/P0-2/P0-3）、§6.1（实测回填）；账户实测见 `docs/free-plan-account-facts.md`（配额消耗、CPU 分位与单次峰值、权限边界、账户计划未判定）。三条官方出处：<https://developers.cloudflare.com/workers/platform/limits/>（CPU 10 ms 档 + 子请求两行）、<https://developers.cloudflare.com/workers/wrangler/configuration/#limits>（"The free account maximum is 50"）、<https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/>（"50 external subrequests and 1000 subrequests to Cloudflare services"）。**为什么不做成代码里的"Free 档默认值"**：Worker 运行期读不到账号计划（`Bindings` 里没有计划字段），只能靠人配 ⇒ 做成开关会立刻漂移（部署开关要同步四处的纪律见 `AGENTS.md` §1）；**代价与影响** —— **Free**：10 ms 是**平均**预算 —— 平台对偶发越界有 rollover CPU time（官方 metrics 页：「更高的分位可能看起来超过 CPU 时间上限而不产生调用错误」），只有**持续**越界才以 `error 1102`（CPU 超限）终止；实测本账号单次 CPU 达 633 / 712 ms 仍成功（`docs/free-plan-account-facts.md` §3.2）。一个常驻 WebSocket 的 DO duration 实测 11,014–11,103 GB-s/天 = 日额度 13,000 GB-s 的 **84.5–85.5%**（与推算吻合）；清理按行字节预算慢收敛，被终止时**可见**（轮首心跳）但仍慢。**Paid**：CPU 5 min ⇒ 上传侧与 `[limits]` 那两条都不成立、48 MiB 默认值继续有效，**无需任何改动**。**另有一条两档都生效**：行字节预算是按 **CPU 安全上限**取的（运行期读不到账号计划 ⇒ 不可能按计划分档），因此 Paid 上它**比必要值保守**（那边是 30 s CPU 档）—— 代价是大记录库的清理收敛比改动前慢（256 KiB/轮/阶段；4 KB 行约 64 条/轮），收益是**任何档都不会因为一轮清理过大而整轮被终止**（宁可慢收敛，也不依赖"当轮一定不超"）；数值待实测标定（见 `docs/free-plan-audit.md` §6 M3） | 已定（2026-09-25）；首轮落地为**文档**（本文件 §4/§7.1/§13 + `README.md`「容量估算与限制」），代码侧不改默认值。**第二轮（同日）已按本条落地代码**：单轮工作量改按**行字节预算**收敛 + **轮首心跳**（`src/cleanup.ts`），文档同步在本文件 §9/§13 与 `docs/protocol.md` §10 |
-| D41 | **P4（放宽心跳节奏）不做：实测证明 15 s alarm 的 duration 代价仅满额的 0.1%**（2026-09-25）：**决策** —— 不把 `HEARTBEAT_INTERVAL_MS`（`src/durable/SyncClipboardHub.ts:38`）放宽到接近客户端超时，也不为「省唤醒」改心跳机制；`sendPings` / `scheduleHeartbeat` 的现有形态**保持不动**。**理由** —— 云端 A 臂实测（`HibernatingAlarm` = `acceptWebSocket` + 15 s alarm ping）：两个**独立全窗**读数分别是满额的 **0.076%**（30 分钟、alarm 触发 119 次、净 0.175 / 满额 230.4 GB-s）与 **0.1%**（10 分钟、alarm 触发 39 次、0.12 / 满额 76.8 GB-s）⇒ **15 s alarm 自身的 duration 代价可忽略**，放宽它对 duration **没有收益**；另有一条硬约束：客户端 **ServerTimeout 30 s**（`src/durable/SyncClipboardHub.ts:11` / `:37`）⇒ 服务端到客户端的应用层 Ping **不能稀于 ~30 s**，能调的空间本来就只有「15 s → 更接近 30 s」。**代价** —— 无（本决策 = 不改）。**影响** —— Free 与 Paid **都无需**为此改动；`docs/do-hibernation-plan.md` §5 P4 已相应降级为「不需要」（其「零唤醒心跳」备选路径所依赖的 `setWebSocketAutoResponse` 匹配语义，也因此不再需要验证）。 | 依据：`docs/do-hibernation-plan.md` §4.1（A 臂两次读数与「满额」口径）与 §5 P4；实验过程与两条环境事实见 `docs/progress.md` §182–§183。**注意**：本条**不**涉及 WS hibernation 改造本身（那是 P1 —— 已由 **D42** 采纳并实施，见 §4.1 与 `docs/progress.md` §183/§184），也**不**涉及 SSE / 长轮询（P3 / P2，仍不能判定）。 | 已定（2026-09-25）；实现处无需注明 D 号（本轮不涉及代码改动） |
-| D42 | **采纳 P1：`SyncClipboardHub` 的 WS 路径迁到 Hibernation API**（2026-09-25，用户定案）：`src/durable/SyncClipboardHub.ts` 的 `handleWebSocket` 由 `server.accept()` + 三个 `addEventListener` 改为 `state.acceptWebSocket(server)` + 类方法 `webSocketMessage` / `webSocketClose` / `webSocketError`（**类声明保持普通 class**，不改成 `extends DurableObject` —— §4.2① 已本地实测按名分派成立）；WS 连接集合与 `lastSeen` 从内存 `Map` 迁到 `state.getWebSockets()` + 每连接的 `serializeAttachment({lastSeen})`（**每次触碰都要重新序列化**，单条上限 16,384 字节）；心跳防重排判据从内存标志 `heartbeatScheduled` 改为 `await state.storage.getAlarm()`（`alarm()` 运行中它返回 `null`）；`webSocketClose` 里**必须**显式 `ws.close(code, reason)`；`authLimits` 的封锁状态改为**按实质变化落盘**（封锁开始/延长立即落、计数清零强制落、纯计数按 15 s 节流落），因为 hibernate 会常规性清空内存态而封锁窗口是分钟级。**为什么**：生产实测该 DO 的 duration 吃掉 Free 日额度 **84.5–85.5%**（11,014–11,103 GB-s/天、`activeTime` 99.6%），根因是标准 WS API 让 hibernate 前置条件「No WebSocket standard API is used」不成立（pricing 脚注 4：`accept()` 之后**整个连接期间**计费，与是否真被回收无关）；A 臂两次独立全窗实测把「WS 单独在线」的 duration 压到满额的 **0.076%**（30 min / 119 次 alarm）与 **0.1%**（10 min / 39 次 alarm），并已裁定 **15 s alarm 不阻止 hibernate** ⇒ 心跳节奏不动（D41 不变）。**边界（不得越读）**：① **SSE 与长轮询的既有实现保持原样** —— 活的 `writer` 与未兑现的 `pending` 不可迁移 ⇒ **有这两类连接在线时该对象仍不可 hibernate、照样全程计费**（P2/P3 仍不能判定）；② 本地**不**验证 hibernation 本身（本地不会真 hibernate，`progress.md` §181）⇒ 收益须上线后按 `docs/do-hibernation-plan.md` §8.5 的 Analytics 查询复核；③ wire **逐字节不变**（`docs/protocol.md` §10 无新差异行），`compatibility_date` / `[[migrations]]` / `AVAILABLE_TRANSPORTS` 均未动。**代价**：`lastSeen` 每次触碰都要重写 attachment；`getWebSockets()` 可能含 CLOSING ⇒ `clientCount()` 可能略偏高（最坏多排几轮心跳）；认证失败计数的落盘行写数 = **1 行/次**（快速爆破 ≈1–2 行/封锁事件，慢速试探上界 ≈ 封锁窗口 / 15 s + 1）。**2026-09-25 第二轮（三处微优化 + 真实边缘实测）**：① `authLimits` 快照改**按需加载**（`loadAuthLimitsOnce` —— 只有 `handleAuthRateLimit` 与 `connectionAuthFailure` 两条入口读，**有效 token 的连接路径零存储读**）：hibernate 后构造函数每次唤醒都重跑，旧写法让每次唤醒白付一次 storage 读**和一个往返**；② `alarm()` 内的重排改走 `rearmHeartbeatInAlarm()`、**不再读** `getAlarm()`（alarm 运行期间该读必为 `null`）⇒ 省 5,760 读/天；③ 快照读取加**形状守卫 + 旧形态迁移** `readPersistedAuthLimits`：新形态 `{persistedAt, limits}` 与**上一版的平铺表**都认 —— 后者逐条用 `isAuthLimitState` 校验后接收、`persistedAt` 取 0（节流判据立刻允许落盘 ⇒ 下一次实质变化即写成新形态）⇒ **部署不再清空生效中的封锁与失败计数**；只有真正不可识别的损坏值才按空表起算并留一条告警（**2026-09-26 按用户审查意见 F3 从「按空表起算」改为「迁移」**，见 §8.7(d) 与 `progress.md` §187）。旁挂 A/B 实测（真实边缘，同一套客户端脚本，两版 `compatibility_date` 逐字相同）：分支每连接秒只计满速的 **0.025%**、master（标准 API）**≈104%**（约 4,100×）；P3 补测：长轮询挂住 = 满速 **103%**、SSE = **20%**、静默 8 分钟零唤醒泄漏、响应时间无差异。详见 `docs/do-hibernation-plan.md` §8.7。 | 已定（2026-09-25）；实现处注明 D42 |
+| D40 | **Free 计划适配：10 ms CPU 是平均预算（平台有 rollover）、`[limits]` 不要设、清理按 CPU 收敛**（2026-09-25，审计轮；**同日按账户实测修订 ①**）：① 请求体上限的**默认值不动**，**部署到 Free 时也不要调小** —— 48 MiB 是 isolate 内存维度（Free/Paid 同为 128 MiB）的结论；原「推算有效上限约 3–10 MiB、建议先设 `2 MiB`」**已被账户实测推翻**（本账号真实承载过 15.5 MiB 的 zip 请求体 / 20.36 MiB 的 Group 载荷，单次调用 CPU 达 ~0.7 s 仍成功，30 天 0 次资源超限；见 `docs/free-plan-account-facts.md`）；② `wrangler.toml` **不加 `[limits]` 段** —— Free 上 `subrequests` 不能放宽额度，只可能把「到 Cloudflare 服务」的 1,000 次/调用钳低，而清理的 800 次预算正建立在那 1,000 之上；③ 清理任务（Cron）在 Free 上按**慢收敛**对待：单轮工作量由**子请求预算 + CPU 行字节预算**（256 KiB/轮/阶段，按实测行字节动态收敛，**不是平坦条数**）双重收敛；万一整轮仍被平台终止，**轮首心跳**（进入 `runCleanup` 先写一次 `cleanup:lastRunAt`）让「被终止」可见而不再静默 | 依据：早期 Free 计划审计（见 Git 历史） §1（限额事实 + 子请求口径裁定：Free = 50 次外部 `fetch` + 1,000 次到 Cloudflare 服务）、§3（落库路径的 SHA-256/解压是 CPU 主导项）、§5（P0-1/P0-2/P0-3）、§6.1（实测回填）；账户实测见 `docs/free-plan-account-facts.md`（配额消耗、CPU 分位与单次峰值、权限边界、账户计划未判定）。三条官方出处：<https://developers.cloudflare.com/workers/platform/limits/>（CPU 10 ms 档 + 子请求两行）、<https://developers.cloudflare.com/workers/wrangler/configuration/#limits>（"The free account maximum is 50"）、<https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/>（"50 external subrequests and 1000 subrequests to Cloudflare services"）。**为什么不做成代码里的"Free 档默认值"**：Worker 运行期读不到账号计划（`Bindings` 里没有计划字段），只能靠人配 ⇒ 做成开关会立刻漂移（部署开关要同步四处的纪律见 `AGENTS.md` §1）；**代价与影响** —— **Free**：10 ms 是**平均**预算 —— 平台对偶发越界有 rollover CPU time（官方 metrics 页：「更高的分位可能看起来超过 CPU 时间上限而不产生调用错误」），只有**持续**越界才以 `error 1102`（CPU 超限）终止；实测本账号单次 CPU 达 633 / 712 ms 仍成功（`docs/free-plan-account-facts.md` §3.2）。一个常驻 WebSocket 的 DO duration 实测 11,014–11,103 GB-s/天 = 日额度 13,000 GB-s 的 **84.5–85.5%**（与推算吻合）；清理按行字节预算慢收敛，被终止时**可见**（轮首心跳）但仍慢。**Paid**：CPU 5 min ⇒ 上传侧与 `[limits]` 那两条都不成立、48 MiB 默认值继续有效，**无需任何改动**。**另有一条两档都生效**：行字节预算是按 **CPU 安全上限**取的（运行期读不到账号计划 ⇒ 不可能按计划分档），因此 Paid 上它**比必要值保守**（那边是 30 s CPU 档）—— 代价是大记录库的清理收敛比改动前慢（256 KiB/轮/阶段；4 KB 行约 64 条/轮），收益是**任何档都不会因为一轮清理过大而整轮被终止**（宁可慢收敛，也不依赖"当轮一定不超"）；数值待实测标定（见 早期 Free 计划审计（见 Git 历史） §6 M3） | 已定（2026-09-25）；首轮落地为**文档**（本文件 §4/§7.1/§13 + `README.md`「容量估算与限制」），代码侧不改默认值。**第二轮（同日）已按本条落地代码**：单轮工作量改按**行字节预算**收敛 + **轮首心跳**（`src/cleanup.ts`），文档同步在本文件 §9/§13 与 `docs/protocol.md` §10 |
+| D41 | **P4（放宽心跳节奏）不做：实测证明 15 s alarm 的 duration 代价仅满额的 0.1%**（2026-09-25）：**决策** —— 不把 `HEARTBEAT_INTERVAL_MS`（`src/durable/SyncClipboardHub.ts:38`）放宽到接近客户端超时，也不为「省唤醒」改心跳机制；`sendPings` / `scheduleHeartbeat` 的现有形态**保持不动**。**理由** —— 云端 A 臂实测（`HibernatingAlarm` = `acceptWebSocket` + 15 s alarm ping）：两个**独立全窗**读数分别是满额的 **0.076%**（30 分钟、alarm 触发 119 次、净 0.175 / 满额 230.4 GB-s）与 **0.1%**（10 分钟、alarm 触发 39 次、0.12 / 满额 76.8 GB-s）⇒ **15 s alarm 自身的 duration 代价可忽略**，放宽它对 duration **没有收益**；另有一条硬约束：客户端 **ServerTimeout 30 s**（`src/durable/SyncClipboardHub.ts:11` / `:37`）⇒ 服务端到客户端的应用层 Ping **不能稀于 ~30 s**，能调的空间本来就只有「15 s → 更接近 30 s」。**代价** —— 无（本决策 = 不改）。**影响** —— Free 与 Paid **都无需**为此改动；早期 Hibernation 方案（见 Git 历史） §5 P4 已相应降级为「不需要」（其「零唤醒心跳」备选路径所依赖的 `setWebSocketAutoResponse` 匹配语义，也因此不再需要验证）。 | 依据：早期 Hibernation 方案（见 Git 历史） §4.1（A 臂两次读数与「满额」口径）与 §5 P4；实验过程与两条环境事实见 `docs/progress.md` §182–§183。**注意**：本条**不**涉及 WS hibernation 改造本身（那是 P1 —— 已由 **D42** 采纳并实施，见 §4.1 与 `docs/progress.md` §183/§184），也**不**涉及 SSE / 长轮询（P3 / P2，仍不能判定）。 | 已定（2026-09-25）；实现处无需注明 D 号（本轮不涉及代码改动） |
+| D42 | **采纳 P1：`SyncClipboardHub` 的 WS 路径迁到 Hibernation API**（2026-09-25，用户定案）：`src/durable/SyncClipboardHub.ts` 的 `handleWebSocket` 由 `server.accept()` + 三个 `addEventListener` 改为 `state.acceptWebSocket(server)` + 类方法 `webSocketMessage` / `webSocketClose` / `webSocketError`（**类声明保持普通 class**，不改成 `extends DurableObject` —— §4.2① 已本地实测按名分派成立）；WS 连接集合与 `lastSeen` 从内存 `Map` 迁到 `state.getWebSockets()` + 每连接的 `serializeAttachment({lastSeen})`（**每次触碰都要重新序列化**，单条上限 16,384 字节）；心跳防重排判据从内存标志 `heartbeatScheduled` 改为 `await state.storage.getAlarm()`（`alarm()` 运行中它返回 `null`）；`webSocketClose` 里**必须**显式 `ws.close(code, reason)`；`authLimits` 的封锁状态改为**按实质变化落盘**（封锁开始/延长立即落、计数清零强制落、纯计数按 15 s 节流落），因为 hibernate 会常规性清空内存态而封锁窗口是分钟级。**为什么**：生产实测该 DO 的 duration 吃掉 Free 日额度 **84.5–85.5%**（11,014–11,103 GB-s/天、`activeTime` 99.6%），根因是标准 WS API 让 hibernate 前置条件「No WebSocket standard API is used」不成立（pricing 脚注 4：`accept()` 之后**整个连接期间**计费，与是否真被回收无关）；A 臂两次独立全窗实测把「WS 单独在线」的 duration 压到满额的 **0.076%**（30 min / 119 次 alarm）与 **0.1%**（10 min / 39 次 alarm），并已裁定 **15 s alarm 不阻止 hibernate** ⇒ 心跳节奏不动（D41 不变）。**边界（不得越读）**：① **SSE 与长轮询的既有实现保持原样** —— 活的 `writer` 与未兑现的 `pending` 不可迁移 ⇒ **有这两类连接在线时该对象仍不可 hibernate、照样全程计费**（P2/P3 仍不能判定）；② 本地**不**验证 hibernation 本身（本地不会真 hibernate，`progress.md` §181）⇒ 收益须上线后按 早期 Hibernation 方案（见 Git 历史） §8.5 的 Analytics 查询复核；③ wire **逐字节不变**（`docs/protocol.md` §10 无新差异行），`compatibility_date` / `[[migrations]]` / `AVAILABLE_TRANSPORTS` 均未动。**代价**：`lastSeen` 每次触碰都要重写 attachment；`getWebSockets()` 可能含 CLOSING ⇒ `clientCount()` 可能略偏高（最坏多排几轮心跳）；认证失败计数的落盘行写数 = **1 行/次**（快速爆破 ≈1–2 行/封锁事件，慢速试探上界 ≈ 封锁窗口 / 15 s + 1）。**2026-09-25 第二轮（三处微优化 + 真实边缘实测）**：① `authLimits` 快照改**按需加载**（`loadAuthLimitsOnce` —— 只有 `handleAuthRateLimit` 与 `connectionAuthFailure` 两条入口读，**有效 token 的连接路径零存储读**）：hibernate 后构造函数每次唤醒都重跑，旧写法让每次唤醒白付一次 storage 读**和一个往返**；② `alarm()` 内的重排改走 `rearmHeartbeatInAlarm()`、**不再读** `getAlarm()`（alarm 运行期间该读必为 `null`）⇒ 省 5,760 读/天；③ 快照读取加**形状守卫 + 旧形态迁移** `readPersistedAuthLimits`：新形态 `{persistedAt, limits}` 与**上一版的平铺表**都认 —— 后者逐条用 `isAuthLimitState` 校验后接收、`persistedAt` 取 0（节流判据立刻允许落盘 ⇒ 下一次实质变化即写成新形态）⇒ **部署不再清空生效中的封锁与失败计数**；只有真正不可识别的损坏值才按空表起算并留一条告警（**2026-09-26 按用户审查意见 F3 从「按空表起算」改为「迁移」**，见 §8.7(d) 与 `progress.md` §187）。旁挂 A/B 实测（真实边缘，同一套客户端脚本，两版 `compatibility_date` 逐字相同）：分支每连接秒只计满速的 **0.025%**、master（标准 API）**≈104%**（约 4,100×）；P3 补测：长轮询挂住 = 满速 **103%**、SSE = **20%**、静默 8 分钟零唤醒泄漏、响应时间无差异。详见 早期 Hibernation 方案（见 Git 历史） §8.7。 | 已定（2026-09-25）；实现处注明 D42 |
 | D43 | **在非 Free 档账号上精简三处 CPU 向优化（2026-09-27，用户定案；`progress.md` §195）**：① `/file/{name}` 的同名候选**上限 32 撤销** —— 候选数不设上限（与上游一致，`docs/protocol.md` §10 那行改成"本轮对齐"），SQL 只取 `Type/Hash/TransferDataFile` 三列；② 统计的四个计数（`totalCount`/`starredCount`/`deletedCount`/`activeCount`）**只留一份实现** `db.statistics()` —— 界面的 `/ui/api/statistics` 与 `/ui/api/overview` 改回调它，删掉 2026-09-25（P1-3）引入的 `statisticsFromViews` 及其等价性用例；`db.statistics()` 不再吃 `totalFileSizeMB`（体积是 R2 实列的事实）⇒ 它与 R2 列举可并发；③ 清理的**行字节预算只留软删两条路径**：删掉硬删阶段那份**从不生效**的字节代码（`fetchBatch` 忽略 `byteLeft`，而注释写着"积压 20,000 条时才会先触发"），并修一个真缺陷 —— `rowsWithinBytes` 加 `minTake`「**本轮第一批至少取一条**」，否则"单行就超过整个 256 KiB 预算"时该阶段每轮取回 0 条、`truncated` 常驻、**软删永不推进**（D1 单行上限够得着这个尺寸） | 2026-09-26/27 探针实测该账号**不在 Free 的 10 ms CPU 档**（单请求可烧 2–3 s 才被 `exceededCpu` 终止，`progress.md` §193）⇒ 为"Free 的 10 ms"而做的取舍要在新前提下重新评估。但仓库是**给别人部署的产品**：Free 档的 CPU 与子请求约束对使用者仍然成立 ⇒ 保留一切**防线**，只删「同一语义两份实现」「从不生效的分支」与「以正确性换子请求数」的那部分；**整体删掉清理的字节预算不在本次范围内** —— 它同时是"取回字节有界"的内存守卫（128 MiB isolate），而被它替换掉的"首批 5 条探路 + 均值外推"正是产生 25× 越界那个 bug 的版本（§188） | 已定（2026-09-27）；两处回归钉子：`test/fixes.test.ts` 的「40 条同名候选全部返回」、`test/cleanup-budget.test.ts` 的「单行 512 KiB 也必须被取到」 |
 | D44 | **query 时间字段：保持「忽略 + warn」，不做 day-first 超集**（2026-10-03）：`Before`/`After`/`ModifiedAfter` 解析不了时仍**忽略该项并返回 200**（不改 400），只在 `src/routes/history.ts` 的 `parseDateOrNull` 里补一条 `[HISTORY QUERY] drop <字段>: <值>` 的 warn（值压单行、截 80 字符）。**不做**「点分日期按 day-first 解析」：2026-10-03 用 V8 `Date.parse` × .NET `DateTimeOffset.Parse` 逐串对照（实测表在 `docs/protocol.md` §10），`03.10.2026 …`（de-DE 形态）**两侧都按美式读成 3 月 10 日** —— 本实现与 invariant/en-US/zh-CN 区域性的上游**同侧**，主动改日序反而变成"偏离上游"；而 `/` 分隔的 day-first 区域性（fr-FR）无论如何都消歧不了 | 依据：`docs/protocol.md` §10 的实测表 + 「客户端会因此整轮同步失败」比「过滤条件退化」更糟（客户端唯一在发的字段是 `ModifiedAfter`，见 `UserServices/ClipboardService/HistoryService.cs:215`）；丢弃有 warn 可查，不再是静默 | 已定（2026-10-03） |
 | D45 | **搜索不换 `instr`：保留上游的 LIKE 通配语义与 48 字节上限**（2026-10-03）：`/api/history/query` 的 `SearchText` 继续用 `Text LIKE '%…%'`（`%`/`_` 仍是通配符 —— 那是上游 `HistoryService.cs:153` 的行为），入口继续按 `MAX_SEARCH_BYTES = 48` 校验（D1 官方 limits：`LIKE`/`GLOB` 模式上限 50 字节）。**不做** `instr(lower(Text), lower(?))` 改写：它能解除长度上限（>16 个汉字可搜），但会丢掉上游的通配语义（= 新的有意偏离），且协议面与界面面两条路径的守卫/用例都要一起改 | 依据：D1 平台硬约束 + 「客户端不发 `SearchText`」（与 D44 同一处核对）⇒ 收益面主要是本站界面，留待专门一轮权衡（`progress.md` §196.5） | 已定（2026-10-03） |
@@ -158,101 +158,20 @@ flowchart TB
 （由 `UI_ENABLED` 决定"转回静态资源"还是 404，见 D16 与 [`ui.md`](ui.md) §2.1）；
 其余路径由边缘先行处理 —— 命中静态资源的直接返回，未命中的（含全部协议端点）回落给 Worker。
 
-## 4. 目录结构
+## 4. 代码所有权
 
-> ⚠️ **这棵树是「同一事实的多处副本」之一，且被守卫逐项校验**
-> （`test/docs.test.ts`：V1 / V2 的 js 与 V1 的 components 清单必须**逐项等于实际文件**）。
-> 加删 `public/` 下的任何文件都要同步这棵树 + [`ui-v2-design.md`](ui-v2-design.md) §7 + `README.md` 的 `public/` 行。
-> 其余三棵树（`docs/`、`src/`、`test/`）是**说明性**的，不进守卫。
+不要在文档维护完整文件树；文件系统本身就是目录结构的唯一事实源。这里只保留模块边界：
 
-```
-SyncClipboardCfServer/
-├── AGENTS.md                   # 行为契约（给 AI 代理与新人）：改代码顺手维护文档、DoD、协议与前端红线
-├── package.json / tsconfig.json / vitest.config.ts / eslint.config.js / wrangler.toml
-├── schema.sql                  # D1 建表语句（部署时执行）
-├── docs/
-│   ├── design.md               # 本文件
-│   ├── protocol.md             # 协议契约（精确到端点与字段）
-│   ├── ui.md                   # Web 历史界面：来源、边界、模块、API、设计系统
-│   ├── ui-document-preview.md  # 文档预览集成（File Viewer）：决策、方案、CSP 放宽清单与过程日志
-│   ├── free-plan-audit.md      # Cloudflare Free 计划适配审计（限额事实、子请求/CPU 折算、优先级清单；D40）
-│   ├── free-plan-account-facts.md # Cloudflare **账户实测事实**（配额实测、权限边界、查询原文；账户计划未判定）
-│   ├── free-plan-baseline.md   # Free 计划适配分支的基线门禁记录
-│   ├── do-hibernation-plan.md  # DO Hibernation 改造方案（候选并列、**不含决定**；收益待实测）
-│   ├── progress.md             # 开发进度追踪（按轮次的历史）
-│   └── progress-index.md       # 上面那份的**目录**（由它的 `##` 标题生成，守卫盯着）
-├── public/                     # 静态资源（由 Cloudflare 托管，run_worker_first 优先进 Worker 以支持 UI_ENABLED 开关）
-│   ├── robots.txt              # 必须放站点根（爬虫只读根路径）
-│   ├── _headers                # 响应头（边缘直出）：CSP/安全头 + 四个挂载点各自的 js/css no-cache、图标与 manifest 长缓存
-│   ├── ui_v1/                  # 默认界面 V1（2026-09-18 起接手默认入口 /ui_v1/；详见其 README.md）
-│   │   ├── index.html / login.html / manifest.webmanifest
-│   │   ├── css/                # tokens / base / layout / components / motion / auth
-│   │   └── js/                 # api / clipboard / dom / filters / format / latest / login / main / messages / next-target / signalr / store / theme-init（图标表在共用层）
-│   │       └── components/     # confirm / header / info / list / pagination / preview / row-content / shortcuts / stats / toast / toolbar / tooltip
-│   ├── ui_shared/              # **V1/V2 唯一的共享面**（挂 /ui_shared/，同受 UI_ENABLED）：brand/（品牌图标）+ js/icons.js（共用图标表）
-│   ├── ui_v2/                  # 开发测试版 V2（挂载 /ui_v2/，应用本体在 /ui_v2/app/；详见 docs/ui-v2-design.md）
-│   │   ├── app/                # 应用本体（index.html / login.html）
-│   │   ├── css/                # tokens-v2 / base-v2 / shell-v2 / board-v2 / overlay-v2
-│   │   └── js/                 # api / boot / clipboard / dom / filters / focus / format / keys / latest / login / menus / messages / next-target / paths / push / spark / state / theme / theme-init / ui/*（图标表在共用层）
-│   └── ui/                     # `/ui/` 的跳转壳：index.html + js/redirect-hash.js（送到 /ui_v1/）
-├── src/
-│   ├── index.ts                # Worker 入口：Hono 装配、中间件、Hub 转发、Cron
-│   ├── env.ts                  # 绑定类型（D1/R2/HUB/Vars/Secrets）
-│   ├── auth.ts                 # Basic Auth 校验、凭据校验、请求体排空
-│   ├── rateLimit.ts            # 认证失败限速：isolate 内存快路径 + DO 权威计数（F7）
-│   ├── requestLimits.ts        # 请求体上限的**唯一**读取入口（预检 + readBodyCapped/readBodyTextCapped）与 loopback 判定（F8/HSTS 与 F9 共用）
-│   ├── pathCase.ts             # 协议路径**字面段**大小写归一（对齐 ASP.NET 路由；2026-09-15 A/B 后补救）
-│   ├── uiEnabled.ts            # Web 界面部署开关（UI_ENABLED）：关闭时四个挂载点（/ui*、/ui_v1*、/ui_v2*、/ui_shared*）全 404、根路径不跳转
-│   ├── types.ts                # ProfileDto / HistoryRecordDto / QueryDto / StatisticsDto / 枚举
-│   ├── serialization.ts        # camelCase 序列化、枚举字符串、时间与体积口径转换
-│   ├── hash.ts                 # Text / File / Image / Group 哈希（协议级精确复刻）
-│   ├── multipart.ts            # 字节级 multipart 解析（兼容 .NET 的无引号 name=hash）
-│   ├── profile.ts              # Profile 服务端语义：校验、落盘移动、持久化命名
-│   ├── historyOps.ts           # 历史记录的写路径（官方 PATCH 与 UI 共用：判定+广播+R2 清理）
-│   ├── db.ts                   # D1 访问层：CRUD、查询过滤、ShouldUpdate 判定、清理
-│   ├── storage.ts              # R2 访问层：暂存、持久化、历史查找下载
-│   ├── contentTypes.ts         # 附件 Content-Type（mrmime 438 项 + 12 项补遗）与响应头加固：默认-deny 内联白名单 + XML/HTML 家族强制下载（WebDAV 与 UI 共用）
-│   ├── webdavXml.ts            # PROPFIND 多状态响应（RFC 4918）
-│   ├── hub.ts                  # 广播触发封装 + negotiate 载荷
-│   ├── cleanup.ts              # 保留/清理任务（Cron 触发）
-│   ├── routes/
-│   │   ├── webdav.ts           # SyncClipboard.json、file/*、PROPFIND/MKCOL
-│   │   └── history.ts          # /api/history/* 全部端点
-│   ├── ui/                     # Web 界面的服务端面（协议面无反向依赖）；文件清单以 docs/ui.md §3 为准
-│   │   ├── session.ts          # 签名 Cookie 的签发/校验/清除
-│   │   ├── guard.ts            # 会话或 Basic 鉴权 + 失败路径排空请求体
-│   │   ├── query.ts            # 列表查询层：参数解析、白名单排序、截断、变更信号
-│   │   ├── routes.ts           # /ui/api/* 路由装配
-│   │   ├── maintenance.ts      # 后台维护与自检：完整性自检 GET /ui/api/integrity 与在线保留策略 PUT /ui/api/settings
-│   │   └── notFound.ts         # 四个界面前缀（/ui/*、/ui_v1/*、/ui_v2/*、/ui_shared/*）共用的 404 页
-│   └── durable/
-│       ├── SyncClipboardHub.ts # Durable Object：WS/SSE/长轮询三传输 + 广播 + 心跳
-│       └── signalr.ts          # SignalR JSON 协议消息编解码
-├── tools/                      # 按需运行的核实工具（不进任何套件、不参与部署产物）
-│   ├── ab-upstream-probe.ps1   # 真上游 A/B：官方发布件逐条对照，退出码 = 未登记差异数（D10）
-│   ├── check-d1-like-limit.mjs # D1 引擎的 LIKE 模式上限是否仍与 MAX_LIKE_PATTERN_BYTES 一致（progress §105.3）
-│   └── migrate-d1.mjs          # 老库加列（幂等；CI 在 Deploy 前执行，见 §9 与 README「升级与数据备份」）
-└── test/
-    ├── hash.test.ts            # 哈希算法对照 C# 参考值
-    ├── protocol.test.ts        # HTTP 协议黑盒测试
-    ├── signalr.test.ts         # 真实 SignalR 客户端连接/广播
-    ├── transports.test.ts      # 三种传输的 negotiate 与握手
-    ├── query-filters.test.ts   # 查询过滤与排序
-    ├── cleanup.test.ts         # 保留/清理语义
-    ├── cleanup-budget.test.ts  # 清理预算/游标/失败可观测
-    ├── fixes.test.ts           # 历次缺陷的回归
-    ├── fix-regressions.test.ts # 修复回归
-    ├── dto-validation.test.ts  # DTO 类型校验与 /data 头编码
-    ├── ui-guard.test.ts        # UI 挂载点/端点/令牌守卫
-    ├── ui-contract.test.ts     # 前端跨文件契约（modulepreload/BEM 类名双向）
-    └── …（其余见下方「套件清单」，共 22 个）
-    ├── ui.test.ts              # /ui/api/* 的接口与鉴权（含回收站视图与恢复）
-    ├── ui-logic.test.ts        # 零构建前端的纯逻辑（筛选/格式化/归一化）
-    ├── ui-contract.test.ts     # 跨文件契约（预载清单、BEM 类名、属性生产者、原生可解析）
-    └── support/
-        ├── target-guard.ts     # 写库套件的目标守卫（非本机需显式放行）
-        └── d1-sqlite.ts        # node:sqlite 上的最小 D1 适配器（唯一一份；非 D1，口径差异见 progress §105.3）
-```
+| 区域 | 职责 |
+|---|---|
+| `src/` | Worker、协议、D1/R2、SignalR/DO、清理任务与 UI 服务端 |
+| `public/ui_v1/` | 默认产品界面 |
+| `public/ui_v2/` | 开发测试版界面 |
+| `public/ui_shared/` | 两版唯一共享的稳定静态资产 |
+| `test/` | 协议/UI/部署回归与 manual probes |
+| `docs/` | 当前设计与少量历史事实；不再存放每轮审计过程 |
+
+新增文件时不需要同步任何“文件数”或完整目录树。只有会影响运行时的挂载点、部署变量和数据库迁移需要机械守卫。
 
 ## 5. 存储设计
 
@@ -369,10 +288,7 @@ R2 孤儿目录回收。**保留期默认 0 = 不限制**（对齐上游 3.3.0�
 | E2E | 本机官方客户端连接 | 真实客户端全流程（含历史同步） |
 | **真上游 A/B** | `tools/ab-upstream-probe.ps1` | 框架 / 路由 / 绑定层行为；退出码 = **未登记差异**条数 |
 
-**套件清单**（`npm test` = 22 套件，此处逐个列出 —— 名单与数字是两条独立断言，守卫只比数字）：
-`clipboard`、`cleanup`、`cleanup-budget`、`docs`、`dto-validation`、`fix-regressions`、`fixes`、`hardening`、
-`hash`、`limits`、`next-target`、`protocol`、`query-filters`、`rate-limit`、`signalr`、`transports`、
-`ui`、`ui-activity`、`ui-contract`、`ui-guard`、`ui-input`、`ui-logic`。
+**测试清单不在文档复制**：以 `test/*.test.ts` 的实际文件和 `npm test` 输出为准。
 
 其中**纯逻辑套件**进程内运行、不需要服务器；其余黑盒套件由运行者（或 CI 的 `quality` job）先起
 `wrangler dev` 再跑。这些进程内套件里的 D1 是**同一份** `test/support/d1-sqlite.ts`（`node:sqlite` 适配器）——
@@ -393,7 +309,7 @@ R2 孤儿目录回收。**保留期默认 0 = 不限制**（对齐上游 3.3.0�
 `cleanup` 套件经 `GET /__scheduled` 触发**真实的 scheduled handler**，故 dev server 必须以
 `--test-scheduled` 启动；未启用时该套件**跳过并明确报告原因**，而不是假装通过。
 
-**CI 执行策略**：`typecheck` + `lint` + 全部 22 套件；黑盒套件由 CI 自起 `wrangler dev --local`、
+**CI 执行策略**：`typecheck` + `lint` + 全部测试套件；黑盒套件由 CI 自起 `wrangler dev --local`、
 `d1 execute --local` 初始化、凭据用 `--var` 临时注入 ⇒ **不需要 Cloudflare 凭据、也不接触线上资源**；
 `deploy` job 通过 `needs: quality` 依赖它。
 

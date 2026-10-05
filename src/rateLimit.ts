@@ -1,4 +1,4 @@
-// 认证失败限速（F7，docs/security-fix-plan.md §二·F7）
+// 认证失败限速：isolate 快路径 + Durable Object 权威计数。
 //
 // 存储层设计（按 Main 的修正意见，**不用 D1**）：
 //   - **权威计数在 Durable Object**：env.HUB 的单实例（`hubStub`），单线程长驻，天然串行化计数、跨 isolate 一致。

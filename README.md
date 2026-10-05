@@ -194,7 +194,7 @@ flowchart LR
 5. **触发部署**：
    推送代码变更到 master 分支，或者在 GitHub 仓库的 `Actions` 页面找到「Deploy」工作流点击「Run workflow」手动执行。CI 会自动跑完代码检查、测试套件并完成部署。
    **部署完成后点开这次 run，Summary 里就有服务器地址**（含客户端该选什么类型、界面入口）。
-    `Actions`完整链路：`quality`（typecheck + lint + 22 个套件）→ 解析/创建资源 → `Deploy Worker` → 同步凭据 → 只读冒烟检查。
+    `Actions`完整链路：`quality`（typecheck + lint + 全部测试）→ 解析/创建资源 → `Deploy Worker` → 同步凭据 → 只读冒烟检查。
 
 ---
 
@@ -249,9 +249,7 @@ Cloudflare 默认分配的 `*.workers.dev` 域名在部分国内运营商网络�
 
 ### Cloudflare Free 计划的真实约束
 
-> 下面几条是 Free 上**真正会先撞到**的限制。数字的完整推导（逐入口子请求表、CPU 遍数折算、
-> 每日配额折算）在 [docs/free-plan-audit.md](docs/free-plan-audit.md)，基线门禁记录在
-> [docs/free-plan-baseline.md](docs/free-plan-baseline.md)；决策登记为 `docs/design.md` 的 D40。
+> 下面只保留当前仍会影响部署选择的结论。账户实测数据集中在 [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)，设计决策见 `docs/design.md` D40–D42。
 
 - **CPU 是平均预算，不是单次硬顶**：Free 的 HTTP 请求与 Cron 触发**同一档**（都是 10 ms），但平台另有
   **rollover CPU time** 机制 —— 官方 metrics 页原文是「更高的分位可能看起来超过 CPU 时间上限而不产生
@@ -272,17 +270,9 @@ Cloudflare 默认分配的 `*.workers.dev` 域名在部分国内运营商网络�
   ⚠️ 2026-09-25 更正：此前这里写「≈4 台」，那是把**整个部署**的日请求量当成了**单台**的口径。
   界面侧还要算上一次页面加载的三十多个静态资源请求（`run_worker_first` 让它们同样经 Worker），
   频繁刷新会明显加快消耗。
-- **Durable Object 的 duration 是隐藏额度**：Free 每日 13,000 GB-s，按分配到的 128 MB 计（与实际用量无关）。
-  · **线上现状（仍是 `master` 的形态）**：WS 走标准 API（`server.accept()`）⇒ **WebSocket 连着多久就计费多久**，
-    一个常驻连接约 0.128 GB × 86,400 s = **11,059 GB-s/天，吃掉日额度约 85%**（这是 `perf/free-plan` 分支的**迁移前基线**）。
-  · **`perf/free-plan` 分支已迁到 Hibernation API**（`state.acceptWebSocket`，ADR D42）：旁挂**真实边缘 A/B** 实测每连接秒
-    只计满速的 **0.025%**、master 对照 **≈104%**（约 4,100×）⇒ 预期 duration 从 ~11,050 GB-s/天 降到 **3–11 GB-s/天（约 0.1%）**，
-    代价是 DO **请求数**上升（每条客户端 keepalive = 一次调用，约 1.2–2.9 万/天）。
-    ⚠️ **边界**：**长轮询在线 ⇒ 收益归零**（真机实测满速 **103%**）；**SSE 的代价仍未知** —— 旧读数 20% 已按
-    「4 帧 × 15 s 心跳 = 60 s = 本机代理静默硬切点」判为假象（`docs/progress.md` §189.1）。而降级到这两档的前提都是
-    **WS 不可用**：本仓库界面**只用 WS**（`public/ui_v1/js/signalr.js`、`public/ui_v2/js/push.js`，断线走应用层轮询，
-    不经 DO），官方客户端也只有 WS 失败才降级（上游 `OfficialAdapter.cs` 未设 `.Transports`）。合并后本节以线上实测为准，
-    判据见 `docs/do-hibernation-plan.md` §8.5 与 `docs/progress.md` §189.4。
+- **Durable Object 已在 `master` 使用 WebSocket Hibernation API**：`SyncClipboardHub` 通过 `state.acceptWebSocket()` 托管 WS。
+  迁移前使用标准 `server.accept()` 时，一个常驻连接实测约消耗 **11,000 GB-s/天（约 85% Free 日额度）**；真实边缘 A/B 中 Hibernation 形态的 duration 下降约三个数量级。
+  **长轮询和 SSE 仍不能 hibernate**，如果客户端降级到这些传输，duration 优势会明显下降。当前实现与取舍见 `docs/design.md` D41/D42，实测记录见 `docs/free-plan-account-facts.md`。
 - **清理任务是慢收敛，而且可能被平台中断**：一轮跑不完由 Meta 游标下一轮续跑（单轮工作量按**行字节预算**
   256 KiB/阶段收敛，而不是平坦条数）；若单轮 CPU 仍超限，平台**直接终止**本轮 —— 但**轮首心跳**（进入清理
   就先写一次"最近一次尝试"）已经落库，所以"被终止"在部署信息里**看得见**，不再是静默的（只是会慢收敛）。
@@ -379,7 +369,7 @@ cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-运行测试（22 个套件）：
+运行测试：
 
 ```bash
 # 类型检查与 ESLint
@@ -392,7 +382,7 @@ npx vitest run test/hash.test.ts test/fixes.test.ts
 npm test
 ```
 
-**写库套件默认只允许指向本机**：七个套件（`protocol`、`fix-regressions`、`transports`、`signalr`、`cleanup`、`query-filters`、`ui`）会创建/删除历史记录与 R2 对象，因此当目标地址非 `127.0.0.1` 或 `localhost` 时会默认拒绝执行，防止误删线上数据。如需向特定远端实例执行测试，必须显式附加参数：`ALLOW_REMOTE_TARGET=1 BASE=https://your-worker.workers.dev npm test`。
+**写库测试默认只允许指向本机**：相关套件统一使用 `test/support/target-guard.ts`。目标地址不是 `127.0.0.1` 或 `localhost` 时会拒绝执行；只有明确需要远端验证时才设置 `ALLOW_REMOTE_TARGET=1`。
 
 ---
 
@@ -413,23 +403,20 @@ src/
 public/                 静态资源：robots.txt + _headers + ui_v1/（默认界面 V1）+ ui_v2/（开发测试版 V2）+ ui_shared/（两版共用的品牌图标与图标表）+ ui/（/ui/ 的跳转壳）
 schema.sql              D1 数据库建表与初始元数据语句
 wrangler.toml           Cloudflare Worker 配置文件与绑定声明
-test/                   测试套件（集成测试、协议回归测试、文档口径测试）
+test/                   测试套件（协议回归、UI、部署/迁移契约）
 ```
 
 ---
 
 ## 相关文档
 
-- [docs/project-analysis.md](docs/project-analysis.md)：系统全景架构解析、时序图与数据模型
-- [docs/design.md](docs/design.md)：系统总体架构设计、决策记录与存储映射
-- [docs/protocol.md](docs/protocol.md)：官方协议逐条对照、DTO 契约与已知差异表
-- [docs/ui.md](docs/ui.md)：Web 历史界面的接口设计、鉴权模型与前端规范
-- [docs/security-fix-plan.md](docs/security-fix-plan.md)：安全审计与已知安全加固项说明
-- [docs/free-plan-audit.md](docs/free-plan-audit.md)：Cloudflare Free 计划适配审计（平台限额事实、逐入口子请求/CPU 折算、优先级清单）
-- [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)：Cloudflare **账户实测事实**档案（配额实测、权限边界、查询原文；账户计划未判定）
-- [docs/free-plan-baseline.md](docs/free-plan-baseline.md)：Free 计划适配分支的基线门禁记录
-- [docs/do-hibernation-plan.md](docs/do-hibernation-plan.md)：Durable Object Hibernation 改造方案（阻止 hibernate 的构造清单、内存态迁移去向、文档矛盾、并列候选方案；**不含决定**，收益待实测）
-- [AGENTS.md](AGENTS.md)：开发行为契约与代码维护规范
+- [docs/design.md](docs/design.md)：当前架构、关键设计决策与存储映射
+- [docs/protocol.md](docs/protocol.md)：官方协议逐条对照、DTO 契约与已知差异
+- [docs/ui.md](docs/ui.md)：Web 历史界面的接口、鉴权与前端约束
+- [docs/project-analysis.md](docs/project-analysis.md)：系统级分析与数据流说明
+- [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)：Cloudflare 账户实测事实
+- [docs/progress.md](docs/progress.md)：冻结的历史开发档案（非现行规范）
+- [AGENTS.md](AGENTS.md)：最小开发行为契约
 
 ## 许可证
 

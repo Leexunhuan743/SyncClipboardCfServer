@@ -286,7 +286,7 @@ export class HistoryDb {
       // 这是**对齐上游**（`HistoryService.cs:153` 同样 `EF.Functions.Like(r.Text, $"%{searchText}%")`），
       // 属协议面行为，不能单方面收紧——改了会让"上游能搜到、这里搜不到"。
       // 对照实现：UI 面**转义**（src/ui/query.ts 的 `LIKE … ESCAPE '\'`），那是本站自己的面，
-      // 用户搜 `100%` 不该退化成匹配任意。这处分面登记在 docs/AUDIT-redundancies.md 的 C-05
+      // 用户搜 `100%` 不该退化成匹配任意。这里保持上游 LIKE 通配语义；现行决策见 docs/design.md D45
       // （它**不是**协议差异 —— 协议面这边就是照上游做的，故不在 protocol.md §10 里）。
       // 上限另有约束：超长搜索串会让 D1 的 LIKE 直接报错，故入口按 48 字节校验
       // （src/serialization.ts 的 normalizeSearchText）。
