@@ -1,50 +1,19 @@
-# 自动部署 SyncClipboard CfServer 到 Cloudflare Workers
-# 触发：push 到 master **且改动涉及产品代码/构建输入**，或 GitHub Actions 页面手动触发。
-#       纯文档改动（README、docs/**、*.md、审计工件）不再空跑 CI —— 见下方 paths 白名单。
-#
-# 前置一次性配置（GitHub 仓库 Settings → Secrets and variables → Actions）：
-#   Secrets:
-#     CLOUDFLARE_API_TOKEN  — Cloudflare API Token，权限：
-#                             Workers Scripts:Edit、D1:Edit、R2:Edit、Account Settings:Read
-#     CLOUDFLARE_ACCOUNT_ID — Cloudflare 账户 ID（dashboard 右侧栏）
-#     USERNAME / PASSWORD   — 可选。Basic Auth 凭据，配置后 CI 自动同步写入 Worker
-#   Variables:
-#     DEPLOY_URL            — 可选，部署后地址，用于冒烟检查（未设置则自动使用部署输出的地址）
-#
-# 凭据管理两种用法（任选）：
-#   A) 手动设置：在本地执行 `npx wrangler secret put USERNAME / PASSWORD`，
-#      GitHub Secrets 不填这两个凭据 —— CI 不触碰凭据。
-#   B) 交给 CI（推荐）：在 GitHub Secrets 配好 USERNAME 与 PASSWORD，
-#      每次部署自动同步至 Cloudflare Worker，无需敲命令行。
-
+# Production deployment. PR validation lives in quality.yml.
 name: Deploy
 
 on:
   push:
     branches: [master]
-    # 白名单：只在这些路径变更时触发。文档与审计工件不在其中——它们既不改变部署产物，
-    # 也不影响协议行为，此前每次提交空跑一遍 quality + deploy 是纯浪费。
-    #
-    # 两条刻意保留的边界：
-    #   - public/** 是 Web 界面本体，随部署上线，属于产品代码（不是文档）；
-    #   - test/** 是本仓库的质量门产物，改坏了不该静默合入；而且「文档口径守卫」也住在
-    #     test/ 下（代价：纯文档改动触发的 CI 顺带校验的那次机会没有了，下一次代码改动仍会校验）。
-    #
-    # 这是**白名单**：将来新增部署输入（新的配置文件/目录）时必须同步加进列表，
-    # 否则那次变更不会触发流水线。手动触发（workflow_dispatch）不受此限。
     paths:
-      - 'src/**'                 # 协议实现
-      - 'public/**'              # Web 界面（静态资源，随部署上线）
-      - 'test/**'                # 测试套件 + 文档口径守卫
-      - 'schema.sql'             # D1 表结构（部署时执行）
-      - 'tools/**'               # 部署脚本（migrate-d1.mjs 在 Deploy 前执行）
-      - 'wrangler.toml'          # 部署配置（绑定、[assets]、[triggers]、[vars]）
+      - 'src/**'
+      - 'public/**'
+      - 'schema.sql'
+      - 'tools/migrate-d1.mjs'
+      - 'wrangler.toml'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
-      - 'vitest.config.ts'
-      - 'eslint.config.js'       # 前端静态检查的配置（改坏了 lint 门禁就失效）
-      - '.github/workflows/**'   # CI 自身
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 concurrency:
@@ -53,65 +22,7 @@ concurrency:
 
 jobs:
   quality:
-    # 真正的质量门：typecheck + lint + **全部测试套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
-    # 黑盒套件需要服务器：这里用 wrangler dev（miniflare）起一个本地实例，
-    # 不触碰任何线上资源、也不需要 Cloudflare 凭据。
-    # 单独成 job 有两个好处：与部署进程隔离（dev server 不残留），且失败即不部署。
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Lint（零构建前端：public/ui_v*/js 不在 tsc 的 include 里）
-        run: npm run lint
-
-      - name: Start local server (miniflare) and run all suites
-        env:
-          # 测试只读 SYNC_USER / SYNC_PASS（不用 USER/USERNAME —— 宿主环境已占用）
-          SYNC_USER: ci-user
-          SYNC_PASS: ci-password-${{ github.run_id }}
-          BASE: http://127.0.0.1:8787
-        run: |
-          set -euo pipefail
-          # 本地凭据文件（wrangler dev 读取）；仅存在于 CI 容器内，不涉及线上资源
-          printf 'USERNAME=%s\nPASSWORD=%s\n' "$SYNC_USER" "$SYNC_PASS" > .dev.vars
-          # 初始化本地 D1（幂等：schema.sql 用 CREATE IF NOT EXISTS）；按 binding 名寻址，与线上同一规则
-          npx wrangler d1 execute DB --local --file=./schema.sql
-          # 后台启动，等到端口就绪后再跑测试
-          # --test-scheduled：让 cleanup 套件能经 GET /__scheduled 触发真实 Cron 处理器
-          npx wrangler dev --local --test-scheduled --port 8787 --ip 127.0.0.1 > /tmp/wrangler-dev.log 2>&1 &
-          echo $! > /tmp/wrangler-dev.pid
-          for i in $(seq 1 60); do
-            if curl -s -o /dev/null --max-time 2 "$BASE/" ; then ready=1; break; fi
-            sleep 1
-          done
-          if [ "${ready:-0}" != "1" ]; then
-            echo "dev server 未就绪，日志："; cat /tmp/wrangler-dev.log; exit 1
-          fi
-          # 全部套件（--no-file-parallelism：多个套件都会改写「当前 profile」，须串行）
-          npx vitest run --no-file-parallelism
-          kill "$(cat /tmp/wrangler-dev.pid)" || true
-
-      - name: Upload dev server log on failure
-        if: failure()
-        # v4 也是 Node 20 运行时（实测 action.yml 的 runs.using），只在 quality 失败时才加载，
-        # 因此它不会出现在成功运行的注解里——但真失败时同样会触发弃用警告。一并升到 v7（Node 24）。
-        uses: actions/upload-artifact@v7
-        with:
-          name: wrangler-dev-log
-          path: /tmp/wrangler-dev.log
-          if-no-files-found: ignore
+    uses: ./.github/workflows/quality.yml
 
   deploy:
     needs: quality

@@ -1,0 +1,66 @@
+name: Quality
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run all tests against local Worker
+        env:
+          SYNC_USER: ci-user
+          SYNC_PASS: ci-password-${{ github.run_id }}
+          BASE: http://127.0.0.1:8787
+        run: |
+          set -euo pipefail
+          printf 'USERNAME=%s\nPASSWORD=%s\n' "$SYNC_USER" "$SYNC_PASS" > .dev.vars
+          npx wrangler d1 execute DB --local --file=./schema.sql
+          npx wrangler dev --local --test-scheduled --port 8787 --ip 127.0.0.1 > /tmp/wrangler-dev.log 2>&1 &
+          echo $! > /tmp/wrangler-dev.pid
+          trap 'kill "$(cat /tmp/wrangler-dev.pid)" 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null --max-time 2 "$BASE/"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "${ready:-0}" != "1" ]; then
+            cat /tmp/wrangler-dev.log
+            exit 1
+          fi
+
+          npx vitest run --no-file-parallelism
+
+      - name: Upload Worker log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wrangler-dev-log
+          path: /tmp/wrangler-dev.log
+          if-no-files-found: ignore
