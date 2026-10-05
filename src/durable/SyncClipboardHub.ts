@@ -760,7 +760,7 @@ export class SyncClipboardHub {
    * 由来（P3 判据，2026-09-26）：Free 计划下 hibernate 能不能生效，取决于**有没有非 WS 连接**——
    * 真机旁挂实测「长轮询在线 ⇒ duration 满速 103%（收益归零）」「SSE 待判」。而在此之前服务端
    * **没有任何按传输打点的口**（`clientCount()` 只有总数），生产到底用了哪些传输**无从判定**
-   * （`docs/progress.md` §189.2/§189.4）。这三行日志就是那条判据的数据来源。
+   * （Git history§189.4）。这三行日志就是那条判据的数据来源。
    *
    * ⚠️ 不落连接 id：SSE/长轮询的 `id` 就是 negotiate 签发的 **connectionToken**，SignalR 传输规范
    * 明确要求它保密；不要把 connectionToken 写入日志。

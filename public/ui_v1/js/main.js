@@ -1292,7 +1292,7 @@ async function openDeepLink({ closeOnMissing = false } = {}) {
 //      `newVersion = dto.version ?? existing.version + 1`、`newLastModified = dto.lastModified ?? max(now, …)`
 //      ⇒ 只发 `lastAccessed` 会让**版本自增、修改时间也变**；回显两者之后，落库改动的**只有
 //      `lastAccessed`**（版本不动 ⇒ 官方客户端随后对该记录的正常同步不会被 `shouldUpdate` 判成冲突；
-//      修改时间不动 ⇒ 「修改」列不因一次复制而跳）。实测见 `docs/progress.md` §146。
+//      修改时间不动 ⇒ 「修改」列不因一次复制而跳）。实测见 Git history。
 //   ② **失败必须静默**：这是一次"顺手记一笔"，绝不能让它的失败影响复制/下载本身 ——
 //      409（别的设备刚改过）与网络抖动都只丢这一次触碰；只有 401 仍然走统一的回登录页。
 //

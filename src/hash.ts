@@ -133,7 +133,7 @@ export function groupZipDecompressionCap(zipBytes: Uint8Array): number {
 // 为什么必须有：上游算哈希走的是「解压落盘 → 枚举目录树」（`GroupProfile.cs:631-674` → `:167-181`），
 // 而 `Path.GetFullPath` 与内核都把 `a//b.txt` 当作 `a/b.txt` ⇒ 树里的条目名**永远是单斜杠**。
 // 不折叠时，含 `a//b.txt` 的 zip 两侧都会**接受**、却对同一个文件夹算出不同 hash 与不同 `filePaths`
-// （2026-10-03 对齐；此前既未登记也不等价 —— 见 `docs/progress.md` §197）。
+// （2026-10-03 对齐；此前既未登记也不等价 —— 见 Git history）。
 // ⚠️ **`topLevel` 不归一**：上游那一步用的是原始条目名（`GroupProfile.cs:666-670` 的
 // `entry.FullName.TrimEnd('/')`），本项目 `test/hash.test.ts` 的 `a//` 用例钉的正是这个口径。
 function normalizeEntryName(name: string): string {

@@ -4,7 +4,7 @@
 // 而 D1 存会话表会让每次页面请求多一次写库。签名 Cookie 的语义等价于 clipserver 的登录会话，
 // 但零存储、天然可水平扩展；密钥由 PASSWORD 派生，因此**改密码即让全部已签发会话失效**。
 //
-// **复用了什么、刻意不复用什么**（2026-09-21 的取舍，读数与依据见 docs/progress.md §106）：
+// **复用了什么、刻意不复用什么**（2026-09-21 的取舍，读数与依据见 Git history）：
 //   ✅ `hono/utils/cookie` 的 `parse` / `serialize`：Cookie 的**属性拼装与解析**（此前手写 20 行）。
 //      选它而不是 `hono/cookie` 的 `getCookie`/`setCookie`，是因为那两个要 `Context`，
 //      而本模块的入口是 `Request`（`readSession(env, request)`）—— 没必要为此把 Context 穿到调用方。

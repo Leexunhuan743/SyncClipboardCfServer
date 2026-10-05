@@ -3,7 +3,7 @@
 // 为什么是抽屉而不是又一个对话框：抽屉容纳"可以边看边改"的设置与只读信息，
 // 对话框适合"必须做出决定才能继续"的内容。混用会让用户猜每个入口的后果。
 //
-// 这里同时落地了 `docs/backend-gaps.md` §1 的几条"已建未接"能力：
+// 这里同时落地了 GitHub issue #3 的几条"已建未接"能力：
 //   §1.1 清理状态（`/ui/api/info` 一直在返回 `cleanup`，此前**无人消费**）
 //   §1.5 页大小档位补齐到 500（服务端白名单的上限）
 //   §1.6 `PATCH` 响应体的版本/时间戳被采纳（不在这里，在 boot.js 的 adoptPatch）
@@ -206,7 +206,7 @@ export function createDrawer(handlers) {
   const retentionSection = section('保留策略', [
     row('保留天数', '超过这个天数的未收藏、未置顶记录会被软删', retentionInput),
     // 与 V1 那条说明（`ui_v1/js/components/info.js` 的 `.note`）说的是同一件事：
-    // **收藏与置顶不受这两项清理影响**，2026-09-22 用户问起后两版一起写明（`progress.md` §161）。
+    // **收藏与置顶不受这两项清理影响**，2026-09-22 用户问起后两版一起写明（Git history）。
     row('最多条数', '超过后从最旧的开始软删（收藏、置顶的不会被裁）', maxCountInput),
     row(null, null, saveRetention),
     retentionSource,

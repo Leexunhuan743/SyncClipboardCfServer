@@ -48,7 +48,7 @@ export function broadcast(
 //
 // 为什么不是 N 次 `broadcast`：批量写一次可达 100 条（`BATCH_UPDATE_MAX_ITEMS`），逐条广播
 // 就是 100 次 DO 子请求 —— 而免费档「内部服务子请求」上限是 **1000 次/调用**，一次 1000 条的
-// 批量删除逐条广播正好触顶（这也是 `clear` 当初"不逐条广播"的同一个理由，见 `docs/backend-gaps.md` §3.5）。
+// 批量删除逐条广播正好触顶（这也是 `clear` 当初"不逐条广播"的同一个理由，见 GitHub issue #3）。
 // 合并后：消息**内容与顺序不变**（DO 侧逐条入队），客户端收到的东西与逐条广播时一模一样 ——
 // 唯一的变化是 100 次子请求变成 1 次，以及客户端**整批同时**收到（而不是边写边收）。
 export async function broadcastMany(
@@ -113,7 +113,7 @@ export async function negotiateResponse(env: Bindings, request: Request): Promis
 
 // 返回钳制后的版本号，或上游语义下的错误消息字符串。
 // 语义按 .NET `int.TryParse`（NumberStyles.Integer：允许首尾空白与正负号，不允许千位分隔符）
-// 与官方服务端 v3.2.0 的 A/B 实测结果实现（见 docs/progress.md §44）：
+// 与官方服务端 v3.2.0 的 A/B 实测结果实现（见 Git history）：
 //   - 解析失败（含**超出 Int32**）→ 错误串里回显**原样未 trim** 的入参
 //   - 解析成功但 < 0        → 错误串里回显**解析后的整数**（`' -1 '` → `'-1'`）
 const NEGOTIATE_MIN_VERSION = 0;

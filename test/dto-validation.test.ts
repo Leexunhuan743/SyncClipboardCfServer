@@ -25,7 +25,7 @@ const enc = new TextEncoder();
 // ============ 内存 R2 bucket ============
 // 这个**留在这里**（不并进 test/support/）：它只存字节、`list()` 恒空，与
 // test/fixes.test.ts 的 FakeBucket（只存 size、真分页）和 test/cleanup-budget.test.ts 的
-// CountingBucket（带记账）语义各不相同 —— 合并它们只会为差异造一层配置面（docs/progress.md §105）。
+// CountingBucket（带记账）语义各不相同 —— 合并它们只会为差异造一层配置面（Git history）。
 class FakeR2Bucket {
   objects = new Map<string, Uint8Array>();
   async put(key: string, body: Uint8Array | ArrayBuffer | ReadableStream): Promise<void> {

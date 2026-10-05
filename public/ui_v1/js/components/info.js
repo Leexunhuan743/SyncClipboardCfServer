@@ -387,7 +387,7 @@ export function createInfo({ onCopyText, onClearAll, getClockOffsetMs, getLastCh
         class: 'note',
         // 2026-09-22 用户问「收藏和置顶的会不会被清理」之后补的一句：这条豁免在服务端是**硬判据**
         // （`src/db.ts` 的两条软删查询都带 `Stared = 0 AND Pinned = 0`，与上游 `HistoryService.cs`
-        // 的同名谓词一致，见 `progress.md` §161），但界面上原本一个字都没说 —— 用户看不到，
+        // 的同名谓词一致，见 Git history），但界面上原本一个字都没说 —— 用户看不到，
         // 就等于这个承诺不存在。文案与 V2 那版提示（`ui_v2/js/ui/drawer.js` 的「最多条数」行）
         // 说的是同一件事，两版都别只改一处。
         text:

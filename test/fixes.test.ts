@@ -993,7 +993,7 @@ describe('F21 · 附件响应加固（同源存储型 XSS 面）', () => {
 
     // ③ 非白名单（压缩包 / Office / 未知）→ 强制下载，但**不**加 CSP（不是可渲染类型）。
     //    ⚠️ 2026-09-21：`.zip` 从「无 disposition」改成「attachment」—— 策略由"可渲染黑名单"改成
-    //    "默认-deny 内联白名单"；决定、差集与读数见 docs/progress.md §106。
+    //    "默认-deny 内联白名单"；决定、差集与读数见 Git history。
     for (const name of ['c.zip', 'i.docx', 'j.7z', 'k.bin', 'noext']) {
       const h = fileHeaders(name);
       expect(h.get('x-content-type-options'), name).toBe('nosniff');

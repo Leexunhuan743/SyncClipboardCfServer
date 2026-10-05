@@ -1120,7 +1120,7 @@
    *
    * ⚠️ 别照截图把宽度规则加回来：探针**默认没有触摸模拟 ⇒ 恒为细指针**，所以
    * `--width 390` 读到的是「窄窗口桌面」（28px）而**不是手机**。要看手机就跑
-   * `node test/manual/probe.mjs --width 390 --touch`（粗指针 ⇒ 44px）。实测见 `progress.md` §94.10。
+   * `node test/manual/probe.mjs --width 390 --touch`（粗指针 ⇒ 44px）。实测见 Git history。
    * 本档保留的只是下面那些**让开安全区**的间距改写。 */
 
   .batchbar {

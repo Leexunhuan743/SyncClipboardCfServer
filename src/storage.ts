@@ -105,7 +105,7 @@ export class R2Storage {
 
   // range 直接透传给 R2 的区间读（由 R2 切片段，不把整个对象读进 Workers 内存再截断）。
   // 目前只有 UI 数据端点（`GET /ui/api/history/:type/:hash/data`）会传：协议侧忽略 Range
-  // 是对齐上游的**有意**行为（F29b，docs/backend-gaps.md §2.3），那边不应改。
+  // 是对齐上游的**有意**行为（F29b，GitHub issue #3），那边不应改。
   async getHistory(
     type: ProfileType,
     hash: string,

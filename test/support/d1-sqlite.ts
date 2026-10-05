@@ -3,7 +3,7 @@
 // 此前它被抄了 **5 份**（`test/fixes.test.ts` 的 `FakeD1` 与 `FaultD1`、`test/dto-validation.test.ts`
 // 与 `test/ui-activity.test.ts` 的同名 `FakeD1`、`test/cleanup-budget.test.ts` 的 `CountingD1`），
 // 差异只有「要不要记账」与「要不要注入故障」两点，其余 prepare/bind/all/first/run 逐字相同。
-// 收敛理由与实测依据见 docs/progress.md §105。
+// 收敛理由与实测依据见 Git history。
 //
 // ⚠️ **它不是 D1**，而且差异是**实测**出来的（2026-09-21）：
 //   同一个 LIKE 模式，真 `wrangler dev` 报 `LIKE or GLOB pattern too complex: SQLITE_ERROR`

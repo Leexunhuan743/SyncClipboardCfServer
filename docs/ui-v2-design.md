@@ -5,7 +5,7 @@
 > `git show --diff-filter=A --format=%h -- docs/ui-v2-design.md`。
 >
 > **重写的取舍**：原文§13–§17 是 2026-09-15 至 09-16 六轮迭代的**逐轮记录**（每轮"用户点了哪几条 →
-> 抓到什么缺陷 → 怎么修 → 验证数字"）。那是改动日志，属于 `docs/progress.md` 的职责，
+> 抓到什么缺陷 → 怎么修 → 验证数字"）。那是改动日志，已交给 Git 历史，
 > 而且它把设计事实源埋在了 600 行过程叙述下面。**本版只留两类内容**：
 > ① **设计契约**（§2–§10：骨架、令牌、组件词汇表、API、文件结构、状态、预算、无障碍）；
 > ② **判据与取舍的现状**（§11–§13：哪些不变式被守着、哪些边界是已知的、哪些明确不做）。
@@ -109,7 +109,7 @@ V1 的**工程**是可靠的：交互约定、真实令牌层、诚实的空/错
 
 > 关键取舍：**把「大小 / 创建 / 修改 / 访问」四列收进第二行的次要文本**。
 > 排序入口移到列表头右上角的「排序」菜单（V1 那边 6 个排序字段只有 3 个可点，
-> 见 [`backend-gaps.md`](backend-gaps.md) §1.4）。
+> 见 [Issue #3](https://github.com/Leexunhuan743/SyncClipboardCfServer/issues/3) §1.4）。
 
 ### 3.2 移动端（< 720px）
 
@@ -248,7 +248,7 @@ V1 的**工程**是可靠的：交互约定、真实令牌层、诚实的空/错
 
 - 服务端"搜索建议 / 自动补全"—— `LIKE %…%` 够用，且搜索串的字节上限已定。
 - 服务端分组接口（按来源聚类）—— `From` 列在历史里恒为空（保留列），无数据可聚。
-- 缩略图端点 —— Cloudflare Images 路线属独立立项，见 [`backend-gaps.md`](backend-gaps.md) §2.10。
+- 缩略图端点 —— Cloudflare Images 路线属独立立项，见 [Issue #3](https://github.com/Leexunhuan743/SyncClipboardCfServer/issues/3) §2.10。
 - `GET /ui/api/status`（把 overview 与 activity 再合并）—— 首屏已压到 2 个请求
   （overview 与列表并发，activity 不阻塞首屏），再合并的收益小于它带来的耦合。
 

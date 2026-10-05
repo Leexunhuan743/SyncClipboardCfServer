@@ -605,7 +605,7 @@ describe('F15 · 既有缺口行为的判别用例', () => {
     //    不经 URL 库）实测：`/file/..` 与 `/file/%2E%2E` 变成 `/`、`/file/.` 与 `/file/%2E` 变成 `/file/`
     //    ⇒ Hono 兜底 **404**，连 handler 都进不来 ⇒ 这类名字**根本存不进 R2**。
     //    ∠ 推论：客户端 `PreciseDelete` 删不掉 `file/..` 的那种泄漏**不可能发生**（曾按该假设在写入侧
-    //    加过 `.`/`..` 拒绝，实测后撤回 —— 见 `progress.md` §199.2）。
+    //    加过 `.`/`..` 拒绝，实测后撤回 —— 见 Git history）。
     for (const p of ['/file/..', '/file/%2E%2E']) {
       expect(new URL(p, 'http://x/').pathname, `${p} 的归一化目标`).toBe('/');
       expect(await rawRequest('PUT', p, 'x'), `${p} 应被平台归一化后落到 404`).toBe(404);
@@ -868,7 +868,7 @@ describe('F15 · 既有缺口行为的判别用例', () => {
 
   it('F32 · negotiate 版本协商与错误路径逐字对齐上游（2026-09-15 起为 A/B 实测值）', { timeout: 60_000 }, async () => {
     // 依据：ASP.NET Core `HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`，
-    // 并已用**官方 v3.2.0 服务端发布件**逐值实测（`tools/ab-upstream-probe.ps1`，见 docs/progress.md §44）：
+    // 并已用**官方 v3.2.0 服务端发布件**逐值实测（`tools/ab-upstream-probe.ps1`，见 Git history）：
     //   - 未携带 negotiateVersion → 版本 0（MinimumProtocolVersion=0，不算错误）
     //   - `int.TryParse` 失败（非数字 / 千位分隔符 / 空串 / **超出 Int32**）→
     //     error "The client requested an invalid protocol version '<原样未 trim 的入参>'"

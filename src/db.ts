@@ -371,7 +371,7 @@ export class HistoryDb {
       .filter((e) => e.transferDataFile !== '' && basename(e.transferDataFile) === fileName);
   }
 
-  // 数据完整性自检（docs/backend-gaps.md §2.4）的候选集：`TransferDataFile != ''` 的**活跃**记录，
+  // 数据完整性自检（GitHub issue #3）的候选集：`TransferDataFile != ''` 的**活跃**记录，
   // 一次查询取回期望 R2 key 的全部组成部分（Type/Hash/文件名 + 汇报用的 Text/CreateTime/Size）。
   // 两个刻意的取舍：
   //   · 不走 SELECT * / rowToEntity —— 自检只用这 6 列，而记录数上千（本机总数 2000+ 条），

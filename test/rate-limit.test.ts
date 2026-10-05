@@ -580,7 +580,7 @@ describe('F9 请求体上限（413）', () => {
     // 真实请求侧另有一次 workerd 验证：dev server 用 `--var MAX_REQUEST_BODY_BYTES:1048576`
     // 起在 8791，用 node:http 发 chunked 的 1.5 MiB 正文 →
     // `PATCH /api/history/Text/<hash> 413 Payload Too Large`（对照：0.5 KiB → 400 Bad Request）。
-    // 同一台服务器上还用裸 socket 量了两条边界（见 progress.md §205.3）：
+    // 同一台服务器上还用裸 socket 量了两条边界（见 Git history）：
     // `Content-Length` **恰好等于**上限 → 400（不是 413，即边界是 `>`）；**谎报** `Content-Length`
     // （声明 1 KiB、实写 1.5 MiB）→ 服务端按 framing 只消费声明的 1 KiB（多余字节成了"下一个请求"），
     // 不可能靠谎报把超限的体喂进去。

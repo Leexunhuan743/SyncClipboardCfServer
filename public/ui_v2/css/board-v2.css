@@ -619,7 +619,7 @@ button.entry:focus-visible {
  *
  * 上一条注释里的「骨架仍 64px（差 61px）」是 §10.1 修好**之前**写的：修好后骨架在这一档
  * 是 77px，差值也随之从 61px 变成 —— 卡片档的真实行 125px（细指针）/ 135px（粗指针），
- * 即每行差 48 / 58px。2026-09-19 把这一档也修齐（原为 N-16 / docs/progress.md §94 第 13 行）。
+ * 即每行差 48 / 58px。2026-09-19 把这一档也修齐（原为 N-16 / Git history第 13 行）。
  */
 .ghost {
   display: flex;
@@ -839,7 +839,7 @@ button.entry:focus-visible {
     border-bottom: 0;
   }
 
-  /* ── 骨架行 = 一张卡片（2026-09-19 修 N-16 / docs/progress.md §94 第 13 行）──
+  /* ── 骨架行 = 一张卡片（2026-09-19 修 N-16 / Git history第 13 行）──
    * 上面那条 calc(var(--row-h) + var(--sp-3) + 1px) 在这一档不成立：.item 成了 grid 卡片，
    * 高度由卡片的盒模型与内容决定；--row-h 只剩 .item__kind 在消费，而它被绝对定位了、
    * 不参与撑高。修前实测（CDP，细指针）：骨架 77px vs 真实卡片 125px。

@@ -140,7 +140,7 @@
    * 2026-09-20 实跑过（`.audits/_r19-overview-fit.mjs`）：把 `.overview__value` 改回 30px，概览带立刻从
    * **62px 撑到 76px**（+14px，越过 `min-height: 60px`）—— 30px 放不进那条带，2026-09-15 那次
    * "36px 把视觉重心抢走"的实测调整随之成为历史。
-   * 判据与实跑见 `docs/progress.md` §94.17；守卫在 `test/ui-guard.test.ts` 的 V2 那一节。 */
+   * 判据与实跑见 Git history；守卫在 `test/ui-guard.test.ts` 的 V2 那一节。 */
   --fs-title: 1.0625rem; /* 17px 页面标题 */
 
   --fs-h2: 0.9375rem; /* 15px 区块标题 */

@@ -47,7 +47,7 @@ export default [
     // 此前唯一一道门是 `node --check`（只管语法）。2026-09-21 的教训正是这条缝：
     // `probe-ui-v1.mjs` 调了一个**从未定义**的 `check()` —— 语法完全合法，`node --check` 永远绿，
     // 而探针一跑到那里就 `ReferenceError` 退出（整份探针自 `fee8078` 起就没跑完过，见
-    // `docs/progress.md` §105.6）。`no-undef` 一行就能拦下它，成本是零。
+    // Git history）。`no-undef` 一行就能拦下它，成本是零。
     //
     // ⚠️ 与上面那条同理：这里的 `files` 与 `package.json` 的 `lint` 脚本必须**一起**改
     // （只改一处时，脚本那半会以「No files matching the pattern」失败，配置这半失配不一定有人报到）。

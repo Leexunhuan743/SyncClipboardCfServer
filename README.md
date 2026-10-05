@@ -413,9 +413,7 @@ test/                   测试套件（协议回归、UI、部署/迁移契约�
 - [docs/design.md](docs/design.md)：当前架构、关键设计决策与存储映射
 - [docs/protocol.md](docs/protocol.md)：官方协议逐条对照、DTO 契约与已知差异
 - [docs/ui.md](docs/ui.md)：Web 历史界面的接口、鉴权与前端约束
-- [docs/project-analysis.md](docs/project-analysis.md)：系统级分析与数据流说明
 - [docs/free-plan-account-facts.md](docs/free-plan-account-facts.md)：Cloudflare 账户实测事实
-- [docs/progress.md](docs/progress.md)：冻结的历史开发档案（非现行规范）
 - [AGENTS.md](AGENTS.md)：最小开发行为契约
 
 ## 许可证

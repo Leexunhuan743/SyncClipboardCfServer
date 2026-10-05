@@ -80,7 +80,7 @@ async function request(path, { method = 'GET', body, signal, timeout = REQUEST_T
     let payload = null;
     // 「状态码是 2xx」与「body 是 JSON」是**两件事**。此前这条 catch 把解析失败静默折成 `{}`，
     // 于是「200 + 非 JSON」的响应（拦截式代理 / 门户认证页 / 被静态层以 200 回的 HTML ——
-    // `docs/frontend-checklist.md` 记的那类事故）会让调用方读到 `total: undefined`，
+    // docs/ui.md 记的那类事故）会让调用方读到 `total: undefined`，
     // 列表据此渲染成「还没有任何记录」，**而且没有任何错误提示**。
     // 这是同一个谎的第三个成因（前两个：`total === 0` 既当"还没到"又当"真的没有"，
     // 见 历史审计记录）。V2 在同一处抛 502（`public/ui_v2/js/api.js` 里那句

@@ -225,7 +225,7 @@ function parsePathIds(
   return { type, hash };
 }
 
-// ===== Range（只给下面那个数据端点，见 docs/backend-gaps.md §2.3）=====
+// ===== Range（只给下面那个数据端点，见 GitHub issue #3）=====
 // 为什么只在这里加：协议侧 `/file/{name}`（src/routes/webdav.ts）与 `/api/history/{id}/data`
 // （src/routes/history.ts）忽略 `Range` 是**对齐上游的有意行为**（上游 `File(bytes, …)` 的
 // `EnableRangeProcessing` 默认 false，F29b 记录在案，test/fix-regressions.test.ts 有断言守着），
@@ -853,7 +853,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // GET /ui/api/overview —— 首屏总览（**合并端点**）
   //
   // 为什么要有它：V1 的首屏打三次请求（`history` + `statistics` + `info`），而 `statistics`
-  // 内部还要跑三条查询（`docs/backend-gaps.md` §3.1）。V2 的概览带需要的是它们**合并后的
+  // 内部还要跑三条查询（GitHub issue #3）。V2 的概览带需要的是它们**合并后的
   // 一个快照** —— 更重要的是，概览带与列表必须在**同一次往返**里对齐，
   // 否则用户会看到"数字说 1009 条、列表说 1008 条"这种两个瞬间的差异。
   //
@@ -900,7 +900,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   // POST /ui/api/history/batch-meta —— 按 (type,hash) 批量取记录（含**完整正文**）
   //
   // 用途：列表里的正文被截断到 500 字符，「选中多条 → 一起复制/下载」需要全文，
-  // 而逐条走单条端点是 O(N) 次请求（`docs/backend-gaps.md` §2.8 记的口径）。
+  // 而逐条走单条端点是 O(N) 次请求（GitHub issue #3 记的口径）。
   guarded.post('/ui/api/history/batch-meta', async (c) => {
     // 只接受 application/json：与 batch-update / clear 同一条理由 ——
     // 跨站**表单**能直接发出 POST 且不经过 CORS 预检，而 JSON 必须由脚本构造（那类请求被来源校验挡下）。

@@ -34,7 +34,7 @@ node test/manual/probe-ui-v1.mjs --write            # 额外：收藏开关来�
 ```
 
 > 手动脚本一律显式给 `--port`（默认端口与其它探针/`states.mjs` 有重合，撞上残留浏览器会量到
-> 另一个页面的状态，得到假结论；详见 `docs/progress.md` §62.6）。
+> 另一个页面的状态，得到假结论；详见 Git history）。
 > 默认探针也会真实写入并清理自己创建的记录；非本机目标默认拒绝，只有确认目标可丢弃后
 > 才能用 `ALLOW_REMOTE_TARGET=1` 显式放行。
 
@@ -54,7 +54,7 @@ node test/manual/probe-ui-v1.mjs --write            # 额外：收藏开关来�
 ## 详细文档
 
 - 界面契约、模块划分与验证记录：[`docs/ui.md`](../../docs/ui.md)
-- 2026-09-17 这轮的改动与实测数字：[`docs/progress.md`](../../docs/progress.md) §53
+- 2026-09-17 这轮的改动与实测数字：[Git history](../../Git history) §53
 - 2026-09-17 的**生产级完善**（顶栏实时状态、统计条重排、表格密度、部署信息分段、
-  未来时间戳修复等）：[`docs/progress.md`](../../docs/progress.md) §54
-- 前端要点清单（关注点 / 判据 / 落地建议）：[`docs/frontend-checklist.md`](../../docs/frontend-checklist.md)
+  未来时间戳修复等）：[Git history](../../Git history) §54
+- 前端要点清单（关注点 / 判据 / 落地建议）：[docs/ui.md](../../docs/ui.md)
