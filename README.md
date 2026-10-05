@@ -192,9 +192,9 @@ flowchart LR
    > `MAX_SAVED_HISTORY_COUNT` 与 `HISTORY_RETENTION_MINUTES` 除了在此处通过变量设置，也可以在 Web 界面的「维护面板」中直接在线修改。设置会写入 D1 数据库的 Meta 表并立即生效，不需要重新部署。在界面中清空设置即可恢复使用这里的变量值。
 
 5. **触发部署**：
-   推送代码变更到 master 分支，或者在 GitHub 仓库的 `Actions` 页面找到「Deploy」工作流点击「Run workflow」手动执行。CI 会自动跑完代码检查、测试套件并完成部署。
+   PR 会自动运行「Quality」工作流（typecheck + lint + 全部测试）。合并到 master 后，只有真正影响部署产物的文件变化才触发「Deploy」；也可以在 `Actions` 页面手动运行 Deploy。
    **部署完成后点开这次 run，Summary 里就有服务器地址**（含客户端该选什么类型、界面入口）。
-    `Actions`完整链路：`quality`（typecheck + lint + 全部测试）→ 解析/创建资源 → `Deploy Worker` → 同步凭据 → 只读冒烟检查。
+    `Deploy` 会复用同一份 `Quality` workflow，通过后才继续：解析/创建资源 → `Deploy Worker` → 同步凭据 → 只读冒烟检查。测试或文档本身的改动不再触发生产部署。
 
 ---
 
