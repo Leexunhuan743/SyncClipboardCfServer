@@ -92,7 +92,7 @@ export function createOverview({ onOpenDrawer }) {
    * （**17px**），2026-09-20 那个 `--fs-display` 令牌连同 `shell-v2.css` 里 `≤380px` 的
    * "数字降一档"一起删掉了（见 `docs/progress.md` §94.17）。所以骨架条在这里**只按它自己的
    * 理由**保留：它不靠字号大小成立。把它记成"设计意图 vs 实现的分歧"的那一轮见
-   * `docs/AUDIT-missing-states.md` §5.3。
+   * 历史审计记录。
    */
   function placeholder() {
     return el('span', { class: 'overview__ghost', 'aria-hidden': 'true' });
@@ -109,7 +109,7 @@ export function createOverview({ onOpenDrawer }) {
     // 与 `null` 相等 ⇒ **在 append(placeholder()) 之前就 return 了**，于是构造时写死的那个 `—`
     // 一直留到数据到达，而 `.overview__ghost` **一次都没被绘制过**（`placeholder()` 只在
     // "有值 → 又变回 null" 时才会走到，而 `stats` 从不写回 null）。
-    // 见 `docs/AUDIT-missing-states.md` §1.3：那份设计文档把"未加载时给淡色骨架条"记成已修，
+    // 见 历史审计记录：那份设计文档把"未加载时给淡色骨架条"记成已修，
     // 实际是死代码 —— 与 V1 首屏骨架那次是同一个机制。
     const nextText = text === null || text === undefined ? null : String(text);
     const next = nextText ?? '';

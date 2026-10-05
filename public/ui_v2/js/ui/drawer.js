@@ -305,7 +305,7 @@ export function createDrawer(handlers) {
    * 抽屉开着、用户正在填「保留天数 / 最大条数 / 自定义起止日期」时，无条件赋值会把半成品
    * 覆盖回服务端的旧值 ⇒ 用户敲的东西**静默消失**，看起来像"填不进去"。
    * V1 对同一件事有这条守卫（`ui_v1/js/main.js` 的 `editing` 判据，注释写着"正在输入时不覆盖"），
-   * V2 此前漏了（见 `docs/archive/AUDIT-v1-v2-divergence.md` §1.1）。
+   * V2 此前漏了（见 历史审计记录）。
    */
   function setInputValue(node, value) {
     if (document.activeElement === node) return;
@@ -318,7 +318,7 @@ export function createDrawer(handlers) {
   // ---- 活动趋势 ----
   clear(barsBox);
   // **「还没取到」不是「没有活动」**：`activity === null` 表示还没取到（`refreshActivity` 失败时
-  // 静默退出且不重试，见 `boot.js`），`[]` 才是"这段时间真的没有活动"（`docs/AUDIT-missing-states.md` §2.2）。
+  // 静默退出且不重试，见 `boot.js`），`[]` 才是"这段时间真的没有活动"（历史审计记录）。
   // 把两者读成同一档，会把"取数失败"讲成"这台服务器从来没被用过"。
   const loaded = Array.isArray(activity);
   const days = loaded ? activity : [];
@@ -345,7 +345,7 @@ export function createDrawer(handlers) {
     // 柱子按**当天占比最高的类型**上色：`data-kind` 是 CSS 的判据（`overlay-v2.css` 的
     // `.bar__fill[data-kind=…]`），而服务端**每天都给了四个类型的计数**
     // （`readActivity` 的 `Text / Image / File / Group`）—— 此前前端一个都没读，
-    // 于是那四条颜色规则从未生效过，所有柱子恒为强调色（`docs/AUDIT-missing-states.md` §3.2）。
+    // 于是那四条颜色规则从未生效过，所有柱子恒为强调色（历史审计记录）。
     // 0 条的那天没有"主导类型"，不写 `data-kind`，落到 CSS 的基础色。
     const KINDS = ['Text', 'Image', 'File', 'Group'];
     const dominantOf = (day) => {
@@ -466,7 +466,7 @@ export function createDrawer(handlers) {
   if (!info) {
     // 部署信息**一次都没取到**：此时"清理任务跑过没有"是**未知**的。
     // 此前这里会落进下面那条断言，于是界面替服务器说"清理任务还没有运行过"——
-    // 把"我不知道"说成"它没跑过"（`docs/AUDIT-missing-states.md` §2.2）。
+    // 把"我不知道"说成"它没跑过"（历史审计记录）。
     cleanupFacts.append(
       el('p', { class: 'note', text: '部署信息还没取到，暂时无法判断清理任务的状态。' }),
     );

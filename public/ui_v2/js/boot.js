@@ -536,7 +536,7 @@ function boot() {
       if (page.items.length === 0 && (page.total ?? 0) > 0 && current.filters.page > lastPage) {
         // `push: false`：这是界面的**自我修正**，不该进浏览器的后退历史 ——
         // 用 push 的话，打开 `?page=999` 会多压一条记录，用户按后退又回到越界页、再自校正一次，
-        // 形成后退循环。V1 在同一处写着"用 replace 而不是 push"（`docs/archive/AUDIT-v1-v2-divergence.md` §1.2）。
+        // 形成后退循环。V1 在同一处写着"用 replace 而不是 push"（历史审计记录）。
         setFilters({ page: lastPage }, { push: false });
         return;
       }
@@ -1032,7 +1032,7 @@ function boot() {
       // `{ updated, failed }`（`src/ui/routes.ts`）。此前这个分支完全不读它，直接报
       // 「已删除 N 条」⇒ 部分失败被报成**全成功**（某条已被别处删除/恢复时就会发生）。
       // 同文件的通用分支（下面 star/pin/restore 那一段）一直读了它，V1 的 `runBatch` 更会在
-      // `failed` 非零时直接抛错 —— 只有这里漏了。见 `docs/archive/AUDIT-v1-v2-divergence.md` §7.1。
+      // `failed` 非零时直接抛错 —— 只有这里漏了。见 历史审计记录。
       let outcome = null;
       const ok = await confirm.ask({
         ...batchDeleteConfirmSpec(items.length),

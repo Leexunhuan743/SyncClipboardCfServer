@@ -290,7 +290,7 @@
      * `.status`、`.icon-btn`、`.segmented__item`、`.check-wrap`、`.row-actions__slot`、
      * `.th-sort`、`.search__clear`、页脚的 `.footer-links__item`），第 15 条是
      * `.skeleton__row` 的**高度**（粗指针卡片档），不是命中区。
-     * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §6.2。 */
+     * 见 历史审计记录。 */
     --control-h: var(--hit-min);
     --control-h-sm: var(--hit-min);
   }

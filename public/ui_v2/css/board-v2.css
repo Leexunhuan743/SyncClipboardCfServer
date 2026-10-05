@@ -379,7 +379,7 @@ button.entry:focus-visible {
  * （`ui/row.js`）写死的是 `'2'`，密度切换只改 `--row-h`、从不写这个属性 ⇒ **那一档从未出现过**。
  * 现在挂到**已经存在**的密度开关上（`:root[data-density="compact"]`，见 `tokens-v2.css`）：
  * 少了一个没有任何生产者的属性，而行为正是当初注释里写的那个意思（紧凑时只留一行、省行高）。
- * 见 `docs/AUDIT-missing-states.md` §3.2。 */
+ * 见 历史审计记录。 */
 :root[data-density="compact"] .entry__text {
   -webkit-line-clamp: 1;
 }
@@ -531,7 +531,7 @@ button.entry:focus-visible {
  * `undo / copy / download / star / dots`（`ui/rowops.js`），**没有 pin**：置顶是 `⋯` 菜单项
  * （`menus.js`），不产生 `data-icon`。那条约 V2 重构后遗留的规则从未命中过。
  * 真要做到"填充 vs 描边"的双通道，得先把置顶的入口从菜单搬回行内 —— 那是设计决策，不是修 bug。
- * 见 `docs/AUDIT-missing-states.md` §3.2。 */
+ * 见 历史审计记录。 */
 
 /* 就地成功态：按钮变成对勾 + 结果文案（V1 的状态机，V2 沿用并把时长收紧）。
  * `data-state="ok"` 与 `data-loading` 互斥，由 JS 保证。 */
@@ -744,7 +744,7 @@ button.entry:focus-visible {
    * 按 Enter 会异步改排序且没有任何可见反馈。
    * `visibility: hidden`（不是 `display: none`）刚好：把按钮移出 Tab 顺序与无障碍树，
    * 而 `<th>` 的列名「内容」不在这里面，照旧留在树里给单元格提供列上下文。
-   * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §6.1。 */
+   * 见 历史审计记录。 */
   .board__head-row .sort-btn {
     visibility: hidden;
   }

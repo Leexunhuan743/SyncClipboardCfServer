@@ -58,7 +58,7 @@ export function createAppbar({ onToggleTheme, onLogout, onOpenDrawer, onFocusSea
   // 刷新入口**也只在窄屏出现**（2026-09-18 补）：宽屏它留在筛选条里（那里离列表更近），
   // 而 ≤720px 时筛选条把它 `display: none` 掉了 —— 那条规则原本的注释说"收进抽屉的一部分"，
   // 但抽屉里**没有**刷新控件，顶栏也没有 ⇒ 手机上唯一的刷新手段是等 10 秒自动轮询
-  // （快捷键 `r` 对触屏不存在）。见 `docs/AUDIT-missing-states.md` §3.4。
+  // （快捷键 `r` 对触屏不存在）。见 历史审计记录。
   const refreshBtn = iconButton({ icon: 'refresh', label: '刷新', onClick: onRefresh });
   refreshBtn.setAttribute('data-when', 'narrow');
 
@@ -91,7 +91,7 @@ export function createAppbar({ onToggleTheme, onLogout, onOpenDrawer, onFocusSea
   // （"SignalR 已连接"、"轮询模式"）——后者对使用者没有意义。
   // 没有 `offline` 这一档：轮询**一直在跑**，所以通道断着时用户能看到的事实就是"定时检查中"
   // （与 V1 的措辞一致）。此前这里定义过一档「未连接」，而代码从不产出它 —— 死配置，
-  // 见 `docs/AUDIT-missing-states.md` §2.3。
+  // 见 历史审计记录。
   const STATE_TEXT = {
     live: '实时同步中',
     poll: '定时检查中',
@@ -138,7 +138,7 @@ export function createAppbar({ onToggleTheme, onLogout, onOpenDrawer, onFocusSea
       //                 "定时检查中"（与 V1 的措辞一致）。
       // 此前这里多定义了一个 `offline`（「未连接」）档，却把 `pushState === 'offline'` 折进 `'poll'`，
       // 于是那一档文案永远画不出来；而紧接着的注释写的是"展示上与 offline 分开"—— 与代码相反。
-      // 见 `docs/AUDIT-missing-states.md` §2.3 / §4.2。
+      // 见 历史审计记录。
       const state = pushState === 'live' ? 'live' : pushState === 'connecting' ? 'connecting' : 'poll';
       if (sync.dataset.state !== state) sync.dataset.state = state;
 

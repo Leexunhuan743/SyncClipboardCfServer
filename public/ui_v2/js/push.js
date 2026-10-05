@@ -26,7 +26,7 @@ const RETRY_MAX_MS = 60_000;
 // **冷却**（2026-09-18 补）：此前到 5 次就直接 `return`，于是"标签页一直可见、推送被稳定阻断"的
 // 环境里**再也没有自愈路径**——只有切一次前后台才会恢复。V1 早就修过这同一处
 // （`ui_v1/js/signalr.js` 的注释逐字写着"此前这里是永久停手…唯一的恢复路径是切一次标签页"），
-// 冷却 10 分钟后清零再试一次。见 `docs/archive/AUDIT-v1-v2-divergence.md` §1.3。
+// 冷却 10 分钟后清零再试一次。见 历史审计记录。
 const MAX_CONSECUTIVE_FAILURES = 5;
 const RETRY_COOLDOWN_MS = 10 * 60_000;
 

@@ -156,7 +156,7 @@ function setStale(source, stale) {
  * 404 —— 它们都不会让「恢复后会自动刷新」成真，而横幅里那句"暂时失去联系"会让用户去
  * **重启服务**（V2 的注释逐字记着这次实测）。V1 此前是任何失败都无地点亮，
  * 于是搜索词过长时屏幕上同时出现「搜索词过长…」与「与服务器暂时失去联系」两种说法
- * （`docs/archive/AUDIT-v1-v2-divergence.md` §2.1）。
+ * （历史审计记录）。
  */
 function serverUnreachable(error) {
   return !(error instanceof ApiError) || error.status >= 500;
@@ -588,7 +588,7 @@ async function refreshStats() {
 // **永久空着**，用户分不清"库里是 0"还是"坏了"，而注释还在替它担保。
 // 现在那句话成真了：`pollOnce` 在**轮询成功之后**若发现 `stats === null`（= 快照一次都没
 // 落地）就补取一次；成功后 `stats` 非空，这条分支自然关掉。见
-// `docs/AUDIT-missing-states.md` §2.1 / §4.1。
+// 历史审计记录。
 //
 // 快照与 `refreshStats()` 写的是 store 里**同一个** `stats`，而它们是两条独立的取数路径
 // （首屏走快照、此后走 statistics）。故这里也有两条与 refreshStats 同源的纪律：
@@ -1789,9 +1789,9 @@ async function boot({ retry = false } = {}) {
   //
   // ⚠️ 初次调用必须在任何挂载副作用之前检查文档标记（2026-09-18 修）；首屏会话探测失败后
   // 点击「重试」则沿用同一份模块实例，显式跳过这道只针对重复求值的检查。
-  // （提示条那一处已在 2026-09-19 随提示条一起删除，见 `docs/ui-rename-v1-v2.md`。）
+  // （提示条那一处已在 2026-09-19 随提示条一起删除，见 历史审计记录。）
   // 模块级那几行（`createToasts` / `createConfirm` / …）在**模块求值时**就往 body 里塞
-  // 常驻 `<dialog>`，那一段这里管不到，见 `docs/archive/AUDIT-v1-v2-divergence.md` §4.1
+  // 常驻 `<dialog>`，那一段这里管不到，见 历史审计记录
   // （V2 的解法是把这些创建搬进守卫之后）。
   const root = document.documentElement;
   if (!retry) {
