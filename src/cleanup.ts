@@ -75,7 +75,7 @@ const DELETED_RETENTION_DAYS = 30;
 // 「单条语句 + 一批广播」的内存界，见上面的常量注释），另加按**实际行字节**动态收敛的单轮预算
 // —— 大记录库自动慢收敛（多轮推进，游标语义不变，见 ZERO_CURSORS 的注释），小记录库不受影响。
 //
-// 数值口径（**全是推断，必须实测标定** —— docs/free-plan-audit.md §6 的 M3）：
+// 数值口径（保守预算；真实账户读数见 docs/free-plan-account-facts.md）：
 //   · 文本为主的 JSON 反序列化按 **100 MB/s** 的悲观吞吐折算（V8 原生 JSON.parse 常见
 //     200–400 MB/s，取 100 即留 2–4 倍安全系数）；
 //   · 10 ms 先扣掉与记录无关的固定项：R2 列举结果反序列化（1 页 1000 个对象 ≈ 100 KB ≈ 1 ms）、
@@ -88,7 +88,7 @@ const DELETED_RETENTION_DAYS = 30;
 // 字节，再按前缀和定量 —— 于是"取回的字节"不依赖行大小是否均匀。**硬删/孤儿阶段不扫、也不设字节预算**：
 // 候选行只 `RETURNING (Type, Hash)`，一轮的上限（MAX_BATCHES_PER_PHASE × HARD_DELETE_BATCH_LIMIT = 20,000 条）
 // 也只有约 0.6 MB，条数上限先起作用。曾经的"首批 5 条探路 + 按已处理均值收窄"已被删除：均值会被
-// "先小后大"骗过，实测单轮 6,553,600 字节 = 25 × 预算（`progress.md` §188）。
+// "先小后大"骗过，实测单轮 6,553,600 字节 = 25 × 预算（Git history）。
 // **本轮第一批至少取一条**（`rowsWithinBytes` 的 `minTake`）：单行就超过整个预算时若一条都不取，
 // 该阶段会每轮 0 条、永远没有进度（D1 单行上限够得着 256 KiB 的预算）。本轮已有产出之后不再破例，
 // 于是单轮 materialize 的正文最多比预算多出**一行**。
@@ -182,7 +182,7 @@ const META_KEYS_ALL: string[] = [
 // cleanup:lastError 落库长度上限（UI 只展示一行；完整清单在返回值与 [cleanup] 日志里）
 const META_LAST_ERROR_MAX = 300;
 
-// ===== 保留策略（Meta 覆盖 / env 回落，docs/backend-gaps.md §2.5）=====
+// ===== 保留策略（Meta 覆盖 / env 回落，GitHub issue #3）=====
 
 // 在线可调的覆盖键：存在即覆盖 env。**清除覆盖 = 删键**，不是写空串 ——
 // 空串经 `Number('')` 会解析成 0，而 0 的语义是「关闭该阶段」（见 disabledReason），
@@ -450,7 +450,7 @@ async function drainBatches<T extends CleanupRow>(
     // `length(...)` 扫描量出下一批候选的逐行字节，再据此决定取回几条 ⇒ 每批真正 materialize 的字节
     // 都被预算硬约束，**与行大小是否均匀无关**。
     // ⚠️ 2026-09-26 修（合并前审查 High）：此前按"已处理行"的均值外推，首批 5 条小行后紧跟一批大行
-    // 即可数量级越界 —— 实测 100 条 × 64 KiB = 6,553,600 字节 = 25 × 预算，见 `progress.md` §188。
+    // 即可数量级越界 —— 实测 100 条 × 64 KiB = 6,553,600 字节 = 25 × 预算，见 Git history。
     const limit = Math.min(spec.batchLimit, subrequestLimit);
     if (limit < 1) return { processed, batches, truncated: true };
     run.budget.spend(spec.queryCost);

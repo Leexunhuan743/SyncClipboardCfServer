@@ -67,7 +67,7 @@ function findBrowser() {
 //
 // ⚠️ 2026-09-21 修（真缺陷）：本文件此前在 CLS / 首帧两处直接调用 `check(...)`，而**从未定义它** ——
 // 探针打到 PERF 那一行就抛 `ReferenceError: check is not defined` 退出，后面的骨架几何、主题脚本、
-// 选择流、AUDIT 收尾**一行都没执行**；而那时退出码 1 也不是任何判据给的（见 docs/progress.md §105）。
+// 选择流、AUDIT 收尾**一行都没执行**；而那时退出码 1 也不是任何判据给的（见 Git history）。
 // 现在判据与 `auditFindings` 合并进同一个数组，末尾那处 `process.exitCode` 才真正是判据的出口。
 const auditFindings = [];
 function check(name, ok, detail) {
@@ -75,7 +75,7 @@ function check(name, ok, detail) {
   auditFindings.push(detail === undefined || detail === '' ? name : `${name}（读到 ${detail}）`);
 }
 
-// 「跳过」与「通过」必须分得开（2026-09-23 补，见 `docs/progress.md` §161 那条 RETENTION-NOTE）：
+// 「跳过」与「通过」必须分得开（2026-09-23 补，见 Git history那条 RETENTION-NOTE）：
 // 本文件里每个块都可能因为**前提不满足**而 `return { skipped: ... }`，而那些块一律把结果
 // `console.log` 出来。此前 `findings=0` 与"所有判据都真跑过"是两件事 —— 一条判据可能因为
 // 选择器与实现不同源而**一直在空转**（2026-09-23 抓到两处：IME 与写路径用 `#search`，
@@ -256,7 +256,7 @@ try {
     }
   });
 
-  // ===== 首帧主题脚本的时序（`docs/AUDIT-redundancies.md` §11 #10；本仓库 §94 第 17 行）=====
+  // ===== 首帧主题脚本的时序（回归首帧主题脚本的真实加载时序）=====
   // `theme-init.js` 是 `<head>` 里 **位于样式表之后**的经典阻塞脚本，它那句
   // `getComputedStyle(documentElement).getPropertyValue('--bg')` **到底取不取得到值**，
   // 静态判不了：V2 的注释断言"此刻样式表还没加载、永远停在 HTML 静态值上"，
@@ -590,7 +590,7 @@ try {
           overflow: Math.round(right - cellRect.right),
         };
       })(),
-      // 提示条已于 2026-09-19 随改名一起移除（见 docs/ui-rename-v1-v2.md；progress.md §89 把本项
+      // 提示条已于 2026-09-19 随改名一起移除（目录改名历史见 Git；Git history把本项
       // 记作"提示条确已移除"的证据）⇒ 这是一条**缺席断言**：恒为 true，若有人把它加回来就变 false。
       // （原来写作「q('.notice-bar') ? !q('.notice-bar').hidden : null」—— 那个 null 既不能区分
       //  "按预期移除"与"选择器打错"，也不再有任何变化空间。）
@@ -1072,7 +1072,7 @@ try {
   };
   await runAudit('initial');
 
-  // ===== 骨架行高 = 真实行高（2026-09-20，`docs/progress.md` §94 第 16 行）=====
+  // ===== 骨架行高 = 真实行高（2026-09-20，Git history第 16 行）=====
   //
   // V1 的骨架行高有**两档**，两档都要求等于真实行高（理由在 `components.css` 的
   // `.skeleton__row` 注释里）：
@@ -1509,7 +1509,7 @@ try {
     }
   }
 
-  // ===== 预览关闭即释放正文（2026-09-20，`docs/archive/AUDIT-v1-v2-divergence.md` §4.2）=====
+  // ===== 预览关闭即释放正文（2026-09-20 回归）=====
   //
   // 缺陷形态：预览对话框是**启动期创建、常驻 `body`** 的节点，关闭时只 `dialog.close()`，
   // 正文（`<pre>` 里的整条全文）与页脚按钮的闭包一直留在 DOM 里，直到**下次打开预览**才被
@@ -2618,7 +2618,7 @@ try {
   {
     const s = JSON.parse(headerFold);
     // 表头只在**表格档**（>860px）吸顶；卡片档它是 `top: auto`、随页面滚走（实测 y=900 时 top=−482）。
-    // 故这两条判据必须分档 —— 第一版忘了分，390 档报了两次假阳性（`progress.md` §158 记着这次）。
+    // 故这两条判据必须分档 —— 第一版忘了分，390 档报了两次假阳性（Git history记着这次）。
     const cardMode = (s.down900?.vw ?? 1440) <= 860;
     const thCollapsedOk = cardMode ? (s.down900?.th === null || s.down900.th.top < 0) : s.down900?.th?.top === 45;
     const hidden = (x) => x?.header?.top <= -56;
@@ -2651,7 +2651,7 @@ try {
 
   // ===== 部署信息的「保留策略」说明里必须写着那条豁免（2026-09-22 用户问「收藏和置顶的会不会被清理」后补的）=====
   // 判据是"看得见且读得到"：静态文案被折掉、被压住、字在但不可见，都等于这个承诺没出现
-  // （文案在 `ui_v1/js/components/info.js` 的 `.note` 里，`progress.md` §161）。
+  // （文案在 `ui_v1/js/components/info.js` 的 `.note` 里，Git history）。
   // ⚠️ 必须放在**默认流程**里：第一版写进了 `if (SHOTS)` 那段（只在 `--shots` 时跑），
   // 结果默认跑的探针根本不打印它 —— 判据没执行，`findings=0` 是假的。
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });

@@ -87,7 +87,7 @@ describe('基础端点', () => {
 // 2026-09-15 用官方 v3.2.0 服务端发布件 A/B 实测：ASP.NET Core 的路由对**字面段**不区分大小写
 // （`/API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`/SYNCCLIPBOARDHUB/negotiate`
 // 全部 200），而 Hono 与入口的 `url.pathname === HUB_PATH` 都是精确比较 ⇒ 曾一律 404/400。
-// 修复：src/pathCase.ts 的归一表（只归一字面段、取值原样保留），在入口最前面应用。见 docs/progress.md §44。
+// 修复：src/pathCase.ts 的归一表（只归一字面段、取值原样保留），在入口最前面应用。见 Git history。
 describe('路径字面段大小写（对齐 ASP.NET Core 路由）', () => {
   it('归一函数：只动字面段，取值与超出协议面的路径一律原样', () => {
     const cases: [string, string | null][] = [

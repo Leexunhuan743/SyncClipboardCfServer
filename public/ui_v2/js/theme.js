@@ -11,7 +11,7 @@ const DENSITY_KEY = 'sb-ui-density';
 // **旧值**（样式重算是异步的），于是 theme-color 总是慢一步」—— **2026-09-20 实测证伪**：
 // 同一个同步块里改完 `data-theme` 再读，计算值立刻就是新主题的 `--bg`
 // （那次读数取自 **V1 的探针**：dark `#191817` → light `#faf8f5`，是 V1 `tokens.css` 的两个真值；
-// 见 `docs/progress.md` §94 第 17 行）。
+// 见 Git history第 17 行）。
 // 仍用显式映射是为了**不依赖时序**，不是因为计算值会慢。
 const BG = { light: '#f5f2ee', dark: '#15191a' };
 

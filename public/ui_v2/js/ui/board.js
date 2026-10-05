@@ -32,7 +32,7 @@ export function createBoard(handlers) {
   // `block / flex / grid`（卡片流），而 `display` 一改，浏览器就不再从元素类型推导出
   // 表格语义 ⇒ 读屏听到的是一串没有列上下文的单元格值。
   // V1 早就这么做了（`ui_v1/js/components/list.js` 逐格补 `role`，`components.css` 的
-  // 窄屏块里逐字记着这件事），V2 漏了。见 `docs/archive/AUDIT-v1-v2-divergence.md` §6.3。
+  // 窄屏块里逐字记着这件事），V2 漏了。见 历史审计记录。
   const table = el('table', { class: 'board__table', role: 'table' });
   const colgroup = el('colgroup');
   const headRow = el('tr', { class: 'board__head-row', role: 'row' });
@@ -290,7 +290,7 @@ export function createBoard(handlers) {
       // 三档而不是两档（2026-09-18 修）：`loading` 之外还有 **`error`**，而失败时条数是**未知**的 ——
       // 此前它落进"否则"那一支，写出「0 条记录」，于是一行里上面写「0 条记录」、下面写「加载失败」。
       // 「0 条」只属于 `empty` 那一档（那时它确实是 0，写在下面反而是对的）。
-      // 见 `docs/AUDIT-missing-states.md` §1.5。
+      // 见 历史审计记录。
       const parts = [];
       if (state === 'loading') {
         parts.push(el('strong', { text: '…' }), document.createTextNode(' 正在加载'));
@@ -555,7 +555,7 @@ function applySelectAllState(selectAll, items, selection) {  if (!selectAll || !
  * 于是选择器永不命中、`nextFocus` 恒为 `null`，`removeItem` 里那句 `if (nextFocus) nextFocus.focus()`
  * 是死路 ⇒ **删/恢复一行后焦点掉到 `<body>`**，键盘用户下一次 Tab 从页面开头重来。
  * 当时这段注释还承诺"都找不到时交给第一行的选择框"，而函数体是直接 `return null` —— 承诺不存在。
- * 见 `docs/AUDIT-missing-states.md` §3.1。
+ * 见 历史审计记录。
  *
  * 已知仍**未覆盖**的一档：删掉的是**最后一行**（列表变空）时邻行不存在，焦点仍会落到 `<body>`；
  * V1 的 `restoreFocus()` 链条里有"空状态的主按钮"这一档（`ui_v1/js/components/list.js`），

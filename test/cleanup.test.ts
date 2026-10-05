@@ -61,7 +61,7 @@ function multipart(
 // 2026-09-20 实测：整套跑时偶发的 `Error inside ProxyWorker … Network connection lost`（500，
 // 且服务端**没有**该请求的日志行）两次都落在它之后的第一个请求上。这里按"排空"写 ——
 // 但**这不代表已证因果**（隔离跑 7/7 通过、cron→POST 序列 10/10 通过）：证据与判据见
-// `docs/progress.md` §95.8 的那条注。
+// Git history的那条注。
 async function triggerCron(): Promise<number> {
   const res = await fetch(`${BASE}/__scheduled?cron=${encodeURIComponent('17 * * * *')}`);
   await res.text();
@@ -297,7 +297,7 @@ describe('清理任务（Cron scheduled handler）端到端', () => {
   });
 });
 
-// ===== 保留策略在线可调（docs/backend-gaps.md §2.5）=====
+// ===== 保留策略在线可调（GitHub issue #3）=====
 //
 // 覆盖写：PUT /ui/api/settings（受守卫，走本套件的 Basic 凭据）。
 async function putSettings(body: Record<string, unknown>) {

@@ -258,7 +258,7 @@
  * "强调（收藏/置顶）"这一档**没有生产者** —— `.tag` 只在 `ui/row.js` 里建两处
  * （`正文已截断` 无 tone、`已删除` 是 `warn`），而同处的注释明确写着
  * "收藏/置顶不进这里 —— 它们已经由行尾的按钮状态表达，再放一个徽标就是同一件事说两遍"。
- * 那是 JS 的**有意决定**，CSS 却按相反的意思留了一档。见 `docs/AUDIT-missing-states.md` §3.2。 */
+ * 那是 JS 的**有意决定**，CSS 却按相反的意思留了一档。见 历史审计记录。 */
 .tag {
   display: inline-flex;
   align-items: center;
@@ -1120,7 +1120,7 @@
    *
    * ⚠️ 别照截图把宽度规则加回来：探针**默认没有触摸模拟 ⇒ 恒为细指针**，所以
    * `--width 390` 读到的是「窄窗口桌面」（28px）而**不是手机**。要看手机就跑
-   * `node test/manual/probe.mjs --width 390 --touch`（粗指针 ⇒ 44px）。实测见 `progress.md` §94.10。
+   * `node test/manual/probe.mjs --width 390 --touch`（粗指针 ⇒ 44px）。实测见 Git history。
    * 本档保留的只是下面那些**让开安全区**的间距改写。 */
 
   .batchbar {

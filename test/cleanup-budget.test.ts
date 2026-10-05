@@ -633,7 +633,7 @@ describe('F11 · 清理任务的子请求预算', () => {
 });
 
 
-// ===== `reason=` 的成因措辞：必须指向**真正的来源**（docs/progress.md §94.13） =====
+// ===== `reason=` 的成因措辞：必须指向**真正的来源**（Git history） =====
 //
 // 为什么这组住在本文件：本文件是仓库里唯一用**真实 runCleanup + 真库**跑清理、并把 console 抓下来的
 // 地方（`test/cleanup.test.ts` 那条路要 dev server + `--test-scheduled`，没法精确摆布 env 与 Meta）。

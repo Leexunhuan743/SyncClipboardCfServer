@@ -3,7 +3,7 @@
 // 上游是 ASP.NET Core：它的 endpoint 路由对**字面段**用 OrdinalIgnoreCase 匹配
 // （`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate`
 // 全部命中并返回 200），而 Hono 的路径匹配是精确的（区分大小写）⇒ 同一批请求在本实现上会 404/400。
-// 2026-09-15 用官方 v3.2.0 服务端发布件 A/B 实测确认（见 docs/progress.md §44），本模块是那次实测的修复。
+// 2026-09-15 用官方 v3.2.0 服务端发布件 A/B 实测确认（见 Git history），本模块是那次实测的修复。
 //
 // 设计约束（改动时务必保持）：
 //   1. **只归一"上游确实存在字面路由"的那些位置**，其余段一律原样透传。因为

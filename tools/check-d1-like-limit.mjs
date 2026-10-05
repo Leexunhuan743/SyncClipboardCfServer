@@ -10,7 +10,7 @@
 //   | `@cloudflare/vitest-pool-workers` 0.12 的 miniflare 4 | ok      | **ok**   |
 //   | `node:sqlite`（Node 24）                             | ok      | ok       |
 //
-// （读法与结论见 docs/progress.md §105.3；最后一行正是 `test/fix-regressions.test.ts` 里那句
+// （读法与结论见 Git history；最后一行正是 `test/fix-regressions.test.ts` 里那句
 //  「node:sqlite 不管模式长度，故只能在这一层钉」的实测依据。）
 //
 // **用法**：`node tools/check-d1-like-limit.mjs`（需要仓库根的 `wrangler.toml`；默认 `--local`）。
@@ -79,7 +79,7 @@ if (!pass) {
   console.error(
     `\n不一致：wrangler ${wranglerVersion}。若换过运行时/工具链，请同时复核\n` +
       '  · src/serialization.ts 的 MAX_LIKE_PATTERN_BYTES / MAX_SEARCH_BYTES\n' +
-      '  · docs/design.md §12 与 docs/progress.md §105.3 的读数表',
+      '  · docs/design.md §12 与 Git history的读数表',
   );
 }
 process.exitCode = pass ? 0 : 1;

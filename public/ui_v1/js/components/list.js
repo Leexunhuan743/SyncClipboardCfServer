@@ -12,7 +12,7 @@
 // ⚠️ 这里**原有第 3 条「行入场只在首屏错峰播」**（前 12 行按 `--row-index × 40ms` 依次淡入）：
 // **2026-09-22 用户要求移除**（刷新后逐行从上往下冒出来读起来是"慢"，不是"来了"）——
 // CSS 规则、`ENTER_STAGGER_LIMIT`、`data-enter`、`--row-index` 与 `docs/ui.md` 的两处口径
-// 已一起清掉，别再照旧稿加回来。取舍与判据见 `progress.md` §155。
+// 已一起清掉，别再照旧稿加回来。取舍与判据见 Git history。
 import { el, svg } from '../dom.js';
 import { iconPaths } from '../../../ui_shared/js/icons.js';
 import { formatRelative, formatAbsolute, formatSize, previewText, previewIsEmpty, typeLabel, typeChipClass, truncateText } from '../format.js';
@@ -1066,7 +1066,7 @@ export function createList(actions) {
       // 按行对账 —— 整表重建要求节点全新建，实测（6× CPU 降速）这类切换一次要 250~350ms
       // 主线程，对账后 38ms。
       // 2026-09-22：这里原先还负责「错峰入场」（前 12 行按 `--row-index × 40ms` 依次淡入），
-      // 那条动画已按用户要求**移除**（见 motion.css 与 progress.md §155）—— 首屏与后续更新
+      // 那条动画已按用户要求**移除**（见 motion.css 与 Git history）—— 首屏与后续更新
       // 现在唯一的差别只剩"节点是否重建"。
       //
       // 判据不能用「视图标记变了」：boot 的顺序是 `render()`（items 还是空的）→ `refresh()`，

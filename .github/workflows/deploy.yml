@@ -53,7 +53,7 @@ concurrency:
 
 jobs:
   quality:
-    # 真正的质量门：typecheck + lint + **全部 22 个套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
+    # 真正的质量门：typecheck + lint + **全部测试套件**（含 HTTP 黑盒、Web 界面的 /ui/api 与文档口径守卫）。
     # 黑盒套件需要服务器：这里用 wrangler dev（miniflare）起一个本地实例，
     # 不触碰任何线上资源、也不需要 Cloudflare 凭据。
     # 单独成 job 有两个好处：与部署进程隔离（dev server 不残留），且失败即不部署。

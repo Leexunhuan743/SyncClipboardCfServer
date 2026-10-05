@@ -17,7 +17,7 @@
 // duration charges for the entire time the WebSocket is connected），与是否真被回收无关。
 // 实测代价：本 DO 吃掉 Free 日额度的 84.5–85.5%（11,014–11,103 GB-s/天，activeTime 99.6%）；
 // 迁移后同样的 15 s alarm 心跳下 duration 降到满额的 0.076–0.1%。
-// 依据与回归面：docs/do-hibernation-plan.md §5 P1 / §8、docs/design.md D42。
+// 依据与回归面：docs/design.md D42；真实账户读数见 docs/free-plan-account-facts.md。
 // ⚠️ 两种 API **不可并用**：`acceptWebSocket` 之后 `addEventListener` 收不到事件。
 // ⚠️ SSE 与长轮询**仍是**不可 hibernate 的（活着的 `writer` / 未兑现的 `pending` 无法迁移）
 // ⇒ 有这两类连接在线时，本对象照样全程计费。这是已知且已登记的边界（D42）。
@@ -760,10 +760,10 @@ export class SyncClipboardHub {
    * 由来（P3 判据，2026-09-26）：Free 计划下 hibernate 能不能生效，取决于**有没有非 WS 连接**——
    * 真机旁挂实测「长轮询在线 ⇒ duration 满速 103%（收益归零）」「SSE 待判」。而在此之前服务端
    * **没有任何按传输打点的口**（`clientCount()` 只有总数），生产到底用了哪些传输**无从判定**
-   * （`docs/progress.md` §189.2/§189.4）。这三行日志就是那条判据的数据来源。
+   * （Git history§189.4）。这三行日志就是那条判据的数据来源。
    *
    * ⚠️ 不落连接 id：SSE/长轮询的 `id` 就是 negotiate 签发的 **connectionToken**，SignalR 传输规范
-   * 明确要求它保密（`docs/do-hibernation-plan.md` 引同款结论）。
+   * 明确要求它保密；不要把 connectionToken 写入日志。
    * ⚠️ `getWebSockets()` 可能仍含 CLOSING 的连接 ⇒ `ws:` 计数略偏高（已知口径差，同 `clientCount()`）。
    */
   private transportBreakdown(): string {

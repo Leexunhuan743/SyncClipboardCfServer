@@ -1,36 +1,7 @@
-// 文档口径守卫：文档里「N 个套件」「N 个资源」这类**可从仓库直接数出来**的数字，
-// 必须与实际一致。
-//
-// ⚠️ 写这一类「读仓库文本 / 统计仓库」的检查前，先问一句：**它会不会把检查器自己算进去？**
-// 本轮这个坑以三种形态出现过，都不是理论：
-//   1. 检测写库套件时用 `includes('assertWritableTarget')`，而本文件注释里就有这个名字
-//      → 文档守卫自己被算成「写库套件」（已改为判据「名字紧跟左括号」）。
-//   2. 加了这个守卫文件本身，套件数从 9 变 10，而四处文档还写着 9
-//      （守卫第一次运行就红了——这是它该有的行为；按实际改成 10，而不是把它排除在外）。
-//   3. 代码规模的快照写进 docs/progress.md 会改变「文档行数」这个被统计量本身
-//      （先用占位数字跑一次拿到终值再回填，且显式标注为**带日期的快照**、不做等值断言）。
-//   4. 把判据从「字面量」收紧成「调用形态」之后**仍然自命中**：先是本文件的注释里写了一句示例
-//      调用（散文含被判定的形状），剥掉注释后，字符串夹具里那句示例调用又命中了。
-//      对策（收敛点）：① 判据用**语义**而非形状——「是否 import 了被检查的模块」是检查器自己
-//      不具备的性质，无法自命中；② 检查器里**不放内联正例夹具**（演示判据能命中的字符串本身
-//      就会命中它，这是同一坑的第五种面孔），正例交给真实文件，命中为零时下游用例直接红；
-//      ③ 每加一条这类检查，都补一条「检查器对自己不命中」的断言。
-// 共同对策：判据用**形态**（调用/结构）且**先剥注释**；被统计量若包含记录载体，就先写占位
-// 再回填，并把数字标注为快照而非实时值；每加一条这类检查，都补一条「检查器对自己不命中」的断言。
-//
-// 为什么值得一条测试：这类数字的漂移在本仓库真实发生过三次（README 两处、CI 工作流注释一处），
-// 而它们的共同点是「只有人去数才会发现」。凡是能从文件系统推导出来的口径，就不该靠人记。
-//
-// 只检查**可推导**的量：
-//   - 套件数 = test/*.test.ts 的数量
-//   - 前端资源数 = public/ 下的文件数
-// 用例数不可推导（要跑一遍才知道），故不在此校验——由 CI 的实际输出与其记录者负责。
-//
-// 第二个 describe 做**代码规模统计**（业务 / 测试 / 文档行数）：把数字算出来打印到测试输出
-// （CI 日志里可读），并要求 docs/progress.md 保有对应记录节。数字本身不做等值断言——
-// 行数每改一行就变，固化成断言只会让每次改动都被迫同步文档。
+// 只守会影响真实部署或数据结构的跨文件不变式。
+// 套件数、资源数、目录树、代码行数和历史文档不属于测试职责。
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
@@ -39,372 +10,19 @@ function read(relative: string): string {
   return readFileSync(join(ROOT, relative), 'utf8');
 }
 
-function countFiles(dir: string, predicate: (name: string) => boolean, recursive = false): number {
-  let total = 0;
-  for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (recursive) total += countFiles(join(dir, entry.name), predicate, true);
-    } else if (predicate(entry.name)) {
-      total += 1;
-    }
-  }
-  return total;
-}
-
-// 提取**总数**声明：「全部 N 个套件」「N 个套件」「N 套件」。
-//
-// 这条正则天然区分总数与子集，靠的是**相邻性**：数字后面只允许跟一个「个」，紧跟「套件」。
-// 于是「6 个黑盒套件」「7 个写库套件」这类子集声明不匹配（限定词夹在中间），
-// 不会拿子集的 7 去和总数 10 比——那会造出假红。**不要**为了「多覆盖」而放宽它。
-// 中文数字（六个/七个）同样不匹配：现状文档的总数一律写阿拉伯数字，子集可以写中文数字。
-function suiteClaims(text: string): number[] {
-  return [...text.matchAll(/(?:全部\s*)?(\d+)\s*个?套件/g)].map((m) => Number(m[1]));
-}
-
-function assetClaims(text: string): number[] {
-  return [...text.matchAll(/共\s*(\d+)\s*个资源/g)].map((m) => Number(m[1]));
-}
-
-const SUITES = countFiles('test', (name) => name.endsWith('.test.ts'));
-const SUITE_NAMES = readdirSync(join(ROOT, 'test'))
-  .filter((name) => name.endsWith('.test.ts'))
-  .map((name) => name.replace(/\.test\.ts$/, ''));
-const ASSETS = countFiles('public', () => true, true);
-
-// 扫描名单 = **描述当前状态**的文档与配置。两条边界是刻意的：
-//   1. 不含 `docs/progress.md`：它按轮次记录，里面全是**历史快照**（第 12 轮写「6 套件」、
-//      第 14 轮写「7 套件」……），守卫无从区分「历史」与「现状」，加进来必然红。
-//      那些带日期的数字正是版本曲线可读的原因，不该被抹平。
-//   2. 不校验**用例数**：它不能从文件系统推导（要跑一遍才知道），解析 `it(` 计数又会被
-//      参数化/条件用例带偏——守出一道假警报比不守更糟。故现状文档一律只写套件数，
-//      用例数交给 `npm test` 自己的输出（历史快照里保留）。
-//   3. **含根目录 `AGENTS.md`**（2026-09-18 加入）：它是给代理/新人的行为契约，只描述现状
-//      （不像 progress.md 混着历史），而且它自己那条「改代码顺手维护文档」正要求人同步这些数字。
-//      把它纳入守卫，等于让"它写下的套件数"自动被盯住——契约自己遵守契约，不靠自觉。
-const CURRENT_STATE_FILES = [
-  'README.md',
-  'AGENTS.md',
-  'docs/design.md',
-  'docs/ui.md',
-  '.github/workflows/deploy.yml',
-];
-
-describe('文档口径与仓库实际一致', () => {
-  it('描述当前状态的文档与 CI 里的「套件数」与实际一致', () => {
-    const suites = SUITES;
-    expect(suites, '测试套件数不应为 0（守卫自身失效）').toBeGreaterThan(0);
-
-    for (const file of CURRENT_STATE_FILES) {
-      if (!existsSync(join(ROOT, file))) continue;
-      const claims = suiteClaims(read(file));
-      expect(claims.length, `${file} 未声明套件数？`).toBeGreaterThan(0);
-      for (const claim of claims) {
-        expect(claim, `${file} 写「${claim} 个套件」，实际是 ${suites} 个（test/*.test.ts）`).toBe(suites);
-      }
-    }
-  });
-
-  // `public/` 下现在有四部分（2026-09-19 改名后）：V1（`public/ui_v1/`，默认界面）、
-  // V2（`public/ui_v2/`，开发测试版）、`/ui/` 的跳转壳（`public/ui/`，只有 index.html 与
-  // 它的 fragment 中继脚本）、站点根的两个文件。docs/ui.md 的「共 N 个资源」声明的是**这个总数** ——
-  // 判据不变（数字必须能从文件系统数出来），分母的含义随三次结构调整（V1→V2→V1→三挂载点）变过三次。
-  it('docs/ui.md 里声明的资源数与 public/ 下实际文件数一致', () => {
-    const claims = assetClaims(read('docs/ui.md'));
-    expect(claims.length, 'docs/ui.md 未声明资源数').toBeGreaterThan(0);
-    for (const claim of claims) {
-      expect(claim, `docs/ui.md 写「${claim} 个资源」，实际是 ${ASSETS} 个（public/ 下全部文件）`).toBe(ASSETS);
-    }
-  });
-
-  // 「= N 套件」是**数字**，套件清单是**名单**：只校验数字会让两者脱节（真的发生过——清单少一个、
-  // 数字却改了，守卫全绿）。这里做**正向**校验：每个实际套件都必须在 design.md 的清单段里出现。
-  // 反向（清单里留着已删的套件名）不做：那段的反引号 token 混着 `/ui/api/*`、`node:sqlite` 这类
-  // 非套件名，反向匹配要么误报、要么得维护例外表——而这正是本文件反复踩过的「判据越写越脆」。
-  it('docs/design.md 的套件清单逐个覆盖实际套件（名单与数字不分家）', () => {
-    const text = read('docs/design.md');
-    const anchor = text.indexOf('**套件清单**');
-    expect(anchor, 'docs/design.md 未找到「套件清单」段').toBeGreaterThan(-1);
-    // 段落切到**第一个空行**为止。注意必须用 `\r?\n\s*\r?\n` 而不是 `'\n\n'`：
-    // 仓库的文件是 CRLF，`'\n\n'` 永远匹配不到，`slice(anchor, -1)` 会一路切到文件末尾——
-    // 那样「名单里有没有这个名字」就变成「全文里有没有」，检查从此没有判别力（变异实验实测过）。
-    const rest = text.slice(anchor);
-    const end = rest.search(/\r?\n\s*\r?\n/);
-    const paragraph = end < 0 ? rest : rest.slice(0, end);
-    const listed = [...paragraph.matchAll(/`([^`]+)`/g)].map((m) => m[1]!);
-    const missing = SUITE_NAMES.filter((name) => !listed.includes(name));
-    expect(missing, `design.md 套件清单缺少：${missing.join(' / ')}`).toEqual([]);
-  });
-
-  // 2026-09-22（`progress.md` §151）：目录拆成独立的 `docs/progress-index.md`。
-  // 它必须与正文**逐条逐字一致** —— 目录是**能从文件系统推导**的口径（`progress.md` 的 `##` 标题），
-  // 按本文件开头的判据（"凡能从文件系统推导出来的口径，就不该靠人记"）它就该被守着。
-  // 此前内嵌目录停在 §102 而正文已到 §150，两次都只在 `progress.md` 里记一句"留待单独一轮"。
-  // 判据是**列表的每一行**（`- 编号. 标题`）与正文标题逐条相等：数量与文本一起比，
-  // 少了/多了/改了标题都会红。`目录` 那一节自身不进目录（否则目录会列出自己）。
-  it('docs/progress-index.md 覆盖 progress.md 的全部小节（编号与标题逐字一致）', () => {
-    const heads = [...read('docs/progress.md').matchAll(/^## (.+)$/gm)]
-      .map((m) => m[1]!.trim())
-      .filter((heading) => heading !== '目录');
-    expect(heads.length, '正文小节数不该为 0（守卫可能失效）').toBeGreaterThan(0);
-    const listed = [...read('docs/progress-index.md').matchAll(/^- (.+)$/gm)].map((m) => m[1]!.trim());
-    expect(
-      listed,
-      'docs/progress-index.md 与 progress.md 的 `##` 标题不一致（新增/改动小节后重跑目录：见 progress.md §151）',
-    ).toEqual(heads);
-  });
-});
-
-// ===== 界面目录树的模块清单：按**文件系统**对账 =====
-//
-// 由来（2026-09-22 审核）：`AGENTS.md` §1 说"改 `public/` 下任何文件要同步三处目录树"，但那条规则
-// 一直只靠记性 —— 2026-09-21 的共用层抽取（ADR D22）删掉了 `public/ui_v2/js/icons.js`，
-// `ui-v2-design.md` §7 与 `design.md` §4 的 **V1** 行都改了，**只有 §4 的 V2 行没改**（还写着 `icons`）。
-// 模块清单是**能从文件系统推导**的口径（目录里有哪些 `.js`），按本文件开头的判据它就该被守着。
-describe('界面目录树与文件系统一致（design.md §4 / ui-v2-design.md §7）', () => {
-  // 仓库里的文件是 **CRLF** ⇒ 任何"按行/按行首匹配"的抽取都要先归一（同本文件上面那条守卫的坑）
-  const readNorm = (relative: string): string => read(relative).replace(/\r\n/g, '\n');
-  const jsNames = (relative: string): string[] =>
-    readdirSync(join(ROOT, relative))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => name.slice(0, -3))
-      .sort();
-
-  /** 取树行 `#` 之后的模块清单（去掉"（图标表在共用层）"这类说明，`ui/*` 通配不算模块名） */
-  function modulesOf(line: string | undefined, label: string): string[] {
-    const after = line?.split('#')[1];
-    expect(after, `没抽到 ${label} 的模块清单（树的行格式变了？守卫可能失效）`).toBeTruthy();
-    return (after ?? '')
-      .replace(/（[^）]*）/g, '')
-      // `ui/*` 这类子目录通配必须在**切分之前**整段去掉：按 `/` 切完再过滤 `*` 会留下孤零零的 `ui`
-      // （2026-09-22 加这条守卫时正是这么错的 —— 断言报"树里有 `ui`、实际没有"）。
-      .replace(/[\w.-]+\/\*/g, '')
-      .split('/')
-      .map((part) => part.trim())
-      .filter((part) => part !== '')
-      .sort();
-  }
-
-  /** 两侧不一致时把差集写进失败信息 —— 否则 vitest 只显示"…(17)"，看不出差在哪一项 */
-  function expectSameModules(label: string, tree: string[], disk: string[]): void {
-    const onlyTree = tree.filter((name) => !disk.includes(name));
-    const onlyDisk = disk.filter((name) => !tree.includes(name));
-    expect(tree, `${label}：树里多 [${onlyTree.join(', ')}]；磁盘上多 [${onlyDisk.join(', ')}]`).toEqual(disk);
-  }
-
-  it('design.md §4：V1 / V2 的 js 与 V1 的 components 清单逐项等于实际文件', () => {
-    const lines = readNorm('docs/design.md').split('\n');
-    // 锚点必须带树的前缀（`│   ├── `）：`ui_v1/` 这个串在文档别处还出现 5 次（ADR 表、§3 等），
-    // 用宽锚点会把切片切错位置 —— 2026-09-22 加这条守卫时正是这么错的（断言先红在"没找到三行"上）。
-    const at = (needle: string): number => lines.findIndex((line) => line.includes(needle));
-    const v1 = at('├── ui_v1/');
-    const shared = at('├── ui_shared/');
-    const v2 = at('├── ui_v2/');
-    expect(v1 > 0 && shared > v1 && v2 > shared, '树里没找到 ui_v1 / ui_shared / ui_v2 三行').toBe(true);
-
-    const v1Js = lines.slice(v1, shared).find((line) => line.includes('└── js/'));
-    const v1Components = lines.slice(v1, shared).find((line) => line.includes('└── components/'));
-    const v2Js = lines.slice(v2).find((line) => line.includes('└── js/'));
-
-    expectSameModules('design.md §4 的 V1 js 清单', modulesOf(v1Js, 'V1 js'), jsNames('public/ui_v1/js'));
-    expectSameModules(
-      'design.md §4 的 V1 components 清单',
-      modulesOf(v1Components, 'V1 components'),
-      jsNames('public/ui_v1/js/components'),
-    );
-    // V2 的 `ui/*` 是子目录通配（那 16 个模块在 ui-v2-design.md §7 里逐个列着），不参与这一比
-    expectSameModules('design.md §4 的 V2 js 清单', modulesOf(v2Js, 'V2 js'), jsNames('public/ui_v2/js'));
-  });
-
-  it('ui-v2-design.md §7：树里列出的每个 .js 都真实存在（"已移入共用层"那种括号条目也算存在）', () => {
-    const listed = [...readNorm('docs/ui-v2-design.md').matchAll(/^[│ ]*[├└]── \(?([\w.-]+\.js)\)?/gm)].map(
-      (match) => match[1]!,
-    );
-    expect(listed.length, '没抽到 §7 的 .js 条目（守卫可能失效）').toBeGreaterThan(10);
-    const actual = [
-      'public/ui_v1/js',
-      'public/ui_v1/js/components',
-      'public/ui_v2/js',
-      'public/ui_v2/js/ui',
-      'public/ui_shared/js',
-      'public/ui/js',
-    ].flatMap((dir) => jsNames(dir).map((name) => `${name}.js`));
-    expect(
-      listed.filter((name) => !actual.includes(name)),
-      'ui-v2-design.md §7 列了不存在的文件（删/移文件时漏改这处目录树）',
-    ).toEqual([]);
-  });
-});
-
-// ===== 代码规模统计 =====
-//
-// 口径（与 docs/progress.md §1.1 的记录一致）：
-//   业务代码 = src/**/*.ts
-//   测试代码 = test/**/*.{ts,mjs}（含 support/ 与一次性脚本）
-//   文档     = README.md + AGENTS.md + docs/*.md（根目录那两份"给人/代理读的入口"都算）
-// 只统计行数，不区分空行/注释——「有效代码行」需要语言级解析，而这一层的用途是**规模量级**
-// 与增长趋势，精确到行反而制造无谓争议。
-
-interface SizeStat {
-  label: string;
-  files: number;
-  lines: number;
-}
-
-function collectFiles(dir: string, extensions: string[]): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
-    const relative = `${dir}/${entry.name}`;
-    if (entry.isDirectory()) out.push(...collectFiles(relative, extensions));
-    else if (extensions.some((ext) => entry.name.endsWith(ext))) out.push(relative);
-  }
-  return out;
-}
-
-// 行数口径与 `wc -l` 一致：数换行符，**不把结尾换行额外计一行**。
-// （`split('\n').length` 会为每个文件的尾换行多算 1 行，40 个文件就虚增 40 行。）
-function countLines(text: string): number {
-  const breaks = text.match(/\n/g)?.length ?? 0;
-  return text.endsWith('\n') ? breaks : breaks + 1;
-}
-
-function measure(label: string, files: string[]): SizeStat {
-  let lines = 0;
-  for (const file of files) lines += countLines(readFileSync(join(ROOT, file), 'utf8'));
-  return { label, files: files.length, lines };
-}
-
-// 子集清单用**名字集合**校验，不碰数字：这类清单此前写成「六个」而漏了 `ui`，
-// 任何数字式样（阿拉伯或中文）都可能绕过计数守卫，而成员比对绕开数字直接比集合。
-const WRITE_GUARD_ANCHOR = '**写库套件默认只允许指向本机**';
-
-// 剥注释：**先剥行注释，再剥块注释**。顺序不能反——行注释里会出现 `/*`（本仓库第一行就写着
-// `/ui/api/*`），先剥块注释会让它一路吃到后面任意一个 `*/`（例如测试名里的 `bytes */size`），
-// 把中间整段真实代码一起吞掉：实测 `test/ui.test.ts` 的 `import ... from './support/target-guard'`
-// 因此被判为「不存在」，写库套件清单随之少一项。
-function stripComments(source: string): string {
-  return source.replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/\/\*[\s\S]*?\*\//g, '');
-}
-
-// 写库套件的判据：**导入**了目标守卫模块（相对路径形式，与本仓库既有写法一致）
-const SUITE_IMPORT = /from\s+'\.\/support\/target-guard'/;
-
-function writeGuardedSuites(): string[] {
-  return readdirSync(join(ROOT, 'test'))
-    .filter((name) => name.endsWith('.test.ts'))
-    // 判据用**语义**而不是形状：写库套件 = 导入了 target-guard 的文件。
-    // 理由（踩了三次才收敛）：形状判据一直在换皮自命中——先是「文件里出现这个名字」（注释命中），
-    // 再是「调用形态 + 剥注释」（本文件的字符串夹具命中）。而「是否 import 了守卫模块」这件事，
-    // 检查器自己不具备（它只读文件不导入），无法自命中，且语义上正是「用了守卫」的定义。
-    .filter((name) => SUITE_IMPORT.test(stripComments(read(`test/${name}`))))
-    .map((name) => name.replace(/\.test\.ts$/, ''));
-}
-
-describe('口径守卫自身的判据', () => {
-  it('套件数提取只认**总数**声明，子集与中文数字不命中（夹具即约定）', () => {
-    // 正例：总数声明
-    for (const text of ['全部 10 个套件', 'npm test = 10 套件', '10 个套件']) {
-      expect(suiteClaims(text), `应识别为总数：${text}`).toEqual([10]);
-    }
-    // 反例：子集声明（限定词夹在数字与「套件」之间）与中文数字——都不该被当成总数
-    for (const text of ['6 个黑盒套件', '7 个写库套件', '七个写库套件', '六个写库套件', '中文十套件']) {
-      expect(suiteClaims(text), `不应识别为总数：${text}`).toEqual([]);
-    }
-    // 已知边界，写在这里以免被当成缺陷：限定词在**数字之前**的写法（「其中 7 个套件会写库」）
-    // 会被当作总数；故现状文档里子集一律写成「N 个<限定词>套件」。
-  });
-
-  // 注意这里**不放正例夹具**：任何「演示判据能命中」的字符串本身就会命中判据（实测踩到，
-  // 这正是自指的第四种面孔）。正例由真实文件提供——下面那条「清单 == 实际集合」的用例，
-  // 在判据命中为零时会直接红。
-  //
-  // **这条断言是承重的，不是装饰**：判据（导入形态）唯一残留的脆弱点是「检查器里出现该导入的
-  // 字面量」——夹具、注释里的示例、抄一行真实导入，都会让它成立。断言正是盯着这一点：
-  // 谁要是加了那样的字符串，它会立刻红，而不是静默污染下面那条清单比对。别删。
-  it('写库套件判据不会命中检查器自己（每加一条这类检查都要有这一条）', () => {
-    expect(
-      SUITE_IMPORT.test(stripComments(read('test/docs.test.ts'))),
-      '检查器自己不应被判为写库套件（判据被改回「形状」或本文件出现了该导入的字面量？）',
-    ).toBe(false);
-  });
-});
-
-describe('写库套件清单与实现一致', () => {
-  it('README 列出的写库套件 == 实际调用 assertWritableTarget 的套件', () => {
-    const readme = read('README.md');
-    const anchor = readme.indexOf(WRITE_GUARD_ANCHOR);
-    expect(anchor, `README 未找到「${WRITE_GUARD_ANCHOR}」段落`).toBeGreaterThan(-1);
-    const open = readme.indexOf('（', anchor);
-    const close = readme.indexOf('）', open);
-    expect(open, '锚点后未找到清单的起始括号').toBeGreaterThan(-1);
-    expect(close, '清单括号未闭合').toBeGreaterThan(open);
-
-    const listed = [...readme.slice(open, close).matchAll(/`([^`]+)`/g)].map((m) => m[1]!);
-    const actual = writeGuardedSuites();
-    expect(actual.length, '实际写库套件不应为空').toBeGreaterThan(0);
-    expect(
-      [...listed].sort(),
-      `README 列出的写库套件（${listed.join('/')}）与实际（${actual.join('/')}）不一致`,
-    ).toEqual([...actual].sort());
-  });
-});
-
-describe('代码规模统计', () => {
-  it('计算出业务/测试/文档的行数，并要求 progress.md 保有记录节', () => {
-    const business = measure('业务代码', collectFiles('src', ['.ts']));
-    const tests = measure('测试代码', collectFiles('test', ['.ts', '.mjs']));
-    const docs = measure('文档', ['README.md', 'AGENTS.md', ...collectFiles('docs', ['.md'])]);
-
-    const all = [business, tests, docs];
-    const total = all.reduce((n, s) => n + s.lines, 0);
-    for (const stat of all) {
-      // 打印到测试输出（CI 日志里直接可读）——这是这个用例的主要产出
-      console.log(`[规模] ${stat.label.padEnd(4, '　')} ${String(stat.lines).padStart(6)} 行 / ${String(stat.files).padStart(3)} 个文件`);
-    }
-    console.log(`[规模] 合计   ${String(total).padStart(6)} 行 / ${String(all.reduce((n, s) => n + s.files, 0)).padStart(3)} 个文件`);
-
-    // 断言只保留结构性不变量（不做等值断言，见文件头说明）
-    for (const stat of all) {
-      expect(stat.lines, `${stat.label}行数不应为 0`).toBeGreaterThan(0);
-      expect(stat.files, `${stat.label}文件数不应为 0`).toBeGreaterThan(0);
-    }
-    // 本项目以协议级测试为主要质量手段：测试规模不应显著低于业务代码（低于则说明套件被削）
-    expect(
-      tests.lines / business.lines,
-      `测试代码仅为业务代码的 ${Math.round((tests.lines / business.lines) * 100)}%，与「协议级测试为主」的定位不符`,
-    ).toBeGreaterThan(0.3);
-
-    // 记录必须存在（防止记录节被删掉却无人察觉）
-    expect(read('docs/progress.md')).toContain('### 代码规模');
-  });
-});
-
-// ===== 部署开关的四处清单：`.dev.vars.example` ↔ `deploy.yml`（↔ `README.md` 的开关表）=====
-//
-// 由来（2026-09-21 复查）：同一批开关散在四处 —— `.dev.vars.example`（本地开发）、`deploy.yml`
-// （GitHub 仓库变量 → 绑给 Worker）、`wrangler.toml` 的 `[vars]`（默认值）、`README.md` 的开关表。
-// 此前**没有任何判据**看着它们：`.dev.vars.example` 只在四个套件的注释里被提到（"默认与 .dev.vars 示例一致"），
-// 于是"新增一个开关、忘了改示例文件或 README"这类漂移只能靠人去数 —— 正是 `AGENTS.md` §1 点名的那类
-// （2026-09-21 实测：README 的开关表就漏了 4 个 `AUTH_RATE_LIMIT_*`，而 `deploy.yml` 的注释还写着
-// "README 已写明"）。判据只钉**名字集合**：默认值各处已实测一致，范围另有 `src/rateLimit.ts` 的
-// `AUTH_RATE_LIMIT_RANGES`、`src/requestLimits.ts` 的 FLOOR/CEILING 与 CI 的校验。
 describe('部署开关清单：.dev.vars.example / deploy.yml / README 三处一致', () => {
-  // ⚠️ 仓库里的文件是 **CRLF** ⇒ 任何"按行匹配"的抽取都要先归一，否则 `\|\n` 这类模式永远不命中
-  // （2026-09-21 加这条守卫时正踩在这里：抽不到 `vars:` 名单，断言先红在"抽取器失效"上）。
   const readText = (relative: string): string => read(relative).replace(/\r\n/g, '\n');
 
-  /** `.dev.vars.example` 里的名字（含被注释掉的**可选**行 —— 注释行同样是这份清单的一部分）。 */
   function exampleNames(): string[] {
     return [...readText('.dev.vars.example').matchAll(/^\s*#?\s*([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]!);
   }
 
-  /** `deploy.yml` 里 `Deploy Worker` 步骤的 `vars: |` 名单 —— 即"绑给 Worker"的那批名字。 */
   function workerBoundNames(): string[] {
     const list = /\n\s+vars: \|\n((?:\s+[A-Z][A-Z0-9_]*\n)+)/.exec(readText('.github/workflows/deploy.yml'))?.[1];
     expect(list, '没抽到 deploy.yml 的 vars 名单（守卫可能失效）').toBeTruthy();
     return [...(list ?? '').matchAll(/([A-Z][A-Z0-9_]*)/g)].map((m) => m[1]!);
   }
 
-  /** `README.md` **开关表**里被反引号括起来的变量名（只认表格行，避免把散文里的提及算进来）。 */
   function readmeTableNames(): string[] {
     return [...readText('README.md').matchAll(/^\s*\|\s*`([A-Z][A-Z0-9_]*)`\s*\|/gm)].map((m) => m[1]!);
   }
@@ -412,10 +30,8 @@ describe('部署开关清单：.dev.vars.example / deploy.yml / README 三处一
   it('.dev.vars.example == CI 绑给 Worker 的名字 + 凭据 + 测试覆盖（双向，且不放空）', () => {
     const example = new Set(exampleNames());
     const bound = new Set(workerBoundNames());
-    // 空集合会让下面两条断言永远为真 ⇒ 先钉住"抽取器在工作"
     expect(example.size, '没抽到 .dev.vars.example 的名字（守卫可能失效）').toBeGreaterThan(6);
     expect(bound.size, '没抽到 deploy.yml 的开关名单（守卫可能失效）').toBeGreaterThan(6);
-    // 凭据走 secrets（`wrangler secret put`），SYNC_USER/SYNC_PASS 只是测试覆盖 —— 这五个不进 CI 的 vars 名单
     const allowed = new Set([...bound, 'USERNAME', 'PASSWORD', 'SYNC_USER']);
     expect(
       [...example].filter((name) => !allowed.has(name)).sort(),
@@ -442,26 +58,17 @@ describe('部署开关清单：.dev.vars.example / deploy.yml / README 三处一
   });
 });
 
-// ===== 部署链守卫：列迁移脚本与步骤顺序（2026-09-22 发布审计新增）=====
-// 迁移是「推送即部署」链路上唯一会先于新代码跑的东西：schema.sql 的 CREATE IF NOT EXISTS
-// 对老库不生效，新代码的 INSERT/UPDATE 写 TransferDataHash 列 ⇒ 列不存在则部署后每次写库失败，
-// 而只读冒烟（statistics=COUNT(*)）根本发现不了。以下两条把「手检」变成常驻判据。
-
 describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
   it('parseD1Output 处理 wrangler 的横幅前缀 / 空输出 / 正常 JSON 三形态', async () => {
-    // tools/ 不在 tsconfig include，也没有 .d.ts —— 静态导入即报 TS7016，故用 ts-expect-error
     // @ts-expect-error —— 无 migrate-d1.mjs 的声明文件
     const mod = await import('../tools/migrate-d1.mjs');
-    // --remote 会在 JSON 前打印 `🌀 Executing …`（直接 JSON.parse 会抛 → 挡住部署）
     const banner =
       '🌀 Executing on remote database syncclipboard (a1b2c3)\n' +
       '[{"results":[{"name":"ID"},{"name":"TransferDataHash"}],"success":true}]';
     expect([...mod.parseD1Output(banner)]).toEqual(['ID', 'TransferDataHash']);
-    // 正常形态（多页结构）
     expect([
       ...mod.parseD1Output('[{"results":[{"name":"A"}],"success":true},{"results":[{"name":"B"}],"success":true}]'),
     ]).toEqual(['A', 'B']);
-    // 空输出：解析失败必须抛（脚本据此非零退出）
     expect(() => mod.parseD1Output('no json')).toThrow();
   });
 
@@ -474,7 +81,6 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
     expect(applyIdx, '缺少 Apply D1 schema 步骤').toBeGreaterThan(-1);
     expect(migrateIdx, '缺少 Migrate D1 步骤').toBeGreaterThan(applyIdx);
     expect(deployIdx, 'Deploy Worker 步骤缺失').toBeGreaterThan(migrateIdx);
-    // 三处必须按 **binding 名** `DB` 寻址：按库名 `syncclipboard` 会与注入的 database_id 解耦
     const d1ExecLines = yml
       .split('\n')
       .filter((l) => l.includes('wrangler d1 execute'))
@@ -489,24 +95,13 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
   });
 
   it('迁移的 ALTER DDL 与 schema.sql 的列定义**同一事实**（加了列/改了默认值必须两处同步）', () => {
-    // 这是本仓库"同一个事实存在两处"清单里**唯一还没被判据看着**的一处：
-    // 新库由 `CREATE TABLE` 建列、老库由 `ALTER TABLE … ADD COLUMN` 加列 —— 两边必须是同一列，
-    // 否则新库与老库**结构不同**，而 DDL 本身两边都能跑过（不报错），只在别处冒出来：
-    //   · `NOT NULL DEFAULT ''` 是 SQLite 对 ADD COLUMN 的硬要求（非空列必须带默认值）；
-    //   · 少了 `DEFAULT ''`，老库的新列默认 NULL、新库是 ''，同一行在不同库上读出来不同值；
-    //   · 默认值不一致（`DEFAULT ''` vs `DEFAULT 'x'`）是纯静默漂移，什么都不报。
-    // tools/migrate-d1.mjs 的注释已经写着"必须与 schema.sql 逐字一致"，但没有判据 —— 靠人记。
-    // （仓库文件是 CRLF ⇒ 按行/正则抽取前先归一，见上面那条守卫的同一教训。）
     const script = read('tools/migrate-d1.mjs').replace(/\r\n/g, '\n');
     const schema = read('schema.sql').replace(/\r\n/g, '\n');
 
-    // 抽取**每一条**迁移（不是只第一条）：将来加第二条 ADD COLUMN 时，它同样必须与 schema.sql 同源。
-    // 一条迁移在源码里是 `{ table: '…', column: '…', ddl: "ALTER TABLE …" }` 三行，故按出现顺序配对。
     const entries = [
       ...script.matchAll(/table:\s*'([^']+)'[\s\S]*?column:\s*'([^']+)'[\s\S]*?"(ALTER TABLE[^"\n]+)"/g),
     ].map((m) => ({ table: m[1]!, column: m[2]!, ddl: m[3]! }));
 
-    // 抽取器自检：没抽到就说明文件结构变了，下面的断言会退化成"空集合全过"
     expect(
       entries.length,
       '抽不到任何一条迁移（抽取器失效；迁移条数应 ≥1）',
@@ -516,12 +111,10 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
     );
 
     for (const { table, column, ddl } of entries) {
-      // ① 结构：DDL 必须就是 `<表> ADD COLUMN` 形态（不是 CREATE/RENAME/别的表的列）
       const prefix = `ALTER TABLE ${table} ADD COLUMN `;
       expect(ddl.startsWith(prefix), `${table}.${column} 的 DDL 形态不对：${ddl}`).toBe(true);
       expect(ddl, `DDL 必须加的是同名表上的那一列（${table}.${column}）`).toContain(` ${column} `);
 
-      // ② 交叉核对：DDL 的**列定义段**与 schema.sql 里该列的定义**逐字一致**
       const migratedDef = ddl.slice(prefix.length);
       const body = schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\);`));
       expect(body, `schema.sql 里找不到表 ${table}`).not.toBeNull();
@@ -539,18 +132,11 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
           `  migrate: ${migratedDef}\n  schema : ${schemaDef}`,
       ).toBe(schemaDef);
 
-      // ③ 非空列必须带默认值：SQLite 的 ADD COLUMN 直接拒绝 `NOT NULL` 而不给 `DEFAULT`
-      //    （那条错误会让 CI 的迁移步骤红、挡住部署 —— 但那时是在部署链路上才发现）
       expect(migratedDef, `${table}.${column}：ADD COLUMN 出现 NOT NULL 却没有 DEFAULT ⇒ SQLite 会拒绝`).toMatch(
         /NOT NULL DEFAULT/,
       );
     }
 
-    // ④ **反方向**（2026-10-04 补，审计 R2#4）：schema.sql 里新增的列必须要么有对应迁移、
-    //    要么在下面的白名单里 —— 否则「老库没有这一列」永远没人发现（实测：给 schema.sql 加一列
-    //    后，5 个读 schema 的套件 128 条全绿 exit=0）。这条与上面的 ①②③ 合起来才是双向的。
-    //    白名单：建立**早于**迁移机制存在的历史列（老库靠 CREATE TABLE IF NOT EXISTS 的首次执行
-    //    就已带上，无需 ALTER）。新增列时**不要**往这里加，而应加进 MIGRATIONS。
     const LEGACY_COLUMNS_WITHOUT_MIGRATION = new Set([
       'ID',
       'UserId',
@@ -594,9 +180,6 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
         '请把它们加进 tools/migrate-d1.mjs 的 MIGRATIONS（而不是白名单）',
     ).toEqual([]);
 
-    // ⑤ 白名单的**反方向**（2026-10-04 补，验证单元 V2 指出）：白名单里的名字必须在 schema 里真实存在。
-    //    否则删掉一列后白名单留下一条死条目 —— 那条没人守，将来同名的新列会被它**静默放行**
-    //    （V2 实测：把 `Tags` 从 schema 删除而白名单留着，15 passed 未红）。
     const staleWhitelist = [...LEGACY_COLUMNS_WITHOUT_MIGRATION].filter((c) => !schemaColumns.includes(c));
     expect(
       staleWhitelist,

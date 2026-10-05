@@ -181,7 +181,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
     // ⚠️ 不要把 `.`/`..` 也加进来（试过，2026-10-03 撤回）：**平台在 Worker 之前就把点段归一化了** ——
     // 实测原始请求（`node:http`，不经 URL 库）`PUT /file/..`、`/file/.`、`/file/%2E%2E`、`/file/%2E`
     // 全部落到别处（`/` 或 `/file/`）→ **404**，连 handler 都进不来 ⇒ 那种名字根本存不进 R2，
-    // 也就不存在"客户端 `PreciseDelete` 删不掉"的泄漏（见 `docs/protocol.md` §10 与 `progress.md` §199）。
+    // 也就不存在"客户端 `PreciseDelete` 删不掉"的泄漏（见 `docs/protocol.md` §10 与 Git history）。
     // 可达性：官方客户端发的是 `EscapeDataString(Path.GetFileName(localPath))`（真实文件名），
     // 而任何文件系统都不允许含 NUL 的文件 ⇒ 不可达，属"更严但不伤兼容"的入口校验。
     if (invalidFileName(fileName) || fileName.includes('\0')) {

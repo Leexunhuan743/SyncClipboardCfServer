@@ -1007,7 +1007,7 @@ describe('verifyCredentials 未配置凭据边界（单元，review 修复）', 
 });
 
 describe('UI API 数据端点 Range（206 / 416 / 回退 200）', () => {
-  // docs/backend-gaps.md §2.3：Range **只**加在这个端点上。协议侧 `/file/{name}` 与
+  // GitHub issue #3：Range **只**加在这个端点上。协议侧 `/file/{name}` 与
   // `/api/history/{id}/data` 忽略 Range 是对齐上游的有意行为（F29b，fix-regressions 有断言守着），
   // 故本套件不碰那两条路径。
   const name = `ui-range-${RUN}.bin`;
@@ -1094,7 +1094,7 @@ describe('UI API 数据端点 Range（206 / 416 / 回退 200）', () => {
     // 206 仍带着数据端点原有的头：Range 不改变缓存/内联语义
     expect(res.headers.get('cache-control')).toBe('private, max-age=60');
     // ⚠️ 2026-09-21：夹具是 `ui-range-<RUN>.bin`，`.bin` **不在**内联白名单里 ⇒ 现在强制 `attachment`
-    // （策略由"可渲染黑名单"改成"默认-deny 内联白名单"，见 docs/progress.md §106）。
+    // （策略由"可渲染黑名单"改成"默认-deny 内联白名单"，见 Git history）。
     expect(res.headers.get('content-disposition')?.startsWith('attachment')).toBe(true);
   });
 

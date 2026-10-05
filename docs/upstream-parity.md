@@ -279,7 +279,7 @@ Hub 路径、广播方法名与参数形状（`RemoteProfileChanged` / `RemoteHi
 + **真客户端 E2E**（官方便携客户端 × 生产：双向文本 / 文件 + 实时推送）。
 
 **做法（可复现）**：本机**有** ASP.NET Core 运行时（只是没有 SDK），而官方 release 附了框架依赖型的
-`SyncClipboard.Server.zip` ⇒ 直接起官方服务端对跑。A/B 的结论逐条记在 `docs/progress.md` §44
+`SyncClipboard.Server.zip` ⇒ 直接起官方服务端对跑。A/B 的结论逐条记在 Git history
 （含修掉的两处真缺陷与 3 条大小写用例从"已知偏离"转为"一致"）。
 
 **结果**：22 个套件全绿；`npm run check`（`tsc --noEmit` + `eslint`）通过；

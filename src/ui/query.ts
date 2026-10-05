@@ -278,7 +278,7 @@ export function codePointCount(text: string): number {
 // 那一边量的是**用户看到的字符**（`Intl.Segmenter` 字素簇，一个家庭 emoji 算 1 个），
 // 这一边量的是**码点** —— 因为这里的 500 是**服务端协议上限**（约束 JSON 体积，且必须与
 // SQL 的 `length()`/`substr()` 同口径），不是展示口径。
-// 差异的登记处是 `docs/archive/AUDIT-v1-v2-divergence.md` §5.3。
+// 两版都按 Unicode 码点处理截断/计数；对应回归测试负责防止退回 UTF-16 码元口径。
 export function truncateText(text: string, limit: number): string {
   let n = 0;
   let i = 0;
@@ -475,7 +475,7 @@ const TYPE_BUCKET: Record<number, 'Text' | 'Image' | 'File' | 'Group' | undefine
  * `tz` 的符号与 `Date.prototype.getTimezoneOffset()` 一致（UTC+8 ⇒ `-480`）。
  *
  * **成本**：1 条聚合查询（`GROUP BY`，不是把行拉进 JS 循环 —— 后者是
- * `docs/backend-gaps.md` §3.1 记的效率欠账，而统计在每次页面加载都会跑）。
+ * GitHub issue #3 记的效率欠账，而统计在每次页面加载都会跑）。
  * 代价是 `CreateTime` 上的索引用不上（表达式不是索引列），但候选集先被
  * `CreateTime >= ?` 的范围条件筛过，实际扫描量只与**窗口内的记录数**成正比，与库总量无关。
  *
@@ -552,7 +552,7 @@ export const BATCH_META_MAX_ITEMS = 100;
 /**
  * 按 `(type, hash)` 批量取记录。用于「选中多条 → 一起复制/下载」这类需要**完整正文**的场景：
  * 列表里的正文被截断到 500 字符（`UI_LIST_TEXT_LIMIT`），而逐条走单条端点是 O(N) 次请求
- * （`docs/backend-gaps.md` §2.8 记的口径）。
+ * （GitHub issue #3 记的口径）。
  *
  * 实现是 `IN` 查询而不是 N 条：每次 D1 往返都计入平台的子请求配额，100 条逐条查就是 100 次
  * —— 那正是这个端点存在的理由。**但要分片**（见下）。
@@ -574,7 +574,7 @@ export async function readBatchMeta(
   // 这条查询的参数数 = `1`（UserId）+ hash 数 ⇒ **最多只能带 99 个 hash**，而本端点的入参上限
   // 是 100 条（`BATCH_META_MAX_ITEMS`）—— 于是"正好 100 条"这一档**必然** 500：
   //   2026-09-22 发布前审核第 13 轮实测：`batch-meta` 50 条 → 200、100 条 → 500，
-  //   服务端报 `D1_ERROR: variable number must be between ?1 and ?100`（见 progress.md §142）。
+  //   服务端报 `D1_ERROR: variable number must be between ?1 and ?100`（见 Git history）。
   // 分片取 50（1 + 50 = 51，留一半余量）：既守住上限，又保住"几次查询而不是 N 次"的本意
   // （100 条 = 2 次查询，不是 100 次）。
   const HASH_CHUNK = 50;

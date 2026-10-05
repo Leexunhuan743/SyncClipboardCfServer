@@ -379,7 +379,7 @@ button.entry:focus-visible {
  * （`ui/row.js`）写死的是 `'2'`，密度切换只改 `--row-h`、从不写这个属性 ⇒ **那一档从未出现过**。
  * 现在挂到**已经存在**的密度开关上（`:root[data-density="compact"]`，见 `tokens-v2.css`）：
  * 少了一个没有任何生产者的属性，而行为正是当初注释里写的那个意思（紧凑时只留一行、省行高）。
- * 见 `docs/AUDIT-missing-states.md` §3.2。 */
+ * 见 历史审计记录。 */
 :root[data-density="compact"] .entry__text {
   -webkit-line-clamp: 1;
 }
@@ -531,7 +531,7 @@ button.entry:focus-visible {
  * `undo / copy / download / star / dots`（`ui/rowops.js`），**没有 pin**：置顶是 `⋯` 菜单项
  * （`menus.js`），不产生 `data-icon`。那条约 V2 重构后遗留的规则从未命中过。
  * 真要做到"填充 vs 描边"的双通道，得先把置顶的入口从菜单搬回行内 —— 那是设计决策，不是修 bug。
- * 见 `docs/AUDIT-missing-states.md` §3.2。 */
+ * 见 历史审计记录。 */
 
 /* 就地成功态：按钮变成对勾 + 结果文案（V1 的状态机，V2 沿用并把时长收紧）。
  * `data-state="ok"` 与 `data-loading` 互斥，由 JS 保证。 */
@@ -619,7 +619,7 @@ button.entry:focus-visible {
  *
  * 上一条注释里的「骨架仍 64px（差 61px）」是 §10.1 修好**之前**写的：修好后骨架在这一档
  * 是 77px，差值也随之从 61px 变成 —— 卡片档的真实行 125px（细指针）/ 135px（粗指针），
- * 即每行差 48 / 58px。2026-09-19 把这一档也修齐（原为 N-16 / docs/progress.md §94 第 13 行）。
+ * 即每行差 48 / 58px。2026-09-19 把这一档也修齐（原为 N-16 / Git history第 13 行）。
  */
 .ghost {
   display: flex;
@@ -744,7 +744,7 @@ button.entry:focus-visible {
    * 按 Enter 会异步改排序且没有任何可见反馈。
    * `visibility: hidden`（不是 `display: none`）刚好：把按钮移出 Tab 顺序与无障碍树，
    * 而 `<th>` 的列名「内容」不在这里面，照旧留在树里给单元格提供列上下文。
-   * 见 `docs/archive/AUDIT-v1-v2-divergence.md` §6.1。 */
+   * 见 历史审计记录。 */
   .board__head-row .sort-btn {
     visibility: hidden;
   }
@@ -839,7 +839,7 @@ button.entry:focus-visible {
     border-bottom: 0;
   }
 
-  /* ── 骨架行 = 一张卡片（2026-09-19 修 N-16 / docs/progress.md §94 第 13 行）──
+  /* ── 骨架行 = 一张卡片（2026-09-19 修 N-16 / Git history第 13 行）──
    * 上面那条 calc(var(--row-h) + var(--sp-3) + 1px) 在这一档不成立：.item 成了 grid 卡片，
    * 高度由卡片的盒模型与内容决定；--row-h 只剩 .item__kind 在消费，而它被绝对定位了、
    * 不参与撑高。修前实测（CDP，细指针）：骨架 77px vs 真实卡片 125px。

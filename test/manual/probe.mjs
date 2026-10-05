@@ -448,7 +448,7 @@ try {
   console.log('DRAWER ', drawer);
   await read(`document.querySelector('.drawer')?.close(), 'closed'`);
 
-  // ===== 预览关闭即释放正文（2026-09-20，`docs/archive/AUDIT-v1-v2-divergence.md` §4.2）=====
+  // ===== 预览关闭即释放正文（2026-09-20 回归）=====
   //
   // 缺陷形态：对话框是**启动期创建、常驻 `body`** 的节点（`ui/dialog.js` 里 `createDialog`
   // 一进来就 `document.body.append(dialog)`），关闭时只 `dialog.close()`，正文与页脚一直留在
@@ -591,7 +591,7 @@ try {
   check('抽屉趋势柱数 == 概览趋势柱数', D.bars === S.sparkBars, String(D.bars) + ' vs ' + String(S.sparkBars));
   check('抽屉里给出了本服务地址', typeof D.copyline === 'string' && D.copyline.startsWith(BASE), JSON.stringify(D.copyline));
 
-  // 预览关闭即释放正文与页脚（`docs/archive/AUDIT-v1-v2-divergence.md` §4.2，2026-09-20）
+  // 预览关闭即释放正文与页脚（2026-09-20 回归）
   // ⚠️ 这条判据描述的是**默认列表页里的第一行**：`--url` 指到空结果页时读不到行 ⇒ 会红
   //   （那不是误报，而是"没落在探针认识的那个视图上"，与上面那组 STATE 判据同一个口径）。
   const P = JSON.parse(previewClose);

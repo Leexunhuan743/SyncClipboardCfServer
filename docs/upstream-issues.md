@@ -12,7 +12,7 @@
 
 **它不是**什么：`upstream-defects.md` 回答的是"上游的这个问题在本实现里怎么处置"
 （含**有意复刻**的契约类行为，那些不是 issue）；本实现自身的问题见
-[`security-fix-plan.md`](security-fix-plan.md)。三份不要混。
+[README 的安全机制](../README.md#安全机制) 与现行回归测试。历史安全审计过程已移出工作树。
 
 **核实方式**：只读通读上游源码，逐条给出 `文件:行` 与逐字代码；**未运行**上游服务端。
 因此凡"影响"是按代码语义的推断，未实测处逐一标注；已用官方发布件 A/B 实测过的项标
@@ -469,7 +469,7 @@ scheduler.AddJob<OrphanedHistoryCleanupJob>(TimeSpan.FromHours(6));      // 按�
 
 | 候选 | 为什么不成立 |
 |---|---|
-| 「`Web.cs:27-29` 只 `AddAuthentication("BasicAuthentication")` 而未设 `DefaultChallengeScheme`，因此 `[Authorize]` 拒绝时会抛 `No authenticationScheme was specified` → 500」 | **驳回**。ASP.NET Core 解析默认质询方案的回退链是 `DefaultChallengeScheme ?? DefaultScheme`，而 `AddAuthentication("BasicAuthentication")` 设的正是 `DefaultScheme` ⇒ 质询落到 `BasicAuthenticationHandler`，401 + `WWW-Authenticate` 正常生效。**官方文档依据**：`AddAuthentication(IServiceCollection, String)` 的参数说明是 "The default scheme used as a **fallback for all other schemes**"，`AuthenticationOptions.DefaultScheme` 是 "Used as the **fallback default scheme for all the other defaults**"，而 `DefaultChallengeScheme` 才是 `ChallengeAsync` 的默认方案。**[A/B 实测]**：对官方发布件发一条未认证的 `GET /api/version` 得到 **401 + `WWW-Authenticate: Basic realm="SyncClipboard"`**（`tools/ab-upstream-probe.ps1` 用例 1、`docs/progress.md` §44），不存在"401 变 500"。 |
+| 「`Web.cs:27-29` 只 `AddAuthentication("BasicAuthentication")` 而未设 `DefaultChallengeScheme`，因此 `[Authorize]` 拒绝时会抛 `No authenticationScheme was specified` → 500」 | **驳回**。ASP.NET Core 解析默认质询方案的回退链是 `DefaultChallengeScheme ?? DefaultScheme`，而 `AddAuthentication("BasicAuthentication")` 设的正是 `DefaultScheme` ⇒ 质询落到 `BasicAuthenticationHandler`，401 + `WWW-Authenticate` 正常生效。**官方文档依据**：`AddAuthentication(IServiceCollection, String)` 的参数说明是 "The default scheme used as a **fallback for all other schemes**"，`AuthenticationOptions.DefaultScheme` 是 "Used as the **fallback default scheme for all the other defaults**"，而 `DefaultChallengeScheme` 才是 `ChallengeAsync` 的默认方案。**[A/B 实测]**：对官方发布件发一条未认证的 `GET /api/version` 得到 **401 + `WWW-Authenticate: Basic realm="SyncClipboard"`**（`tools/ab-upstream-probe.ps1` 用例 1、Git history），不存在"401 变 500"。 |
 | 「`README_DOCKER.md:54` 让用户把配置挂到 `/app/appsettings.json`，而 `Dockerfile:17` 的 `--contentRoot` 是 `/app/data`，所以按文档挂载不生效、改密码无效」 | **驳回**。`Program.cs:48-74` 的 `EnsureAppSettingsExists` 在 `/app/data/appsettings.json` 不存在时，会从 `AppContext.BaseDirectory`（= `/app`，正是文档里的挂载点）**复制**该文件到 `/app/data/` 并 `AddJsonFile(...)` 显式加载 ⇒ 文档给的挂载路径恰好落在复制来源上，配置能生效。附带结论：镜像内的 `/app/appsettings.json`（占位口令）会被复制成运行时配置——这是 Issue 1 的另一条触发路径，而不是"文档无效"。 |
 
 ## 待实测、暂不主张的候选（可提，但先要有证据）
