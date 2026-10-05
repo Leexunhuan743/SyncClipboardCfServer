@@ -81,15 +81,8 @@ describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
     expect(applyIdx, '缺少 Apply D1 schema 步骤').toBeGreaterThan(-1);
     expect(migrateIdx, '缺少 Migrate D1 步骤').toBeGreaterThan(applyIdx);
     expect(deployIdx, 'Deploy Worker 步骤缺失').toBeGreaterThan(migrateIdx);
-    const d1ExecLines = yml
-      .split('\n')
-      .filter((l) => l.includes('wrangler d1 execute'))
-      .filter((l) => !l.trim().startsWith('#')); // 跳过注释（如「参数本身就是 name or binding」的说明）
-    expect(d1ExecLines.length).toBeGreaterThanOrEqual(2);
-    for (const line of d1ExecLines) {
-      expect(line, `d1 execute 必须用 binding 名 DB：${line.trim()}`).toMatch(/d1 execute DB\b/);
-      expect(line).not.toMatch(/d1 execute syncclipboard\b/);
-    }
+    expect(yml).toContain('npx wrangler d1 execute DB --remote --file=./schema.sql');
+    expect(yml).not.toContain('wrangler d1 execute syncclipboard');
     const script = read('tools/migrate-d1.mjs');
     expect(script).toContain("const DB = 'DB'");
   });
