@@ -1,4 +1,4 @@
-// 三个手动探针（probe / probe-ui-v1 / states / shoot）共用的 CDP 原语。
+// 四个手动探针（probe / probe-ui-v1 / states / shoot）共用的 CDP 原语。
 //
 // 抽出来的理由：这几份脚本各自复制过一整套「找浏览器 / 起无头实例 / 连 CDP / 等 DevTools 就绪 /
 // 登录并注入会话 Cookie」的代码，改动一处要同步四处。这里只放**不含判据**的原语 ——
