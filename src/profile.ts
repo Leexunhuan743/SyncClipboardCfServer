@@ -1,6 +1,6 @@
 // 服务层共享原语：Profile 校验/持久化、DTO 映射与错误类型。
 // 两条写编排在 src/profileWrite.ts（PUT /SyncClipboard.json）与 src/profileHistory.ts（POST /api/history）。
-import { HistoryDb, basename, BadRequestError } from './db';
+import { basename, BadRequestError } from './db';
 import { R2Storage } from './storage';
 import {
   sha256Hex,
@@ -11,11 +11,6 @@ import {
   parseGroupZip,
 } from './hash';
 import { ProfileType, HistoryRecordEntity, ProfileDto } from './types';
-import { profileDtoToJson, profileDtoToWire } from './serialization';
-
-// `BadRequestError`/`basename` 的唯一定义处在 src/db.ts；此处转出以保持既有导入面
-// （两个路由与 test/limits.test.ts 从 './profile' 取），并与 db 侧 `instanceof` 同源。
-export { BadRequestError, basename };
 
 // ===== 异常 =====
 
@@ -186,15 +181,4 @@ async function textProfileHashOf(
     throw new ProfileDataInvalidError('Hash is not match data.');
   }
   return hash;
-}
-
-// 当前 profile 的落库 + 广播（PUT 路径命中复用分支与新建分支共用）
-export async function saveAndNotifyCurrentProfile(
-  db: HistoryDb,
-  entity: HistoryRecordEntity,
-  notify: NotifyHandlers,
-): Promise<void> {
-  const dto = entityToProfileDto(entity);
-  await db.setCurrentProfileJson(profileDtoToJson(dto));
-  await notify.notifyProfile(profileDtoToWire(dto));
 }

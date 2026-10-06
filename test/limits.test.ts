@@ -15,11 +15,11 @@ import {
   parseGroupZip,
 } from '../src/hash';
 import {
-  BadRequestError,
   PayloadTooLargeError,
   ProfileDataInvalidError,
   validateAndPersistData,
 } from '../src/profile';
+import { BadRequestError } from '../src/db';
 import { putSyncProfile } from '../src/profileWrite';
 import { addRecordDto } from '../src/profileHistory';
 import { ProfileType } from '../src/types';

@@ -6,11 +6,50 @@ import { stores } from '../../stores';
 import { drainRequestBody } from '../../auth';
 import { UiQueryError, listUiHistory, parseUiHistoryQuery, toUiItem } from '../query';
 import { fileHeaders } from '../../contentTypes';
-import {
-  parsePathIds,
-  parseRangeHeader,
-  resolveRange,
-} from './shared';
+import { parsePathIds } from './shared';
+
+// ===== Range（只给 `/ui/api/history/:type/:hash/data`）=====
+// 为什么只在这里加：协议侧 `/file/{name}`（src/routes/webdav.ts）与 `/api/history/{id}/data`
+// （src/routes/history.ts）忽略 `Range` 是**对齐上游的有意行为**（上游 `File(bytes, …)` 的
+// `EnableRangeProcessing` 默认 false，test/fix-regressions.test.ts 有断言守着），
+// 给那边加 206 会变成新的有意偏离。这里是本站自己的面，加 206 后浏览器/播放器能按需取片段。
+export type RangeSpec = { offset: number; length?: number } | { suffix: number };
+
+// 解析 `Range: bytes=a-b` / `bytes=a-` / `bytes=-n`；无法识别一律返回 null，调用方回退 200 全量。
+// 有意不做的两件事：
+//   ① 多段（`bytes=a-b,c-d`）：那要 multipart/byteranges 响应体，收益低（浏览器极少发多段），
+//      正则整体不匹配即落到「回退全量」；
+//   ② `If-Range` 条件：本端点不外发 ETag / Last-Modified，客户端没有可用来发 If-Range 的校验器，
+//      真收到也只当普通 Range 处理（不引入校验器状态）。
+export function parseRangeHeader(raw: string | undefined): RangeSpec | null {
+  if (!raw) return null;
+  // 单位名大小写不敏感（RFC 9110 §14.1）；只认单段
+  const match = /^\s*bytes\s*=\s*(\d*)-(\d*)\s*$/i.exec(raw);
+  if (!match) return null;
+  const startRaw = match[1]!;
+  const endRaw = match[2]!;
+  // `bytes=-n`：末尾 n 字节。n=0 语法合法但不可满足（RFC 9110 §14.1.2），留给 resolveRange 判 416
+  if (startRaw === '') return endRaw === '' ? null : { suffix: Number(endRaw) };
+  if (endRaw === '') return { offset: Number(startRaw) };
+  const start = Number(startRaw);
+  const end = Number(endRaw);
+  if (end < start) return null; // 畸形：last-byte-pos 小于 first-byte-pos
+  return { offset: start, length: end - start + 1 };
+}
+
+// 按对象实际大小把区间落成可返回的 [start, end]；不可满足（起点越界、末尾 0 字节）返回 null。
+// 调用方保证 size > 0：零长度对象在端点里按「忽略 Range」处理（见那里的注释）。
+// 超长数字串解析成 Infinity 时走「起点越界」这一支，不会把非法值透给 R2。
+export function resolveRange(spec: RangeSpec, size: number): { start: number; end: number } | null {
+  if ('suffix' in spec) {
+    if (spec.suffix <= 0) return null;
+    return { start: Math.max(size - spec.suffix, 0), end: size - 1 };
+  }
+  if (spec.offset >= size) return null;
+  const last =
+    spec.length === undefined ? size - 1 : Math.min(spec.offset + spec.length - 1, size - 1);
+  return { start: spec.offset, end: last };
+}
 
 export function createHistoryDataRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });

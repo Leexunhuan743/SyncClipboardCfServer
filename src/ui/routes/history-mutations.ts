@@ -17,12 +17,40 @@ import { isValidProfileHash, ProfileType } from '../../types';
 import type { HistoryRecordUpdateDto } from '../../types';
 import { BATCH_META_MAX_ITEMS, readBatchMeta, toUiItem } from '../query';
 import type { BatchMetaItem } from '../query';
-import {
-  BATCH_UPDATE_CONCURRENCY,
-  UI_TEXT_CREATE_MAX_BYTES,
-  mapLimit,
-  parsePathIds,
-} from './shared';
+import { parsePathIds } from './shared';
+
+// 「编辑文本」保存时的体积上限（UTF-8 字节）。1 MiB 是**编辑器的**上限而不是协议的：
+// 协议侧的记录可以有 48 MiB，但把这个量级的正文塞进 `<textarea>` 只会把页面卡死
+// （前端同一条判据见 `preview.js` 的 `EDIT_MAX_BYTES` —— 两处必须一致，改一处就要改另一处）。
+// 超限时服务端回 400 `text_too_large`（前端在按钮上就拦下，正常走不到这里；这是纵深防御）。
+export const UI_TEXT_CREATE_MAX_BYTES = 1024 * 1024;
+
+// 批量写的有界并发（见本文件里 batch-update 的注释）。
+// 10 是保守值：生产实测串行 663ms/条，10 路并行把 100 条从 ~66s 压到 ~5s，同时
+// D1/DO/R2 的并发压力可控；总量子请求不变（不影响 1000 上限的记账）。
+export const BATCH_UPDATE_CONCURRENCY = 10;
+
+// 有界并发执行：同时最多 `limit` 个 `fn` 在跑，保序（results 按下标填）。
+// 批量循环里每条相互独立，串行等的是网络往返；并行是纯粹地摊销延迟。
+export async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      const index = cursor++;
+      // index 由 cursor 递增保证 < items.length（取号与越界判定在同一同步段，无竞争）；
+      // `noUncheckedIndexedAccess` 收窄不掉这个不变量，显式断言。
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 export function createHistoryMutationRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });

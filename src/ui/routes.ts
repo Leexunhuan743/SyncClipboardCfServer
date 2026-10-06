@@ -8,13 +8,40 @@ import { Bindings } from '../env';
 import { isAuthConfigured, verifyCredentials, drainRequestBody } from '../auth';
 import { issueSession, clearSession } from './session';
 import { uiAuthMiddleware, authenticateUi } from './guard';
-import { maxRequestBodyBytes } from '../requestLimits';
+import { maxRequestBodyBytes, readBodyCapped } from '../requestLimits';
 import { notFoundPage } from './notFound';
 import { createUiMaintenanceRoutes } from './maintenance';
-import { readCredentials } from './routes/shared';
 import { createHistoryDataRoutes } from './routes/history-data';
 import { createHistoryMutationRoutes } from './routes/history-mutations';
 import { createInfoRoutes } from './routes/info';
+
+export interface UiCredentials {
+  username: string;
+  password: string;
+}
+
+// 读取结果：`ok` = 解析出的凭据；`too_large` = 超体量上限（**与畸形体区分**，
+// 否则同一个端点对超限会给出 400 而协议面给 413）。
+export type ReadCredentialsResult =
+  | { kind: 'ok'; credentials: UiCredentials }
+  | { kind: 'too_large' }
+  | { kind: 'invalid' };
+
+export async function readCredentials(raw: Request, limit: number): Promise<ReadCredentialsResult> {
+  try {
+    // 与入口的 login 解析同纪律：整包读取过体量上限（login 免认证，chunked 大 body 会绕过
+    // content-length 预检）
+    const body = await readBodyCapped(raw, limit);
+    if (body === null) return { kind: 'too_large' };
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+    if (typeof parsed?.username !== 'string' || typeof parsed.password !== 'string') {
+      return { kind: 'invalid' };
+    }
+    return { kind: 'ok', credentials: { username: parsed.username, password: parsed.password } };
+  } catch {
+    return { kind: 'invalid' };
+  }
+}
 
 export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });

@@ -29,6 +29,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check CI shell syntax
+        # tools/ci/*.sh 是部署流程的实质逻辑（见 deploy.yml 的三个 run: 一行调用）。
+        # 它们不在 tsc/eslint 的射程内，改坏了 PR 仍可能全绿 ⇒ 用 bash -n 机械守住语法边界。
+        run: bash -n tools/ci/*.sh
+
       - name: Run all tests against local Worker
         env:
           SYNC_USER: ci-user
