@@ -1,19 +1,16 @@
-// V1（`/ui_v1/`）界面的运行时探针（手动运行，不属于 npm test 套件）
-//
-// 为什么 V1 也需要它：2026-09-17 起 `public/ui_v1/` 从「冻结存档」重新变成**在维护的**
-// 界面（2026-09-18 起是**默认界面**，见该目录 README）。维护状态的界面需要它自己的一份「读真实 DOM 值」的
-// 工具——截图只能证明"看起来对"，证明不了"计算值对"。V2 有 `probe.mjs`，本文件是它的 V1
-// 对位物：同一套 CDP 起浏览器/登录/注入 Cookie 的做法，探针内容按 V1 的 DOM 重写。
+// V1（`/ui_v1/`）界面的运行时探针（手动运行，不属于 npm test 套件）。
+// V1 是在维护的默认界面（`public/ui_v1/README`），截图只能证明"看起来对"，
+// 证明不了"计算值对" —— 本文件读真实 DOM 值，CDP 原语共用 `./cdp.mjs`。
 //
 // 用法（需 dev server 已启动）：
 //   node test/manual/probe-ui-v1.mjs
 //   node test/manual/probe-ui-v1.mjs --width 390 --height 844
 //   node test/manual/probe-ui-v1.mjs --width 1024 --coarse   # 触屏模拟（COARSE 行会报媒体查询是否真匹配）
 //   node test/manual/probe-ui-v1.mjs --dark
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { collectErrors, createRecorder, launchBrowser, loginAndSetCookie } from './cdp.mjs';
 
 function arg(name, fallback = null) {
   const idx = process.argv.indexOf(`--${name}`);
@@ -21,8 +18,8 @@ function arg(name, fallback = null) {
 }
 
 const BASE = arg('base', 'http://127.0.0.1:8787');
-// 默认流程会真实写入再清理 PROBE-* 记录；与写库套件同一条目标边界。
-// 必须在启动浏览器、登录和任何请求之前检查，免得把探针误指线上实例。
+// 默认流程会真实写入再清理 PROBE-* 记录：必须在起浏览器、登录和任何请求之前拦住非本机目标，
+// 免得把探针误指线上实例。
 const targetHost = new URL(BASE).hostname;
 const localTargets = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0']);
 if (!localTargets.has(targetHost) && process.env.ALLOW_REMOTE_TARGET !== '1') {
@@ -36,51 +33,22 @@ const WIDTH = Number(arg('width', '1440'));
 const HEIGHT = Number(arg('height', '900'));
 const SETTLE = Number(arg('settle', '4000'));
 const DARK = process.argv.includes('--dark');
-// `--anonymous`：不注入会话 Cookie。登录页在已登录时会立刻跳走（login.js 的 session 探测），
-// 所以「看登录页长什么样」必须用未登录身份打开。
+// 登录页在已登录时会立刻跳走（login.js 的 session 探测）⇒ 看登录页必须用未登录身份打开。
 const ANONYMOUS = process.argv.includes('--anonymous');
-// `--shots <dir>`：除了打印数值，还把若干**真实状态**截成 PNG（给人看）。
-// 不传就只出数值 —— 这是它与 shoot.mjs 的分工：shoot 只出图，probe 出值，两者都能出图时
-// 以"谁拥有这个界面"为准：V1 的运行时证据都收在本文件里。
+// `--shots <dir>`：额外把若干**真实状态**截成 PNG（与 shoot.mjs 的分工：shoot 只出图、probe 出值）。
 const SHOTS = arg('shots', null);
-// 默认流程的 SAVE 检查会创建一条 PROBE-* 文本记录，再软删并彻底删除；清理失败会判红。
-// `--write` **额外**走收藏开关的往返写路径（状态净零）。两条都会改动目标实例，
-// 因此只应指向可写的本地测试实例。它验的是"点下去真的写进去了"，而不只是"按钮画得对"。
+// 默认流程的 SAVE 检查就会创建一条 PROBE-* 文本记录，再软删并彻底删除（清理失败会判红）。
+// `--write` **额外**走收藏/置顶开关的往返写路径（状态净零）。两者都只应指向可写的本地测试实例。
 const WRITE = process.argv.includes('--write');
 // `--coarse`：模拟触屏（`pointer: coarse`）。行内操作那一排的命中区与间距只在粗指针下才变，
-// 而它正是"下载紧挨着删除"这类误触的现场 —— 只能在模拟成触屏时才量得到。
+// 「下载紧挨着删除」这类误触只能在这一档量到。
 const COARSE = process.argv.includes('--coarse');
 
-const BROWSERS = [
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-];
-
-function findBrowser() {
-  for (const path of BROWSERS) if (existsSync(path)) return path;
-  throw new Error(`未找到 Edge/Chrome：\n  ${BROWSERS.join('\n  ')}`);
-}
-
-// 失败清单：探针末尾统一决定退出码（与同目录 probe.mjs 的 `problems` 同形）。
-//
-// ⚠️ 2026-09-21 修（真缺陷）：本文件此前在 CLS / 首帧两处直接调用 `check(...)`，而**从未定义它** ——
-// 探针打到 PERF 那一行就抛 `ReferenceError: check is not defined` 退出，后面的骨架几何、主题脚本、
-// 选择流、AUDIT 收尾**一行都没执行**；而那时退出码 1 也不是任何判据给的（见 Git history）。
-// 现在判据与 `auditFindings` 合并进同一个数组，末尾那处 `process.exitCode` 才真正是判据的出口。
-const auditFindings = [];
-function check(name, ok, detail) {
-  if (ok) return;
-  auditFindings.push(detail === undefined || detail === '' ? name : `${name}（读到 ${detail}）`);
-}
-
-// 「跳过」与「通过」必须分得开（2026-09-23 补，见 Git history那条 RETENTION-NOTE）：
-// 本文件里每个块都可能因为**前提不满足**而 `return { skipped: ... }`，而那些块一律把结果
-// `console.log` 出来。此前 `findings=0` 与"所有判据都真跑过"是两件事 —— 一条判据可能因为
-// 选择器与实现不同源而**一直在空转**（2026-09-23 抓到两处：IME 与写路径用 `#search`，
-// 而搜索框根本没有这个 id）。这里把 console.log 的 JSON 里出现的每个 `"skipped"` 都记下来，
-// 末尾统一判：**只有"环境/数据前提"允许跳过**，其余一律算判据失效（进 findings）。
+// 判据与几何审计合并进同一个数组，末尾那处 `process.exitCode` 才是判据的唯一出口。
+const { problems: auditFindings, check } = createRecorder();
+// 「跳过」与「通过」必须分得开：每个块都可能因**前提不满足**而 `return { skipped: ... }`，
+// 这里把打印出来的每个 `"skipped"` 记下来，末尾统一判 —— 只有环境/数据前提允许跳过，
+// 其余（比如选择器与实现不同源）一律算判据失效 ⇒ 进 findings。
 const skips = [];
 const origLog = console.log;
 console.log = (...args) => {
@@ -103,87 +71,19 @@ const SKIP_IS_PRECONDITION = [
   /no sticky chain/, // 卡片档没有吸顶表头 ⇒ "不被吸顶链挡住"这条判据不适用
 ];
 
-class Cdp {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    ws.addEventListener('message', (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.id === undefined || !this.pending.has(msg.id)) return;
-      const { settle, reject } = this.pending.get(msg.id);
-      this.pending.delete(msg.id);
-      if (msg.error) reject(new Error(`${msg.error.message} ${JSON.stringify(msg.error.data ?? '')}`));
-      else settle(msg.result);
-    });
-  }
-
-  send(method, params = {}, sessionId = undefined) {
-    const id = ++this.id;
-    return new Promise((settle, reject) => {
-      this.pending.set(id, { settle, reject });
-      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-      setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`CDP 超时：${method}`));
-      }, 30_000);
-    });
-  }
-}
-
-async function waitForDevTools(port, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`);
-      if (res.ok) return res.json();
-    } catch (error) {
-      last = error;
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  throw new Error(`DevTools 端点未就绪：${last?.message}`);
-}
-
-const profileDir = join(tmpdir(), `probe-ui-old-${process.pid}`);
-mkdirSync(profileDir, { recursive: true });
-// 文本下载的落点（`TEXTDL` 一行要读回磁盘上的那个 .txt），与浏览器 profile 同生命周期
+// 文本下载的落点（`TEXTDL` 一行要读回磁盘上的那个 .txt）。
 const downloadDir = join(tmpdir(), `probe-ui-old-dl-${process.pid}`);
-const proc = spawn(
-  findBrowser(),
-  [
-    '--headless=new',
-    `--remote-debugging-port=${PORT}`,
-    `--user-data-dir=${profileDir}`,
-    `--window-size=${WIDTH},${HEIGHT}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-extensions',
-    'about:blank',
-  ],
-  { stdio: 'ignore' },
-);
-
-let browserWs;
-let cdp;
+const { cdp, send, read, close } = await launchBrowser({
+  port: PORT,
+  width: WIDTH,
+  height: HEIGHT,
+  touch: COARSE,
+});
+const { consoleErrors, failedRequests } = collectErrors(cdp);
 try {
-  const version = await waitForDevTools(PORT);
-  browserWs = new WebSocket(version.webSocketDebuggerUrl);
-  await new Promise((settle, reject) => {
-    browserWs.addEventListener('open', settle, { once: true });
-    browserWs.addEventListener('error', () => reject(new Error('CDP WebSocket 连接失败')), {
-      once: true,
-    });
-  });
-  cdp = new Cdp(browserWs);
-
-  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
-  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-  const send = (method, params) => cdp.send(method, params, sessionId);
   // 真实输入的派发：细指针用鼠标；`--coarse` 下 Chrome headless 的触屏模拟会让
-  // `Input.dispatchMouseEvent` **永久挂起**（CDP 30s 超时；2026-09-23 实测，1440/1024 两档复现，
-  // 与 `setEmitTouchEventsForMouse` 的开关无关，切回 `Input.dispatchTouchEvent` 即恢复）。
-  // 粗指针设备本来就该用**轻点**：一次 touchStart + touchEnd，浏览器会合成兼容的 click。
+  // `Input.dispatchMouseEvent` **永久挂起**（CDP 30s 超时，切回 `Input.dispatchTouchEvent` 即恢复）
+  // —— 粗指针本来就该用轻点：一次 touchStart + touchEnd，浏览器会合成兼容的 click。
   const tapAt = async (x, y) => {
     if (COARSE) {
       await send('Input.dispatchTouchEvent', {
@@ -196,75 +96,23 @@ try {
     await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x, y });
     await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x, y });
   };
-  await send('Page.enable');
-  await send('Runtime.enable');
-  await send('Network.enable');
   await send('Emulation.setDeviceMetricsOverride', {
     width: WIDTH,
     height: HEIGHT,
     deviceScaleFactor: 1,
-    // 触屏模拟必须**在导航之前**设好（媒体查询首帧就参与布局），且 `mobile: true` 是必需的：
-    // Chrome 的 `(pointer: coarse)` 跟的是设备模拟里的"主指针"，只开 touch 事件时不匹配。
+    // `mobile: true` 是必需的：Chrome 的 `(pointer: coarse)` 跟的是设备模拟里的"主指针"，
+    // 只开 touch 事件时不匹配。**不**随 `--coarse` 改视口语义之外的东西（那会引入无关的水平溢出）。
     mobile: COARSE,
   });
-  if (COARSE) {
-    await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
-    await send('Emulation.setEmitTouchEventsForMouse', { enabled: true, configuration: 'mobile' });
-  }
+  if (COARSE) await send('Emulation.setEmitTouchEventsForMouse', { enabled: true, configuration: 'mobile' });
 
-  // 真实登录接口 → 服务端签发的会话 Cookie（与 shoot/probe 同一做法，不伪造已登录状态）
-  if (!ANONYMOUS) {
-    const login = await fetch(`${BASE}/ui/api/login`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: USER, password: PASS }),
-    });
-    if (!login.ok) throw new Error(`登录失败 ${login.status}：${await login.text()}`);
-    const rawCookie = (login.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');
-    const eq = rawCookie.indexOf('=');
-    await send('Network.setCookie', {
-      name: rawCookie.slice(0, eq),
-      value: rawCookie.slice(eq + 1),
-      domain: new URL(BASE).hostname,
-      path: '/',
-      httpOnly: true,
-      sameSite: 'Strict',
-    });
-  }
+  if (!ANONYMOUS) await loginAndSetCookie(send, { base: BASE, user: USER, pass: PASS });
 
-  const consoleErrors = [];
-  const failedRequests = [];
-  // requestId → 方法：失败请求那一行带上 `PATCH` / `POST` / `GET`，才能一眼看出是哪条路径
-  // （2026-09-23 定位「复制后的 touchAccess 被自己判 409」时缺的就是这个）。
-  // 只**加**信息，判据不变：仍然是「任何 ≥400 的响应都进 failedRequests」。
-  const requestMethods = new Map();
-  cdp.ws.addEventListener('message', (event) => {
-    const msg = JSON.parse(event.data);
-    if (msg.method === 'Network.requestWillBeSent') {
-      requestMethods.set(msg.params.requestId, msg.params.request?.method ?? '?');
-    }
-    if (msg.method === 'Runtime.consoleAPICalled' && msg.params?.type === 'error') {
-      consoleErrors.push((msg.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' '));
-    }
-    if (msg.method === 'Runtime.exceptionThrown') {
-      consoleErrors.push(`未捕获异常：${msg.params?.exceptionDetails?.exception?.description ?? ''}`);
-    }
-    if (msg.method === 'Network.responseReceived' && (msg.params?.response?.status ?? 200) >= 400) {
-      failedRequests.push(
-        `${msg.params.response.status} ${requestMethods.get(msg.params.requestId) ?? '?'} ${msg.params.response.url}`,
-      );
-    }
-  });
-
-  // ===== 首帧主题脚本的时序（回归首帧主题脚本的真实加载时序）=====
-  // `theme-init.js` 是 `<head>` 里 **位于样式表之后**的经典阻塞脚本，它那句
-  // `getComputedStyle(documentElement).getPropertyValue('--bg')` **到底取不取得到值**，
-  // 静态判不了：V2 的注释断言"此刻样式表还没加载、永远停在 HTML 静态值上"，
-  // 而按 HTML 规范前置样式表会阻塞经典脚本 —— 两种说法都说得通。
-  // 这里做**不改源码**的观测，两条证据链：
-  //   ① 包装 `getComputedStyle`，记下它每次被调用时看到的 `--bg`（第一笔就是 theme-init）；
-  //   ② 监听 `meta[name=theme-color]` 的 `content` 首次被写入的时刻（`readyState` + 已加载样式表数）。
-  // 判据：首次写入发生在 `readyState === 'loading'` 且写入值 ≠ HTML 里的静态值 ⇒ theme-init 取值成功。
+  // ===== 首帧主题脚本的时序 =====
+  // `theme-init.js` 是 `<head>` 里位于样式表之后的经典阻塞脚本，它那句
+  // `getComputedStyle(documentElement).getPropertyValue('--bg')` 到底取不取得到值，静态判不了。
+  // 这里**不改源码**地观测两笔：① 包装 `getComputedStyle` 记下每次调用时看到的 `--bg`；
+  // ② 监听 `meta[name=theme-color]` 的 `content` 首次写入的时刻（`readyState` + 已加载样式表数）。
   await send('Page.addScriptToEvaluateOnNewDocument', {
     source: `(() => {
       window.__probeTheme = { calls: [], writes: [] };
@@ -298,11 +146,9 @@ try {
     });
   }
 
-  // 首屏性能读数（2026-09-20 补，与 V2 的 `probe.mjs` 同形）：V1 的文档里一直写着
-  // 「连续重载 5 次 … CLS 全 0」（`docs/ui.md` §9 第 10 条），但**没有任何判据守着它**。
-  //  · cls   = layout-shift 的**非输入**位移之和（buffered ⇒ 含本页加载期全部位移）
-  //  · marks = 加载各阶段的高度快照（docH / 页脚位置 / 骨架行数 / readyState）
-  // ⚠️ 注入串里**不许出现反引号**（模板字面量，N-14 形态；本文件 2026-09-20 刚踩过一次）。
+  // 首屏性能读数：cls = layout-shift 的**非输入**位移之和（buffered ⇒ 含本页加载期全部位移）；
+  // marks = 加载各阶段的高度快照（docH / 页脚位置 / 骨架行数 / readyState）。
+  // ⚠️ 注入串里不许出现反引号（模板字面量），一个反引号就会把它提前结束。
   await send('Page.addScriptToEvaluateOnNewDocument', {
     source: `(() => {
       const P = { cls: 0, shifts: [], marks: [] };
@@ -361,22 +207,7 @@ try {
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, SETTLE));
 
-  const read = async (expression) => {
-    const result = await send('Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    });
-    if (result.exceptionDetails) {
-      const d = result.exceptionDetails;
-      throw new Error(
-        `${d.text ?? 'Uncaught'} :: ${d.exception?.description ?? JSON.stringify(d).slice(0, 400)}`,
-      );
-    }
-    return result.result.value;
-  };
-
-  // 对比度按 sRGB 相对亮度算（WCAG 2.x）。徽标这类小字必须 ≥ 4.5:1。
+  // 对比度按 sRGB 相对亮度算（WCAG 2.x），小字必须 ≥ 4.5:1。
   const CONTRAST_HELPER = `
     const lum = (rgb) => {
       const [r, g, b] = rgb.map((v) => {
@@ -420,10 +251,8 @@ try {
     });
     const theadRow = document.querySelector('.table thead tr');
     const theadRect = theadRow ? theadRow.getBoundingClientRect() : null;
-    // 表头**格子**相对表头**行**的位移：sticky 生效时它会被顶离行盒，而布局高度不变。
-    // 2026-09-17 的教训：.results 上的 overflow:hidden 让卡片成了滚动容器，
-    // th 的 top:var(--header-h) 于是把表头下推 56px（自然位置只有 42px 的头栏），
-    // 结果表头灰底压在第一行数据上 —— 只量行高永远量不出来，必须量这个差。
+    // 表头**格子**相对表头**行**的位移：sticky 生效时格子被顶离行盒，而布局高度不变
+    // ⇒ 表头灰底会压在第一行数据上，只量行高永远量不出来。
     const firstHeadCell = theadRow ? theadRow.querySelector('th') : null;
     const theadCellOffset = theadRect && firstHeadCell
       ? Math.round((firstHeadCell.getBoundingClientRect().top - theadRect.top) * 10) / 10
@@ -455,8 +284,7 @@ try {
       : null;
     const stats = q('.stats');
     const toolbar = q('.toolbar');
-    // 四种类型徽标的前景/背景直接读令牌：列表当前页不一定同时出现四种类型，
-    // 而「深色下徽标对比度」这条判据必须对四个都成立才叫成立。
+    // 徽标对比度直接读令牌：列表当前页不一定同时出现四种类型，而判据要对四个都成立。
     const rootStyle = getComputedStyle(document.documentElement);
     const token = (name) => rootStyle.getPropertyValue(name).trim();
     const typeContrast = ['text', 'image', 'file', 'group'].map((kind) => {
@@ -478,16 +306,12 @@ try {
       rows: rows.length,
       headText: q('.results__count')?.textContent ?? null,
       rowHeight: rows.length ? Math.round(rows[0].getBoundingClientRect().height) : null,
-      // **逐行**高度：只量第一行是"抽样"，而"所有行等高"是**集合上的不变式** ——
-      // 2026-09-17 的教训：上面那个 rowHeight 只取 rows[0]，于是"第一行与其余行不一样"
-      // 这类问题恰好被这个采样点遮住（用户截图指出第一行更高，而探针只报了一个数）。
-      // （这段注释里不能出现反引号：整块是模板字面量，一个反引号就会把它提前结束。）
+      // **逐行**高度：只量第一行是抽样，而"所有行等高"是集合上的不变式。
       rowHeights: [...new Set(rows.map((r) => +r.getBoundingClientRect().height.toFixed(1)))].sort(
         (a, b) => a - b,
       ),
       rowHeightsFirst5: rows.slice(0, 5).map((r) => +r.getBoundingClientRect().height.toFixed(1)),
-      // 比"众数"高的行是哪几条、高在哪：行高不一致本身不是缺陷（缩略图/换行/徽标都会撑高），
-      // 但**必须知道是哪一类行** —— 否则"第一行为什么更高"这种问题只能靠盯图猜。
+      // 比"众数"高的行是哪几条、高在哪（缩略图/换行/徽标都会撑高，得知道是哪一类行）。
       tallRows: (() => {
         const heights = rows.map((r) => r.getBoundingClientRect().height);
         if (heights.length === 0) return null;
@@ -514,7 +338,6 @@ try {
             })(),
           }));
       })(),
-      // 第一行每个单元格的高度与宽度：用来定位"是哪一格把它撑高的"
       firstRowCells: rows.length
         ? [...rows[0].children].map((td) => ({
             cls: (td.className || '').toString().slice(0, 24),
@@ -534,7 +357,7 @@ try {
       selectionHiddenAttr: selection ? selection.hidden : null,
       selectionDisplay: selection ? getComputedStyle(selection).display : null,
       statsHeight: box(stats)?.h ?? null,
-      // 活动趋势（借自 V2 的 /ui/api/activity）：柱子数、高度分布与可访问名。
+      // 活动趋势（借自 V2 的 /ui/api/activity）：柱子数与高度分布。
       // 「14 根柱子都有高度」是判据本身 —— 0 高度的柱子视觉上等于"这天不存在"。
       spark: (() => {
         const node = q('.stats__spark');
@@ -548,7 +371,7 @@ try {
         };
       })(),
       toolbarHeight: box(toolbar)?.h ?? null,
-      // 工具栏每一组的位置与宽度：溢出与"挤成几行"都只能从这些盒子看出来
+      // 工具栏每一组的位置与宽度：溢出与"挤成几行"都只能从这些盒子看出来。
       toolbarBoxes: toolbar
         ? [...toolbar.children].map((child) => {
             const r = child.getBoundingClientRect();
@@ -562,7 +385,7 @@ try {
         : null,
       sortHeads,
       theadInfo,
-      // 必须是 0：不为 0 说明表头被 sticky 顶离了它自己的行盒（视觉上压住相邻行）
+      // 必须是 0：不为 0 说明表头被 sticky 顶离了它自己的行盒（视觉上压住相邻行）。
       theadCellOffset,
       headGap: (() => {
         const head = q('.results__head');
@@ -573,7 +396,7 @@ try {
       rowActionButtons: rows.length ? rows[0].querySelectorAll('.row-actions .icon-btn').length : null,
       rowActionsOpacity: rows.length ? getComputedStyle(rows[0].querySelector('.row-actions')).opacity : null,
       // 行内操作必须落在自己的单元格里：表格不产生滚动条，溢出只会表现为"贴到卡片右边"
-      // 或盖住相邻列——两种都不会报错，只能靠量。取一行按钮最多的（图片行：4 个）。
+      // 或盖住相邻列，两种都不报错，只能靠量。取一行按钮最多的（图片行：4 个）。
       actionsFit: (() => {
         if (!rows.length) return null;
         const row = rows.find((r) => r.querySelectorAll('.row-actions .icon-btn').length >= 4) ?? rows[0];
@@ -590,27 +413,19 @@ try {
           overflow: Math.round(right - cellRect.right),
         };
       })(),
-      // 提示条已于 2026-09-19 随改名一起移除（目录改名历史见 Git；Git history把本项
-      // 记作"提示条确已移除"的证据）⇒ 这是一条**缺席断言**：恒为 true，若有人把它加回来就变 false。
-      // （原来写作「q('.notice-bar') ? !q('.notice-bar').hidden : null」—— 那个 null 既不能区分
-      //  "按预期移除"与"选择器打错"，也不再有任何变化空间。）
-      // ⚠️ 本条注释里不能出现反引号：整段是模板字面量，一个反引号就会把它提前结束（N-14 形态，
-      // 见下方 overflowers 那条同款提醒）—— 2026-09-20 这处正是这么把整份探针写坏过一次。
+      // 缺席断言：提示条已随改名一起移除，恒为 true，谁加回来就变 false。
+      // ⚠️ 本条注释里不能出现反引号：整段是模板字面量。
       noticeBarRemoved: q('.notice-bar') === null,
       pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      // 吸顶元素必须**不透明**：吸顶意味着它会盖在滚过的内容上，透明底会让下面的行透出来
-      // （2026-09-22 用户截图报的「共 N 条记录 这一行透明了」—— 头栏改成恒吸顶后底色仍只在选中态，
-      // 于是未选中时滚动就是一块透明玻璃）。几何判据看不见这件事，只有计算色能看见。
-      // （本段在模板字符串里，注释中不能出现反引号。）
+      // 吸顶元素必须**不透明**：吸顶意味着它盖在滚过的内容上，透明底会让下面的行透出来
+      // （头栏改成恒吸顶后底色仍只在选中态 ⇒ 未选中时是一块透明玻璃）。只有计算色能看见这件事。
       stickyBg: ['.results__head', '.table th']
         .map((sel) => {
           const el = document.querySelector(sel);
           return el ? { sel, bg: getComputedStyle(el).backgroundColor } : null;
         })
         .filter(Boolean),
-      // 横向溢出的**肇事者**：scrollWidth > clientWidth 只说"有溢出"，
-      // 定位还得逐元素量右边缘。取最靠右的前 5 个，附标签名与类名。
-      // （本条注释里不能出现反引号：整段是模板字面量，一个反引号就会把它提前结束。）
+      // 横向溢出的**肇事者**：scrollWidth > clientWidth 只说"有溢出"，定位还得逐元素量右边缘。
       overflowers: (() => {
         const limit = document.documentElement.clientWidth;
         return [...document.querySelectorAll('body *')]
@@ -632,11 +447,9 @@ try {
   })()`);
   console.log('STATE   ', state);
 
-  // ===== 吸顶元素必须**不透明**（2026-09-22 用户截图："共 1012 条记录 这一行透明了"）=====
-  // 头栏改成**恒吸顶**之后，底色仍只在选中态出现（`--accent-soft`）⇒ 未选中时它是一块透明玻璃，
-  // 滚过的行从背后透出来。这一类的性质在**别的守卫里全都看不见**：几何审计只比矩形关系、
-  // 行高/间距判据只看布局、`ui-guard` 只看模块图与挂载点 —— 只有**计算色**能看见"透不透"。
-  // 两条都要查（头栏 + 表头），缺一条就漏一半。
+  // ===== 吸顶元素必须**不透明** =====
+  // 几何审计只比矩形关系、行高判据只看布局、`ui-guard` 只看模块图 —— 只有**计算色**能看见
+  // "透不透"。头栏与表头两条都要查，缺一条就漏一半。
   {
     const s = JSON.parse(state);
     const bg = s.stickyBg ?? [];
@@ -650,8 +463,7 @@ try {
     );
   }
 
-  // ── 首屏性能：CLS 与加载各阶段高度（把「CLS 全 0」变成判据）──
-  // 读点放在**首屏刚落地、探针还没开始交互**的位置（同 V2 的 `probe.mjs`，理由见那边的注释）。
+  // ── 首屏性能：CLS 与加载各阶段高度（把「连续重载 CLS 全 0」那条变成判据）──
   const perf = JSON.parse(
     await read(`JSON.stringify({
       cls: Math.round((window.__probePerf ? window.__probePerf.cls : -1) * 1e4) / 1e4,
@@ -669,7 +481,7 @@ try {
   console.log('PERF    ', JSON.stringify(perf));
   const preJs = (perf.marks ?? []).find((m) => m.why === 'interactive');
   check(
-    '首屏 CLS 没退化（判据取 0.1 = "good" 阈值，其职责是抓回归：修前 V1 是 0.928）',
+    '首屏 CLS 没退化（0.1 = "good" 阈值）',
     (perf.clsAtLoad ?? perf.cls) >= 0 && (perf.clsAtLoad ?? perf.cls) <= 0.1,
     'clsAtLoad=' + String(perf.clsAtLoad) + ' cls=' + String(perf.cls) + ' shifts=' + JSON.stringify(perf.shifts),
   );
@@ -679,11 +491,9 @@ try {
     JSON.stringify(preJs),
   );
 
-  // ===== 静止即静止（handfeel §7 的落点：到达并停住）=====
-  // 判据不是"看着不动"，而是 `document.getAnimations()` 里没有还在跑的动画。允许的例外只有
-  // **在用持续动效编码"正在做"的那两个**：推送通道连接中的旋转环、以及骨架屏的呼吸
-  // （骨架屏只在首屏未就绪时存在，这里一般看不到）。其余任何 running 动画都意味着
-  // "页面已经静止了，但还有东西在动" —— 那正是装饰性循环动效的形态。
+  // ===== 静止即静止：到达并停住 =====
+  // 判据是 `document.getAnimations()` 里没有还在跑的动画；例外只有在用持续动效编码"正在做"的
+  // 推送通道旋转环（骨架屏只在首屏未就绪时存在）。
   const settled = await read(`(() => {
     const running = document.getAnimations().filter((a) => a.playState === 'running');
     const nameOf = (a) => a.animationName ?? (a.transitionProperty ? 'transition:' + a.transitionProperty : 'unknown');
@@ -697,8 +507,8 @@ try {
   console.log('SETTLED ', settled);
 
   // ===== 首帧主题脚本：把上面那支观测读回来 =====
-  // `theme` = 生效主题；`meta` = 最终写进 `theme-color` 的值（HTML 静态值是 `#faf8f5`）；
-  // `firstBgSeen` = `getComputedStyle` 被**第一次**调用时看到的 `--bg`（即 theme-init 看到的值）。
+  // `firstBgSeen` = `getComputedStyle` 被第一次调用时看到的 `--bg`（即 theme-init 看到的值）；
+  // 判据：首次写入发生在 `readyState === 'loading'` 且写入值 ≠ HTML 静态值 ⇒ theme-init 取值成功。
   const themeProbe = await read(`(() => {
     const probe = window.__probeTheme ?? { calls: [], writes: [] };
     return JSON.stringify({
@@ -713,10 +523,9 @@ try {
   })()`);
   console.log('THEMECOLOR', themeProbe);
 
-  // ===== 运行期那条断言（V2 `theme.js:9-10`：「切换后 `getComputedStyle` 会立即返回**旧值**」）=====
-  // 两版运行期都是"先写 `dataset.theme`、再读计算值去同步 `theme-color`" ⇒ 这条断言若是假的，
-  // 两边都不用绕开计算值。**非破坏性**：同一个同步块里设属性→读数→立刻还原（还原 `data-theme`
-  // 与 `theme-color` 两样），中间态不渲染，后续读数不受影响。
+  // ===== 运行期：先写 `data-theme` 再读计算值是否会读到旧值 =====
+  // **非破坏性**：同一个同步块里设属性 → 读数 → 立刻还原 `data-theme` 与 `theme-color`，
+  // 中间态不渲染，后续读数不受影响。
   const themeSwitch = await read(`(() => {
     const root = document.documentElement;
     const meta = document.querySelector('meta[name="theme-color"]');
@@ -740,15 +549,11 @@ try {
   })()`);
   console.log('THEMESWITCH', themeSwitch);
 
-  // ===== 顶栏那枚「部署信息」胶囊：四个字**不许断开**（2026-09-18 用户截图）=====
-  // 用户看到的形态是「部署信 / 息」两行、字还溢出了 30px 高的胶囊。根因是**没有 nowrap**：
-  // 胶囊是 flex 项，顶栏一挤就按比例被压，而中文没有词边界，于是"能压到只剩一个字的宽度"。
-  // 这里量四件事，任何一条不达标都能一眼定位：
-  //   ① `labelLines` —— 数**文字的行盒**：`entry.getClientRects()` 不行（它在 flex 里被块化，
-  //      只有一个盒子，288px 实测那会儿它报 1、而高度是 81px 的 4 行），用 Range 取文本的矩形；
-  //      ② 胶囊自身的宽高（字溢出去时 label 盒比胶囊高）；
-  //   ③ `innerOverflow` —— 顶栏内容超出容器的量，超出的部分会被 `html { overflow-x: clip }` 裁掉，
-  //      屏幕上"看不见"但东西真的没了；④ 最右那个控件还在不在视口里。
+  // ===== 顶栏那枚「部署信息」胶囊：四个字**不许断开** =====
+  // 胶囊是 flex 项，顶栏一挤就按比例被压，而中文没有词边界 ⇒ 没有 nowrap 时会折成两行并溢出。
+  // 量四件事：① `labelLines` 数**文字的行盒**（`getClientRects()` 在 flex 里被块化，只有 1 个盒子，
+  // 必须用 Range 取文本矩形）；② 胶囊自身的宽高；③ 顶栏内容超出的量（超出部分被
+  // `html { overflow-x: clip }` 裁掉，屏幕上"看不见"但东西真的没了）；④ 最右控件还在不在视口里。
   const header = await read(`(() => {
     const entry = document.querySelector('.status__entry');
     const pill = document.querySelector('.status');
@@ -777,12 +582,9 @@ try {
   })()`);
   console.log('HEADER  ', header);
 
-  // ===== 工具栏：「每页条数 + 刷新」这一组（2026-09-18 用户要求）=====
-  // 用户要的是"50 条/页 绑定刷新，放在下面一行右边"。三件事都要量，缺一条就不算做到：
-  // ① 每页条数**在窄屏还看得见**（上一版是 `display: none`，那条已被反转）；
-  // ② 两件在**同一组/同一行**（它们本来就是 `.toolbar__group--pager` 的两个孩子）；
-  // ③ 整组贴**行尾**（`margin-left: auto`）：`gapToRight` 应为 0；放不下时它会整体落到下一行，
-  //    那时 `sameRowAsFilters` 为 false 但 `gapToRight` 仍应为 0。
+  // ===== 工具栏：「每页条数 + 刷新」这一组 =====
+  // ① 每页条数在窄屏还看得见；② 两件在**同一组/同一行**；③ 整组贴行尾（`margin-left: auto`）：
+  // `gapToRight` 应为 0；放不下时整组落到下一行，那时 `sameRowAsFilters` 为 false 但 gap 仍应为 0。
   const pagerBar = await read(`(() => {
     const toolbar = document.querySelector('.toolbar');
     const pager = toolbar?.querySelector('.toolbar__group--pager') ?? null;
@@ -806,12 +608,10 @@ try {
       gapToRight: rb && box ? Math.round(box.right - rb.right) : null,
       toolbarOverflow: toolbar ? Math.round(toolbar.scrollWidth - toolbar.clientWidth) : null,
       viewport: window.innerWidth,
-      // 工具栏那排 chip 的定形读数（2026-09-23 四句话定形后）：七枚 chip 的**文字都要在**、
-      // 类型五枚的**计数也要在**、每枚都有 aria-label、且类型那排**不溢出**（放不下时换行）。
+      // 七枚 chip 的**文字都要在**、类型五枚的**计数也要在**、每枚都有 aria-label、
+      // 且类型那排**不溢出**（放不下时换行）。
       chips: [...document.querySelectorAll('.toolbar .segmented__item')].map((b) => {
-        // 文字那一段是**无类名**的 span（toolbar.js 用 el('span', {text})）—— 七枚 chip 现在
-        // 都不带类，故按"不是计数的那个 span"来认（第一版按类名找，那版折字被否掉之后类名没了，
-        // 判据当场假红 —— 记在这里免得下次再踩）。
+        // 文字那一段是**无类名**的 span（toolbar.js 用 el('span', {text})），故按"不是计数的那个"来认。
         const labelSpan =
           b.querySelector('.segmented__label') ??
           [...b.children].find((c) => c.tagName === 'SPAN' && !c.classList.contains('segmented__count')) ??
@@ -844,8 +644,8 @@ try {
     const chips = p.chips ?? [];
     const types = chips.slice(0, 5);
     const views = chips.slice(5);
-    // 定形的结论（2026-09-23 用户四句话）：**这一行不折叠任何文字** —— 类型五枚保留
-    // 图标 + 文字 + 计数，两枚视图 chip 也保留文字；放不下时换行（下面那条溢出判据）。
+    // 定形结论：**这一行不折叠任何文字** —— 类型五枚保留图标 + 文字 + 计数，两枚视图 chip
+    // 也保留文字；放不下时换行（下面那条溢出判据）。
     check(
       '七个 chip 的文字都显示（这一行不折字：折了两枚视图 chip 会在行中间留一个大洞）',
       chips.length === 7 && chips.every((c) => c.labelShown === true),
@@ -861,8 +661,8 @@ try {
       types.length === 5 && types.every((c) => /^(全部|文本|图片|文件|组合)( [0-9]+)?$/.test(c.aria ?? '')),
       JSON.stringify(types.map((c) => c.aria)),
     );
-    // 两枚视图 chip **不另挂 aria-label**：文字本来就显示着，再挂一个与可见文字不同的名字会违反
-    // "可见标签必须包含在可访问名里"（语音控制说"点击 收藏"会对不上）。它们的说明在 `title` 上。
+    // 两枚视图 chip **不另挂 aria-label**：文字本来就显示着，再挂一个不同的名字会违反
+    // "可见标签必须包含在可访问名里"。它们的说明在 `title` 上。
     check(
       '视图 chip（收藏 / 回收站）的名字就是它的可见文字（不另挂 aria-label）',
       views.length === 2 && views.every((c) => c.labelShown === true && (c.aria ?? '') === ''),
@@ -875,10 +675,10 @@ try {
     );
   }
 
-  // ===== 行内操作这一排的命中区（2026-09-18）=====
-  // 判据来自 V2 踩过的坑：44px 命中区之间只要重叠或贴太近，「下载」与「删除」就会互相误触。
-  // 这里量五件事：媒体查询是否真的匹配（不匹配则这次证据无效，一眼能看出）、这一排的 rest 不透明度、
-  // 按钮的实际尺寸、相邻按钮的**中心距**（≥44 才不重叠）、以及最宽一行（4 个按钮）是否还在单元格里。
+  // ===== 行内操作这一排的命中区 =====
+  // 44px 命中区之间只要重叠或贴太近，「下载」与「删除」就会互相误触。量五件事：
+  // 媒体查询是否真匹配（不匹配则这次证据无效）、这一排的 rest 不透明度、按钮实际尺寸、
+  // 相邻按钮的**中心距**（≥44 才不重叠）、最宽一行（4 个按钮）是否还在单元格里。
   const coarseGeom = await read(`(() => {
     const rows = [...document.querySelectorAll('tbody tr.row')];
     if (!rows.length) return JSON.stringify({ skipped: 'no rows' });
@@ -905,8 +705,7 @@ try {
   console.log('COARSE  ', coarseGeom);
 
   // 禁用态的行内按钮还能不能被指针"够到"：够不到就没有 title 提示、也没有 not-allowed 光标
-  // （`.icon-btn[disabled]` 曾经带 `pointer-events: none`，于是「数据不可用，无法下载」永远看不见）。
-  // 用一个临时节点读计算值，读完立刻摘掉 —— 不改页面状态、也不进截图。
+  // （`.icon-btn[disabled]` 曾带 `pointer-events: none`）。临时节点读计算值，读完立刻摘掉。
   const disabledIcon = await read(`(() => {
     const probe = document.createElement('button');
     probe.className = 'icon-btn';
@@ -921,10 +720,9 @@ try {
   })()`);
   console.log('DISABLED', disabledIcon);
 
-  // ===== 分页在窄屏的行结构（2026-09-18 用户截图：390px 下折成四行、按钮各占一行）=====
+  // ===== 分页在窄屏的行结构 =====
   // 判据是"控件之间的**行关系**"而不是"看着行不行"：范围文本允许独占一行（它长），
-  // 但「上一页 / 第 X/Y 页 / 下一页」必须**同一行**。根因曾是两者共用 `pagination__range`
-  // 这个类，窄屏那条 `width: 100%` 把页码标签也撑成整行。
+  // 但「上一页 / 第 X/Y 页 / 下一页」必须**同一行**（窄屏那条 `width: 100%` 曾把页码标签撑成整行）。
   const pager = await read(`(() => {
     const nav = document.querySelector('.pagination');
     if (!nav) return JSON.stringify({ skipped: 'no .pagination' });
@@ -934,20 +732,17 @@ try {
     const label = rectOf(nav.querySelector('.pagination__page'));
     const prev = rectOf(buttons.find((b) => (b.textContent ?? '').includes('上一页')));
     const next = rectOf(buttons.find((b) => (b.textContent ?? '').includes('下一页')));
-    // 判据是竖直投影是否重叠，**不是"top 相等"**：分页容器是 align-items center，
-    // 36px 的按钮与 18px 的文字天然差 9px —— 第一版拿 top 比，写出了假阴性。
-    // （提醒：这一段在模板串里，注释里不要再出现反引号，否则会把外层串提前闭合。）
+    // 判据是竖直投影是否重叠，**不是"top 相等"**：容器是 align-items center，
+    // 36px 的按钮与 18px 的文字天然差 9px（拿 top 比会写出假阴性）。
     const sameLine = (a, b) => (a && b ? a.bottom > b.top + 1 && b.bottom > a.top + 1 : null);
     const tops = [range, prev, label, next].filter(Boolean).map((r) => Math.round(r.top));
     return JSON.stringify({
-      // rows（去重后的 top 个数）**不能**当作行数：同一行上居中对齐的控件 top 各不相同
-      // （36px 按钮 vs 18px 文字差 9px）。只报"谁和谁同行"这两条关系。
+      // rows（去重后的 top 个数）**不能**当作行数：同一行上居中对齐的控件 top 各不相同。
       rangeAloneOnFirstLine: range && prev ? !sameLine(range, prev) : null,
       prevLabelSameLine: sameLine(prev, label),
       labelNextSameLine: sameLine(label, next),
       rangeOwnLine: range && prev ? Math.round(range.top) < Math.round(prev.top) : null,
-      // 控制组要**靠右**：最后一个**可见**子元素（窄屏是 next，桌面还有跳页输入框跟在它后面）
-      // 的右缘与容器右缘的差值应≈0。窄屏换行到第二行时同样成立 —— 那正是 margin-left:auto 的作用。
+      // 控制组要**靠右**：最后一个**可见**子元素的右缘与容器右缘的差值应≈0（窄屏换行到第二行同样成立）。
       groupRightGap: (() => {
         const visible = [...nav.children].filter((n) => getComputedStyle(n).display !== 'none');
         const last = visible[visible.length - 1];
@@ -959,12 +754,8 @@ try {
   })()`);
   console.log('PAGER   ', pager);
 
-  // ===== 首屏截图必须在**任何交互之前**拍 =====
-  // 下面三段（SELECTION / KEYNAV / IME）会真的去点复选框、按方向键、往搜索框里打字，
-  // 而 IME 那段收尾时会走 `setFilters({ search, page: 1 })` —— **把页码重置回 1**。
-  // 于是 `--url '/ui_v1/?page=99'` 这种用法下，STATE 打印的是越界页（夹取前 rows=0、
-  // 夹取后 rows=9），而 01-list.png 里却是第 1 页：截图与数值互相矛盾，而"照片不是那个
-  // 状态"的证据比没有证据更糟（这一次就是这么被骗了一遍）。故把拍照点提到 STATE 之后。
+  // 首屏截图必须在**任何交互之前**拍：下面几段会真的点复选框、按方向键、往搜索框打字，
+  // 而 IME 那段收尾会把页码重置回 1 —— 否则截图与 STATE 数值互相矛盾。
   const shotDir = SHOTS ? resolve(SHOTS) : null;
   if (shotDir) mkdirSync(shotDir, { recursive: true });
   const shot = async (name) => {
@@ -976,11 +767,8 @@ try {
   if (shotDir) await shot('01-list');
 
   // ===== 绘制几何审计 =====
-  //
-  // 这一类检查是 2026-09-17 两次"看走眼"之后补的：**布局指标全对、只有像素不对**的缺陷
-  // （sticky 位移、绝对定位跑出容器、相邻行压在一起）在 `getBoundingClientRect` 的"高度"里
-  // 完全看不出来 —— 必须逐元素比**矩形之间的包含与重叠关系**。
-  // 判据都是集合上的不变式（"所有格子都在自己行里"），不是抽样。
+  // **布局指标全对、只有像素不对**的缺陷（sticky 位移、绝对定位跑出容器、相邻行压在一起）
+  // 在"高度"里完全看不出来，必须逐元素比**矩形之间的包含与重叠关系**。判据都是集合上的不变式。
   const AUDIT_EXPR = `(() => {
     const round = (n) => Math.round(n * 10) / 10;
     const findings = [];
@@ -1058,9 +846,7 @@ try {
 
     return JSON.stringify({ findings, count: findings.length });
   })()`;
-  // 判据一直在，但**只打印、不影响退出码** —— 人工不逐行看输出就发现不了（审计 §12.16③）。
-  // 这里把每次结果累计起来，末尾统一决定退出码；同目录的 states.mjs 早已是这个写法。
-  // （`auditFindings` 现在声明在文件头部，与 `check()` 共用同一个数组 —— 见那里的注释。）
+  // 每次审计结果累计进 `auditFindings`，末尾统一决定退出码（只打印的话人工不逐行看就发现不了）。
   const runAudit = async (label) => {
     const raw = await read(AUDIT_EXPR);
     console.log('AUDIT   ', label + ' ' + raw);
@@ -1072,37 +858,24 @@ try {
   };
   await runAudit('initial');
 
-  // ===== 骨架行高 = 真实行高（2026-09-20，Git history第 16 行）=====
+  // ===== 骨架行高 = 真实行高 =====
   //
-  // V1 的骨架行高有**两档**，两档都要求等于真实行高（理由在 `components.css` 的
-  // `.skeleton__row` 注释里）：
-  //   · 表格档（>860px）绑定 `.table td` 的盒模型 —— 8+8+1+30 = 47px；
-  //   · 卡片档（≤860px）绑定 `.table tr.row` 的盒模型 —— 实测 103px（细指针）/ 117px（粗指针）。
-  // 骨架一旦与真实行不同高，内容落地时折线以上的东西就会位移，它就从「CLS 的解法」变成来源。
+  // V1 的骨架行高有**两档**，两档都要求等于真实行高（推导在 `components.css` 的 `.skeleton__row`）：
+  //   · 表格档（>860px）绑定 `.table td` 盒模型 —— 8+8+1+30 = 47px；
+  //   · 卡片档（≤860px）绑定 `.table tr.row` 盒模型 —— 实测 103px（细指针）/ 117px（粗指针）。
+  // 骨架与真实行不同高，内容落地时折线以上的东西就会位移，它就从「CLS 的解法」变成来源。
   //
-  // ⚠️ 骨架在 fast path 下只存在一帧（数据一到就被 `list.js` 换成表格），走正常流程量不到
-  // ⇒ 就地造一份**真的** `.skeleton`、放进 `.results`（与真实那一份同一个父元素、同一套 CSS），
-  // 量完立刻摘掉 —— 不改页面状态、也不进截图（同上面 `.icon-btn[disabled]` 那条的做法）。
-  //
-  // 判据取真实行的**最小值**：两档的真实行高都可能随内容漂，骨架该对齐的是设计保证的那一档
-  // （表格档是 `.table td` 的盒模型 `8+8+1+30 = 47px`；卡片档是每行都有的固定 48px 内容区
-  //  + 固定 30/44px 操作行）。⚠️ 这里**不该出现 `--row-h`** —— 那是 V2 的令牌，`public/ui_v1/`
-  //  里一处都没有；V1 的表格档绑的是 `.table td`，等式写在 `components.css` 的 `.skeleton__row` 上。
-  // `realMin` / `realMax` 都会打进上面那行读数，**那是查「行高有没有漂」的入口**：V1 的末行用
-  // `border-bottom-color: transparent` 保住盒模型，所以两个数本来该相等（V2 那边相反，末行真的
-  // 会矮 0.5px，故 V2 的探针改用众数）。⚠️ 但这两个数**不进 findings** —— 本探针的判据只有
-  // `gap` 与卡片档的 `skPitch`，别把"读数里有"读成"不达标会红"。
-  // 第二条判据是**行距**：卡片档的骨架行必须与真实卡片一样相邻（真实卡片是 0 间距 +
-  // 1px 分隔线）。只改行高不改 `.skeleton` 的 padding/gap，每行仍差 12px（50 行 600px），
-  // 骨架整页照样比真实页短一截。
+  // ⚠️ 骨架在 fast path 下只存在一帧 ⇒ 就地造一份**真的** `.skeleton` 放进 `.results`
+  // （与真实那一份同一个父元素、同一套 CSS），量完立刻摘掉 —— 不改页面状态、也不进截图。
+  // 判据取真实行的**最小值**（骨架该对齐的是设计保证的那一档）。⚠️ 这里**不该出现 `--row-h`**：
+  // 那是 V2 的令牌。`realMin` / `realMax` 只打进读数、**不进 findings**。
+  // 第二条判据是**行距**：卡片档骨架必须与真实卡片一样相邻（只改行高不改 padding/gap 仍差 12px）。
   const skeletonGeom = await read(`(() => {
     const rows = [...document.querySelectorAll('.table tr.row')];
     if (!rows.length) return JSON.stringify({ skipped: 'no rows' });
     const hs = rows.map((r) => r.getBoundingClientRect().height);
-    // 「设计保证的那一档」= **没有徽标**的普通卡片行：带徽标且内容格 ≤360px 时那一档会换成
-    // 131px（粗指针 145px，见 docs/ui.md §3.3 第 30 条与 components.css 末尾的推导），
-    // 而骨架**画不了"哪一行带徽标"**，按基础值估 —— 拿它当基准是数据相关的假阳性
-    // （2026-09-22 实测：列表首两行恰好都是带徽标的那档时报 131 vs 103）。
+    // 「设计保证的那一档」= **没有徽标**的普通卡片行：带徽标且内容格 ≤360px 时是另一档，
+    // 而骨架画不了"哪一行带徽标"，拿全体最小值当基准是数据相关的假阳性。
     const plain = rows.filter((r) => r.querySelector('.cell-content__flags .chip') === null);
     const plainHs = plain.map((r) => r.getBoundingClientRect().height);
     const plainPitch =
@@ -1131,7 +904,6 @@ try {
       realMin: Math.round(Math.min(...hs)),
       realMax: Math.round(Math.max(...hs)),
       plainRows: plain.length,
-      // 判据用的基准：优先取"无徽标"那批（设计保证档），一个都没有就退回全体最小值
       baseMin: plainHs.length > 0 ? Math.round(Math.min(...plainHs)) : Math.round(Math.min(...hs)),
       realPitch: plainPitch,
       skeleton: skRow,
@@ -1141,7 +913,6 @@ try {
   })()`);
   console.log('SKELETON', skeletonGeom);
   {
-    // 不达标就进 auditFindings ⇒ 影响退出码（与上面那组几何审计同一个出口）
     const s = JSON.parse(skeletonGeom);
     if (s.skipped) auditFindings.push('skeleton: ' + s.skipped);
     else {
@@ -1150,11 +921,10 @@ try {
           'skeleton: 骨架行高 ≠ 真实行高（' + s.mode + ' 档 骨架 ' + s.skeleton + ' vs 真实 ' + s.realMin + '，差 ' + s.gap + 'px）',
         );
       }
-      // 卡片档还要「相邻」：真实卡片是 0 间距 + 1px 分隔线，骨架的行距必须等于卡片行距。
-      // 表格档的 12px 行距是那一档自己的观感选择（骨架＝一列小条），不在本条判据里。
+      // 卡片档还要「相邻」：真实卡片是 0 间距 + 1px 分隔线，骨架行距必须等于卡片行距。
+      // 表格档的 12px 行距是那一档自己的观感选择，不在本条判据里。
       if (s.mode === 'card' && s.realPitch === null) {
-        // 一屏里没有"无徽标"的卡片行可比（全是带徽标那档）：这条判据**取不到基准**，
-        // 记一条已跳过而不是判红（判红就成了数据相关的假阳性）。
+        // 一屏里没有"无徽标"的卡片行可比 ⇒ 取不到基准，记一条已跳过而不是判红（否则是假阳性）。
         console.log('[skip] skeleton: 没有无徽标的卡片行可作基准（plainRows=' + s.plainRows + '）');
       }
       if (s.mode === 'card' && s.realPitch !== null && s.skPitch !== s.realPitch) {
@@ -1166,8 +936,8 @@ try {
   }
 
   // 选择条的开合：勾选第一行 → 读条 → 取消选择 → 再读条。
-  // 这一段存在的理由：`.results__selection` 的 CSS 里写了 `display: flex`，而 JS 用 `hidden`
-  // 关它——若没有 `[hidden]` 守卫，取消选择后那条「已选 N 条 + 批量按钮」会**留在页面上**。
+  // `.results__selection` 的 CSS 写了 `display: flex`，而 JS 用 `hidden` 关它 —— 没有 `[hidden]`
+  // 守卫时，取消选择后「已选 N 条 + 批量按钮」会**留在页面上**。
   const selectionFlow = await read(`(async () => {
     const first = document.querySelector('.table tr.row input.checkbox');
     if (!first) return JSON.stringify({ skipped: 'no rows' });
@@ -1194,12 +964,10 @@ try {
   })()`);
   console.log('SELECTION', selectionFlow);
 
-  // 选中态的两条**行体**交互（2026-09-21 用户定；2026-09-22 审核补这一段）：
-  //   ① 选区非空时**点行体 = 切换该行选中**（不再打开预览）；
-  //   ② **Shift+点击 = 范围选择**（锚点与复选框共用 `anchorIndex`，范围与已有选区取并集）。
-  // 为什么必须有它：这两条此前只有人工验证，而它们**没有任何报错出口** —— 坏了的表现是
-  // "点了没反应"或"预览弹出来了"，两种都不会让别的测量变红（上面 SELECTION 那段走的是复选框，
-  // 覆盖不到行体这条路）。判据进 auditFindings ⇒ 影响退出码。
+  // 选中态的两条**行体**交互：① 选区非空时点行体 = 切换该行选中（不开预览）；
+  // ② Shift+点击 = 范围选择（锚点与复选框共用 `anchorIndex`，范围与已有选区取并集）。
+  // 这两条坏了的表现是"点了没反应"或"预览弹出来了"，都不会让别的测量变红（上面的 SELECTION
+  // 走的是复选框，覆盖不到行体这条路）⇒ 判据进 auditFindings。
   const selectModes = await read(`(async () => {
     // 前面几段可能留下文字选区或开着的对话框：行体点击在"正在划选文字"时会**有意**不动作，
     // 而模态框会挡住点击 —— 先归零，这一段测的才是它自己那两条语义。
@@ -1225,9 +993,8 @@ try {
     await wait();
     const afterShift = { checked: checked(), count: countText() };
 
-    // ③ mousedown 上的掐断（只在"选中态 + Shift + 落在行体"时）：原生 Shift+click 会扩展**文字选择**
-    //    （从上次锚点开始划一段），所以那一下必须被 preventDefault；而**普通**按下要放行 ——
-    //    用户拖动划选文字复制那条路不能堵。这两条都是可确定断言的（读 defaultPrevented）。
+    // ③ mousedown 上的掐断（只在"选中态 + Shift + 落在行体"时）：原生 Shift+click 会扩展**文字选择**，
+    //    那一下必须被 preventDefault；而**普通**按下要放行 —— 拖动划选文字复制那条路不能堵。
     const downEvent = (shift) =>
       new MouseEvent('mousedown', { bubbles: true, cancelable: true, shiftKey: shift });
     const shiftDown = downEvent(true);
@@ -1269,8 +1036,8 @@ try {
     }
   }
 
-  // 浏览器后退也必须走筛选的成员资格规则：旧实现从回收站后退时选区仍有 1 条，
-  // 活跃列表却没有任何勾选行，批量操作因此指向看不见的记录（ADR D38）。
+  // 浏览器后退也必须走筛选的成员资格规则：旧实现从回收站后退时选区仍有 1 条，活跃列表却没有任何
+  // 勾选行，批量操作因此指向看不见的记录（ADR D38）。
   const popSelection = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const until = async (ready) => {
@@ -1315,8 +1082,7 @@ try {
   }
 
   // 行间方向键：焦点放在第 1 行的「预览」上，按 ↓ 后应当落在第 2 行的**同一个**控件上。
-  // 这条检查存在的理由：方向键是**纯增量**（Tab 顺序一个不动），它最容易在重构行结构时
-  // 被顺手弄坏 —— 坏了不会有任何报错，只是键盘用户按了没反应。
+  // 方向键是**纯增量**（Tab 顺序一个不动），坏了不会有任何报错，只是键盘用户按了没反应。
   const keyNav = await read(`(async () => {
     const rows = [...document.querySelectorAll('.table tr.row')];
     if (rows.length < 2) return JSON.stringify({ skipped: 'not enough rows' });
@@ -1345,14 +1111,12 @@ try {
   })()`);
   console.log('KEYNAV  ', keyNav);
 
-  // 输入法组合期间的搜索（中文/日文）：拼音串不该被当成搜索词发出去。
-  // 判据用 URL 而不是"数请求"：`setFilters` 里 `syncUrl` 是**同步**执行的，所以只要发出了一次
-  // 搜索，`?search=` 会立刻出现在地址栏上 —— URL 是这条链路上最直接的事实源。
+  // 输入法组合期间的搜索：拼音串不该被当成搜索词发出去。判据用 URL 而不是"数请求"——
+  // `setFilters` 里 `syncUrl` 是**同步**执行的，只要发出过一次搜索，`?search=` 会立刻出现在地址栏上。
   const imeSearch = await read(`(async () => {
     const input = document.querySelector('.toolbar input.input--search');
-    // 取不到就**不是"跳过"而是判据失效**（2026-09-22 修：此前用 getElementById('search')，而搜索框
-    // 根本没有这个 id —— 于是这条 IME 判据一直在空转，"findings=0"里少了一条）。
-    // 选择器改成与工具栏同源的 class（这段在模板串里，注释里不要出现反引号）。
+    // 取不到就**不是"跳过"而是判据失效**：选择器必须与工具栏同源（曾用 getElementById('search')，
+    // 而搜索框根本没有这个 id —— 这条 IME 判据一直在空转）。
     if (!input) return JSON.stringify({ skipped: 'no search input（判据失效：选择器与工具栏不同源）' });
     const current = () => new URLSearchParams(location.search).get('search');
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1368,23 +1132,20 @@ try {
     input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
     await wait(700);
     const afterComposition = current();
-    // 收尾：清空搜索，别把状态留给后面的检查
+    // 收尾：清空搜索，别把状态留给后面的检查。
+    // ⚠️ 还要等**列表真的回来**（去抖 260ms + 一次往返），否则下一条判据读到空列表。
     input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    // ⚠️ 还要等**列表真的回来**：清空搜索是一次新的列表请求（去抖 260ms + 一次往返），
-    // 只等 500ms 不够 —— 实测偶发下一条判据读到空列表（BATCHCOPY 报"少于两行"、HOVER 报 no rows）。
-    // 探针要等自己的前提成立，而不是把"还没画出来"留给下一条判据去跳过。
     for (let i = 0; i < 60 && document.querySelectorAll('tbody tr.row').length === 0; i += 1) await wait(100);
     await wait(400);
     return JSON.stringify({ duringComposition, afterComposition, reset: current() });
   })()`);
   console.log('IME     ', imeSearch);
 
-  // 批量复制（2026-09-18）：**真的点一次**，再把剪贴板读回来逐字对照。
-  // 为什么不能只看渲染：这条链上有四段各自会静默失败的东西 —— 选中集、batch-meta 分片、
-  // 全文拼接、剪贴板写入 —— 而"按钮画得对"与"内容真的进去了"是两件事。
-  // 它**不改服务端数据**（只读 + 写本机剪贴板），故属于默认的只读探针，不需要 --write。
-  // 剪贴板权限：headless 下页面不算"已聚焦"，直接 readText 会被拒，故先授权限 + 打开焦点模拟。
+  // 批量复制：**真的点一次**，再把剪贴板读回来逐字对照（选中集、batch-meta 分片、全文拼接、
+  // 剪贴板写入四段都会静默失败，而"按钮画得对"与"内容真的进去了"是两件事）。
+  // 它**不改服务端数据**（只读 + 写本机剪贴板），故属于默认的只读探针。
+  // 剪贴板权限：headless 下页面不算"已聚焦"，直接 readText 会被拒 ⇒ 先授权限 + 打开焦点模拟。
   await send('Browser.grantPermissions', {
     origin: BASE,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
@@ -1405,9 +1166,8 @@ try {
     const button = batchButtons().find((b) => (b.textContent ?? '').includes('复制选中'));
     if (!button) return JSON.stringify({ error: '选择条里没有「复制选中」' });
     button.click();
-    // 进行中态要**同步**读：click 派发是同步的，处理器里的第一句就是 setPending(true)，
-    // 故这一刻必然已置上。等到 40ms 再读会变成"看请求有多快"——两条小记录的批量复制
-    // 早就跑完了（实测 pendingDuring 恒为 null），那是在测网络而不是测代码。
+    // 进行中态要**同步**读：click 派发是同步的，处理器第一句就是 setPending(true)。
+    // 等到 40ms 再读会变成"看请求有多快"（两条小记录的批量复制早就跑完了）。
     const pendingImmediately = button.dataset.loading ?? null;
     await wait(2500);
     const pendingAfter = button.dataset.loading ?? null;
@@ -1424,8 +1184,7 @@ try {
       pendingAfter,
       clipboardReadable: !clipboard.startsWith('ERR:'),
       clipboardHead: clipboard.slice(0, 60),
-      // 行尾归一后再比：Windows 剪贴板往返会把行内的 \\n 变成 \\r\\n，直接 includes 会读到 false
-      // （2026-09-23 实测：clipboardHead 里明明有两段文本，containsSecond 却是 false）。
+      // 行尾归一后再比：Windows 剪贴板往返会把行内的 \\n 变成 \\r\\n，直接 includes 会读到 false。
       containsFirst: texts[0] !== '' && clipboard.replace(/\\r\\n/g, '\\n').includes(texts[0]),
       containsSecond: texts[1] !== '' && clipboard.replace(/\\r\\n/g, '\\n').includes(texts[1]),
       toast: [...document.querySelectorAll('.toast')].map((t) => t.textContent).join(' | '),
@@ -1436,20 +1195,15 @@ try {
   })()`);
   console.log('BATCHCOPY', batchCopy);
 
-  // ===== 悬停预览浮层（2026-09-21 重做；docs/ui.md §3.3 硬约束 #26）=====
+  // ===== 悬停预览浮层 =====
   //
   // 这个构件**唯一**不能出错的地方是：它贴在行下方、必然压住后面几行，却**绝不能接收指针
-  // 事件** —— 一旦接收，被压住那几行的 hover 与点击全被吞掉。2026-09-21 实测过这个形态：
-  // `elementFromPoint` 在浮层覆盖处返回浮层本身，鼠标顺着一列往下走"走不过去"，
-  // 被压住的行连「收藏」都点不到（第一版就是 `pointer-events: auto` + 可滚动）。
+  // 事件** —— 一旦接收，被压住那几行的 hover 与点击全被吞掉。这条性质在别的守卫里看不见
+  // （`ui-guard` 只查模块图与挂载点、`docs.test` 只查数目、tsc/eslint 不管 CSS 命中测试），
+  // 只在这台真实浏览器里成立或不成立。
   //
-  // 为什么必须在这里钉：这条性质在别的守卫里**看不见** —— `ui-guard` 只查模块图与挂载点、
-  // `docs.test` 只查数目、`tsc`/eslint 更不管 CSS 的命中测试。它只在这台真实浏览器里成立或不成立。
-  //
-  // 手法：把**真实第一行**的正文宽度收窄 → `line-clamp:1` 的纵向裁切成立 → `buildRow` 里
-  // 那个真实监听器的 `check` 通过 ⇒ 用的是真实浮层节点与真实 CSS，不是另造一个。收窄在同一个
-  // 表达式里还原，后续几何测量不受影响。另外两条一并钉：正文区不超过 6 行的封顶、
-  // 离开触发元素即收起。
+  // 手法：把**真实第一行**的正文宽度收窄 → `line-clamp:1` 的纵向裁切成立 → `buildRow` 里那个
+  // 真实监听器的 `check` 通过 ⇒ 用的是真实浮层节点与真实 CSS。收窄在同一个表达式里还原。
   const hoverTip = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
@@ -1457,8 +1211,7 @@ try {
     }
     const el = document.querySelector('tbody tr.row .cell-content__text');
     if (!el) return JSON.stringify({ skipped: 'no rows' });
-    // 先把它滚进视口：探针跑到这里时页面已经被滚到页脚附近了，触发元素在视口外时量出来的
-    // 浮层坐标没有意义（第一版就是这么读到一个负的 y 的）。
+    // 先滚进视口：触发元素在视口外时量出来的浮层坐标没有意义。
     el.scrollIntoView({ block: 'center' });
     await wait(200);
     const widthBefore = el.style.width;
@@ -1481,7 +1234,7 @@ try {
       pointInRect: cx >= Math.round(r.left) && cx <= Math.round(r.right) && cy >= Math.round(r.top) && cy <= Math.round(r.bottom),
       point: [cx, cy],
       height: Math.round(r.height),
-      // 正文区封顶 6 行（6 × 20.8 = 124.8）：长内容被裁在这里，不给滚动条也不给说明行
+      // 正文区封顶 6 行（6 × 20.8 = 124.8）：长内容被裁在这里，不给滚动条也不给说明行。
       textHeight: Math.round(text.getBoundingClientRect().height),
     };
     el.style.width = widthBefore;
@@ -1502,28 +1255,19 @@ try {
       }
       if (h.hitIsTooltip) auditFindings.push(`hover: 浮层覆盖处的 elementFromPoint 命中浮层本身（读到 ${h.hitClass}）⇒ 那几行点不到`);
       if (!h.pointInRect) auditFindings.push(`hover: 取样点 ${JSON.stringify(h.point)} 落在浮层矩形之外 ⇒ 上面那条判据失去了前提`);
-      // 正文区封顶 6 行 = 124.8px（+1 取整余量）。不封顶时一条长记录会弹出一个盖住半屏、
-      // 还要"移进去滚动"的面板 —— 那正是重做要消掉的形态。
       if (h.textHeight > 126) auditFindings.push(`hover: 正文区高 ${h.textHeight}px，超过 6 行的封顶（125px）`);
       if (!h.hiddenAfterLeave) auditFindings.push('hover: 离开触发元素之后浮层没收起');
     }
   }
 
-  // ===== 预览关闭即释放正文（2026-09-20 回归）=====
+  // ===== 预览关闭即释放正文 =====
   //
-  // 缺陷形态：预览对话框是**启动期创建、常驻 `body`** 的节点，关闭时只 `dialog.close()`，
-  // 正文（`<pre>` 里的整条全文）与页脚按钮的闭包一直留在 DOM 里，直到**下次打开预览**才被
-  // `replaceChildren` 换掉。用户不再预览第二条 ⇒ 这条记录到页面销毁都不释放。
-  //
-  // 判据有**两条，各钉一半**（只钉一条会放过一个错解）：
-  //   ① 关闭、等退出过渡跑完之后，正文必须是空的 —— 钉"到底有没有释放"；
-  //   ② 关闭之后、退出过渡**还在跑**的那一帧里，正文必须还在 —— 钉"释放得是不是时候"。
-  // ② 存在的理由：`.dialog` 有 0.3s 的退出过渡（`motion.css` 的 `@starting-style` +
-  // `transition-behavior: allow-discrete`），在 `close` 里立刻 `replaceChildren` 的写法**能过 ①**
-  // 、但用户会看见"框还在淡出、字先没了"（框的高度也会跟着跳）。量过：点 ✕ 之后
-  // `display: block` 持续到 ~400ms 才变 `none`，所以 t+150ms 那一帧确实还在画。
-  // ② 自己带着前提：那一帧 `display` 若已经是 `none`（减弱动效 / 不支持 `allow-discrete`），
-  // 清得早也看不见，就不该报。
+  // 预览对话框是**启动期创建、常驻 `body`** 的节点，关闭时只 `dialog.close()` 的话，
+  // 正文与页脚按钮的闭包会一直留在 DOM 里，直到下次打开预览才被 `replaceChildren` 换掉。
+  // 判据两条各钉一半：① 关闭、等退出过渡跑完之后正文必须是空的（钉"到底有没有释放"）；
+  // ② 关闭之后、退出过渡**还在跑**的那一帧里正文必须还在（钉"释放得是不是时候"）——
+  // 立刻 `replaceChildren` 的写法能过 ①，但用户会看见"框还在淡出、字先没了"（框高也会跳）。
+  // ② 自带前提：那一帧 `display` 若已是 `none`（减弱动效），清得早也看不见，就不该报。
   const previewClose = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const row = document.querySelector('tbody tr.row');
@@ -1546,11 +1290,9 @@ try {
     const closeBtn = document.querySelector('button[aria-label="关闭预览"]');
     if (!closeBtn) return JSON.stringify({ skipped: 'no close button' });
     closeBtn.click();
-    // 退出过渡跑到一半（实测总长 ~0.3s）
-    await wait(150);
+    await wait(150); // 退出过渡跑到一半（实测总长 ~0.3s）
     const duringFade = snap();
-    // 给足余量等过渡结束 + 清理那一帧
-    await wait(750);
+    await wait(750); // 给足余量等过渡结束 + 清理那一帧
     const after = snap();
     return JSON.stringify({
       before,
@@ -1587,16 +1329,13 @@ try {
     }
   }
 
-  // ===== 编辑态的关闭语义与快捷键（2026-09-22 用户要求：编辑中点空白不关框 / 保存与取消要有快捷键 / hover 显示快捷键）=====
+  // ===== 编辑态的关闭语义与快捷键 =====
   //
-  // 四条判据：
-  //   ① 编辑中点**背景**（真实鼠标点在框外的遮罩上，CDP 真事件）：框不关、也不退出编辑；
-  //   ② Ctrl/⌘ + Enter = 保存 —— 用"内容没改"这条路径验（它与按钮点击走同一个函数，
-  //      但**不发请求**，零副作用）：框仍开着、编辑态退出、且没有弹出「已保存」提示；
-  //   ③ 单独按 Enter **不是**保存（那是正文换行）：编辑态仍在、正文多了一个换行；
-  //   ④ 两枚按钮的 hover 提示（`title`）与 `aria-keyshortcuts` 就是各自快捷键。
-  // 为什么用真事件：`.click()` 只证明"监听器在"，而用户是拿鼠标点在遮罩上、拿键盘按下去的；
-  // 这一条正是"DOM 在 ≠ 看得见"的同一纪律（`--shots` 与探针的分工见 docs/ui.md §11）。
+  // 四条判据：① 编辑中点**背景**（CDP 真事件点在框外的遮罩上）不关框、也不退出编辑；
+  // ② Ctrl/⌘ + Enter = 保存（用"内容没改"这条零副作用路径验：不发请求，框仍开着、编辑态退出、
+  // 没有弹「已保存」）；③ 单独按 Enter **不是**保存（编辑态仍在、正文多一个换行）；
+  // ④ 两枚按钮的 hover 提示（`title`）与 `aria-keyshortcuts` 就是各自快捷键。
+  // 用真事件：`.click()` 只证明"监听器在"，而用户是拿鼠标点在遮罩上、拿键盘按下去的。
   await send('Page.navigate', { url: `${BASE}/ui_v1/?types=Text` });
   await new Promise((r) => setTimeout(r, 2200));
   const editOpen = JSON.parse(
@@ -1653,8 +1392,7 @@ try {
     await keyEvent('keyDown', k, code, vk, modifiers, text);
     await keyEvent('keyUp', k, code, vk, modifiers);
   };
-  // ① 真实鼠标点背景：取对话框外、视口内的一个点（左上角四分之一处，框居中时必然落在遮罩上）
-  // （`editOpen.skipped` 时没有 box 可读 —— 探针自己也要能带着前提缺失继续跑，别把整份探针打断。）
+  // ① 真实鼠标点背景：取对话框外、视口内的一个点（左上角四分之一处，框居中时必然落在遮罩上）。
   const backdrop = editOpen.skipped === undefined
     ? { x: Math.max(2, Math.floor(editOpen.box.l / 2)), y: Math.max(2, Math.floor(editOpen.box.t / 2)) }
     : null;
@@ -1726,16 +1464,14 @@ try {
     await new Promise((r) => setTimeout(r, 400));
   }
 
-  // ===== 对话框开着的提示条必须是**真提示条**（2026-09-22 用户："这个根本不是真实的toast"）=====
+  // ===== 对话框开着的提示条必须是**真提示条** =====
   //
-  // 判据四件事，缺一条都不算做到：
-  //   ① 弹的是全局那条（同一个 `#toasts` 宿主、同一个 `.toast` 节点），不是对话框里另造的一份；
-  //   ② 宿主被搬进**当前这个对话框**里（top layer —— 这是它看得见的前提）；
-  //   ③ 它**真的在 backdrop 之上**：临时打开命中区后，**真实鼠标**点在它中心，命中的是它自己
-  //      （提示条平时 `pointer-events: none` —— 它不该吞掉底下的点击，所以量之前要临时打开）；
-  //   ④ 不压页脚（尾巴在页脚上缘之上），且 2.6s 后自己收掉。
-  // 用「复制文本」触发（预览页脚那枚按钮）：它会走 `toasts.show`，而**不写任何记录** ——
-  // 探针不该为了让提示条出现而往库里塞数据。
+  // 四件事，缺一条都不算做到：① 弹的是全局那条（同一个 `#toasts` 宿主、同一个 `.toast` 节点），
+  // 不是对话框里另造的一份；② 宿主被搬进**当前这个对话框**里（top layer —— 这是它看得见的前提）；
+  // ③ 它**真的在 backdrop 之上**：临时打开命中区后，**真实鼠标**点在它中心，命中的是它自己
+  // （提示条平时 `pointer-events: none`，不该吞掉底下的点击，所以量之前要临时打开）；
+  // ④ 不压页脚，且 2.6s 后自己收掉。
+  // 用「复制文本」触发：它走 `toasts.show` 而**不写任何记录**，探针不该为弹提示条往库里塞数据。
   const prvToast = JSON.parse(
     (await read(`(async () => {
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1754,8 +1490,7 @@ try {
       if (!toast) return JSON.stringify({ skipped: 'no toast appeared' });
       const r = toast.getBoundingClientRect();
       const foot = dlg.querySelector('.dialog__foot').getBoundingClientRect();
-      // 命中区临时打开，只为量「它有没有被 backdrop 盖住」（提示条平时是 pointer-events: none：
-      // 它不该吞掉底下的点击）—— 这与仓库里「量过渡属性前注入 transition:none」是同一类手法。
+      // 命中区临时打开，只为量「它有没有被 backdrop 盖住」（与"量过渡属性前注入 transition:none"同一类手法）。
       window.__toastHit = null;
       toast.style.pointerEvents = 'auto';
       toast.addEventListener('click', () => { window.__toastHit = 'toast'; }, { once: true });
@@ -1778,7 +1513,7 @@ try {
     })()`)) ?? '{}',
   );
   // 真实鼠标点在提示条中心：这一下能证明**没有任何东西盖在它上面**（被 backdrop 压住时，
-  // 点击会落到 dialog 上 —— 那正是"假提示条"的实测形态）。先点、再看提示条与对话框各自的反应。
+  // 点击会落到 dialog 上 —— 那正是"假提示条"的实测形态）。
   let prvToastClick = null;
   if (!prvToast.skipped && prvToast.center) {
     await tapAt(prvToast.center.x, prvToast.center.y);
@@ -1827,16 +1562,11 @@ try {
     check('关框后提示条宿主回到 body（后续提示条不会跟着关闭的框一起消失）', hostAfterClose === 'BODY', String(hostAfterClose));
   }
 
-  // ===== 快捷键（2026-09-22 用户要求"全面评估 V1 全部页面，设计一些合适的快捷键"）=====
+  // ===== 快捷键 =====
   //
-  // 判据六件事：
-  //   ① `?` 打开帮助浮层，且里面**列全**了目录（列表页 / 预览框 / 编辑态三组）；
-  //   ② `t` 真的切换主题（读 `html[data-theme]`，按下前后必须不同）；
-  //   ③ `r` 真的重发列表请求（读 resource timing 里新增的 `/ui/api/history` 条目）；
-  //   ④ `n` / `p` 真的翻页（分页标签的页码变化，回到第 1 页收尾）；
-  //   ⑤ **输入处让路**：搜索框里按 `r` 不能触发刷新（否则用户打不出这个字母）；
-  //   ⑥ **对话框打开时让路**：帮助浮层开着时按 `r` 也不能刷新。
-  // ⑤⑥ 是本轮设计的两条硬前提 —— 少了它们，"加了快捷键"就是"把页面弄坏"。
+  // 六件事：① `?` 打开帮助浮层且里面**列全**了各组键；② `t` 真的切换主题（读 `html[data-theme]`）；
+  // ③ `r` 真的重发列表请求；④ `n` / `p` 真的翻页（回到第 1 页收尾）；⑤ **输入处让路**：搜索框里
+  // 按 `r` 不能触发刷新（否则用户打不出这个字母）；⑥ **对话框打开时让路**。
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, 2400));
   const keyPress = (k, code, vk, modifiers = 0, text = undefined) =>
@@ -1853,12 +1583,9 @@ try {
       await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers });
     })();
   // 「这次按键有没有真的触发列表请求」用**页面内拦 fetch + 时间戳**来量，而不是"总请求数"或
-  // "按钮的进行中态"：
-  //   · 总请求数会被两件事污染 —— 打字引发的防抖搜索、以及后台**轮询**（可见 10s / 隐藏 30s）。
-  //     第一版用计数，390 档上就被一次恰好撞进窗口的轮询判成了"刷新"（实测 4 → 5）。
-  //   · 按钮的 `data-loading` 在本地只存在 ~10ms（刷新太快），按 50ms 轮询抓不到（两档都读到 false）。
-  // 判据因此收成"按键之后 **120ms 内**有没有 `/ui/api/history` 请求"：轮询撞进 120ms 窗口的概率
-  // 约 1%，而"按了键"与"请求发出"在这条路径上只隔一个同步调用 ⇒ 正例必然命中。
+  // "按钮的进行中态"：总请求数会被防抖搜索与后台轮询（可见 10s / 隐藏 30s）污染；
+  // 按钮的 `data-loading` 在本地只存在 ~10ms。判据因此收成"按键之后 **120ms 内**有没有
+  // `/ui/api/history` 请求"：轮询撞进这个窗口的概率约 1%，而正例必然命中。
   await read(`(() => {
     if (window.__reqLog) return 'already';
     window.__reqLog = [];
@@ -1919,7 +1646,7 @@ try {
   await keyPress('p', 'KeyP', 80, 0, 'p');
   await new Promise((r) => setTimeout(r, 900));
   const pageAfterPrev = await pageText();
-  // ⑤ 输入处让路：聚焦搜索框后按 r（这一条只看**非搜索**请求：那一下的搜索请求是打字引发的，不是刷新）
+  // ⑤ 输入处让路：聚焦搜索框后按 r（这一条只看**非搜索**请求）
   await read(`(() => {
     const box = document.querySelector('.toolbar input[type="search"], .toolbar input[type="text"]');
     box?.focus();
@@ -1929,9 +1656,8 @@ try {
   const searchValue = await read(`document.querySelector('.toolbar input[type="search"], .toolbar input[type="text"]')?.value ?? null`);
   // ⑦ `f` / `h`：两个视图开关（只看收藏 / 回收站）。判据是**URL 与 chip 的 aria-pressed 同时变**，
   //    且再按一次能回到原样（净零）—— 只看 URL 会把"键触发了但视图没切"读成通过。
-  //    ⚠️ 前置：上一步把 `r` 打进了搜索框（那正是"输入处让路"的判据），此时焦点还在框里、
-  //    列表也被 `?search=r` 筛过 —— 不先清掉的话，下面按 `f` 只会往框里再打一个字母
-  //    （实测：读到 `?search=rf`、`pressed:["全部636"]`，两条视图判据全红）。
+  //    前置：上一步把 `r` 打进了搜索框，此时焦点还在框里、列表也被 `?search=r` 筛过 ——
+  //    不先清掉的话，下面按 `f` 只会往框里再打一个字母。
   await read(`(() => {
     const box = document.querySelector('.toolbar input');
     box.value = '';
@@ -1979,10 +1705,10 @@ try {
       JSON.stringify(helpState.groups ?? null),
     );
     const keys = new Set((helpState.labels ?? []).map((l) => l.keys));
-    // 新增的行内一组：导航（↑↓ / Home·End / Shift+方向键 / Tab）+ 动作（v/c/d/s/i/r/Delete）
+    // 行内一组的导航（↑↓ / Home·End / Shift+方向键 / Tab）+ 动作（v/c/d/s/i/r/Delete）
     const wanted = ['/', '?', 'r', 't', 'n', 'p', 'b', 'f', 'h', 'Esc', 'v', 's', 'i', 'c', 'd', 'e', 'Ctrl+Enter', 'Esc', 'Delete+Backspace', 'Shift+↑/↓'];
     check(
-      '帮助浮层里每个键都在（含本轮新增的 r/t/n/p/c/d/e 与编辑态的 Ctrl+Enter）',
+      '帮助浮层里每个键都在（含 r/t/n/p/c/d/e 与编辑态的 Ctrl+Enter）',
       wanted.every((w) => keys.has(w)),
       '缺：' + wanted.filter((w) => !keys.has(w)).join(',') + ' 实际=' + [...keys].join(' '),
     );
@@ -2008,17 +1734,12 @@ try {
     check('再按一次 `h` 回到历史记录（净零）', v.afterHBack.url === v.viewBefore.url, `${v.viewBefore.url} → ${v.afterHBack.url}`);
   }
 
-  // ===== 键盘可用性（2026-09-22 用户："你还要详细点捋一下现在的键盘操作都合理完善吗 达到了可用的水平吗"）=====
+  // ===== 键盘可用性（"只用键盘能不能把整页用完"）=====
   //
-  // 快捷键只是其中一半 —— 这一块量的是"**只用键盘**能不能把整页用完"：
-  //   ① 行内动作键：`v` 预览、`s` 收藏（可逆）、`Delete` 进确认框（初始焦点必须是「取消」、Esc 取消、行数不变）；
-  //   ② `c` 复制：剪贴板里真的出现这一行的正文（不是"按钮亮了"）；
-  //   ③ `Shift+↓` 从锚点行**扩展选择**（键盘等价于 Shift+点击），选中数按行数增长；
-  //   ④ **聚焦滚动不落在吸顶链下**：把某行控件滚到视口上缘外 6px 再聚焦，其 `rect.top` 必须 ≥ 吸顶链底边
-  //      （实测修前停在 0，而吸顶链到 92/148 ⇒ 焦点环整个被压住 —— 键盘用户"按了没反应"）；
-  //   ⑤ 输入处让路：焦点在搜索框时按 `v`/`Delete` **不**作用到行（字符进输入框）；
-  //   ⑥ 对话框的焦点交接：预览打开时初始焦点在正文框，关闭后**回到那枚触发按钮**；
-  //   ⑦ Tab 顺序的第一个可聚焦元素是「跳到主内容」（跳链在最前）。
+  // ① 行内动作键：`v` 预览、`s` 收藏（可逆）、`Delete` 进确认框（初始焦点必须是「取消」、Esc 取消、
+  // 行数不变）；② `c` 复制：剪贴板里真的出现这一行的正文；③ `Shift+↓` 从锚点行**扩展选择**；
+  // ④ **聚焦滚动不落在吸顶链下**；⑤ 输入处让路；⑥ 对话框的焦点交接（打开进正文框、关闭回触发按钮）；
+  // ⑦ Tab 顺序的第一个可聚焦元素是「跳到主内容」。
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, 2400));
   const rowKeys = JSON.parse(
@@ -2039,8 +1760,7 @@ try {
       out.inputFocused = document.activeElement === box;
       // ① 行内动作键
       focusCell(1);
-      // 初值必须**先读**：这一行是否已收藏由库里的数据决定（写死"按前=true"会让这条判据
-      // 在那一行恰好未收藏时假红 —— 2026-09-23 实测 390 档就这么红过一次）。
+      // 初值必须**先读**：这一行是否已收藏由库里的数据决定（写死"按前=true"会在该行恰好未收藏时假红）。
       out.starBefore = rowAt(1).querySelector('[data-action="star"]')?.getAttribute('aria-pressed') ?? null;
       document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true, cancelable: true }));
       await wait(600);
@@ -2112,9 +1832,8 @@ try {
     (await read(`(async () => {
       let text = null;
       try { text = await navigator.clipboard.readText(); } catch (error) { text = 'ERR:' + String(error).slice(0, 40); }
-      // 行尾必须先归一（2026-09-23 修）：记录里的正文可能是 CRLF（官方客户端从 Windows 剪贴板
-      // 发来的就是），而列表里那格读到的 textContent 是 LF ⇒ 直接 startsWith 会假红
-      // （实测 390 档读到 "…gamma\\r\\nOBS2" 而格子里是 "…gamma\\nOBS2"）。同一类坑见 AGENTS.md。
+      // 行尾必须先归一：记录里的正文可能是 CRLF（官方客户端从 Windows 剪贴板发来的就是），
+      // 而列表里那格读到的 textContent 是 LF ⇒ 直接 startsWith 会假红。
       const norm = (s) => String(s).replace(/\\r\\n?/g, '\\n');
       return JSON.stringify({ head: (text ?? '').slice(0, 40), matchesCell: text !== null && norm(text).startsWith(norm(window.__rowText)) });
     })()`)) ?? '{}',
@@ -2127,16 +1846,14 @@ try {
       const btn = rows[8].querySelector('[data-action="preview"]');
       const docTop = btn.getBoundingClientRect().top + window.scrollY;
       window.scrollTo(0, Math.round(docTop + 6));
-      // 等折叠**稳定**（过渡期间几何还是展开态，量出来的是假红 —— 第一版就这么读过一次）
+      // 等折叠**稳定**（过渡期间几何还是展开态，量出来的是假红）
       for (let i = 0; i < 40 && document.documentElement.dataset.header !== 'hidden'; i += 1) await wait(50);
       await wait(120);
       btn.focus();
       await wait(400);
       const after = Math.round(btn.getBoundingClientRect().top);
-      // 判据只在**有吸顶链**的那一档成立（2026-09-23 修）：卡片档（≤860px）的表头是
-      // position: static、且它在视口上方很远，表头矩形的 bottom 会是负数 ——
-      // 拿它当门槛，"after >= stickyBottom - 0.5" 就**恒真**（实测 390 档读到 stickyBottom=-796，
-      // 这条判据整个空转却记成通过）。
+      // 判据只在**有吸顶链**的那一档成立：卡片档（≤860px）的表头是 position: static 且在视口上方
+      // 很远，表头矩形 bottom 会是负数 —— 拿它当门槛，"after >= stickyBottom - 0.5" 就**恒真**。
       const th = document.querySelector('.table th');
       const stickyChain = Boolean(th) && getComputedStyle(th).position === 'sticky';
       const stickyBottom = stickyChain ? Math.round(th.getBoundingClientRect().bottom) : null;
@@ -2175,8 +1892,7 @@ try {
     check('取消后行数不变（没有误删）', rowsAfterCancel === rowsBeforeDelete, `${rowsBeforeDelete} → ${rowsAfterCancel}`);
     check('`c` 把这一行的正文真的写进了剪贴板', copied.matchesCell === true, JSON.stringify(copied));
     if (occlusion.stickyChain === false) {
-      // 该档没有吸顶链 ⇒ 这条判据**没有前提**。它是"前提不满足"、不是"通过"，
-      // 故显式写进 SKIPPED（末尾那条守卫会读它，白名单里放行）。
+      // 该档没有吸顶链 ⇒ 这条判据**没有前提**：显式写进 SKIPPED（白名单里放行），而不是记成通过。
       origLog('KBD      occlusion skipped: no sticky chain（本档无吸顶表头，判据不适用）');
       skips.push('no sticky chain（本档无吸顶表头，判据不适用）');
     } else {
@@ -2190,17 +1906,14 @@ try {
     check('Tab 顺序的第一个可聚焦元素是跳链「跳到主内容」', (rowKeys.firstFocusable ?? '').includes('跳到主内容'), String(rowKeys.firstFocusable));
   }
 
-  // ===== 本轮键盘层与提示条停靠的回归（2026-09-23）=====
+  // ===== 键盘层与提示条停靠的回归 =====
   //
-  // 四件事各自是**实测出来的缺陷**，此前都没有判据：
-  //   ① 焦点在行内**复选框**上时，列表级快捷键（`t`/`?`/`n`/`p`）必须照样生效 —— 此前一律按
-  //      `tagName` 让路，而复选框也是 `INPUT`，于是"用键盘选行/方向键导航"的落点上它们全部静默失效；
-  //   ② `n`/`p` 翻页后焦点必须留在**分页条**上 —— 此前掉回 `<body>`（翻页重建整张表，焦点随节点丢），
-  //      此后方向键与行内动作键全部失灵；
-  //   ③ `Ctrl`+滚轮不能被预览框的滚轮转发吞掉（此前 `preventDefault` ⇒ 预览开着时页面缩放失效）；
-  //   ④ 提示条**先显示、对话框后打开**这一档，宿主也必须搬进 top layer（此前只在 `show()` 里搬 ⇒
-  //      那条提示看得见点不动，点下去还会命中 backdrop 把对话框关掉）；且嵌套模态下必须搬进
-  //      **真正在最上层**的那个框（文档序 ≠ top layer 序）。
+  // 四件事，此前都没有判据：① 焦点在行内**复选框**上时，列表级快捷键（`t`/`?`/`n`/`p`）必须照样
+  // 生效（此前一律按 `tagName` 让路，而复选框也是 `INPUT` ⇒ 键盘选行/方向键导航的落点上全部静默失效）；
+  // ② `n`/`p` 翻页后焦点必须留在**分页条**上（此前掉回 `<body>`，此后方向键与行内动作键全部失灵）；
+  // ③ `Ctrl`+滚轮不能被预览框的滚轮转发吞掉（此前 `preventDefault` ⇒ 预览开着时页面缩放失效）；
+  // ④ 提示条**先显示、对话框后打开**这一档，宿主也必须搬进 top layer；嵌套模态下必须搬进
+  // **真正在最上层**的那个框（文档序 ≠ top layer 序）。
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, 2400));
   const kbFix = { before: JSON.parse((await read(`(() => {
@@ -2236,8 +1949,7 @@ try {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const b = document.querySelector('.toolbar .icon-btn[aria-label="键盘快捷键"]');
     if (!b) return JSON.stringify({ found: false });
-    // 翻页/改筛选会把结果区滚进视野（setFilters 的 scroll）⇒ 工具栏可能在视口外，
-    // 而真实鼠标点不到视口外的坐标。先把它滚进来（探针要量的不是"它在哪"，是"点得开吗"）。
+    // 翻页/改筛选会把结果区滚进视野 ⇒ 工具栏可能在视口外，而真实鼠标点不到视口外的坐标。
     b.scrollIntoView({ block: 'center' });
     await wait(400);
     const r = b.getBoundingClientRect();
@@ -2251,9 +1963,8 @@ try {
     await keyPress('Escape', 'Escape', 27);
     await new Promise((r) => setTimeout(r, 600));
   }
-  // ⑤ `b` = 把焦点送到选中操作条（从列表深处够批量动作的唯一入口）
-  // ⚠️ 这一步必须在**没有对话框开着**的时候跑（列表级的派发器见到 `dialog[open]` 就让路），
-  // 故它排在下面"④ 预览框"之前 —— 第一版把它写在预览/滚轮那一段之后，量到的是对话框里的焦点。
+  // ⑤ `b` = 把焦点送到选中操作条（从列表深处够批量动作的唯一入口）。
+  // ⚠️ 必须排在下面"④ 预览框"之前：列表级派发器见到 `dialog[open]` 就让路。
   await read(`(() => {
     const rows = [...document.querySelectorAll('tbody tr.row')];
     const box = rows[5]?.querySelector('input.checkbox');
@@ -2271,7 +1982,7 @@ try {
     label: (document.activeElement?.getAttribute?.('aria-label') ?? document.activeElement?.textContent ?? '').trim().slice(0, 12),
     destructive: Boolean(document.activeElement?.classList?.contains('btn--danger-solid')),
   })`)) ?? '{}');
-  // 收尾：`Esc` 清空选择（顺带钉住本轮新加的 Esc）
+  // 收尾：`Esc` 清空选择（顺带钉住 Esc 这条）
   await keyPress('Escape', 'Escape', 27);
   await new Promise((r) => setTimeout(r, 500));
   kbFix.afterEscClear = await read(`document.querySelectorAll('tbody tr.row input.checkbox:checked').length`);
@@ -2342,8 +2053,7 @@ try {
     hasAction: Boolean(document.querySelector('#toasts .toast__action')),
     parent: document.getElementById('toasts')?.parentElement?.tagName ?? null,
   })`)) ?? '{}');
-  // ⚠️ 顺序：先恢复网络，再打开预览框 —— 离线时预览框取全文会失败并**自己收壳**
-  // （main.js 的取全文失败路径会 close），于是后面读不到对话框（第一版就这么抛了 null）。
+  // ⚠️ 顺序：先恢复网络，再打开预览框 —— 离线时预览框取全文会失败并**自己收壳**，后面读不到对话框。
   await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await read(`document.querySelectorAll('tbody tr.row')[1].querySelector('[data-action="preview"]').click(), 1`);
   await new Promise((r) => setTimeout(r, 1400));
@@ -2357,10 +2067,8 @@ try {
       parent: host?.parentElement?.className ?? null,
       dockedInDialog: Boolean(host?.closest('dialog')),
       dialogOpen: Boolean(document.querySelector('dialog.dialog[open]')),
-      // 提示条现在浮在对话框页脚**之上** ⇒ 重试按钮的新坐标要重新取（旧坐标已经不对了）。
-      // 命中判定要 closest('.toast__action')：按钮中心的最上层元素是它内部的 label 元素
-      // （实测 elementsFromPoint 栈：SPAN → BUTTON.toast__action → PRE.dialog__pre → …），
-      // 直接比 classList 会把自己判成"没命中"。
+      // 提示条现在浮在对话框页脚**之上** ⇒ 重试按钮的新坐标要重新取。
+      // 命中判定要 closest('.toast__action')：按钮中心的最上层元素是它内部的 label 元素。
       retryHit: Boolean(hit?.closest?.('.toast__action')),
     });
   })()`)) ?? '{}');
@@ -2396,8 +2104,7 @@ try {
   await new Promise((r) => setTimeout(r, 600));
   await read(`document.querySelector('dialog.dialog[open]')?.close(), 1`);
   await new Promise((r) => setTimeout(r, 500));
-  // 收尾：本块自己弹的提示条（带「重试」那条停留 10 秒）必须清掉 —— 否则它会被后面的块读到
-  // （实测：SAVE 块读 `#toasts .toast` 读到的是它 ⇒ 假红）。
+  // 收尾：本块自己弹的提示条（带「重试」那条停留 10 秒）必须清掉 —— 否则后面的块会读到它（SAVE 块曾因此假红）。
   await read(`document.querySelectorAll('#toasts .toast').forEach((n) => n.remove()), 1`);
   console.log('DOCK    ', JSON.stringify(dock));
   {
@@ -2419,17 +2126,14 @@ try {
     }
   }
 
-
-  // ===== 编辑保存的**真实路径**（2026-09-22 用户实测报"保存失败：toasts.show is not a function"）=====
+  // ===== 编辑保存的**真实路径** =====
   //
-  // 为什么必须常跑：这条路径此前**没有判据** —— 探针只测了"内容没变 ⇒ 不发请求"那条（`PRVEDIT`），
-  // 它绕过保存后的反馈，于是 `toasts.show`（那个对象上根本没有 `show` 这个方法，只有 `info`/`error`）
-  // 一路走到用户手里才被发现。教训：**"改了没测"与"测了不对"是两件事**，而这条路径属于前者。
+  // 这条路径此前**没有判据**（探针只测了"内容没变 ⇒ 不发请求"那条，它绕过保存后的反馈），
+  // 于是 `toasts.show`（那个对象上只有 `info`/`error`）一路走到用户手里才被发现。
   //
   // 判据四件事：① 真发了一次 POST；② 记录数 +1；③ 出现**真提示条**且文案是"已保存为新记录（N 个字符）"；
   // ④ 自己收拾干净（软删 + 彻底删除，按内容里的探针标记定位，跑完不残留）。
-  // 它**写服务端数据**（与 `--write` 那段同类），但净零且不依赖 --write：这条路径太关键，
-  // 不能被"默认不写"这条偏好挡在门禁之外。
+  // 它**写服务端数据**，但净零且不依赖 --write：这条路径太关键，不能被"默认不写"挡在门禁之外。
   const saveMarker = `PROBE-${Date.now().toString(36)}`;
   const saveResult = JSON.parse(
     (await read(`(async () => {
@@ -2467,11 +2171,9 @@ try {
       (await read(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const dlg = document.querySelector('dialog.dialog[open]');
-        // 读**全部**提示条里匹配"已保存为新记录"的那一条：宿主里可能还有别的提示（本探针自己弹的），
-        // 只取第一条会读到别人（2026-09-23 实测踩到）。
+        // 读**全部**提示条里匹配"已保存为新记录"的那一条：宿主里可能还有别的提示（本探针自己弹的）。
         const toasts = [...document.querySelectorAll('#toasts .toast')].map((t) => t.textContent);
-        // ⚠️ 用 [0-9] 而不是 \d：这段是**模板字面量**，\d 里的反斜杠会被吃掉（变成 d+）⇒
-        // 正则永远匹配不上，判据假红（2026-09-23 实测踩到：toastDebug 里文本明明对得上）。
+        // ⚠️ 用 [0-9] 而不是 \\d：这段是**模板字面量**，\\d 里的反斜杠会被吃掉（变成 d+）⇒ 正则永不匹配。
         const toast = toasts.find((t) => /^已保存为新记录（[0-9]+ 个字符）$/.test(t)) ?? null;
         const after = (await (await fetch('/ui/api/history?page=1&pageSize=1')).json()).total ?? null;
         const out = {
@@ -2491,10 +2193,8 @@ try {
           },
         };
         // 收拾干净：按内容里的探针标记定位 → 软删 → 彻底删除。
-        // ⚠️ type 必须转成**字符串**再发：列表 JSON 里它是**数字**（0/1/2/3），而 batch-purge
-        // 的入口判据是 typeof entry.type === 'string' ⇒ 直接透传数字会被判 invalid、
-        // 静默留在回收站里（第一版就是这么漏了一条，清理看似"过了"）。
-        // （这段在模板串里：注释里不要再出现反引号 —— 会把外层串闭合掉，已踩过两次。）
+        // ⚠️ type 必须转成**字符串**再发：列表 JSON 里它是**数字**，而 batch-purge 的入口判据是
+        // typeof entry.type === 'string' ⇒ 直接透传数字会被判 invalid、静默留在回收站里。
         const marker = ${JSON.stringify(saveMarker)};
         const look = async (deleted) =>
           (await (await fetch('/ui/api/history?page=1&pageSize=20&sort=id&order=desc&search=' +
@@ -2522,8 +2222,7 @@ try {
         }
         out.purged = purged;
         out.purgeBodies = purgeBodies;
-        // 残留要看**回收站**：软删之后它在活跃视图里本来就看不见（第一版只查活跃视图，
-        // 于是"没清干净"也能读到 0）
+        // 残留要看**回收站**：软删之后它在活跃视图里本来就看不见
         out.trashResidual = (await look(true)).total ?? null;
         out.activeResidual = (await look(false)).total ?? null;
         out.finalTotal = (await (await fetch('/ui/api/history?page=1&pageSize=1')).json()).total ?? null;
@@ -2557,15 +2256,12 @@ try {
     }
   }
 
-  // ===== 顶栏折叠（2026-09-22 用户定形：「滚动的时候最上面这一个折叠起来」）=====
+  // ===== 顶栏折叠（"滚动的时候最上面这一个折叠起来"）=====
   //
-  // 判据四件事，缺一条都不算做到：
-  //   ① 向下滚且离开顶部 120px 之后**整条滑出**（`transform` 把它推到视口上方）；
-  //   ② 头栏与表头**跟着上移**：顶栏原来占的那 56px**不留空带**（头栏贴 0、表头贴 45）；
-  //   ③ 向上滚**立刻展开**（回到顶部同理）；
-  //   ④ **多选时不弹回来**（2026-09-22 用户第二次定形）：折叠态下勾一行，顶栏仍滑出、
-  //      头栏仍贴 0、表头仍贴 45 ⇒ **零位移**（早先"选中时不折"那版会让整条链弹回 56/101、
-  //      把内容推下 56px，与第 33 条的"选中前后零位移"自相矛盾）。
+  // 四件事：① 向下滚且离开顶部 120px 之后**整条滑出**；② 头栏与表头**跟着上移**（顶栏原来占的
+  // 56px 不留空带：头栏贴 0、表头贴 45）；③ 向上滚**立刻展开**；④ **多选时不弹回来**：
+  // 折叠态下勾一行，顶栏仍滑出、头栏仍贴 0 ⇒ **零位移**（"选中时不折"那版会把内容推下 56px，
+  // 与"选中前后零位移"自相矛盾）。
   const headerFold = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const box = (sel) => {
@@ -2617,8 +2313,7 @@ try {
   console.log('HEADERFOLD', headerFold);
   {
     const s = JSON.parse(headerFold);
-    // 表头只在**表格档**（>860px）吸顶；卡片档它是 `top: auto`、随页面滚走（实测 y=900 时 top=−482）。
-    // 故这两条判据必须分档 —— 第一版忘了分，390 档报了两次假阳性（Git history记着这次）。
+    // 表头只在**表格档**（>860px）吸顶；卡片档它是 `top: auto`、随页面滚走 ⇒ 这两条判据必须分档。
     const cardMode = (s.down900?.vw ?? 1440) <= 860;
     const thCollapsedOk = cardMode ? (s.down900?.th === null || s.down900.th.top < 0) : s.down900?.th?.top === 45;
     const hidden = (x) => x?.header?.top <= -56;
@@ -2630,8 +2325,7 @@ try {
       '表头 top=' + String(s.down900?.th?.top) + ' 视口宽=' + String(s.down900?.vw),
     );
     check('向上滚立刻展开顶栏', s.up?.attr !== 'hidden' && s.up?.header?.top === 0, JSON.stringify(s.up));
-    // ④ 多选时**不弹回来**：折叠态下勾一行，顶栏仍滑出、头栏仍贴 0、表头仍贴 45 ⇒ **零位移**。
-    // （判据必须分档：卡片档表头随页面滚走，见上面那两条。）
+    // ④ 多选时**不弹回来**：折叠态下勾一行，顶栏仍滑出、头栏仍贴 0、表头仍贴 45 ⇒ **零位移**（分档同上）。
     const thSelectedOk = cardMode ? (s.selected?.th === null || s.selected.th.top < 0) : s.selected?.th?.top === 45;
     check(
       '多选时不弹回顶栏（勾一行仍保持折叠，零位移）',
@@ -2649,11 +2343,10 @@ try {
     );
   }
 
-  // ===== 部署信息的「保留策略」说明里必须写着那条豁免（2026-09-22 用户问「收藏和置顶的会不会被清理」后补的）=====
+  // ===== 部署信息的「保留策略」说明里必须写着那条豁免 =====
   // 判据是"看得见且读得到"：静态文案被折掉、被压住、字在但不可见，都等于这个承诺没出现
-  // （文案在 `ui_v1/js/components/info.js` 的 `.note` 里，Git history）。
-  // ⚠️ 必须放在**默认流程**里：第一版写进了 `if (SHOTS)` 那段（只在 `--shots` 时跑），
-  // 结果默认跑的探针根本不打印它 —— 判据没执行，`findings=0` 是假的。
+  // （文案在 `ui_v1/js/components/info.js` 的 `.note` 里）。
+  // ⚠️ 必须放在**默认流程**里：写进 `if (SHOTS)` 那段时，默认跑的探针根本不执行它 —— `findings=0` 是假的。
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, 2000));
   await read(
@@ -2687,16 +2380,13 @@ try {
   await read(`document.querySelector('dialog[open]')?.close(), 'closed'`);
   await new Promise((r) => setTimeout(r, 300));
 
-  // ===== 文本下载（2026-09-18，"文本也可以下载，格式保存成 txt"）=====
+  // ===== 文本下载 =====
   // 判据不是"点了有反应"，而是**磁盘上真的出现了一个 .txt，且内容与这条记录的正文对得上**。
-  // 列表里的正文被截断到 500 字符，所以这条探针要在命中一条长文本时跑才有意义：
+  // 列表里的正文被截断到 500 字符，故要在命中一条长文本时跑才完整：
   //   node test/manual/probe-ui-v1.mjs --url "/ui_v1/?types=Text&search=LLLL"
-  // （本机那条 11000 字符的 `Text_….txt` 夹具就是这样命中的。）截断的那条会走"先取全文"，
-  // 于是 `bytes` 应当是全文而不是 500 字符。
   //
-  // 必须**自己重新导航一次**：前面的 IME 段收尾时会清空搜索（列表回到无筛选状态），
-  // 直接点第一行会点到另一条记录 —— 第一版就是这么量错的（拿到 `Text-68C2F5F9.txt` 27 字节，
-  // 而那一行根本不是 `search=LLLL` 命中的那条）。
+  // 必须**自己重新导航一次**：前面的 IME 段收尾会清空搜索（列表回到无筛选状态），
+  // 直接点第一行会点到另一条记录。
   await send('Page.navigate', { url: `${BASE}${URL_PATH}` });
   await new Promise((r) => setTimeout(r, 2500));
   mkdirSync(downloadDir, { recursive: true });
@@ -2721,9 +2411,7 @@ try {
   if (!dlCell.skipped) {
     for (let i = 0; i < 60 && !dlFile; i += 1) {
       await new Promise((r) => setTimeout(r, 100));
-      const files = existsSync(downloadDir)
-        ? readdirSync(downloadDir).filter((f) => !f.endsWith('.crdownload'))
-        : [];
+      const files = readdirSync(downloadDir).filter((f) => !f.endsWith('.crdownload'));
       if (files.length > 0) dlFile = files[0];
     }
   }
@@ -2742,10 +2430,9 @@ try {
     }),
   );
 
-  // ===== A5 · 失败路径的「重试」（2026-09-18）=====
+  // ===== 失败路径的「重试」 =====
   // 用 `Network.emulateNetworkConditions({ offline: true })` 把下一次列表请求打成网络失败，
-  // 再点提示条里的「重试」看列表是否恢复。为什么要"制造"故障：真实的瞬时故障没法按需出现，
-  // 而这条修复的全部内容就是"提示条里有没有重试按钮、那个按钮是否真的重发了请求"。
+  // 再点提示条里的「重试」看列表是否恢复（真实的瞬时故障没法按需出现）。
   await send('Network.enable');
   const offline = (on) =>
     send('Network.emulateNetworkConditions', {
@@ -2764,8 +2451,8 @@ try {
     await wait(900);
     const action = document.querySelector('.toast__action');
     const toastText = [...document.querySelectorAll('.toast')].map((t) => t.textContent).join(' | ');
-    // 顺带读一眼顶栏那枚「状态图标 + 部署信息」：断网后推送通道会掉线，图标应当从
-    // 广播/信号（live）换成刷新箭头（offline），而 hover 文案（title）从"实时推送"换成"轮询刷新"。
+    // 顺带读一眼顶栏那枚状态图标：断网后推送通道会掉线，图标应从广播/信号（live）换成刷新箭头（offline），
+    // 而 hover 文案（title）从"实时推送"换成"轮询刷新"。
     const status = document.querySelector('.status');
     return JSON.stringify({
       rowsBefore,
@@ -2778,7 +2465,6 @@ try {
     });
   })()`);
   // 恢复网络**再**点重试 —— 这才是真实时序（网断 → 失败 → 网通 → 按下重试）。
-  // 第一次实现把点重试放在恢复之前，于是重试自己也失败、失联横幅当然还挂着，读起来像"重试坏了"。
   await offline(false);
   const retryAfter = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2793,7 +2479,7 @@ try {
   })()`);
   console.log('RETRY   ', `${retryState} → ${retryAfter}`);
 
-  // ===== A4 · 有结果时的一键复位筛选（2026-09-18）=====
+  // ===== 有结果时的一键复位筛选 =====
   await send('Page.navigate', { url: `${BASE}/ui_v1/?types=File` });
   await new Promise((r) => setTimeout(r, 1800));
   const resetFilter = await read(`(async () => {
@@ -2805,9 +2491,8 @@ try {
       headText: head?.textContent?.trim().slice(0, 40) ?? null,
       hasButton: Boolean(button),
       buttonHidden: button?.hidden ?? null,
-      // 「按钮明显不明显」也有计算值可量（2026-09-18 用户要求"明显点"）：旧版（btn--quiet）
-      // 边框 0px、背景全透明、颜色是次要色 —— 与紧挨着的说明文字完全同色，读起来不是按钮。
-      // 注意：这一段在模板串里，注释里不要再出现反引号（第一版就是这么把外层串闭合掉的）。
+      // 「按钮明显不明显」也有计算值可量：旧版（btn--quiet）边框 0px、背景全透明、颜色是次要色，
+      // 与紧挨着的说明文字同色，读起来不是按钮。
       buttonStyle: (() => {
         if (!button) return null;
         const cs = getComputedStyle(button);
@@ -2836,11 +2521,10 @@ try {
   })()`);
   console.log('RESETFILTER', resetFilter);
 
-  // ===== 范围切换时的工具栏抖动（2026-09-18）=====
-  // 用户报告的现象："点回收站之后前面的搜索框会闪一下"。机制是切换**范围**会换掉整份类型计数，
-  // 而 `countsForView` 的守卫在新计数到达前把五个 chip 的计数清空 → 分段控件窄 ~99px →
-  // 搜索框与 spacer 分走腾出的宽度 → 下一帧再弹回。修法是给计数槽定宽（`.segmented__count` 的 4ch）。
-  // 这里把"修好"变成可复算的判据：**前后三帧的宽度差 ≤ 2px**（修前实测 搜索框 50 / 类型组 99）。
+  // ===== 范围切换时的工具栏抖动 =====
+  // 切换**范围**会换掉整份类型计数，`countsForView` 的守卫在新计数到达前把五个 chip 的计数清空
+  // → 分段控件变窄 → 搜索框与 spacer 分走腾出的宽度 → 下一帧再弹回。修法是给计数槽定宽。
+  // 判据是"**同一份数据内**帧间有没有大跳"（闪 = 一跳一弹），不是"末态与初态是否相同"。
   const toolbarShift = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const widthOf = (selector) => Math.round(document.querySelector(selector)?.getBoundingClientRect().width ?? -1);
@@ -2864,18 +2548,14 @@ try {
     recycleButton.click();
     await wait(1500);
 
-    // 判据是"**同一份数据内**帧间有没有大跳"（闪 = 一跳一弹），而不是"末态与初态是否相同"：
-    // 切换范围后计数本来就会变（617 → 2），宽度随之变是数据变化，不是抖动。
-    // ⚠️ 2026-09-23 修两处：① 此前把 settled 也算成抖动帧 ⇒ 读到的是数据变化那一步；
-    // ② 光看"新计数到达之前"还不够 —— 本地服务器 80ms 内就返回了，after80 已经带着新计数。
-    // 故判据按**计数文本**分帧：只比较"相邻两帧的计数完全相同"的那几对，跨数据的那一跳单列。
+    // ⚠️ 判据按**计数文本**分帧：只比较"相邻两帧的计数完全相同"的那几对，跨数据的那一跳单列
+    // （本地服务器 80ms 内就返回了，after80 已经带着新计数）。
     const frames = [
       { key: 'before', box: before, counts: beforeCounts },
       { key: 'during', box: during, counts: duringCounts },
       { key: 'after80', box: after80, counts: after80Counts },
       { key: 'settled', box: settled, counts: settledCounts },
     ];
-    // 只在**同一份计数**的相邻帧之间量抖动
     let jitter = { search: 0, types: 0 };
     for (let i = 1; i < frames.length; i += 1) {
       if (frames[i].counts !== frames[i - 1].counts) continue;
@@ -2905,8 +2585,8 @@ try {
     );
   }
 
-  // ===== A8 · 顶栏「复制最近一条」（2026-09-18）=====
-  // 断言三件事：按钮真的把内容写进了剪贴板（逐字对照第一行的正文）、提示条报了条数、
+  // ===== 顶栏「复制最近一条」 =====
+  // 三件事：按钮真的把内容写进了剪贴板（逐字对照第一行的正文）、提示条报了条数、
   // 而且它取的是**全库最新**而不是当前列表的第一行（当前列表此时未被筛选/排序过，两者一致）。
   await send('Page.navigate', { url: `${BASE}/ui_v1/` });
   await new Promise((r) => setTimeout(r, 1800));
@@ -2937,11 +2617,10 @@ try {
   })()`);
   console.log('COPYLATEST', copyLatest);
 
-  // ===== 状态图标的三个字形（2026-09-18）=====
-  // 顶栏那枚胶囊里，状态只由**图标**承载（文字只写"部署信息"），故三个字形必须真的会换。
-  // 刺激用的是应用自己认的那个事件：`visibilitychange` → 隐藏时 `pushChannel.stop()` →
-  // 状态转 offline（`main.js` 的可见性处理器就是这么写的），回前台再 start()。
-  // 比"断网"更可靠：断网掐不掉已经建立的 WebSocket（实测那时仍是 live）。
+  // ===== 状态图标的三个字形 =====
+  // 顶栏那枚胶囊里状态只由**图标**承载（文字只写"部署信息"），故三个字形必须真的会换。
+  // 刺激用应用自己认的那个事件：`visibilitychange` → 隐藏时 `pushChannel.stop()` → 状态转 offline，
+  // 回前台再 start()。比"断网"可靠：断网掐不掉已经建立的 WebSocket。
   const statusIcons = await read(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const readStatus = () => {
@@ -2968,8 +2647,8 @@ try {
 
   if (WRITE) {
     // 写路径：点第一行的「收藏」→ 按钮就地变状态 → 服务端真的存了 → 再点回去。
-    // 三条断言各有理由：① 点了要有反应（本地就地更新，不等下一次轮询）；
-    // ② 服务端要真的落了（否则会"看着成功了、刷新就没了"）；③ 要能切回去（净零）。
+    // 三条断言各有理由：① 点了要有反应（本地就地更新，不等下一次轮询）；② 服务端要真的落了；
+    // ③ 要能切回去（净零）。
     const writeCheck = await read(`(async () => {
       const row = document.querySelector('.table tr.row');
       const button = row?.querySelector('[data-action="star"]');
@@ -2994,10 +2673,9 @@ try {
     })()`);
     console.log('WRITE   ', writeCheck);
 
-    // 批量动作后的「焦点不被抢回」（2026-09-18 修）。`list.restoreFocus()` 会把焦点交给结果区，
-    // 它带着一圈 ~0.5s 的重试（用于等浏览器关闭模态后的补焦）。那一圈**不能**把用户自己放好的
-    // 焦点抢回来 —— 这条探针量的就是这件事：动作后立刻点搜索框，等过整个重试窗口，焦点还该在
-    // 搜索框里。没有这道守卫时，`document.activeElement` 会变成表头的全选框。
+    // 批量动作后的「焦点不被抢回」：`list.restoreFocus()` 会把焦点交给结果区，它带着一圈 ~0.5s 的
+    // 重试（用于等浏览器关闭模态后的补焦）—— 那一圈**不能**把用户自己放好的焦点抢回来。
+    // 没有这道守卫时，`document.activeElement` 会变成表头的全选框。
     const focusKeep = await read(`(async () => {
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       if (!document.querySelector('tbody tr.row')) return JSON.stringify({ skipped: 'no rows' });
@@ -3032,22 +2710,16 @@ try {
     })()`);
     console.log('FOCUSKEEP', focusKeep);
 
-    // 置顶（2026-09-18 起列表**恒置顶优先**，见 src/ui/query.ts 的 pinnedFirst）：
-    // 这条探针验的不是"按钮按下去了"，而是三件连起来的事 ——
-    //   ① 服务端真的落了 pinned=true（否则只是画得对）；
-    //   ② 徽标就地出现（不用等下一次整页刷新）；
-    //   ③ 这一行真的挪到了置顶组里（按下前在它上面的行，现在全是置顶的），
-    //      且收尾按回去之后整表顺序**逐行还原**（排序键是 CreateTime，置顶只改 LastModified）。
-    // 取「第一个未置顶、且上面还有行」的那一行：第 1 行本来就在最前，置顶它证明不了"会移动"；
-    // 而库里已经有一批置顶记录时，随便取第 4 行会取到**已置顶**的行 —— 那一下是按"取消置顶"，
-    // 行会往下走，断言的方向就反了（本机实测：前 13 行都是置顶的）。
+    // 置顶（列表**恒置顶优先**，见 src/ui/query.ts 的 pinnedFirst）验三件连起来的事：
+    //   ① 服务端真的落了 pinned=true（否则只是画得对）；② 徽标就地出现（不等下一次整页刷新）；
+    //   ③ 这一行真的挪到了置顶组里（按下前在它上面的行现在全是置顶的），且按回去之后整表顺序**逐行还原**。
+    // 取「页内最后一个未置顶」的行：第 1 行本来就在最前、证明不了"会移动"；而库里已经有一批置顶记录时，
+    // 随便取第 4 行会取到**已置顶**的行 —— 那一下是按"取消置顶"，行会往下走，断言方向就反了。
     const pinCheck = await read(`(async () => {
       const rows = () => [...document.querySelectorAll('.table tr.row')];
       const order = () => rows().map((r) => r.dataset.key);
       const before = order();
       const isPinned = (r) => r.querySelector('[data-action="pin"]')?.getAttribute('aria-pressed') === 'true';
-      // 取**页内最后一个未置顶**的行：位移一眼可见（本机是 50 → 置顶组末尾），
-      // 而"第一个未置顶的行"在已经有一批置顶记录时只会挪一两位，证明不了什么。
       const unpinned = rows().filter((r) => r.querySelector('[data-action="pin"]') && !isPinned(r));
       const target = unpinned[unpinned.length - 1];
       if (!target) return JSON.stringify({ skipped: 'every row is pinned' });
@@ -3114,8 +2786,7 @@ try {
     await runAudit('empty');
     await shot('03-empty');
 
-    // 部署信息：2026-09-18 起并进了顶栏那枚**状态胶囊**（`[● 实时推送 ⓘ]`，整枚可点），
-    // 故这里按 aria-label **包含**「部署信息」来找 —— 前缀随状态变（实时推送/正在连接/轮询刷新）。
+    // 部署信息：并进了顶栏那枚**状态胶囊**，故按 aria-label **包含**「部署信息」来找（前缀随状态变）
     await send('Page.navigate', { url: `${BASE}/ui_v1/` });
     await wait(2500);
     await read(
@@ -3125,8 +2796,7 @@ try {
     await wait(900);
     await runAudit('info-dialog');
     await shot('04-info');
-    // 保留策略那段说明的判据在**默认流程**里（见前面 `RETENTION-NOTE` 段）：写在这里会在
-    // `--shots` 之外完全不执行，而判据没执行时 `findings=0` 是假的。
+    // 保留策略那段说明的判据在**默认流程**里（见 RETENTION-NOTE 段）。
     await read(`document.querySelector('dialog[open]')?.close(), 'closed'`);
     await wait(400);
 
@@ -3153,9 +2823,7 @@ try {
     await shot('06-selection');
 
     // 页脚：入口是**本项目的地址**，悬停时向上拉出「致谢」面板，里面是**另外两个**项目。
-    // 只能靠真实鼠标移动来验（CDP `Input.dispatchMouseEvent`）——手工加个类或改样式是"我让它展开的"，
-    // 验不到 `:hover` 这条真正的路径。先把入口滚进视野（页脚在文档最底部，rect 可能在视口之外），
-    // 再派发 mouseMoved，然后**读回来**：面板可见、在入口**上方**、不越出视口、恰好两个链接。
+    // 只能靠真实鼠标移动来验（手工加个类或改样式是"我让它展开的"，验不到 `:hover` 这条真正的路径）。
     await send('Page.navigate', { url: `${BASE}/ui_v1/` });
     await wait(2500);
     const footerBox = JSON.parse(
@@ -3186,14 +2854,14 @@ try {
         return JSON.stringify({
           hovered: box?.matches(':hover') ?? null,
           triggerHref: box?.querySelector('.footer-links__trigger')?.getAttribute('href') ?? null,
-          // 文案改成项目名之后，**"它会开到哪"只剩 title 这一条通道**（2026-09-18 用户要求补上）：
-          // 可访问名仍是可见文字（SyncClipboard CfServer），title 只作描述与悬停提示。
+          // 文案改成项目名之后，"它会开到哪"只剩 title 这一条通道：可访问名仍是可见文字，
+          // title 只作描述与悬停提示。
           triggerTitle: box?.querySelector('.footer-links__trigger')?.getAttribute('title') ?? null,
           panelVisible: cs ? cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0.9 : null,
           // 面板必须在触发器的**上方**（用户要的"向上拉"）：面板下边缘 ≤ 触发器上边缘
           aboveTrigger: r && triggerRect ? Math.round(r.bottom) <= Math.round(triggerRect.top) : null,
           insideViewport: r ? r.left >= 0 && r.right <= window.innerWidth : null,
-          // 面板要**贴着入口**（2026-09-18 用户指出：锚页脚整块时中间空出一条带子）
+          // 面板要**贴着入口**（锚页脚整块时中间会空出一条带子）
           gapAboveEntry: r && triggerRect ? Math.round(triggerRect.top - r.bottom) : null,
           // 右缘贴内容盒右缘、左缘不越出内容盒（两者合起来才是"不出视口"）
           panelInsideFooterBox: r && inner ? r.left >= Math.round(inner.left) - 1 && r.right <= Math.round(inner.right) + 1 : null,
@@ -3207,9 +2875,8 @@ try {
       await shot('07-footer-links');
     }
 
-    // 分页区单独一张：窄屏下它曾经折成四行、两个按钮各占一整行（用户 2026-09-18 的截图）。
-    // 判据看 `PAGER` 行。**必须先把指针移开**：上一步的悬停还开着致谢面板，它会正好盖住分页区
-    // （第一版就是这么拍出一张"看不出问题"的废图）。
+    // 分页区单独一张：窄屏下它曾经折成四行、两个按钮各占一整行（判据看 `PAGER` 行）。
+    // **必须先把指针移开**：上一步的悬停还开着致谢面板，它会正好盖住分页区（拍出来是废图）。
     if (!COARSE) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 8, y: 8 });
     await wait(400);
     await read(`(() => {
@@ -3220,8 +2887,7 @@ try {
     await shot('08-pager');
   }
 
-  // 判据空转的出口（见文件头那段）：凡不是"前提如此"的 skipped，一律算判据失效。
-  // 放在 SUMMARY 之前 —— 它自己也进 findings。
+  // 判据空转的出口：凡不是"前提如此"的 skipped，一律算判据失效。放在 SUMMARY 之前 —— 它自己也进 findings。
   const badSkips = skips.filter((s) => !SKIP_IS_PRECONDITION.some((re) => re.test(s)));
   check('没有判据在空转（skipped 只能来自环境/数据前提）', badSkips.length === 0, JSON.stringify(badSkips));
   console.log('SKIPPED ', skips.length ? JSON.stringify(skips) : 'none');
@@ -3230,18 +2896,5 @@ try {
   console.log('AUDIT SUMMARY', auditFindings.length === 0 ? 'findings=0' : JSON.stringify(auditFindings));
   process.exitCode = auditFindings.length === 0 ? 0 : 1;
 } finally {
-  try {
-    cdp?.ws.close();
-    browserWs?.close();
-  } catch {
-    /* 忽略 */
-  }
-  proc.kill();
-  await new Promise((r) => setTimeout(r, 400));
-  try {
-    rmSync(profileDir, { recursive: true, force: true });
-    rmSync(downloadDir, { recursive: true, force: true });
-  } catch {
-    /* 临时目录清不掉不影响结果 */
-  }
+  close();
 }
