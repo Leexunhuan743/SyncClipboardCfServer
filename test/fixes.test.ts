@@ -538,25 +538,6 @@ function createFaultD1(): { d1: SqliteD1; fault: { error: Error | null; attempts
 }
 
 describe('F5 · 写路径唯一约束与乐观并发', () => {
-  it('落库 hash 规范化为大写；大小写不同的写入命中同一条记录（不再双份）', async () => {
-    const { db, d1 } = makeDb();
-    const first = await db.insert(entity({ hash: 'abc', text: 'lower' }));
-    // 原始 SQL 里存的必须是大写（规范化发生在写边界，不依赖调用方）
-    const raw = await d1
-      .prepare('SELECT Hash FROM HistoryRecords WHERE ID = ?1')
-      .bind(first.id)
-      .first<{ Hash: string }>();
-    expect(raw?.Hash, '落库为大写').toBe('ABC');
-
-    // 用大写写同一条：命中既有行（LOWER 兼容查询 + 唯一索引），不产生第二行
-    const second = await db.insert(entity({ hash: 'ABC', text: 'upper' }));
-    expect(second.id).toBe(first.id);
-    expect(
-      (await d1.prepare('SELECT COUNT(*) AS n FROM HistoryRecords').first<{ n: number }>())?.n,
-      '同一 hash 只应有一行',
-    ).toBe(1);
-  });
-
   it('(UserId,Type,Hash) 唯一索引阻止重复行；冲突时按上游 UpdateExistingRecordDto 合并元数据', async () => {
     const { db } = makeDb();
     const first = await db.insert(entity({ hash: 'ABC', text: 'one' }));

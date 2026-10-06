@@ -58,7 +58,7 @@ describe('部署开关清单：.dev.vars.example / deploy.yml / README 三处一
   });
 });
 
-describe('部署链：hash 大小写折叠冲突检测（tools/check-hash-case-conflicts.mjs）', () => {
+describe('部署链：hash 大小写体检（tools/check-hash-case-conflicts.mjs）', () => {
   it('findCaseConflicts：只差大小写的同 (User, Type) hash 被挑出；纯大写/不同 hash 不受影响', async () => {
     // @ts-expect-error —— 无该 .mjs 的声明文件
     const mod = await import('../tools/check-hash-case-conflicts.mjs');
@@ -73,6 +73,20 @@ describe('部署链：hash 大小写折叠冲突检测（tools/check-hash-case-c
     expect(conflicts[0].map((r: { Hash: string }) => r.Hash).sort()).toEqual(['ABC', 'abc']);
     // 正对照：全大写、或无折叠冲突时为空
     expect(mod.findCaseConflicts([{ ID: 1, UserId: 'u', Type: 0, Hash: 'ABC' }])).toEqual([]);
+  });
+
+  it('findNonCanonicalRows：**无**冲突但含小写行时也必须被挑出（收敛查询的第二条前提）', async () => {
+    // @ts-expect-error —— 无该 .mjs 的声明文件
+    const mod = await import('../tools/check-hash-case-conflicts.mjs');
+    // 只有一条小写、无任何重复：findCaseConflicts 返回空，但非规范行仍会让大写参数查不到它
+    const rows = [
+      { ID: 1, UserId: 'u', Type: 0, Hash: 'abc' },
+      { ID: 2, UserId: 'u', Type: 0, Hash: 'DEF' },
+    ];
+    expect(mod.findCaseConflicts(rows), '无冲突').toEqual([]);
+    expect(mod.findNonCanonicalRows(rows).map((r: { ID: number }) => r.ID), '仍挑出小写行').toEqual([1]);
+    // 正对照：全大写时为空
+    expect(mod.findNonCanonicalRows([{ ID: 1, UserId: 'u', Type: 0, Hash: 'ABC' }])).toEqual([]);
   });
 
   it('工具是**只读**的（只出现 SELECT，不含 UPDATE/DELETE/INSERT 语句）', () => {

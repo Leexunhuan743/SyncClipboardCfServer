@@ -16,20 +16,6 @@ export async function sha256Hex(data: Uint8Array | string): Promise<string> {
   return hex.toUpperCase();
 }
 
-// ===== Profile 哈希的**规范形态** =====
-//
-// 应用层一律按大写处理 hash（对齐上游 `Convert.ToHexString`），落到 `HistoryRecords.Hash` 也是大写。
-// 但 SQLite 的 `=` 对 TEXT 是**大小写敏感**的（除非列声明 COLLATE NOCASE，本表没有），于是「应用层
-// 大小写不敏感、唯一索引 `ux_h_user_type_hash` 大小写敏感」会分裂：同一份内容在不同设备上写两次、
-// 只有一次被规范化纠正时，会插出 `ABC` 与 `abc` 两条（唯一索引放行）⇒ R2 出现两个工作目录。
-//
-// 收敛办法（不重建表、不引入 COLLATE 迁移）：**新写入与按 hash 查询的参数都先过这里**，
-// 于是新数据不再产生第二种大小写；历史库若已含小写行，检测脚本
-// （tools/check-hash-case-conflicts.mjs）会先确认有无 case-fold 冲突，无冲突才安全统一。
-export function normalizeProfileHash(hash: string): string {
-  return hash.toUpperCase();
-}
-
 // ===== Text（上游 TextProfile.ComputeHash）=====
 // hash = SHA256hex(UTF8(text))
 export function textProfileHash(text: string): Promise<string> {

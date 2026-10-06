@@ -1,12 +1,15 @@
-// 检测 `HistoryRecords.Hash` 的**大小写折叠冲突**：同一 `(UserId, Type)` 下存在只差大小写的多条 hash。
+// 诊断 `HistoryRecords.Hash` 的大小写状况：**只读**检测两类问题，为「把 getByTypeAndHash 的
+// `LOWER(Hash)=LOWER(?)` 收敛为 `Hash=?`」这件事提供事实依据。
 //
-// 为什么需要它（见 src/hash.ts 的 normalizeProfileHash 与 docs/protocol.md §10 的「落库 hash 的大小写」）：
-// 新写入已统一为大写，但**历史库**可能含小写行，而唯一索引 `ux_h_user_type_hash` 是大小写敏感的
-// （SQLite 默认 BINARY 比较），所以 `ABC` 与 `abc` 可以并存。把查询从 `LOWER(Hash) = LOWER(?)`
-// 收敛成 `Hash = ?` 之前，必须先确认线上没有这种行 —— 否则收敛会让其中一条查不到（静默 404/丢数据）。
+// 为什么需要**两**条判据（缺一不可）：`(UserId,Type,Hash)` 唯一索引是大小写敏感的（SQLite 默认
+// BINARY），而查询/参数若规范化成大写，`Hash='ABC'` 就查不到存成 `abc` 的历史行。因此：
+//   ① case-fold 冲突：同一 `(UserId, Type)` 下同时存在 `ABC` 与 `abc`（唯一索引放行）——
+//      收敛后只能命中其中一条，另一条静默消失。
+//   ② 非规范行（任何 `Hash != Hash.toUpperCase()`）：即便无冲突，`abc` 也永远匹配不上大写参数。
+// 只有**两者都为 0**，收敛查询才是安全的。
 //
-// 本脚本**只读**：只 SELECT，不 UPDATE、不 DELETE。存在冲突时退出码非 0 并逐条打印，
-// 由人决定如何合并（本仓库不自动删数据）。
+// 本脚本**只读**：只 SELECT，不 UPDATE/DELETE。发现问题时退出码非 0 并逐条打印，由人决定如何
+// 规范化（本仓库不自动改数据）。
 //
 // 用法：`node tools/check-hash-case-conflicts.mjs [--local|--remote]`（缺省 `--local`）。
 // 寻址用 binding 名 `DB`（与 Worker 绑定、CI 的 schema/migrate 步骤同源）。
@@ -25,11 +28,10 @@ export function parseRows(stdout) {
   const start = stdout.search(/[[{]/);
   if (start < 0) throw new Error('输出里没有 JSON');
   const parsed = JSON.parse(stdout.slice(start));
-  const rows = (Array.isArray(parsed) ? parsed : [parsed]).flatMap((page) => page?.results ?? []);
-  return rows;
+  return (Array.isArray(parsed) ? parsed : [parsed]).flatMap((page) => page?.results ?? []);
 }
 
-// 纯函数：从行集合里挑出大小写折叠冲突。导出以便单测（GUI 无关，无 I/O）。
+// 纯函数：从行集合里挑出大小写折叠冲突。导出以便单测（无 I/O）。
 // 判据：同一 `(UserId, Type)` 下，`Hash.toUpperCase()` 相同但 `Hash` 字符串不同的行 ≥ 2 条。
 export function findCaseConflicts(rows) {
   const groups = new Map();
@@ -41,18 +43,24 @@ export function findCaseConflicts(rows) {
   }
   const conflicts = [];
   for (const list of groups.values()) {
-    const distinct = new Set(list.map((r) => String(r.Hash ?? '')));
-    if (distinct.size > 1) conflicts.push(list);
+    if (new Set(list.map((r) => String(r.Hash ?? ''))).size > 1) conflicts.push(list);
   }
   return conflicts;
+}
+
+// 纯函数：挑出**非规范**行（Hash 与它的大写不同）。导出以便单测。
+export function findNonCanonicalRows(rows) {
+  return rows.filter((r) => {
+    const hash = String(r.Hash ?? '');
+    return hash !== hash.toUpperCase();
+  });
 }
 
 const args = process.argv.slice(2);
 const scope = args.includes('--remote') ? '--remote' : '--local';
 
 async function main() {
-  const sql =
-    'SELECT ID, UserId, Type, Hash FROM HistoryRecords ORDER BY UserId, Type, Hash';
+  const sql = 'SELECT ID, UserId, Type, Hash FROM HistoryRecords ORDER BY UserId, Type, Hash';
   const res = await run(
     process.execPath,
     [WRANGLER, 'd1', 'execute', DB, scope, '--json', '--command', sql],
@@ -60,19 +68,32 @@ async function main() {
   );
   const rows = parseRows(res.stdout);
   const conflicts = findCaseConflicts(rows);
+  const nonCanonical = findNonCanonicalRows(rows);
 
-  if (conflicts.length === 0) {
-    console.log(`hash 大小写折叠冲突：0（扫描 ${rows.length} 行，scope=${scope}）`);
-    console.log('⇒ 可安全把 getByTypeAndHash 的 LOWER(Hash)=LOWER(?) 收敛为 Hash=?');
+  console.log(`扫描 ${rows.length} 行（scope=${scope}）`);
+  console.log(`① case-fold 冲突组：${conflicts.length}`);
+  console.log(`② 非规范（非大写）行：${nonCanonical.length}`);
+
+  if (conflicts.length === 0 && nonCanonical.length === 0) {
+    console.log('⇒ 两项均为 0，可安全把 getByTypeAndHash 的 LOWER(Hash)=LOWER(?) 收敛为 Hash=?');
     return;
   }
 
-  console.error(`hash 大小写折叠冲突：${conflicts.length} 组（扫描 ${rows.length} 行，scope=${scope}）`);
-  for (const group of conflicts) {
-    console.error(`  · (UserId=${group[0].UserId}, Type=${group[0].Type}) ${group[0].Hash}`);
-    for (const row of group) console.error(`      ID=${row.ID} Hash=${row.Hash}`);
+  if (conflicts.length > 0) {
+    console.error(`\n✗ case-fold 冲突 ${conflicts.length} 组（收敛查询会让每组只命中一条）：`);
+    for (const group of conflicts) {
+      console.error(`  · (UserId=${group[0].UserId}, Type=${group[0].Type})`);
+      for (const row of group) console.error(`      ID=${row.ID} Hash=${row.Hash}`);
+    }
   }
-  console.error('⇒ 先人工合并这些行，再收敛查询；本脚本不自动删除任何数据。');
+  if (nonCanonical.length > 0) {
+    console.error(`\n✗ 非规范行 ${nonCanonical.length} 条（收敛查询后，大写参数永远查不到它们）：`);
+    for (const row of nonCanonical.slice(0, 50)) {
+      console.error(`  · ID=${row.ID} (${row.UserId}, Type=${row.Type}) Hash=${row.Hash}`);
+    }
+    if (nonCanonical.length > 50) console.error(`  … 其余 ${nonCanonical.length - 50} 条省略`);
+  }
+  console.error('\n⇒ 先把这些行规范化为大写（本脚本不自动改数据），再收敛查询。');
   process.exit(1);
 }
 

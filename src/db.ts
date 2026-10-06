@@ -12,7 +12,6 @@ import {
 } from './types';
 import { fromIso } from './serialization';
 import { formatWorkingDirName } from './storage';
-import { normalizeProfileHash } from './hash';
 
 // ===== 本模块负责的共享原语 =====
 // （`INT32_MIN/MAX` 不是其中之一：它们留在 src/types.ts，与其它领域常量同处 —— 见那里的注。）
@@ -101,7 +100,7 @@ function entityParams(e: HistoryRecordEntity): (string | number)[] {
     e.transferDataFile,
     e.transferDataHash ?? '',
     JSON.stringify(e.filePaths),
-    normalizeProfileHash(e.hash),
+    e.hash,
     e.createTime,
     e.lastAccessed,
     e.lastModified,
@@ -169,10 +168,6 @@ export class HistoryDb {
   // 通配符（`GET /api/history/Text-<前 8 位>%` 会在上游命中该记录，本实现返回 404）。这里用等值比较，
   // 既更严格、也能走 ux_h_user_type_hash 的索引。完整对照与 A/B 实测见 docs/protocol.md §10
   // 「hash 的匹配方式」，处置决定见 docs/upstream-defects.md 的 D1。
-  //
-  // 大小写：新写入一律经 `normalizeProfileHash`（见 entityParams）⇒ 新行都是大写。查询仍用
-  // `LOWER()` 兼容**历史库里可能存在的**小写行；等 `tools/check-hash-case-conflicts.mjs` 在线上
-  // 确认零冲突、且存量行统一为大写之后，才把这里收敛成 `Hash = ?3`（那时 LOWER 只是白放弃索引）。
   async getByTypeAndHash(type: ProfileType, hash: string): Promise<HistoryRecordEntity | null> {
     const res = await this.db
       .prepare(
@@ -441,13 +436,12 @@ export class HistoryDb {
   // 2026-09-22（ADR D29）起回收站里是真数据，删行不清目录就是把字节留给孤儿阶段（最长 20 分钟）——
   // 路由那侧在删成功后调 `deleteHistoryWorkingDir`（与 `purgeTrash` 同一条判据）。
   // 对照：软删每条要 1 读 + 1 写 + 1 广播（现在**不再**清目录），所以"彻底删除"仍略贵一点（多一次列举）。
-  // hash 参数经 `normalizeProfileHash`：新行都是大写（见 entityParams），调用方可能发小写。
   async purgeDeletedRecord(type: ProfileType, hash: string): Promise<boolean> {
     const res = await this.db
       .prepare(
         `DELETE FROM HistoryRecords WHERE UserId = ?1 AND Type = ?2 AND Hash = ?3 AND IsDeleted != 0`,
       )
-      .bind(HARD_CODED_USER_ID, type, normalizeProfileHash(hash))
+      .bind(HARD_CODED_USER_ID, type, hash)
       .run();
     return (res.meta.changes ?? 0) > 0;
   }
