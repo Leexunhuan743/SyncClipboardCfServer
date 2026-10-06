@@ -1,4 +1,4 @@
-// 广播触发与 negotiate 辅助（docs/protocol.md §6）
+// 广播触发与 negotiate 辅助（协议契约 docs/protocol.md §6）
 import { Bindings } from './env';
 import { INT32_MIN, INT32_MAX } from './types';
 
@@ -11,9 +11,8 @@ export const REGISTER_TOKEN_PATH = '/register-token';
 const MAX_NEGOTIATE_VERSION = 1;
 
 // 逐字对齐上游：ASP.NET Core SignalR 对 WebSockets 传输**硬编码**宣告 ["Text","Binary"]，
-// 与服务端实际注册了哪些协议无关（上游 Web.cs:38 只 AddSignalR() = 仅 JSON）。
-// 官方客户端用默认 JSON(Text) 协议，两种宣告都能连上（已实测）；为保持 negotiate 载荷
-// 与上游逐字一致，这里保留 "Binary"（F13：不再自行收敛为 Text）。
+// 与服务端实际注册了哪些协议无关（上游只 AddSignalR() = 仅 JSON）。
+// 官方客户端用默认 JSON(Text) 协议，两种宣告都能连上；为保持 negotiate 载荷与上游逐字一致，保留 "Binary"。
 const WS_TRANSFER_FORMATS = ['Text', 'Binary'];
 // 上游对 SSE 只宣告 Text、对长轮询宣告 Text+Binary（ASP.NET Core SignalR 的固定表）
 const SSE_TRANSFER_FORMATS = ['Text'];
@@ -21,8 +20,7 @@ const LP_TRANSFER_FORMATS = ['Text', 'Binary'];
 
 // 宣告顺序即客户端的尝试顺序（客户端按列表顺序取第一个可用的传输）。
 // 与上游一致：WebSockets 优先；WS 不可用（代理剥离 Upgrade、防火墙只放行普通 HTTP）时
-// 回退 ServerSentEvents，再回退 LongPolling —— 这是上游具备、此前本实现缺失的降级能力。
-// 三传输及其可承载的格式。顺序 = 上游 `services.AddSignalR()` 的宣告顺序 = 客户端尝试顺序。
+// 回退 ServerSentEvents，再回退 LongPolling。
 // 对 UI 的 info 端点也用它：把「本服务端支持哪些传输」如实告诉部署者。
 export const AVAILABLE_TRANSPORTS = [
   { transport: 'WebSockets', transferFormats: WS_TRANSFER_FORMATS },
@@ -44,11 +42,11 @@ export function broadcast(
   return broadcastMany(env, target, [payload]);
 }
 
-// 批量写用：**一次子请求**投递整批消息（2026-09-22，ADR D33）。
+// 批量写用：**一次子请求**投递整批消息。
 //
 // 为什么不是 N 次 `broadcast`：批量写一次可达 100 条（`BATCH_UPDATE_MAX_ITEMS`），逐条广播
 // 就是 100 次 DO 子请求 —— 而免费档「内部服务子请求」上限是 **1000 次/调用**，一次 1000 条的
-// 批量删除逐条广播正好触顶（这也是 `clear` 当初"不逐条广播"的同一个理由，见 GitHub issue #3）。
+// 批量删除逐条广播正好触顶。
 // 合并后：消息**内容与顺序不变**（DO 侧逐条入队），客户端收到的东西与逐条广播时一模一样 ——
 // 唯一的变化是 100 次子请求变成 1 次，以及客户端**整批同时**收到（而不是边写边收）。
 export async function broadcastMany(
@@ -74,7 +72,7 @@ export function forwardToHub(env: Bindings, request: Request): Promise<Response>
 
 // negotiate 响应（.NET SignalR JSON 协议）
 // 逐字对齐 ASP.NET Core 的 `HttpConnectionDispatcher.ProcessNegotiate` + `NegotiateProtocol.WriteResponse`：
-//   - 版本判定（源码依据见 docs/protocol.md §6；**2026-09-15 用官方 v3.2.0 服务端发布件逐值 A/B 实测过**）：
+//   - 版本判定（**已用官方服务端发布件逐值 A/B 实测**）：
 //       缺参数 → 版本 0；负数（< MinimumProtocolVersion=0）→
 //         `{"error":"The client requested version '<解析后的整数>', but the server does not support this version."}`；
 //       `int.TryParse` 失败 → `{"error":"The client requested an invalid protocol version '<原样未 trim 的入参>'"}`
@@ -113,7 +111,7 @@ export async function negotiateResponse(env: Bindings, request: Request): Promis
 
 // 返回钳制后的版本号，或上游语义下的错误消息字符串。
 // 语义按 .NET `int.TryParse`（NumberStyles.Integer：允许首尾空白与正负号，不允许千位分隔符）
-// 与官方服务端 v3.2.0 的 A/B 实测结果实现（见 Git history）：
+// 与官方服务端的 A/B 实测结果实现：
 //   - 解析失败（含**超出 Int32**）→ 错误串里回显**原样未 trim** 的入参
 //   - 解析成功但 < 0        → 错误串里回显**解析后的整数**（`' -1 '` → `'-1'`）
 const NEGOTIATE_MIN_VERSION = 0;

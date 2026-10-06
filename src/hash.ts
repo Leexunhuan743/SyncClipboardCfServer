@@ -27,17 +27,16 @@ export function textProfileHash(text: string): Promise<string> {
 // hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 //
 // 拆成「内容哈希 → profile 哈希」两步的理由：调用方几乎总是**同时**需要内容字节的 SHA-256
-// （落库的 `transferDataHash`，以及 PUT 路径对客户端声明的核对）。此前 `fileProfileHash`
+// （落库的 `transferDataHash`，以及 PUT 路径对客户端声明的核对）。若让 `fileProfileHash`
 // 内部独占那次摘要，调用方只能再算一遍 —— 同一份内容字节被 SHA-256 两遍，而 CPU 是 Workers
 // 的**平均**预算（Free 档 10 ms/调用；平台对偶发越界有 rollover CPU time —— 偶发越界不报错、
-// 只有**持续**越界才终止，见 docs/free-plan-account-facts.md），重复摘要就是白烧预算
-// （见 src/profile.ts 的 PersistedData.transferDataHash）。
+// 只有**持续**越界才终止），重复摘要就是白烧预算。
 // 传进来的 `contentHash` 不必是大写：`toUpperCase()` 仍在，与旧实现逐字节等价。
 export function fileProfileHashFromContentHash(fileName: string, contentHash: string): Promise<string> {
   return sha256Hex(`${fileName}|${contentHash.toUpperCase()}`);
 }
 
-// 内容字节 → profile 哈希的薄封装（**不要删**：测试与调用方按名字取用，见 test/hash.test.ts）
+// 内容字节 → profile 哈希的薄封装（测试与调用方按名字取用）
 export async function fileProfileHash(fileName: string, content: Uint8Array): Promise<string> {
   return fileProfileHashFromContentHash(fileName, await sha256Hex(content));
 }
@@ -91,8 +90,8 @@ export async function groupHashFromEntries(entries: GroupEntrySpec[]): Promise<s
   return sha256Hex(joined);
 }
 
-// Group zip 解压上限（F9）：解压在哈希校验**之前**发生，不封顶时一个高压缩比 zip
-// 可以让 isolate 在拿到错误前先付出全部解压代价（审计实测 65.7KB → 64MB，≈1000:1）。
+// Group zip 解压上限：解压在哈希校验**之前**发生，不封顶时一个高压缩比 zip
+// 可以让 isolate 在拿到错误前先付出全部解压代价（实测 65.7KB → 64MB，≈1000:1）。
 // 三条上限都在解压过程中生效：边遍历边累计，超限立即抛错中止，不会先把超限内容物化出来。
 export const GROUP_ZIP_MAX_TOTAL_BYTES = 64 * 1024 * 1024; // 解压后内容总字节上限
 export const GROUP_ZIP_MAX_ENTRIES = 1000; // 条目数上限（含目录条目与重复条目）
@@ -109,17 +108,15 @@ const EMPTY_SHA256 = 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B78
 // 从 zip 字节解析条目集合并计算哈希（服务端校验路径，等价"解压后遍历文件系统"）
 // - 目录条目：显式（name 以 '/' 结尾）+ 从文件路径推导的隐式父目录（C# 解压会创建目录并计入）
 // - 防穿越：条目名不得解析到解压根之外（上游 ExtractArchiveEntriesAsync 校验）
-// - 同名重复条目：上游**在这一档是失败**（不是"首次写入优先"）—— `ExtractArchiveEntriesAsync` 用
-//   `FileMode.CreateNew` 落盘（`GroupProfile.cs:662`），第二条同名条目抛 `IOException`，而
-//   `HistoryService.SaveTransferDataAsync` 只捕 `InvalidDataException`/`InvalidOperationException`
-//   （`:457-466`）⇒ 冒到控制器兜底 `catch (Exception)`（`HistoryController.cs:194-197`）⇒ **500**。
+// - 同名重复条目：上游**在这一档是失败**（不是"首次写入优先"）—— 上游用 `FileMode.CreateNew`
+//   落盘，第二条同名条目抛 `IOException`，冒到控制器兜底 `catch (Exception)` ⇒ **500**。
 //   fflate 默认是「后者覆盖」，本实现显式跳过同名后续条目（= 首见优先）⇒ 这类 zip 会**被收下**，
-//   属**有意偏离（更宽容）**，登记在 `docs/protocol.md` §10。
-// - 解压上限（F9）：改用流式 Unzip（旧实现 unzipSync 会按声明尺寸一次性分配并全量解压），
+//   属**有意偏离（更宽容）**。
+// - 解压上限：用流式 Unzip（旧实现 unzipSync 会按声明尺寸一次性分配并全量解压），
 //   每收到一块解压结果就累计并检查上限，超限抛出 InvalidGroupDataError。
-// - 解压预算**随请求体收缩**（2026-09-15）：zip 的压缩体在解压期间一直存活（`contents` 与
-//   `zipBytes` 同时占内存），所以「body 上限」与「解压上限」不能各自贴顶。调用方传
-//   `groupZipDecompressionCap(zipBytes)`，把两者之和压在 ISOLATE_TRANSFER_BUDGET_BYTES 内。
+// - 解压预算**随请求体收缩**：zip 的压缩体在解压期间一直存活（`contents` 与 `zipBytes` 同时占内存），
+//   所以「body 上限」与「解压上限」不能各自贴顶。调用方传 `groupZipDecompressionCap(zipBytes)`，
+//   把两者之和压在 ISOLATE_TRANSFER_BUDGET_BYTES 内。
 export function groupZipDecompressionCap(zipBytes: Uint8Array): number {
   const remaining = ISOLATE_TRANSFER_BUDGET_BYTES - zipBytes.length;
   // 峰值不是「body + 解压」而是「body + 2×解压」：全部条目内容被 `contents` 留存一份，
@@ -130,12 +127,11 @@ export function groupZipDecompressionCap(zipBytes: Uint8Array): number {
 }
 
 // 条目名的**文件系统语义**归一：连续斜杠折叠为一个。
-// 为什么必须有：上游算哈希走的是「解压落盘 → 枚举目录树」（`GroupProfile.cs:631-674` → `:167-181`），
-// 而 `Path.GetFullPath` 与内核都把 `a//b.txt` 当作 `a/b.txt` ⇒ 树里的条目名**永远是单斜杠**。
-// 不折叠时，含 `a//b.txt` 的 zip 两侧都会**接受**、却对同一个文件夹算出不同 hash 与不同 `filePaths`
-// （2026-10-03 对齐；此前既未登记也不等价 —— 见 Git history）。
-// ⚠️ **`topLevel` 不归一**：上游那一步用的是原始条目名（`GroupProfile.cs:666-670` 的
-// `entry.FullName.TrimEnd('/')`），本项目 `test/hash.test.ts` 的 `a//` 用例钉的正是这个口径。
+// 为什么必须有：上游算哈希走的是「解压落盘 → 枚举目录树」，而 `Path.GetFullPath` 与内核都把
+// `a//b.txt` 当作 `a/b.txt` ⇒ 树里的条目名**永远是单斜杠**。不折叠时，含 `a//b.txt` 的 zip
+// 两侧都会**接受**、却对同一个文件夹算出不同 hash 与不同 `filePaths`。
+// ⚠️ **`topLevel` 不归一**：上游那一步用的是原始条目名（`entry.FullName.TrimEnd('/')`），
+// 本项目 `test/hash.test.ts` 的 `a//` 用例钉的正是这个口径。
 function normalizeEntryName(name: string): string {
   return name.replace(/\/{2,}/g, '/');
 }
@@ -161,8 +157,8 @@ export async function parseGroupZip(
       throw new InvalidGroupDataError(`Transfer data contains more than ${GROUP_ZIP_MAX_ENTRIES} entries`);
     }
     if (seenNames.has(file.name)) {
-      // 同名重复条目：保留首个，不调用 start()（= 不解压该条目）。上游在这一档是 **500**
-      // （见上方 parseGroupZip 的注释与 `docs/protocol.md` §10）；本实现选择收下 —— 有意偏离（更宽容）。
+      // 同名重复条目：保留首个，不调用 start()（= 不解压该条目）。上游在这一档是 **500**；
+      // 本实现选择收下 —— 有意偏离（更宽容）。
       return;
     }
     seenNames.add(file.name);
@@ -291,7 +287,7 @@ function assertSafeEntryName(name: string): void {
   // `a:b.txt`、`1:30.txt` 这类「第二字符是冒号」的名字在 Linux/macOS 上合法（上游同样按相对路径落盘），
   // 拒掉它们是行为回归（跨平台的上传者会突然收到 422）。
   //
-  // 与上游的差别是**有意偏离**（见 docs/protocol.md §10）：上游对越界形态的处置是平台相关的——
+  // 与上游的差别是**有意偏离**：上游对越界形态的处置是平台相关的——
   // Windows 上靠 rooted 守卫拒 `C:/evil`（`Path.Combine` 遇 rooted 返回它 ⇒ 不在解压根下），
   // POSIX 上却把它当相对路径落盘（生成名为 `C:` 的目录）；含 NUL 的名字没有专门处理，
   // 落盘时抛未处理异常（500）。本实现不依赖平台，入口一律拒。
@@ -322,7 +318,7 @@ function hasEndOfCentralDirectory(bytes: Uint8Array): boolean {
   return false;
 }
 
-// 流式解压按块交付，合并成条目内容（旧 unzipSync 直接返回整块，故此前无此步骤）
+// 流式解压按块交付，合并成条目内容（unzipSync 直接返回整块，故流式路径需要这一步）
 function concatChunks(chunks: Uint8Array[]): Uint8Array {
   if (chunks.length === 1) return chunks[0]!;
   let length = 0;

@@ -23,8 +23,8 @@ export interface MultipartResult {
 
 const CRLF = '\r\n';
 
-// RFC 2046 规定分界串最长 70 字节。此前直接采用请求头里的任意长度分界串，
-// 而分界串查找代价与之成正比（审计实测 64KB 请求体：61 字节分界串 48ms、2048 字节 267ms）。
+// RFC 2046 规定分界串最长 70 字节。采用请求头里的任意长度分界串时，
+// 分界串查找代价与之成正比（实测 64KB 请求体：61 字节分界串 48ms、2048 字节 267ms）。
 export const MAX_BOUNDARY_LENGTH = 70;
 
 export function parseBoundary(contentType: string): string | null {
@@ -45,7 +45,7 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
   // 本部分的终止串 = CRLF + "--" + 分界串；分界串本体取其尾部视图（零拷贝）
   const partTerminator = encoder.encode(CRLF + `--${boundary}`);
   const delimBytes = partTerminator.subarray(2);
-  // 分界串在循环里被反复查找，编码一次复用（旧实现在每轮循环里新建 TextEncoder 并重编码）
+  // 分界串在循环里被反复查找，编码一次复用（避免每轮循环新建 TextEncoder 并重编码）
   const headerTerminator = encoder.encode(CRLF + CRLF);
   const parts: MultipartPart[] = [];
 
@@ -79,7 +79,7 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
       throw new Error('Invalid multipart: missing part terminator');
     }
     // subarray 是视图（零拷贝），不是副本：文件部分直接透传给 R2。
-    // 此前用 slice 会为整个 body 再复制一份，是峰值内存的主要来源之一。
+    // 用 slice 会为整个 body 再复制一份，是峰值内存的主要来源之一。
     const content = bytes.subarray(pos, bodyEnd);
     pos = bodyEnd + 2 + delimBytes.length; // \r\n--boundary
 
@@ -95,8 +95,8 @@ export function parseMultipart(bytes: Uint8Array, boundary: string): MultipartRe
     }
     pos = skipCrlf(bytes, pos);
   }
-  // 体以 `--boundary` 结尾（缺闭合 `--`）说明请求被截断。此前这种体被当成解析成功，
-  // 于是"半截上传"会静默入库成一条记录；上游的 MultipartReader 在流未闭合时抛错 → 400。
+  // 体以 `--boundary` 结尾（缺闭合 `--`）说明请求被截断。把这种体当成解析成功会让"半截上传"
+  // 静默入库成一条记录；上游的 MultipartReader 在流未闭合时抛错 → 400。
   if (!closed) {
     throw new Error('Invalid multipart: missing closing boundary');
   }
@@ -151,8 +151,8 @@ function extractParam(paramsStr: string, key: string): string | null {
 }
 
 // 子串查找：先用原生 Uint8Array.indexOf 定位首字节（memchr 级扫描，跳过不可能匹配的区间），
-// 再逐字节校验余部。旧实现在每个起始位置都从头比较整条分界串，代价随分界串长度线性增长，
-// 而分界串完全由请求方控制（F9）。
+// 再逐字节校验余部。逐起始位置从头比较整条分界串的写法，代价会随分界串长度线性增长，
+// 而分界串完全由请求方控制。
 // 注意：TypedArray.prototype.indexOf 只按数值搜索（按规范对非数值参数做 ToNumber → NaN → -1），
 // 因此不能把 needle 直接交给它——必须自己扫描首字节。
 function findSubarray(haystack: Uint8Array, needle: Uint8Array, start: number): number {

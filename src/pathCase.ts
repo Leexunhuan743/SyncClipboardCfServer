@@ -3,7 +3,6 @@
 // 上游是 ASP.NET Core：它的 endpoint 路由对**字面段**用 OrdinalIgnoreCase 匹配
 // （`GET /API/version`、`/SyncClipboard.JSON`、`/api/history/Statistics`、`POST /SYNCCLIPBOARDHUB/negotiate`
 // 全部命中并返回 200），而 Hono 的路径匹配是精确的（区分大小写）⇒ 同一批请求在本实现上会 404/400。
-// 2026-09-15 用官方 v3.2.0 服务端发布件 A/B 实测确认（见 Git history），本模块是那次实测的修复。
 //
 // 设计约束（改动时务必保持）：
 //   1. **只归一"上游确实存在字面路由"的那些位置**，其余段一律原样透传。因为
@@ -11,7 +10,7 @@
 //      `/file/Statistics` 是一个名为 "Statistics" 的文件，归一成 `statistics` 就会查错对象。
 //      这正是"部分不区分"比"全都不区分"更安全的原因。
 //   2. 覆盖范围**只到协议面**：界面前缀（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）与静态资源不在其列 ——
-//      这三个前缀是本项目自己的面，上游没有对应路由可对齐（用户 2026-09-15 决策：只修协议面）。
+//      这三个前缀是本项目自己的面，上游没有对应路由可对齐。
 //      ⚠️ 它们**确实**会先进 Worker（`run_worker_first` 里有这六个模式）—— 但那是界面开关
 //      `UI_ENABLED` 的需要，与"对齐 ASP.NET 的字面段大小写"无关，故不参与归一。
 //   3. **表漏项必须能被测试发现**：`test/protocol.test.ts` 有一条守卫遍历 `app.routes`，断言协议面

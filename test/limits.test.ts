@@ -18,13 +18,14 @@ import {
   BadRequestError,
   PayloadTooLargeError,
   ProfileDataInvalidError,
-  addRecordDto,
-  putSyncProfile,
   validateAndPersistData,
 } from '../src/profile';
+import { putSyncProfile } from '../src/profileWrite';
+import { addRecordDto } from '../src/profileHistory';
 import { ProfileType } from '../src/types';
 import type { ProfileDto } from '../src/types';
-import type { IncomingRecord, NotifyHandlers } from '../src/profile';
+import type { IncomingRecord } from '../src/profileHistory';
+import type { NotifyHandlers } from '../src/profile';
 import type { R2Storage } from '../src/storage';
 import { createHistoryRoutes } from '../src/routes/history';
 import { createWebdavRoutes } from '../src/routes/webdav';

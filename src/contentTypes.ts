@@ -3,27 +3,20 @@
 // 独立成模块的原因：WebDAV 端点与 UI 的数据/下载端点都要「按文件名定类型 + 叠加安全头」，
 // 两处各写一份必然分叉（UI 少一道 nosniff 就是一个存储型 XSS 面）。
 //
-// 2026-09-21 重写（取舍、差集与读数见 Git history）：
+//   ① **类型映射用 `mrmime`（438 项，MIT，零依赖）打底 + 12 项本地补遗**。上游 .NET 是
+//      `FileExtensionContentTypeProvider`（~370 项）。⚠️ **只引 mrmime 会退步**：它的表里没有
+//      `.docx`/`.xlsx`/`.pptx`/`.xls`/`.ppt`/`.7z`/`.rar`/`.tar`/`.ico`/`.avi`/`.mkv`/`.flac`，
+//      所以这些留在 `EXTRA_TYPES` 里 —— 它是"mrmime 未收录"的补遗，不是第二份映射表。
+//      唯一取值冲突是 `.xml`：采 mrmime 的 `text/xml`（RFC 3023，也是 .NET 那一侧的取值）。
 //
-//   ① **类型映射改用 `mrmime`（438 项，MIT，零依赖）打底 + 12 项本地补遗**。上游 .NET 是
-//      `FileExtensionContentTypeProvider`（~370 项），本实现此前手写 46 项，实测缺
-//      `.yaml`/`.yml`/`.json5`/`.toml`/`.wasm`/`.epub`/`.ai` 等常见类型（一律被标成 octet-stream）。
-//      ⚠️ **只引 mrmime 会退步**：它的表里没有 `.docx`/`.xlsx`/`.pptx`/`.xls`/`.ppt`/`.7z`/`.rar`/
-//      `.tar`/`.ico`/`.avi`/`.mkv`/`.flac`（12 项，与旧表求差集得到的完整名单），所以这些留在
-//      `EXTRA_TYPES` 里 —— 它是"mrmime 未收录"的补遗，不是第二份映射表。
-//      唯一取值冲突是 `.xml`：旧表写 `application/xml`，mrmime 给标准的 `text/xml`（RFC 3023，
-//      也是 .NET 那一侧的取值）⇒ 采 mrmime（安全判定已改成按后缀，见下，故不影响加固）。
-//
-//   ② **内联策略从"黑名单"改成"默认-deny 白名单"**（可渲染类型另加 CSP 沙箱）。
-//      ⚠️ 这两条**不能分开做**：`.xml` 换表后变成 `text/xml`，而旧黑名单恰好**删掉了** `text/xml`
-//      （历史审计曾误判为不可达；现行判据以本文件与回归测试为准）
-//      ⇒ 只换表就会让 `.xml` 变成「浏览器可渲染、却不加任何加固」，把 `docs/ui.md` §7 登记为
-//      **已修**的存储型 XSS 链重新打开（附件与 API 同源，浏览器会为同源请求自动带上已缓存的
-//      Basic 凭据）。所以加固判据一并从"枚举 4 项"改成"按后缀判定 XML/HTML 家族"。
+//   ② **内联策略是"默认-deny 白名单"**（默认-deny 之外的可渲染类型另加 CSP 沙箱）。
+//      ⚠️ 这两条**不能分开做**：`.xml` 是 `text/xml`，旧黑名单恰好漏掉了 `text/xml`
+//      ⇒ 只换表就会让 `.xml` 变成「浏览器可渲染、却不加任何加固」，重新打开存储型 XSS 链
+//      （附件与 API 同源，浏览器会为同源请求自动带上已缓存的 Basic 凭据）。
+//      所以加固判据一并按"XML/HTML 家族后缀"判定，而不是枚举固定几项。
 import { mimes } from 'mrmime';
 
-// mrmime 未收录、但剪贴板里常见的类型（12 项）。取值与上游 .NET 的口径一致，逐项抄自
-// 本模块 2026-09-21 之前的表 —— 那一版 46 项里，其余 34 项已由 mrmime 提供（含 `.xml` 的取值改动）。
+// mrmime 未收录、但剪贴板里常见的类型（12 项）。取值与上游 .NET 的口径一致。
 const EXTRA_TYPES: Record<string, string> = {
   ico: 'image/x-icon',
   avi: 'video/x-msvideo',
@@ -40,8 +33,8 @@ const EXTRA_TYPES: Record<string, string> = {
 };
 
 // 类型映射。**绕开 mrmime 的 `lookup()` 自己判定**：`mimes` 是普通对象字面量，
-// `lookup('x.constructor')` 会命中 `Object.prototype.constructor` 并返回一个**函数**（实测），
-// 那正是 F20 修过的「原型链查找」形态（`test/fixes.test.ts` 有断言）。两处都走 `Object.hasOwn`。
+// `lookup('x.constructor')` 会命中 `Object.prototype.constructor` 并返回一个**函数**，
+// 那正是「原型链查找」的漏洞形态（`test/fixes.test.ts` 有断言）。两处都走 `Object.hasOwn`。
 // 顺序：补遗在前（本仓库核对过的取值优先），两者按构造不相交。
 export function contentTypeOf(name: string): string {
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
@@ -69,7 +62,7 @@ function isInlineAllowed(contentType: string): boolean {
 
 // 浏览器可能**渲染或执行**的类型（HTML/XML 家族）：即使将来有人把它们加进内联白名单，也必须
 // 叠加 CSP 沙箱。判据按**后缀**而不是枚举 —— mrmime 里 `+xml` 家族有几十项
-// （`xhtml`/`rss`/`atom`/`mathml`/`svg`…），枚举必然漏，`.xml` 那次正是漏在枚举上。
+// （`xhtml`/`rss`/`atom`/`mathml`/`svg`…），枚举必然漏。
 function isRenderable(contentType: string): boolean {
   return (
     contentType === 'text/html' ||
@@ -81,7 +74,7 @@ function isRenderable(contentType: string): boolean {
 
 // 附件响应头：一律禁 MIME 嗅探；**非内联白名单**或可渲染类型强制下载；可渲染类型另加 CSP。
 // 注：上游 ASP.NET `File(bytes, contentType)` 不做这些加固——桌面客户端不读这些头，
-// 因此这是纯增益的安全偏离（同类项目审计将其列为严重缺陷）。
+// 因此这是纯增益的安全偏离。
 export function fileHeaders(fileName: string, size?: number): Headers {
   const contentType = contentTypeOf(fileName);
   const headers = new Headers({

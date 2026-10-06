@@ -1,4 +1,4 @@
-// R2 访问层（docs/design.md §5.2）
+// R2 访问层
 import { ProfileType, isValidProfileHash } from './types';
 
 // key 布局：
@@ -18,8 +18,7 @@ export function tempKey(name: string): string {
 // 最后防线（对齐上游 `Profile.GetWorkingDirName` 在 key 构造处抛 ArgumentException）：
 // 路由层已把含路径分隔符的 hash 拒为 400，此处断言确保将来新增写路径若漏校验会**快速失败**，
 // 而不是静默产生跨目录的 R2 key（那会让孤儿清理的目录判定与实际 key 结构不同构）。
-// 判据复用 `types.ts` 的 `isValidProfileHash`：**分层保留**（路由层给 400、这里抛错），
-// 但判据表达式只应有一处（审计 R-07）。
+// 判据复用 `types.ts` 的 `isValidProfileHash`：**分层保留**（路由层给 400、这里抛错），但判据表达式只应有一处。
 function assertHashForPath(hash: string): void {
   if (!isValidProfileHash(hash)) {
     throw new Error(`Hash contains invalid path characters: ${hash}`);
@@ -28,7 +27,7 @@ function assertHashForPath(hash: string): void {
 
 // 工作目录名（`{Type}_{hash}/`）的**纯格式化**（不带断言、不带前缀）。
 // 孤儿判定的参照集（`db.listReferencedWorkingDirs`）也用它拼目录名 —— 几处集合比较必须同构，
-// 形式不一致会让比较恒不命中（历史上正是这类不一致导致每小时清空一次 history/，见 F33），
+// 形式不一致会让比较恒不命中（历史上正是这类不一致导致每小时清空一次 history/），
 // 所以目录名格式只此一份。
 export function formatWorkingDirName(type: ProfileType, hash: string): string {
   return `${ProfileType[type]}_${hash}/`;
@@ -52,8 +51,8 @@ export function historyKey(type: ProfileType, hash: string, fileName: string): s
 }
 
 // 注意：R2 put 接受 ArrayBuffer | ArrayBufferView | ReadableStream | Blob，直接把 upload 内容透传，
-// **不做防御性拷贝**。此前 `body.slice().buffer` 会为每次上传再复制一份；叠加 multipart 解析期的
-// 切片拷贝，POST /api/history 的峰值内存约为文件大小的 3 倍（40MB ≈ 120MB，逼近 Workers 128MB 上限）。
+// **不做防御性拷贝**。多加一次拷贝会让 POST /api/history 的峰值内存约为文件大小的 3 倍
+// （40MB ≈ 120MB，逼近 Workers 128MB 上限）。
 
 export class R2Storage {
   constructor(private bucket: R2Bucket) {}
@@ -79,7 +78,6 @@ export class R2Storage {
     } catch {
       // 上游 `SafeDeleteFolder` 用 `catch { }` 忽略删除失败：清理是尽力而为的操作，
       // 失败不应让客户端的 CleanupTempFilesAsync 报错（那只是每次上传前的可选清理）。
-      // R2 的强一致删除极少失败；此处对齐上游语义，不把清理失败升级为 5xx。
     }
   }
 
@@ -105,7 +103,7 @@ export class R2Storage {
 
   // range 直接透传给 R2 的区间读（由 R2 切片段，不把整个对象读进 Workers 内存再截断）。
   // 目前只有 UI 数据端点（`GET /ui/api/history/:type/:hash/data`）会传：协议侧忽略 Range
-  // 是对齐上游的**有意**行为（F29b，GitHub issue #3），那边不应改。
+  // 是对齐上游的**有意**行为，那边不应改。
   async getHistory(
     type: ProfileType,
     hash: string,
@@ -129,8 +127,8 @@ export class R2Storage {
 
   // 列出 history/ 下的**全部对象 key**（数据完整性自检的 R2 一侧；期望 key 由 DB 记录算出后求差集）。
   // 分页列举而不是逐条 HEAD：Free 计划单次调用的内部服务子请求上限是 1000（本仓库按它设了
-  // SUBREQUEST_BUDGET = 800，见 src/cleanup.ts:28-31），本机记录总数 2000+ 逐条 HEAD 一次调用即触顶；
-  // 列举是 1000 键/页，成本 = ceil(对象数 / 1000) 次子请求（本机实测 305 个对象 ⇒ 1 轮）。
+  // SUBREQUEST_BUDGET = 800，见 src/cleanup.ts），记录总数上千时逐条 HEAD 一次调用即触顶；
+  // 列举是 1000 键/页，成本 = ceil(对象数 / 1000) 次子请求。
   async listHistoryObjectKeys(): Promise<Set<string>> {
     const keys = new Set<string>();
     let cursor: string | undefined;

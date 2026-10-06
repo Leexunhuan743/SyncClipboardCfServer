@@ -32,7 +32,7 @@ function stripDefaultPort(host: string, proto: string): string {
 // 尾斜杠归一（保留根路径 `/`）。
 // 用途：Hono 的 `strict: false` 让 `/ui/api/login/` 与 `/ui/api/login` 落到同一个 handler，
 // 于是所有"按路径字面量做判定"的中间件都必须先归一，否则会留下一条绕过该判定的等价路径
-// （限速那条就是实例）。此前这段表达式在两个中间件里各写一遍（审计 O-08a）。
+// （限速那条就是实例）。
 function normalizePath(path: string): string {
   return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
 }
@@ -50,7 +50,7 @@ function hostWithoutPort(host: string): string {
 // `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
 const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
-// F8：明文（x-forwarded-proto: http）且 host 不是 loopback → 301 升级到同路径 https；
+// 明文（x-forwarded-proto: http）且 host 不是 loopback → 301 升级到同路径 https；
 // 经 https（x-forwarded-proto: https 或存在 cf-ray）的响应一律带 HSTS。
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
@@ -67,8 +67,8 @@ app.use('*', async (c, next) => {
   }
 });
 
-// F9：这几条端点把整包读进内存，先按 content-length 预检，超限直接 413（不解析、不缓冲）。
-// /ui/api/login 也在列：下方 F4/F7 中间件要读它的 body 取用户名，超大体量必须先拦。
+// 这几条端点把整包读进内存，先按 content-length 预检，超限直接 413（不解析、不缓冲）。
+// /ui/api/login 也在列：下方中间件要读它的 body 取用户名，超大体量必须先拦。
 // `PUT /file/{name}`（暂存）**本身是流式的、不吃内存**，但它必须一起限：暂存进去的对象随后会被
 // 落库那步整包读回内存（见 src/profile.ts 的 PayloadTooLargeError），把上限统一在入口，
 // "任何单个传输对象都 ≤ 上限"才是可解释的不变式（真实护栏仍是落库时按对象实际大小的判定）。
@@ -90,7 +90,7 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-// F4：/ui/api/* 的状态变更方法做来源判定（纵深防御；SameSite=Strict 是第一道）。
+// /ui/api/* 的状态变更方法做来源判定（纵深防御；SameSite=Strict 是第一道）。
 // 带 Origin 且 host 与请求 host 不同 → 403；Sec-Fetch-Site: cross-site → 403；
 // 无 Origin 的 CLI/测试客户端放行（浏览器对跨站写请求一律会带 Origin，故该放行面不构成绕过）。
 app.use('/ui/api/*', async (c, next) => {
@@ -122,7 +122,7 @@ app.use('/ui/api/*', async (c, next) => {
     }
   }
 
-  // F7：/ui/api/login 的凭据在 body 里（走不到 authFailure），这里补齐限速（**只按 IP 维度**）。
+  // /ui/api/login 的凭据在 body 里（走不到 authFailure），这里补齐限速（**只按 IP 维度**）。
   // 路径按尾斜杠归一：Hono 的 strict:false 让 `/ui/api/login/` 也落到同一个 handler，
   // 不归一就会留下一条绕过限速的等价路径。
   const isLogin = method === 'POST' && normalizePath(c.req.path) === '/ui/api/login';
@@ -179,7 +179,7 @@ app.route('/', createUiRoutes());
 // 故这里保持 text 而非 json（否则 TryParse 会拿到带引号的串）。
 app.get('/api/version', (c) => {
   const res = c.text(c.env.VERSION);
-  // F1：弱凭据的机器可读信号（同时打一次 console.warn）。默认不阻断服务，见 src/auth.ts。
+  // 弱凭据的机器可读信号（同时打一次 console.warn）。默认不阻断服务，见 src/auth.ts。
   if (warnWeakCredentials(c.env)) res.headers.set('x-credential-warning', 'weak');
   return res;
 });
@@ -203,18 +203,17 @@ export default {
     const url = new URL(request.url);
 
     // Web 界面开关（GitHub 变量 UI_ENABLED，默认开；判定见 src/uiEnabled.ts）。
-    // 三个界面挂载点（2026-09-19 改名后）：/ui_v1（V1，默认界面）/ /ui_v2（V2，开发测试版）
-    // /ui（只剩一层跳转壳）。它们**共用**同一个开关 —— 关掉时必须全部 404，否则
-    // "关掉界面"会留下一个仍可访问的界面，那正是这个开关要消除的东西。
+    // 三个界面挂载点：/ui_v1（V1，默认界面）/ /ui_v2（V2，开发测试版）/ /ui（只剩一层跳转壳）。
+    // 它们**共用**同一个开关 —— 关掉时必须全部 404，否则"关掉界面"会留下一个仍可访问的界面，
+    // 那正是这个开关要消除的东西。
     //
     // `/ui/api/*` 与界面资源**同前缀但不同族**：它是服务端接口（`src/ui/routes.ts` 的路由），
     // 必须原样交给下面的 Hono，绝不能被当成界面资源去问静态资源，也不能在关闭态被换成 404 页
     // （关闭态它返回与 routes.ts 兜底同形的 JSON，见 src/uiEnabled.ts）。
     const path = url.pathname;
-    // ⚠️ 裸 `/ui/api` 也算接口面（2026-09-20）：它与 `/ui/api/` 是同一个命名空间的两种写法，
-    // 而 Hono 侧的守卫中间件与 `app.all('/ui/api/*')` **都**匹配裸形态（实测）⇒ 交给 Hono 才是
-    // 「API 命名空间返回 JSON」那条路。此前它落进界面资源分支，回的是**一张 HTML 404 页** ——
-    // 同一命名空间两种写法两种形态，调用方（代码）拿到的是给人看的页。
+    // ⚠️ 裸 `/ui/api` 也算接口面：它与 `/ui/api/` 是同一个命名空间的两种写法，
+    // 而 Hono 侧的守卫中间件与 `app.all('/ui/api/*')` **都**匹配裸形态 ⇒ 交给 Hono 才是
+    // 「API 命名空间返回 JSON」那条路；否则它会落进界面资源分支、回一张 HTML 404 页。
     const isUiApi = path.startsWith('/ui/api/') || path === '/ui/api';
     // ⚠️ 这份前缀清单**不是**唯一事实源：`public/` 下的 `ui*` 目录才算数，`wrangler.toml` 的
     // run_worker_first、`public/_headers` 的规则是另外两处副本。三处由 `test/ui-guard.test.ts` 钉在一起
@@ -232,7 +231,7 @@ export default {
     if (isUiAsset && !isUiApi) {
       // ⚠️ 这条分支只在请求**到达 Worker** 时才跑：`wrangler.toml` 的 run_worker_first 必须
       // 覆盖全部四个前缀（含各自的 `/*`），否则边缘命中静态资源就直接返回、开关静默失效
-      // （2026-09-18 曾在 V1 那一面踩到；守卫见 test/ui-guard.test.ts）。
+      // （守卫见 test/ui-guard.test.ts）。
       if (!isUiEnabled(env)) return uiDisabledResponse(false);
       // 先把请求转给静态资源；**未命中资源（404）时回落**到那张设计过的 404 页
       // （与"静态资源直接托管 + not_found_handling=none"时平台的回落行为同形：
@@ -255,18 +254,16 @@ export default {
 
     // SignalR negotiate（需 Basic Auth；上游 hub [Authorize]）
     if (hubPath === `${HUB_PATH}/negotiate`) {
-      // ⚠️ **鉴权必须排在方法判定之前**（2026-10-04，验证单元 V3 的真 A/B 纠正）：
-      // 上游是 hub 类级 `[Authorize]`，无凭据请求**一律 401 + `WWW-Authenticate`**（与方法无关）。
-      // 先判方法会让无凭据的非 POST 变成 405（丢掉 WWW-Authenticate、且绕过认证失败限速）；
-      // 顺序反过来后，两侧对「无凭据 × 任意方法」都是 401。
+      // ⚠️ **鉴权必须排在方法判定之前**：上游是 hub 类级 `[Authorize]`，无凭据请求**一律 401 +
+      // `WWW-Authenticate`**（与方法无关）。先判方法会让无凭据的非 POST 变成 405（丢掉
+      // WWW-Authenticate、且绕过认证失败限速）；顺序反过来后，两侧对「无凭据 × 任意方法」都是 401。
       const denied = authFailure(env, request, ctx);
       if (denied) {
         await drainRequestBody(request);
         return denied;
       }
       // 已通过鉴权后再判方法：上游 `HttpConnectionDispatcher` 只把 negotiate 挂在 POST 上 ⇒ 非 POST **405**
-      // （真 A/B：带凭据时上游 GET/PUT/DELETE/PATCH/OPTIONS/HEAD 全部 405 且不签发 token；
-      //  本实现此前一律 200 并签发+登记 token ⇒ REST 语义被破 + 每次调用 1 次 DO 子请求与 1 条存储写）。
+      // 且不签发 token（此前一律 200 并签发+登记 token ⇒ REST 语义被破 + 每次调用 1 次 DO 子请求与 1 条存储写）。
       if (request.method !== 'POST') {
         await drainRequestBody(request);
         return new Response('Method Not Allowed', { status: 405 });
@@ -280,16 +277,16 @@ export default {
     }
 
     // Hub 连接：全部转发 DO。鉴权在 DO 内完成——校验 negotiate 登记的 connectionToken，
-    // 或接受直接携带有效 Basic 凭据的请求（上游 hub 类级 [Authorize] 的等价物，F1）。
+    // 或接受直接携带有效 Basic 凭据的请求（上游 hub 类级 [Authorize] 的等价物）。
     // 覆盖三种传输：WS 升级、SSE 的 GET、长轮询的 GET/POST/DELETE。
     if (hubPath === HUB_PATH) {
-      // hub 的请求**不进 Hono** ⇒ 协议面那条 F9 中间件管不到它，第一层（content-length 预检）
+      // hub 的请求**不进 Hono** ⇒ 协议面那条体量中间件管不到它，第一层（content-length 预检）
       // 必须在这里做；第二层（读取层上限，覆盖 chunked）在 DO 的 `handleClientMessage` 里
-      // （`readBodyTextCapped`）。两层缺一不可：审计 R1#1 就是"两层都缺"的后果。
-      // ⚠️ **不按方法分支**（2026-10-04，验证单元 V1 指出）：只判 POST 会让非 POST 的带体请求
-      // （GET/DELETE 的 CL/chunked 大体量）绕过这一层。上游对任何方法都不设应用层上限（Kestrel
-      // `MaxRequestBodySize=int.MaxValue`），但"预检"这条护栏对本实现是**统一策略**：任何方法
-      // 超限都早退 413（DO 侧对非 POST 走 `drainRequestBody` 流式排空，本就不读进内存）。
+      // （`readBodyTextCapped`）。两层缺一不可：只做一层会让 chunked 大体量绕过护栏。
+      // ⚠️ **不按方法分支**：只判 POST 会让非 POST 的带体请求（GET/DELETE 的 CL/chunked 大体量）
+      // 绕过这一层。上游对任何方法都不设应用层上限（Kestrel `MaxRequestBodySize=int.MaxValue`），
+      // 但"预检"这条护栏对本实现是**统一策略**：任何方法超限都早退 413
+      // （DO 侧对非 POST 走 `drainRequestBody` 流式排空，本就不读进内存）。
       const declared = Number(request.headers.get('content-length') ?? '0');
       if (Number.isFinite(declared) && declared > maxRequestBodyBytes(env)) {
         await drainRequestBody(request);
@@ -308,7 +305,7 @@ export default {
         .then((r) => {
           console.log(`[cleanup] expired=${r.expired} trimmed=${r.trimmed} hardDeleted=${r.hardDeleted} orphans=${r.orphans} batches=${r.batches}`);
         })
-        // F11：兜底 catch —— 清理失败必须留下可观测信号，而不是只留一行 Uncaught Error
+        // 兜底 catch —— 清理失败必须留下可观测信号，而不是只留一行 Uncaught Error
         // （runCleanup 自身也把失败写进 Meta cleanup:lastError，两处互补：日志给运维、Meta 给 UI）
         .catch((err: unknown) => {
           console.error('[cleanup] fatal', err);
