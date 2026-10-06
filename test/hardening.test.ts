@@ -157,15 +157,15 @@ describe('G6 · SearchText 上限（按字节）', () => {
   });
 });
 
-// 限速的**三信号模型**：`ip` 与 `pair`（来源+账户）可硬封锁；`user` 只统计/告警，绝不单独封锁。
+// 限速的**两信号模型**：`ip` 可硬封锁；`user` 只统计/告警，绝不单独封锁。
 // 关键性质是**攻击者不能仅凭知道真实用户名就把合法用户从全球所有 IP 锁掉**。
 //
 // 判据（对应验收清单）：
-//   ① 固定 IP + 固定用户名 → 第 11 次起 429（ip 与 pair 两个桶都在计数）；
+//   ① 固定 IP + 固定用户名 → 第 11 次起 429（ip 桶在计数）；
 //   ② 固定 IP + 不断换用户名 → 仍 429（ip 桶单独生效，证明"换用户名能绕过"不成立）；
 //   ③ 不断换 IP + 固定用户名 → **不产生全局硬锁**（user 桶只观察）；
 //   ④ 无 cf-connecting-ip → 不封锁（不可归因）。
-describe('限速三信号模型：ip/pair 可封锁，user 只观察', () => {
+describe('限速两信号模型：ip 可封锁，user 只观察', () => {
   // 必须给真实凭据：未配置时是 500 fail-closed，那是另一条路径（见上面的 G2 用例）。
   const USERNAME = 'syncuser';
   const PASSWORD = 'correct-horse-battery-staple';
@@ -201,7 +201,7 @@ describe('限速三信号模型：ip/pair 可封锁，user 只观察', () => {
     expect(ok.status, '被换 IP 打过的账户仍必须能正常登录').toBe(200);
   });
 
-  it('① 固定 IP + 固定用户名：第 11 次起 429（ip 与 pair 两个桶都在计数）', async () => {
+  it('① 固定 IP + 固定用户名：第 11 次起 429（ip 桶在计数）', async () => {
     const ip = freshIp();
     const user = `target-${Date.now()}`;
     const codes: number[] = [];

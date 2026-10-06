@@ -169,7 +169,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('认证限速的键模型（ip/pair 可封锁，user 只观察）', () => {
+describe('认证限速的键模型（ip 可封锁，user 只观察）', () => {
   const req = (ip: string | null, user: string) =>
     new Request('https://sync.example.com/api/version', {
       headers: {
@@ -178,24 +178,23 @@ describe('认证限速的键模型（ip/pair 可封锁，user 只观察）', () 
       },
     });
 
-  it('有 IP + 有用户名 → ip / pair / user 三个键，且只有 ip 与 pair 可封锁', () => {
+  it('有 IP + 有用户名 → ip / user 两个键，且只有 ip 可封锁', () => {
     const keys = authLimitKeys(req('203.0.113.9', 'Admin'), 'Admin');
-    expect(keys).toEqual(['ip:203.0.113.9', 'pair:203.0.113.9:admin', 'user:admin']);
-    expect(keys.map(isHardBlockKey)).toEqual([true, true, false]);
+    expect(keys).toEqual(['ip:203.0.113.9', 'user:admin']);
+    expect(keys.map(isHardBlockKey)).toEqual([true, false]);
   });
 
-  it('无用户名时没有 pair / user 键；无 IP 时只剩 user 键（且不可封锁）', () => {
+  it('无用户名时没有 user 键；无 IP 时只剩 user 键（且不可封锁）', () => {
     expect(authLimitKeys(req('203.0.113.9', ''), null)).toEqual(['ip:203.0.113.9']);
     expect(authLimitKeys(req(null, 'Admin'), 'Admin')).toEqual(['user:admin']);
     expect(authLimitKeys(req(null, 'Admin'), 'Admin').every((k) => !isHardBlockKey(k))).toBe(true);
   });
 
-  it('pair 键的 ip 分量与 user 分量都归一（用户名小写、ip 取自连接头）', () => {
-    const [ipKey] = authLimitKeys(req('198.51.100.7', 'SyncUser'), 'SyncUser');
-    expect(ipKey).toBe('ip:198.51.100.7');
-    expect(authLimitKeys(req('198.51.100.7', 'SyncUser'), 'SyncUser')[1]).toBe(
-      'pair:198.51.100.7:syncuser',
-    );
+  it('user 键归一为小写（`Admin` / `admin` 同桶）', () => {
+    expect(authLimitKeys(req('198.51.100.7', 'SyncUser'), 'SyncUser')).toEqual([
+      'ip:198.51.100.7',
+      'user:syncuser',
+    ]);
   });
 });
 
@@ -946,6 +945,26 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
 
     const cleared = await (await call('clear', [key])).json<AuthLimitResponseBody>();
     expect(cleared.blocks).toEqual({});
+  });
+
+  // burst 按**失败请求**计一次，不按维度键重复计：一次失败通常有 ip + user 两个键，
+  // 若在 key 循环里 countBurst，同一请求会被计两次，让 AUTH_RATE_LIMIT_BURST_WARN 的语义随维度数漂移。
+  it('report 的全局 burst 按请求计一次（多键不重复计）', async () => {
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+    const report = (keys: string[]) =>
+      hub.fetch(
+        new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, {
+          method: 'POST',
+          body: JSON.stringify({ op: 'report', keys }),
+        }),
+      );
+    // 一次 report 带两个键（ip + user）→ burst +1
+    const one = await (await report(['ip:203.0.113.61', 'user:someone'])).json<AuthLimitResponseBody>();
+    expect(one.burst).toBe(1);
+    // 再一次（单键）→ 累计 2，而非按键数翻倍
+    const two = await (await report(['ip:203.0.113.62'])).json<AuthLimitResponseBody>();
+    expect(two.burst).toBe(2);
   });
 
   // 落盘形态的**形状守卫**（2026-09-25）：形态在本分支里改过一次（旧版是平铺的

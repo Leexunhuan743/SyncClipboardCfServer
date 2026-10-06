@@ -642,9 +642,11 @@ export class SyncClipboardHub {
     // "Worker 认为没封锁、DO 认为封锁"的分裂判定（两边都用 src/rateLimit.ts 的同一函数）。
     const limitConfig = authRateLimitConfig(this.env);
     if (op === 'report') {
+      // 全局 burst 按**失败请求**计一次（不按维度键重复计）：一次失败通常有 ip + user 两个键，
+      // 若在循环里 countBurst 就会被计两次，让 AUTH_RATE_LIMIT_BURST_WARN 的语义随维度数漂移。
+      this.countBurst(now, limitConfig.windowMs);
       for (const key of keys) {
         this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now, limitConfig));
-        this.countBurst(now, limitConfig.windowMs);
       }
       pruneAuthLimits(this.authLimits, now, limitConfig);
       this.persistAuthLimits(now);
@@ -658,7 +660,7 @@ export class SyncClipboardHub {
     }
     const blocks: Record<string, number> = {};
     for (const key of keys) {
-      // 只上报**可硬封锁**的键（ip / pair）。用户名维度照常计数与落盘（供告警/诊断），
+      // 只上报**可硬封锁**的键（ip）。用户名维度照常计数与落盘（供告警/诊断），
       // 但它的封锁状态不回给 Worker —— 否则 Worker 会照单把它当封锁依据。
       if (!isHardBlockKey(key)) continue;
       const state = this.authLimits.get(key);
@@ -667,7 +669,7 @@ export class SyncClipboardHub {
     return Response.json({ blocks, burst: this.burstCount });
   }
 
-  // 全局失败计数（仅在**告警**中使用；封锁只按 ip / pair 维度，避免攻击者用垃圾请求锁死合法用户）
+  // 全局失败计数（仅在**告警**中使用；封锁只按 ip 维度，避免攻击者用垃圾请求锁死合法用户）
   private countBurst(now: number, windowMs: number): void {
     if (now - this.burstWindowStart >= windowMs) {
       this.burstWindowStart = now;
@@ -893,7 +895,7 @@ export class SyncClipboardHub {
     const now = Date.now();
     const keys = authLimitKeys(request, basicAuthUsername(request));
     for (const key of keys) {
-      // 与 Worker 侧同一条判据：只有 ip / pair 能封锁；用户名维度只观察。
+      // 与 Worker 侧同一条判据：只有 ip 能封锁；用户名维度只观察。
       if (!isHardBlockKey(key)) continue;
       const state = this.authLimits.get(key);
       if (state !== undefined && isAuthLimitBlocked(state, now)) {
