@@ -31,7 +31,6 @@ import {
   pingMessage,
 } from './signalr';
 import {
-  basicAuthUsername,
   checkBasicAuth,
   unauthorized,
   tooManyRequests,
@@ -49,7 +48,6 @@ import {
   authLimitRetryAfterSeconds,
   authRateLimitConfig,
   isAuthLimitBlocked,
-  isHardBlockKey,
   pruneAuthLimits,
 } from '../rateLimit';
 import type { AuthLimitState } from '../rateLimit';
@@ -660,9 +658,6 @@ export class SyncClipboardHub {
     }
     const blocks: Record<string, number> = {};
     for (const key of keys) {
-      // 只上报**可硬封锁**的键（ip）。用户名维度照常计数与落盘（供告警/诊断），
-      // 但它的封锁状态不回给 Worker —— 否则 Worker 会照单把它当封锁依据。
-      if (!isHardBlockKey(key)) continue;
       const state = this.authLimits.get(key);
       if (state !== undefined && isAuthLimitBlocked(state, now)) blocks[key] = state.blockedUntil;
     }
@@ -893,10 +888,8 @@ export class SyncClipboardHub {
     // 只有走到「要判定/推进限速」这一支才需要快照（有效 token 在上面已放行 ⇒ 该路径零存储读）
     await this.loadAuthLimitsOnce();
     const now = Date.now();
-    const keys = authLimitKeys(request, basicAuthUsername(request));
+    const keys = authLimitKeys(request);
     for (const key of keys) {
-      // 与 Worker 侧同一条判据：只有 ip 能封锁；用户名维度只观察。
-      if (!isHardBlockKey(key)) continue;
       const state = this.authLimits.get(key);
       if (state !== undefined && isAuthLimitBlocked(state, now)) {
         return tooManyRequests(authLimitRetryAfterSeconds(state, now));

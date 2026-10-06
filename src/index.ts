@@ -47,15 +47,7 @@ function hostWithoutPort(host: string): string {
   return colon < 0 ? host : host.slice(0, colon);
 }
 
-// 登录请求体里的用户名（仅用于限速的凭据维度；解析失败只用 IP 维度，不影响登录本身）
-function readUsername(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null || !('username' in value)) return null;
-  const username = value.username;
-  return typeof username === 'string' && username !== '' ? username : null;
-}
-
 // `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
-// （此前这句写在声明行的行尾，把行尾的分号一起注释掉了 —— 语句只是靠 ASI 才成立。）
 const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
 // F8：明文（x-forwarded-proto: http）且 host 不是 loopback → 301 升级到同路径 https；
@@ -130,40 +122,24 @@ app.use('/ui/api/*', async (c, next) => {
     }
   }
 
-  // F7：/ui/api/login 的凭据在 body 里（走不到 authFailure），这里补齐限速；
-  // 带 Basic 头的 /ui/api/* 请求同样纳入 IP 维度（凭据维度由协议路径与 login 覆盖）。
+  // F7：/ui/api/login 的凭据在 body 里（走不到 authFailure），这里补齐限速（**只按 IP 维度**）。
   // 路径按尾斜杠归一：Hono 的 strict:false 让 `/ui/api/login/` 也落到同一个 handler，
   // 不归一就会留下一条绕过限速的等价路径。
-  const normalized = normalizePath(c.req.path);
-  const isLogin = method === 'POST' && normalized === '/ui/api/login';
+  const isLogin = method === 'POST' && normalizePath(c.req.path) === '/ui/api/login';
   if (!isLogin && c.req.header('authorization') === undefined) return next();
-  let username: string | null = null;
-  if (isLogin) {
-    try {
-      // 整包读取也要过体量上限：login 是**免认证**端点，chunked 大 body 会在限速判定前
-      // 先整包缓冲（F9 预检只信 content-length）⇒ 用 capped 读取兜住。
-      // ⚠️ 必须读**克隆**：原始 body 还要给路由的 readCredentials 用（读两次 = 第二次空体）。
-      const body = await readBodyCapped(c.req.raw.clone(), maxRequestBodyBytes(c.env));
-      if (body !== null) {
-        username = readUsername(JSON.parse(new TextDecoder().decode(body)));
-      }
-    } catch {
-      /* 非 JSON 或空体：只用 IP 维度 */
-    }
-  }
-  const verdict = checkAuthRateLimit(c.env, c.req.raw, username, c.executionCtx);
+  const verdict = checkAuthRateLimit(c.env, c.req.raw, c.executionCtx);
   if (verdict !== null) {
     await drainRequestBody(c.req.raw);
     return tooManyRequests(verdict.retryAfterSeconds);
   }
   await next();
   if (c.res.status === 401) {
-    noteAuthFailure(c.env, c.req.raw, username, c.executionCtx);
+    noteAuthFailure(c.env, c.req.raw, c.executionCtx);
   } else if (isLogin && c.res.ok) {
     // 只在**登录成功**时清零计数：若对任意 200 都清零，攻击者给公开端点（/ui/api/session、
     // /ui/api/logout）随手挂一个假 `Authorization` 头即可把 IP 维度的失败计数清零，
     // 限速的防爆破就白做了（实测：session 不看 Basic 头、恒回 200）。
-    noteAuthSuccess(c.env, c.req.raw, username, c.executionCtx);
+    noteAuthSuccess(c.env, c.req.raw, c.executionCtx);
   }
 });
 

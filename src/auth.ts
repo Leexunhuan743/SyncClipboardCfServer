@@ -58,13 +58,6 @@ export function checkBasicAuth(env: Bindings, request: Request): boolean {
   return credentials !== null && verifyCredentials(env, credentials.user, credentials.pass);
 }
 
-// 只取用户名（**不比较凭据**）：限速的凭据维度用它做 key。
-// 导出给 DO 侧：WS/SSE/长轮询的鉴权在 DO 内完成，不经过 authFailure。
-export function basicAuthUsername(request: Request): string | null {
-  const credentials = parseBasicCredentials(request);
-  return credentials !== null ? credentials.user : null;
-}
-
 // 凭据校验的唯一实现：HTTP Basic 头与 UI 登录表单都走这里。
 // 两项都比较完毕再合并结果（不短路）——短路会让「用户名错」比「密码错」早返回，
 // 用响应时间就能区分用户名是否存在。
@@ -152,15 +145,14 @@ export function authFailure(env: Bindings, request: Request, ctx?: WaitUntil): R
     );
   }
   const credentials = parseBasicCredentials(request);
-  const username = credentials !== null ? credentials.user : null;
   // 限速预检必须排在凭据比较**之前**：被封锁时连比较都不做（不泄露时序，也不能被绕过）
-  const verdict = checkAuthRateLimit(env, request, username, ctx);
+  const verdict = checkAuthRateLimit(env, request, ctx);
   if (verdict !== null) return tooManyRequests(verdict.retryAfterSeconds);
   if (credentials === null || !verifyCredentials(env, credentials.user, credentials.pass)) {
-    noteAuthFailure(env, request, username, ctx);
+    noteAuthFailure(env, request, ctx);
     return unauthorized();
   }
-  noteAuthSuccess(env, request, username, ctx);
+  noteAuthSuccess(env, request, ctx);
   return null;
 }
 

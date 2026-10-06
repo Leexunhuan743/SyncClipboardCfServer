@@ -157,15 +157,15 @@ describe('G6 · SearchText 上限（按字节）', () => {
   });
 });
 
-// 限速的**两信号模型**：`ip` 可硬封锁；`user` 只统计/告警，绝不单独封锁。
-// 关键性质是**攻击者不能仅凭知道真实用户名就把合法用户从全球所有 IP 锁掉**。
+// 限速模型：**只有 ip 维度可硬封锁** + 全局 burst 只告警。
+// 关键性质：**任何来源之外的状态都不存在** ⇒ 攻击者换 IP 猜同一账户无法锁死合法用户。
 //
-// 判据（对应验收清单）：
-//   ① 固定 IP + 固定用户名 → 第 11 次起 429（ip 桶在计数）；
-//   ② 固定 IP + 不断换用户名 → 仍 429（ip 桶单独生效，证明"换用户名能绕过"不成立）；
-//   ③ 不断换 IP + 固定用户名 → **不产生全局硬锁**（user 桶只观察）；
+// 判据：
+//   ① 固定 IP 连续失败 → 第 11 次起 429；
+//   ② 换用户名走同一 IP → 仍 429（不靠用户名维度也已生效）；
+//   ③ 不断换 IP → **永不封锁**，合法用户随后仍可登录（不存在跨 IP 的锁）；
 //   ④ 无 cf-connecting-ip → 不封锁（不可归因）。
-describe('限速两信号模型：ip 可封锁，user 只观察', () => {
+describe('限速：只有 ip 可封锁', () => {
   // 必须给真实凭据：未配置时是 500 fail-closed，那是另一条路径（见上面的 G2 用例）。
   const USERNAME = 'syncuser';
   const PASSWORD = 'correct-horse-battery-staple';
@@ -185,13 +185,32 @@ describe('限速两信号模型：ip 可封锁，user 只观察', () => {
   let ipSeq = 0;
   const freshIp = () => `198.18.${Math.floor(++ipSeq / 250) % 250}.${ipSeq % 250}`;
 
-  it('③ 不断换 IP + 固定用户名：不产生全局硬锁，合法用户仍可登录', async () => {
+  it('① 固定 IP 连续失败：第 11 次起 429', async () => {
+    const ip = freshIp();
+    const codes: number[] = [];
+    for (let i = 0; i < 12; i++) codes.push((await worker(wrongAs(`target-${Date.now()}`, { 'cf-connecting-ip': ip }))).status);
+    expect(codes.slice(0, 10).every((c) => c === 401), `前 10 次应全 401，实际 ${JSON.stringify(codes)}`).toBe(true);
+    expect(codes[10]).toBe(429);
+    expect(codes[11]).toBe(429);
+  });
+
+  it('② 同一 IP 不断换用户名：仍 429（不依赖用户名维度）', async () => {
+    const ip = freshIp();
+    const codes: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      codes.push((await worker(wrongAs(`nobody-ip-${Date.now()}-${i}`, { 'cf-connecting-ip': ip }))).status);
+    }
+    expect(codes.slice(0, 10).every((c) => c === 401), `前 10 次应全 401，实际 ${JSON.stringify(codes)}`).toBe(true);
+    expect(codes[10]).toBe(429);
+  });
+
+  it('③ 不断换 IP：永不封锁，合法用户随后仍可登录（不存在跨 IP 的锁）', async () => {
     const user = `victim-${Date.now()}`;
     const codes: number[] = [];
     for (let i = 0; i < 30; i++) {
       codes.push((await worker(wrongAs(user, { 'cf-connecting-ip': freshIp() }))).status);
     }
-    expect([...new Set(codes)], 'user 维度不得单独封锁（换 IP 猜同一账户不能锁死它）').toEqual([401]);
+    expect([...new Set(codes)], '换 IP 猜同一账户不得把它锁死').toEqual([401]);
 
     // 阳性对照：从**新的** IP 用正确凭据仍能通过
     const ok = await worker({
@@ -201,28 +220,7 @@ describe('限速两信号模型：ip 可封锁，user 只观察', () => {
     expect(ok.status, '被换 IP 打过的账户仍必须能正常登录').toBe(200);
   });
 
-  it('① 固定 IP + 固定用户名：第 11 次起 429（ip 桶在计数）', async () => {
-    const ip = freshIp();
-    const user = `target-${Date.now()}`;
-    const codes: number[] = [];
-    for (let i = 0; i < 12; i++) codes.push((await worker(wrongAs(user, { 'cf-connecting-ip': ip }))).status);
-    expect(codes.slice(0, 10).every((c) => c === 401), `前 10 次应全 401，实际 ${JSON.stringify(codes)}`).toBe(true);
-    expect(codes[10]).toBe(429);
-    expect(codes[11]).toBe(429);
-  });
-
-  it('② 固定 IP + 不断换用户名：仍 429（ip 桶单独生效，换用户名不能绕过）', async () => {
-    const ip = freshIp();
-    const codes: number[] = [];
-    for (let i = 0; i < 12; i++) {
-      codes.push((await worker(wrongAs(`nobody-ip-${Date.now()}-${i}`, { 'cf-connecting-ip': ip }))).status);
-    }
-    expect(codes.slice(0, 10).every((c) => c === 401), `前 10 次应全 401，实际 ${JSON.stringify(codes)}`).toBe(true);
-    expect(codes[10]).toBe(429);
-    expect(codes[11]).toBe(429);
-  });
-
-  it('④ 无 cf-connecting-ip + 每次换用户名：连打 20 次仍全 401（不可归因 ⇒ 不封锁）', async () => {
+  it('④ 无 cf-connecting-ip：连打 20 次仍全 401（不可归因 ⇒ 不封锁）', async () => {
     const codes: number[] = [];
     for (let i = 0; i < 20; i++) codes.push((await worker(wrongAs(`nobody-${Date.now()}-${i}`))).status);
     expect([...new Set(codes)], '不可归因流量不应被封锁').toEqual([401]);
