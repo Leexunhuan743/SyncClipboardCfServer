@@ -178,7 +178,7 @@ const META_KEYS_ALL: string[] = [
 // cleanup:lastError 落库长度上限（UI 只展示一行；完整清单在返回值与 [cleanup] 日志里）
 const META_LAST_ERROR_MAX = 300;
 
-// ===== 保留策略（Meta 覆盖 / env 回落，GitHub issue #3）=====
+// ===== 保留策略（Meta 覆盖 / env 回落）=====
 
 // 在线可调的覆盖键：存在即覆盖 env。**清除覆盖 = 删键**，不是写空串 ——
 // 空串经 `Number('')` 会解析成 0，而 0 的语义是「关闭该阶段」（见 disabledReason），
@@ -192,8 +192,8 @@ export const SETTINGS_META_KEYS = {
 const SETTINGS_META_KEY_LIST: string[] = Object.values(SETTINGS_META_KEYS);
 
 // 清理可观测面（六键）+ 保留策略（两键）的**合并键表**：UI 的 `/ui/api/info` 与 `/ui/api/overview`
-// 两批都要读，分成两次 `getMetaValues` 就是两次 D1 子请求（审计 P1-3）。
-// 键名仍只在本文件定义（src/ui/routes.ts 从这里 import，不再自己拼一份字面量）。
+// 都要读，合并成一次 `getMetaValues`，避免为同一页面数据多一次 D1 子请求。
+// 键名仍只在本文件定义（src/ui/routes/ 从这里 import，不再自己拼一份字面量）。
 export const CLEANUP_AND_SETTINGS_META_KEYS: string[] = [...META_KEYS_ALL, ...SETTINGS_META_KEY_LIST];
 
 // env 未提供时的内置默认（与 wrangler.toml [vars] 的取值一致：0 = 不限制保留时长 / 1000 条）。

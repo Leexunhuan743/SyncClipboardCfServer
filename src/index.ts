@@ -262,8 +262,8 @@ export default {
         await drainRequestBody(request);
         return denied;
       }
-      // 已通过鉴权后再判方法：上游 `HttpConnectionDispatcher` 只把 negotiate 挂在 POST 上 ⇒ 非 POST **405**
-      // 且不签发 token（此前一律 200 并签发+登记 token ⇒ REST 语义被破 + 每次调用 1 次 DO 子请求与 1 条存储写）。
+      // 已认证的非 POST 请求返回 405，且不签发或登记 connection token
+      // （上游 `HttpConnectionDispatcher` 只把 negotiate 挂在 POST 上）。
       if (request.method !== 'POST') {
         await drainRequestBody(request);
         return new Response('Method Not Allowed', { status: 405 });
