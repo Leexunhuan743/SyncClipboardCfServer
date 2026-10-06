@@ -20,7 +20,9 @@ import {
   AUTH_RATE_LIMIT_STORAGE_KEY,
   DEFAULT_AUTH_RATE_LIMIT_CONFIG,
   applyAuthFailure,
+  authLimitKeys,
   authRateLimitConfig,
+  isHardBlockKey,
 } from '../src/rateLimit';
 import type { AuthLimitState } from '../src/rateLimit';
 import {
@@ -165,6 +167,36 @@ async function fetchWorker(env: Bindings, ctx: TestCtx, request: Request): Promi
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe('认证限速的键模型（ip/pair 可封锁，user 只观察）', () => {
+  const req = (ip: string | null, user: string) =>
+    new Request('https://sync.example.com/api/version', {
+      headers: {
+        authorization: basic(user, 'x'),
+        ...(ip === null ? {} : { 'cf-connecting-ip': ip }),
+      },
+    });
+
+  it('有 IP + 有用户名 → ip / pair / user 三个键，且只有 ip 与 pair 可封锁', () => {
+    const keys = authLimitKeys(req('203.0.113.9', 'Admin'), 'Admin');
+    expect(keys).toEqual(['ip:203.0.113.9', 'pair:203.0.113.9:admin', 'user:admin']);
+    expect(keys.map(isHardBlockKey)).toEqual([true, true, false]);
+  });
+
+  it('无用户名时没有 pair / user 键；无 IP 时只剩 user 键（且不可封锁）', () => {
+    expect(authLimitKeys(req('203.0.113.9', ''), null)).toEqual(['ip:203.0.113.9']);
+    expect(authLimitKeys(req(null, 'Admin'), 'Admin')).toEqual(['user:admin']);
+    expect(authLimitKeys(req(null, 'Admin'), 'Admin').every((k) => !isHardBlockKey(k))).toBe(true);
+  });
+
+  it('pair 键的 ip 分量与 user 分量都归一（用户名小写、ip 取自连接头）', () => {
+    const [ipKey] = authLimitKeys(req('198.51.100.7', 'SyncUser'), 'SyncUser');
+    expect(ipKey).toBe('ip:198.51.100.7');
+    expect(authLimitKeys(req('198.51.100.7', 'SyncUser'), 'SyncUser')[1]).toBe(
+      'pair:198.51.100.7:syncuser',
+    );
+  });
 });
 
 describe('F7 认证失败限速', () => {

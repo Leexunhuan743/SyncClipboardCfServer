@@ -49,6 +49,7 @@ import {
   authLimitRetryAfterSeconds,
   authRateLimitConfig,
   isAuthLimitBlocked,
+  isHardBlockKey,
   pruneAuthLimits,
 } from '../rateLimit';
 import type { AuthLimitState } from '../rateLimit';
@@ -657,13 +658,16 @@ export class SyncClipboardHub {
     }
     const blocks: Record<string, number> = {};
     for (const key of keys) {
+      // 只上报**可硬封锁**的键（ip / pair）。用户名维度照常计数与落盘（供告警/诊断），
+      // 但它的封锁状态不回给 Worker —— 否则 Worker 会照单把它当封锁依据。
+      if (!isHardBlockKey(key)) continue;
       const state = this.authLimits.get(key);
       if (state !== undefined && isAuthLimitBlocked(state, now)) blocks[key] = state.blockedUntil;
     }
     return Response.json({ blocks, burst: this.burstCount });
   }
 
-  // 全局失败计数（仅在**告警**中使用；封锁只按 ip/user 维度，避免攻击者用垃圾请求锁死合法用户）
+  // 全局失败计数（仅在**告警**中使用；封锁只按 ip / pair 维度，避免攻击者用垃圾请求锁死合法用户）
   private countBurst(now: number, windowMs: number): void {
     if (now - this.burstWindowStart >= windowMs) {
       this.burstWindowStart = now;
@@ -889,6 +893,8 @@ export class SyncClipboardHub {
     const now = Date.now();
     const keys = authLimitKeys(request, basicAuthUsername(request));
     for (const key of keys) {
+      // 与 Worker 侧同一条判据：只有 ip / pair 能封锁；用户名维度只观察。
+      if (!isHardBlockKey(key)) continue;
       const state = this.authLimits.get(key);
       if (state !== undefined && isAuthLimitBlocked(state, now)) {
         return tooManyRequests(authLimitRetryAfterSeconds(state, now));

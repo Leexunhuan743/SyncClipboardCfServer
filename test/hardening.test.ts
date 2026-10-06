@@ -157,15 +157,19 @@ describe('G6 · SearchText 上限（按字节）', () => {
   });
 });
 
-// 限速的**归因制**（本轮加固）：只有拿到 cf-connecting-ip 才启用 IP 维度。该头在生产恒由
-// Cloudflare 覆写、客户端不可伪造；缺头时若把请求全塞进同一个 ip:unknown 桶，10 次错凭据
-// 就能把所有客户端一起锁 15 分钟（限速是削峰控制、不是鉴权边界）⇒ 不可归因则不封锁。
+// 限速的**三信号模型**：`ip` 与 `pair`（来源+账户）可硬封锁；`user` 只统计/告警，绝不单独封锁。
+// 关键性质是**攻击者不能仅凭知道真实用户名就把合法用户从全球所有 IP 锁掉**。
 //
-// 注意「归因」有两个维度：IP 与**用户名**。用例 1 用「无 IP 头 + 每次换用户名」制造真正的
-// 不可归因流量；用例 2 固定 IP + 每次换用户名，证明该锁仍然生效（否则用例 1 可能只是限速整体失效）。
-describe('限速归因制：不可归因不封锁，可归因仍封锁', () => {
+// 判据（对应验收清单）：
+//   ① 固定 IP + 固定用户名 → 第 11 次起 429（ip 与 pair 两个桶都在计数）；
+//   ② 固定 IP + 不断换用户名 → 仍 429（ip 桶单独生效，证明"换用户名能绕过"不成立）；
+//   ③ 不断换 IP + 固定用户名 → **不产生全局硬锁**（user 桶只观察）；
+//   ④ 无 cf-connecting-ip → 不封锁（不可归因）。
+describe('限速三信号模型：ip/pair 可封锁，user 只观察', () => {
   // 必须给真实凭据：未配置时是 500 fail-closed，那是另一条路径（见上面的 G2 用例）。
-  const ENV = { USERNAME: 'syncuser', PASSWORD: 'correct-horse-battery-staple', VERSION: '3.2.0' } as never;
+  const USERNAME = 'syncuser';
+  const PASSWORD = 'correct-horse-battery-staple';
+  const ENV = { USERNAME, PASSWORD, VERSION: '3.2.0' } as never;
   const CTX = { waitUntil: () => {}, passThroughOnException: () => {} } as never;
   const worker = async (headers: Record<string, string>) =>
     (await import('../src/index')).default.fetch(
@@ -177,15 +181,38 @@ describe('限速归因制：不可归因不封锁，可归因仍封锁', () => {
     authorization: `Basic ${Buffer.from(`${user}:wrong-password`).toString('base64')}`,
     ...extra,
   });
+  // 每个用例一套独立 IP：限速缓存是模块级共享的（见 test/rate-limit.test.ts 文件头）。
+  let ipSeq = 0;
+  const freshIp = () => `198.18.${Math.floor(++ipSeq / 250) % 250}.${ipSeq % 250}`;
 
-  it('无 cf-connecting-ip + 每次换用户名：连打 20 次仍全 401（不进入可锁桶）', async () => {
+  it('③ 不断换 IP + 固定用户名：不产生全局硬锁，合法用户仍可登录', async () => {
+    const user = `victim-${Date.now()}`;
     const codes: number[] = [];
-    for (let i = 0; i < 20; i++) codes.push((await worker(wrongAs(`nobody-${Date.now()}-${i}`))).status);
-    expect([...new Set(codes)], '不可归因流量不应被封锁').toEqual([401]);
+    for (let i = 0; i < 30; i++) {
+      codes.push((await worker(wrongAs(user, { 'cf-connecting-ip': freshIp() }))).status);
+    }
+    expect([...new Set(codes)], 'user 维度不得单独封锁（换 IP 猜同一账户不能锁死它）').toEqual([401]);
+
+    // 阳性对照：从**新的** IP 用正确凭据仍能通过
+    const ok = await worker({
+      authorization: `Basic ${Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64')}`,
+      'cf-connecting-ip': freshIp(),
+    });
+    expect(ok.status, '被换 IP 打过的账户仍必须能正常登录').toBe(200);
   });
 
-  it('固定 cf-connecting-ip + 每次换用户名：第 11 次起为 429（证明上条不是「限速整体失效」）', async () => {
-    const ip = `203.0.113.${Math.floor(Math.random() * 200) + 1}`;
+  it('① 固定 IP + 固定用户名：第 11 次起 429（ip 与 pair 两个桶都在计数）', async () => {
+    const ip = freshIp();
+    const user = `target-${Date.now()}`;
+    const codes: number[] = [];
+    for (let i = 0; i < 12; i++) codes.push((await worker(wrongAs(user, { 'cf-connecting-ip': ip }))).status);
+    expect(codes.slice(0, 10).every((c) => c === 401), `前 10 次应全 401，实际 ${JSON.stringify(codes)}`).toBe(true);
+    expect(codes[10]).toBe(429);
+    expect(codes[11]).toBe(429);
+  });
+
+  it('② 固定 IP + 不断换用户名：仍 429（ip 桶单独生效，换用户名不能绕过）', async () => {
+    const ip = freshIp();
     const codes: number[] = [];
     for (let i = 0; i < 12; i++) {
       codes.push((await worker(wrongAs(`nobody-ip-${Date.now()}-${i}`, { 'cf-connecting-ip': ip }))).status);
@@ -193,5 +220,11 @@ describe('限速归因制：不可归因不封锁，可归因仍封锁', () => {
     expect(codes.slice(0, 10).every((c) => c === 401), `前 10 次应全 401，实际 ${JSON.stringify(codes)}`).toBe(true);
     expect(codes[10]).toBe(429);
     expect(codes[11]).toBe(429);
+  });
+
+  it('④ 无 cf-connecting-ip + 每次换用户名：连打 20 次仍全 401（不可归因 ⇒ 不封锁）', async () => {
+    const codes: number[] = [];
+    for (let i = 0; i < 20; i++) codes.push((await worker(wrongAs(`nobody-${Date.now()}-${i}`))).status);
+    expect([...new Set(codes)], '不可归因流量不应被封锁').toEqual([401]);
   });
 });

@@ -1,15 +1,19 @@
 // 认证失败限速：isolate 快路径 + Durable Object 权威计数。
 //
-// 存储层设计（按 Main 的修正意见，**不用 D1**）：
-//   - **权威计数在 Durable Object**：env.HUB 的单实例（`hubStub`），单线程长驻，天然串行化计数、跨 isolate 一致。
-//     端点实现见 src/durable/SyncClipboardHub.ts 的 AUTH_RATE_LIMIT_PATH。
-//   - **请求快路径只读 isolate 内存 Map**（O(1)、零 I/O）。正常同步路径——官方客户端每请求都带**正确** Basic——
-//     既不计数也不产生任何额外往返；命中封锁直接 429，且**不进入凭据比较**（不泄露时序，也不能被绕过）。
-//   - **只有失败才访问 DO**（成功路径仅在本地确有失败记录时才异步清一次），且一律经 `ctx.waitUntil` 投递，
-//     不阻塞响应。否决 D1 方案的原因：失败路径每请求一次 D1 写 = 攻击者用错口令直接烧掉 D1 写入额度。
-//   - **维度**：`ip:<cf-connecting-ip>` 与 `user:<用户名小写>` 各自独立计数与封锁（IP 轮换时凭据维度挡住；
-//     同一 IP 换用户名时 IP 维度挡住）。另有**全局**失败计数，只用于告警、**绝不**用于封锁——
-//     否则攻击者可以用垃圾请求把合法用户锁死。
+// 三个信号（`authLimitKeys` 的产出）：
+//   · `ip:<cf-connecting-ip>`      —— **可以硬封锁**：一个来源连续猜任何用户名都会先撞到它。
+//   · `pair:<ip>:<user>`           —— **可以硬封锁**：同一个来源盯着同一个账户猜（凭据攻击的精确形态）。
+//   · `user:<username>`            —— **只统计/告警，绝不单独封锁**。若它也参与裁决，攻击者只要知道
+//     真实用户名、换着 IP 打，就能把合法用户从全球所有 IP 锁掉（限速是削峰控制、不是鉴权边界）。
+//   另有一个**全局**失败计数，同样只用于告警。
+//
+// 存储层设计（**不用 D1**）：
+//   - 权威计数在 Durable Object（env.HUB 单实例，`hubStub`），单线程长驻、天然串行化、跨 isolate 一致。
+//     端点见 src/durable/SyncClipboardHub.ts 的 AUTH_RATE_LIMIT_PATH。
+//   - 请求快路径只读 isolate 内存 Map（O(1)、零 I/O）。正常同步路径——官方客户端每请求都带**正确** Basic——
+//     既不计数也不产生额外往返；命中封锁直接 429，且不进入凭据比较（不泄露时序，也不能被绕过）。
+//   - 只有失败才访问 DO（成功路径仅在本地确有失败记录时才异步清一次），一律经 ctx.waitUntil 投递。
+//     否决 D1 方案的原因：失败路径每请求一次 D1 写 = 攻击者用错口令直接烧掉 D1 写入额度。
 //   - 未配置凭据的场景不会走到这里：authFailure 先返回 500（fail-closed）。
 //
 // 已知局限（取舍，非缺陷）：
@@ -182,8 +186,7 @@ const cache: IsolateLimitCache = {
 };
 
 // 限速维度键。IP 取 cf-connecting-ip（生产上由 Cloudflare 覆写、客户端不可伪造，故恒存在；
-// 非生产路径若缺失则退化为固定串 `ip:unknown`——但 loopback 请求在 authLimitKeys 里已被整体豁免，
-// 不会与之共用桶）。
+// 非生产路径若缺失则退化为固定串 `ip:unknown`）。
 // 导出：DO 侧的连接鉴权失败路径（WS/SSE/长轮询不走 Worker 的 authFailure）必须用同一套 key。
 export function authLimitIpKey(request: Request): string {
   const ip = request.headers.get('cf-connecting-ip');
@@ -196,6 +199,26 @@ export function authLimitUserKey(username: string | null): string | null {
   return `user:${username.toLowerCase()}`;
 }
 
+// 「来源 + 账户」对：凭据攻击的精确形态是**同一个来源盯着同一个账户**连试，
+// 这个桶既保住那层保护，又不像纯用户名维度那样能被拿来跨国锁人。
+// 只在两个分量都可得（有 cf-connecting-ip 且解析出用户名）时存在。
+function authLimitPairKey(request: Request, username: string | null): string | null {
+  if (username === null || username === '') return null;
+  if (!request.headers.get('cf-connecting-ip')) return null;
+  return `pair:${authLimitIpKey(request).slice(3)}:${username.toLowerCase()}`;
+}
+
+// 可**硬封锁**的键：ip 与 pair。用户名维度与全局计数只观察、不参与裁决。
+// 用前缀**白名单**而非黑名单：将来新增信号默认不封锁（fail-safe）。
+const HARD_BLOCK_PREFIXES: Record<string, true> = { ip: true, pair: true };
+
+/** 该键是否允许参与封锁裁决。Worker 与 DO 两侧共用这一条判据，避免"哪边能锁"分叉。 */
+export function isHardBlockKey(key: string): boolean {
+  const colon = key.indexOf(':');
+  return colon > 0 && HARD_BLOCK_PREFIXES[key.slice(0, colon)] === true;
+}
+
+// 本次请求的全部维度键。返回顺序即 signal 顺序（ip、pair、user）。
 export function authLimitKeys(request: Request, username: string | null): string[] {
   // 本地开发/测试（loopback）不参与限速：生产流量不可能来自 loopback。
   if (isLoopbackRequest(request)) return [];
@@ -203,8 +226,9 @@ export function authLimitKeys(request: Request, username: string | null): string
   // **归因制**：只有拿到 cf-connecting-ip 才启用 IP 维度。该头在生产恒由 Cloudflare 覆写、
   // 客户端不可伪造；而缺头时若把所有请求塞进同一个 `ip:unknown` 桶，10 次错凭据就能把
   // **全部客户端**一起锁 15 分钟（限速是削峰控制、不是鉴权边界，鉴权仍由 Basic 门把关）。
-  // 因此不可归因 ⇒ 不封锁（用户名维度若可得仍然生效，那是可归因的）。
   if (request.headers.get('cf-connecting-ip')) keys.push(authLimitIpKey(request));
+  const pairKey = authLimitPairKey(request, username);
+  if (pairKey !== null) keys.push(pairKey);
   const userKey = authLimitUserKey(username);
   if (userKey !== null) keys.push(userKey);
   return keys;
@@ -212,6 +236,7 @@ export function authLimitKeys(request: Request, username: string | null): string
 
 // 预检：命中封锁返回裁决（调用方据此返回 429 + Retry-After），否则 null。
 // **同步**：只读 isolate 内存；DO 快照经 ctx.waitUntil 异步补充，不阻塞本次响应。
+// 只有**可硬封锁**的键（ip / pair）参与裁决；用户名维度只观察。
 export function checkAuthRateLimit(
   env: Bindings,
   request: Request,
@@ -221,6 +246,7 @@ export function checkAuthRateLimit(
   const now = Date.now();
   const keys = authLimitKeys(request, username);
   for (const key of keys) {
+    if (!isHardBlockKey(key)) continue;
     const state = cache.limits.get(key);
     if (isAuthLimitBlocked(state, now)) {
       return { retryAfterSeconds: authLimitRetryAfterSeconds(state!, now) };
@@ -315,13 +341,15 @@ async function callHub(
   }
 }
 
-// 把 DO 的权威封锁合并进本地缓存（只升不降：本地已知的封锁时限不会被 DO 的短时限拉回）
+// 把 DO 的权威封锁合并进本地缓存（只升不降：本地已知的封锁时限不会被 DO 的短时限拉回）。
+// 只合并**可硬封锁**的键：DO 也可能为用户名维度记账，但那一条不参与裁决，本地不必持有。
 function mergeBlocks(
   blocks: Record<string, number>,
   now: number,
   config: AuthRateLimitConfig,
 ): void {
   for (const [key, blockedUntil] of Object.entries(blocks)) {
+    if (!isHardBlockKey(key)) continue;
     if (blockedUntil <= now) continue;
     const prev = cache.limits.get(key);
     cache.limits.set(key, {
