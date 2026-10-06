@@ -58,6 +58,31 @@ describe('部署开关清单：.dev.vars.example / deploy.yml / README 三处一
   });
 });
 
+describe('部署链：hash 大小写折叠冲突检测（tools/check-hash-case-conflicts.mjs）', () => {
+  it('findCaseConflicts：只差大小写的同 (User, Type) hash 被挑出；纯大写/不同 hash 不受影响', async () => {
+    // @ts-expect-error —— 无该 .mjs 的声明文件
+    const mod = await import('../tools/check-hash-case-conflicts.mjs');
+    const rows = [
+      { ID: 1, UserId: 'default_user', Type: 0, Hash: 'ABC' },
+      { ID: 2, UserId: 'default_user', Type: 0, Hash: 'abc' },
+      { ID: 3, UserId: 'default_user', Type: 0, Hash: 'DEF' },
+      { ID: 4, UserId: 'default_user', Type: 1, Hash: 'ABC' },
+    ];
+    const conflicts = mod.findCaseConflicts(rows);
+    expect(conflicts.length, '只有 (User,Text) 的 ABC/abc 是冲突').toBe(1);
+    expect(conflicts[0].map((r: { Hash: string }) => r.Hash).sort()).toEqual(['ABC', 'abc']);
+    // 正对照：全大写、或无折叠冲突时为空
+    expect(mod.findCaseConflicts([{ ID: 1, UserId: 'u', Type: 0, Hash: 'ABC' }])).toEqual([]);
+  });
+
+  it('工具是**只读**的（只出现 SELECT，不含 UPDATE/DELETE/INSERT 语句）', () => {
+    const script = read('tools/check-hash-case-conflicts.mjs').replace(/\r\n/g, '\n');
+    expect(script).toMatch(/SELECT[^]*FROM HistoryRecords/);
+    // 只看**语句**（行首的 SQL 关键字），注释里提到 DELETE 不算
+    expect(script).not.toMatch(/^[ \t]*(UPDATE|DELETE[ \t]+FROM|INSERT[ \t]+INTO)\b/im);
+  });
+});
+
 describe('部署链：D1 列迁移（tools/migrate-d1.mjs）', () => {
   it('parseD1Output 处理 wrangler 的横幅前缀 / 空输出 / 正常 JSON 三形态', async () => {
     // @ts-expect-error —— 无 migrate-d1.mjs 的声明文件

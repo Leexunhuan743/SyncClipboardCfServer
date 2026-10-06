@@ -7,6 +7,7 @@ import {
   fileProfileHash,
   groupHashFromEntries,
   parseGroupZip,
+  normalizeProfileHash,
   InvalidGroupDataError,
 } from '../src/hash';
 
@@ -173,5 +174,16 @@ describe('parseGroupZip', () => {
     // 首见优先 = 上游"若能落盘"时树里会有的那一份内容
     expect(files[0]!.contentHash).toBe(await sha256Hex(strToU8('FIRST')));
     expect(totalSize).toBe(5);
+  });
+});
+
+describe('normalizeProfileHash（落库哈希的规范形态）', () => {
+  it('统一为大写；已是大写的不变', () => {
+    expect(normalizeProfileHash('abc123')).toBe('ABC123');
+    expect(normalizeProfileHash('ABCDEF')).toBe('ABCDEF');
+  });
+  it('与 sha256Hex 的输出同口径（新写入的哈希过它不变）', async () => {
+    const h = await sha256Hex('hello');
+    expect(normalizeProfileHash(h)).toBe(h);
   });
 });
