@@ -42,19 +42,30 @@ export async function purgeTrash(env: Bindings): Promise<number> {
 
 // 按记录集合清扫 R2 数据目录。
 //
+// **成功后语义统一：D1 完成永久删除 = 业务删除成功。** 本函数是删除之后的后半段，R2 清理失败
+// 只能留下孤儿目录（由清理任务的孤儿阶段回收，最长一轮），**不能**把一次已经生效的删除变成 500 ——
+// 否则用户看到失败、数据其实没了，重试也删不掉（行已不在），只会误导。
+// 因此这里整体 best-effort：内部 catch 后打一条可观测日志，调用方照常返回删除条数。
+//
 // **跳过 hash 非法的行**：`workingDirPrefix` → `workingDirName` 对含路径分隔符的 hash 直接抛
-// （storage.ts 的 `assertHashForPath`，那是 key 构造的最后防线），而本函数在**删行之后**才被调用
-// ⇒ 不跳过就会「行已删掉、接口却报 500」，用户看到失败而数据其实没了、R2 残留还要等孤儿阶段。
-// 坏行只可能来自带外写入（三条写路径都拒这种 hash），它们的目录名也构造不出来 —— 漏掉不可惜，
-// 孤儿阶段照样回收。
+// （storage.ts 的 `assertHashForPath`，那是 key 构造的最后防线）。坏行只可能来自带外写入
+// （三条写路径都拒这种 hash），它们的目录名也构造不出来 —— 漏掉不可惜，孤儿阶段照样回收。
 async function deleteRecordsWorkingDirs(
   env: Bindings,
   entries: { type: ProfileType; hash: string }[],
 ): Promise<void> {
+  const dirs = entries.filter((e) => isValidProfileHash(e.hash)).map((e) => workingDirPrefix(e.type, e.hash));
+  if (dirs.length === 0) return;
   const { storage } = stores({ env });
-  await storage.deleteHistoryDirs(
-    entries.filter((e) => isValidProfileHash(e.hash)).map((e) => workingDirPrefix(e.type, e.hash)),
-  );
+  try {
+    await storage.deleteHistoryDirs(dirs);
+  } catch (err) {
+    // 行已经删掉了，这次失败只意味着数据目录要等孤儿阶段回收 ⇒ 记日志、不改判业务结果。
+    console.warn('[cleanup] deferred R2 cleanup', {
+      dirs: dirs.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export type HistoryUpdateResult =
