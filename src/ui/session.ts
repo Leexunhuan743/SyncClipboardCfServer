@@ -36,7 +36,7 @@ interface SessionPayload {
 //
 // 不能用 env 对象（或 isolate 生命周期）当缓存键：更新 secrets **不保证**换掉 isolate，
 // 也不保证换掉 env 对象；按对象缓存时，同一 isolate 会继续用旧口令派生的密钥验签 ——
-// 改口令后旧会话在缓存存活期内仍被接受（审计残余 G1）。按口令值做键可以把这个窗口收敛到零：
+// 改口令后旧会话在缓存存活期内仍被接受。按口令值做键可以把这个窗口收敛到零：
 // 口令一变，下一次调用立刻重新派生。
 let cachedPassword: string | null = null;
 let cachedKey: Promise<CryptoKey> | null = null;
@@ -74,8 +74,8 @@ async function deriveKey(password: string): Promise<CryptoKey> {
 
 // ===== 无守卫的纯派生原语（**唯一的消费者是测试**）=====
 //
-// 为什么导出：`test/hardening.test.ts` 的 G2 用例要"用生产的同一套管线伪造一个空口令令牌"，
-// 证明它会被拒。若测试自己复制一份管线，生产侧一旦换算法/换盐/换编码，测试会**继续用旧算法伪造**，
+// 为什么导出：`test/hardening.test.ts` 要"用生产的同一套管线伪造一个空口令令牌"证明它会被拒。
+// 若测试自己复制一份管线，生产侧一旦换算法/换盐/换编码，测试会**继续用旧算法伪造**，
 // 于是给出"空口令令牌被拒"的**错误结论**——这条安全用例的判别力就成了人工同步下的赌注。
 //
 // 边界（很重要）：只导出**纯原语**。**不要**导出 `issueSession` 这类带 `isAuthConfigured`
@@ -162,7 +162,7 @@ function readCookie(request: Request, name: string): string | null {
 export async function readSession(env: Bindings, request: Request): Promise<UiSession | null> {
   // 凭据未配置时**不得**继续验签：此时 §sessionKey 的 IKM 退化为空串（无任何秘密输入），
   // 任何人都能用同一份公开算法离线签发一个「有效」令牌，使 /ui/api/session 报告 authenticated:true。
-  // 与 guard 的「未配置即 500」fail-closed 对齐（审计残余 G2）。
+  // 与 guard 的「未配置即 500」fail-closed 对齐。
   if (!isAuthConfigured(env)) return null;
   const token = readCookie(request, SESSION_COOKIE);
   if (!token) return null;

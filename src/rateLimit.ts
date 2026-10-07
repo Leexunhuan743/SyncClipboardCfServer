@@ -184,8 +184,9 @@ const cache: IsolateLimitCache = {
   lastBurstWarnAt: 0,
 };
 
-// 限速维度键。IP 取 cf-connecting-ip（生产上由 Cloudflare 覆写、客户端不可伪造，故恒存在；
-// 非生产路径若缺失则退化为固定串 `ip:unknown`）。
+// 限速维度键。把已存在的 cf-connecting-ip 转成内部 key（生产上该头恒由 Cloudflare 覆写、
+// 客户端不可伪造）。**缺头时不归入任何桶**：`authLimitKeys` 直接返回空 ⇒ 不做不可归因的硬封锁
+// （否则所有缺头客户端会共用一个 `ip:unknown` 桶，10 次错凭据就能把它们一起锁 15 分钟）。
 // 导出：DO 侧的连接鉴权失败路径（WS/SSE/长轮询不走 Worker 的 authFailure）必须用同一套 key。
 export function authLimitIpKey(request: Request): string {
   const ip = request.headers.get('cf-connecting-ip');
@@ -198,9 +199,7 @@ export function authLimitIpKey(request: Request): string {
 export function authLimitKeys(request: Request): string[] {
   // 本地开发/测试（loopback）不参与限速：生产流量不可能来自 loopback。
   if (isLoopbackRequest(request)) return [];
-  // **归因制**：只有拿到 cf-connecting-ip 才启用 IP 维度。该头在生产恒由 Cloudflare 覆写、
-  // 客户端不可伪造；而缺头时若把所有请求塞进同一个 `ip:unknown` 桶，10 次错凭据就能把
-  // **全部客户端**一起锁 15 分钟（限速是削峰控制、不是鉴权边界，鉴权仍由 Basic 门把关）。
+  // 归因制：缺 cf-connecting-ip ⇒ 空数组（不封锁），理由见 authLimitIpKey 的注释。
   return request.headers.get('cf-connecting-ip') ? [authLimitIpKey(request)] : [];
 }
 

@@ -84,7 +84,7 @@ export function forwardToHub(env: Bindings, request: Request): Promise<Response>
 //   - `connectionToken` 仅在版本 > 0 时出现；`connectionId` 恒出现
 //   - `availableTransports` 恒出现（数组），顺序即客户端尝试顺序
 // 无论哪种版本都把 token 登记到 Hub：v1 客户端用它作 `?id=`；版本 0 客户端用 connectionId 作 `?id=`
-// （本实现刻意让二者同值，使两种形态都能通过 DO 的连接鉴权，F1）。
+// （本实现刻意让二者同值，使两种形态都能通过 DO 的连接鉴权）。
 export async function negotiateResponse(env: Bindings, request: Request): Promise<Response> {
   const url = new URL(request.url);
   const rawVersion = url.searchParams.get('negotiateVersion');

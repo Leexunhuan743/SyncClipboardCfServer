@@ -1,4 +1,4 @@
-// 后台维护端点：数据完整性自检（GitHub issue #3）与保留策略在线可调（§2.5）。
+// 后台维护端点：数据完整性自检与保留策略在线可调。
 //
 // 保留策略**没有单独的读端点**：生效值与来源（env / meta）都随 `/ui/api/info` 一起返回 ——
 // 界面只打开部署信息对话框，为它多开一条 GET 只会留下一个无人调用的端点（复核时删掉的正是这种）。
@@ -19,7 +19,7 @@ import { truncateText } from './query';
 import { readRetentionSettings, SETTINGS_META_KEYS } from '../cleanup';
 
 // 自检清单的条数上限：完整计数走 missingCount，这里只截断清单。
-// 缺数据的记录是事故残留（GitHub issue #3：线上实测 12 条），超过 50 条就是系统性问题；
+// 缺数据的记录是事故残留（线上实测过 12 条），超过 50 条就是系统性问题；
 // DB 侧按 CreateTime 倒序返回，取前 50 = 最新的 50 条（最可能是刚刚发生的故障），更多只会撑大响应体。
 const MISSING_LIMIT = 50;
 // 摘要长度：清单只需让人认出「是哪条剪贴板」，60 字符够（列表端点截到 500 是另一套口径）。
@@ -54,7 +54,7 @@ function parseSettingInput(raw: unknown, max: number): SettingInput {
 }
 
 // 截断（`query.ts` 的 `truncateText`）：不再在本地复制一份 —— 同一个"不留半截代理对"的规则
-// 有两处实现时，只会有一处被测试覆盖（审计 R-03）。
+// 有两处实现时，只会有一处被测试覆盖。
 
 export function createUiMaintenanceRoutes(): Hono<{ Bindings: Bindings }> {
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });
@@ -120,7 +120,7 @@ export function createUiMaintenanceRoutes(): Hono<{ Bindings: Bindings }> {
     }
     let body: unknown;
     try {
-      // 整包读的一律走 capped（F9 预检只信 content-length，chunked 会绕过它）
+      // 整包读的一律走 capped（content-length 预检对 chunked 请求无效）
       const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
       if (text === null) return new Response('Payload Too Large', { status: 413 });
       body = JSON.parse(text) as unknown;
