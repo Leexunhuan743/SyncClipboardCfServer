@@ -9,7 +9,7 @@
 // 并另有一组针对**真实 DO 类**（new SyncClipboardHub(...)）的端点/队列断言，避免 stub 自说自话。
 //
 // 限速缓存是 isolate 级（模块级 Map）且本文件所有用例共享同一份模块实例，因此**每个用例用一套
-// 独立的身份（用户名 + IP）**；否则上一个用例攒下的失败会把下一个用例的第一个请求打成 429。
+// 独立的身份（IP 唯一）**；否则上一个用例攒下的失败会把下一个用例的第一个请求打成 429。
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { Bindings } from '../src/env';
 import {
@@ -20,6 +20,7 @@ import {
   AUTH_RATE_LIMIT_STORAGE_KEY,
   DEFAULT_AUTH_RATE_LIMIT_CONFIG,
   applyAuthFailure,
+  authLimitKeys,
   authRateLimitConfig,
 } from '../src/rateLimit';
 import type { AuthLimitState } from '../src/rateLimit';
@@ -61,7 +62,7 @@ interface TestIdentity {
   ip: string;
 }
 
-// 每个用例一套独立身份：用户名维度与 IP 维度都必须唯一（见文件头的说明）
+// 每个用例一套独立 IP：限速缓存是模块级共享的（见文件头的说明）
 function createIdentity(): TestIdentity {
   const n = seq.value++;
   return { user: `syncuser-${n}`, pass: `correct-horse-battery-${n}`, ip: `198.51.100.${n}` };
@@ -165,6 +166,21 @@ async function fetchWorker(env: Bindings, ctx: TestCtx, request: Request): Promi
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe('认证限速的键模型（只有 ip）', () => {
+  const req = (ip: string | null) =>
+    new Request('https://sync.example.com/api/version', {
+      headers: {
+        authorization: basic('admin', 'x'),
+        ...(ip === null ? {} : { 'cf-connecting-ip': ip }),
+      },
+    });
+
+  it('有 IP → 只有一个 ip 键；无 IP → 空（不可归因 ⇒ 不封锁）', () => {
+    expect(authLimitKeys(req('203.0.113.9'))).toEqual(['ip:203.0.113.9']);
+    expect(authLimitKeys(req(null))).toEqual([]);
+  });
 });
 
 describe('F7 认证失败限速', () => {
@@ -914,6 +930,26 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
 
     const cleared = await (await call('clear', [key])).json<AuthLimitResponseBody>();
     expect(cleared.blocks).toEqual({});
+  });
+
+  // burst 按**一次失败报告**计一次，与报告里携带多少 key 无关（内部接口仍接受 keys[]，
+  // 这条测试防止将来有人把 countBurst 又塞回 key 循环）。
+  it('report 的全局 burst 按请求计一次（多键不重复计）', async () => {
+    const { env } = createEnv();
+    const hub = new SyncClipboardHub(createDoState(), env);
+    const report = (keys: string[]) =>
+      hub.fetch(
+        new Request(`https://hub${AUTH_RATE_LIMIT_PATH}`, {
+          method: 'POST',
+          body: JSON.stringify({ op: 'report', keys }),
+        }),
+      );
+    // 一次 report 带多个键 → burst 只 +1（按请求计，不按维度键重复计）
+    const one = await (await report(['ip:203.0.113.61', 'ip:203.0.113.62'])).json<AuthLimitResponseBody>();
+    expect(one.burst).toBe(1);
+    // 再一次（单键）→ 累计 2，而非按键数翻倍
+    const two = await (await report(['ip:203.0.113.63'])).json<AuthLimitResponseBody>();
+    expect(two.burst).toBe(2);
   });
 
   // 落盘形态的**形状守卫**（2026-09-25）：形态在本分支里改过一次（旧版是平铺的

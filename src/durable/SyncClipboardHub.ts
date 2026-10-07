@@ -31,7 +31,6 @@ import {
   pingMessage,
 } from './signalr';
 import {
-  basicAuthUsername,
   checkBasicAuth,
   unauthorized,
   tooManyRequests,
@@ -641,9 +640,11 @@ export class SyncClipboardHub {
     // "Worker 认为没封锁、DO 认为封锁"的分裂判定（两边都用 src/rateLimit.ts 的同一函数）。
     const limitConfig = authRateLimitConfig(this.env);
     if (op === 'report') {
+      // 全局 burst 按**一次失败报告**计一次（与报告里携带多少 key 无关）：若在 key 循环里
+      // countBurst，同一请求会被计多次，让 AUTH_RATE_LIMIT_BURST_WARN 的语义随 key 数漂移。
+      this.countBurst(now, limitConfig.windowMs);
       for (const key of keys) {
         this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now, limitConfig));
-        this.countBurst(now, limitConfig.windowMs);
       }
       pruneAuthLimits(this.authLimits, now, limitConfig);
       this.persistAuthLimits(now);
@@ -663,7 +664,7 @@ export class SyncClipboardHub {
     return Response.json({ blocks, burst: this.burstCount });
   }
 
-  // 全局失败计数（仅在**告警**中使用；封锁只按 ip/user 维度，避免攻击者用垃圾请求锁死合法用户）
+  // 全局失败计数（仅在**告警**中使用；封锁只按 ip 维度，避免攻击者用垃圾请求锁死合法用户）
   private countBurst(now: number, windowMs: number): void {
     if (now - this.burstWindowStart >= windowMs) {
       this.burstWindowStart = now;
@@ -887,7 +888,7 @@ export class SyncClipboardHub {
     // 只有走到「要判定/推进限速」这一支才需要快照（有效 token 在上面已放行 ⇒ 该路径零存储读）
     await this.loadAuthLimitsOnce();
     const now = Date.now();
-    const keys = authLimitKeys(request, basicAuthUsername(request));
+    const keys = authLimitKeys(request);
     for (const key of keys) {
       const state = this.authLimits.get(key);
       if (state !== undefined && isAuthLimitBlocked(state, now)) {

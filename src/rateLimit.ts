@@ -1,15 +1,18 @@
 // 认证失败限速：isolate 快路径 + Durable Object 权威计数。
 //
-// 存储层设计（按 Main 的修正意见，**不用 D1**）：
-//   - **权威计数在 Durable Object**：env.HUB 的单实例（`hubStub`），单线程长驻，天然串行化计数、跨 isolate 一致。
-//     端点实现见 src/durable/SyncClipboardHub.ts 的 AUTH_RATE_LIMIT_PATH。
-//   - **请求快路径只读 isolate 内存 Map**（O(1)、零 I/O）。正常同步路径——官方客户端每请求都带**正确** Basic——
-//     既不计数也不产生任何额外往返；命中封锁直接 429，且**不进入凭据比较**（不泄露时序，也不能被绕过）。
-//   - **只有失败才访问 DO**（成功路径仅在本地确有失败记录时才异步清一次），且一律经 `ctx.waitUntil` 投递，
-//     不阻塞响应。否决 D1 方案的原因：失败路径每请求一次 D1 写 = 攻击者用错口令直接烧掉 D1 写入额度。
-//   - **维度**：`ip:<cf-connecting-ip>` 与 `user:<用户名小写>` 各自独立计数与封锁（IP 轮换时凭据维度挡住；
-//     同一 IP 换用户名时 IP 维度挡住）。另有**全局**失败计数，只用于告警、**绝不**用于封锁——
-//     否则攻击者可以用垃圾请求把合法用户锁死。
+// 两个信号：
+//   · `ip:<cf-connecting-ip>` —— **可以硬封锁**：一个来源连续猜任何用户名都会先撞到它。
+//   · 全局失败计数           —— **只告警**（每个失败**请求**计一次），不参与封锁。
+// 刻意**不做用户名维度**：它没有消费端，且攻击者知道真实用户名后换 IP 猜同一账户，
+// 本就无法安全地按用户名封锁（会把合法用户从所有 IP 锁死）—— 这一情形交给全局 burst 告警。
+//
+// 存储层设计（**不用 D1**）：
+//   - 权威计数在 Durable Object（env.HUB 单实例，`hubStub`），单线程长驻、天然串行化、跨 isolate 一致。
+//     端点见 src/durable/SyncClipboardHub.ts 的 AUTH_RATE_LIMIT_PATH。
+//   - 请求快路径只读 isolate 内存 Map（O(1)、零 I/O）。正常同步路径——官方客户端每请求都带**正确** Basic——
+//     既不计数也不产生额外往返；命中封锁直接 429，且不进入凭据比较（不泄露时序，也不能被绕过）。
+//   - 只有失败才访问 DO（成功路径仅在本地确有失败记录时才异步清一次），一律经 ctx.waitUntil 投递。
+//     否决 D1 方案的原因：失败路径每请求一次 D1 写 = 攻击者用错口令直接烧掉 D1 写入额度。
 //   - 未配置凭据的场景不会走到这里：authFailure 先返回 500（fail-closed）。
 //
 // 已知局限（取舍，非缺陷）：
@@ -182,32 +185,23 @@ const cache: IsolateLimitCache = {
 };
 
 // 限速维度键。IP 取 cf-connecting-ip（生产上由 Cloudflare 覆写、客户端不可伪造，故恒存在；
-// 非生产路径若缺失则退化为固定串 `ip:unknown`——但 loopback 请求在 authLimitKeys 里已被整体豁免，
-// 不会与之共用桶）。
+// 非生产路径若缺失则退化为固定串 `ip:unknown`）。
 // 导出：DO 侧的连接鉴权失败路径（WS/SSE/长轮询不走 Worker 的 authFailure）必须用同一套 key。
 export function authLimitIpKey(request: Request): string {
   const ip = request.headers.get('cf-connecting-ip');
   return `ip:${ip !== null && ip !== '' ? ip : 'unknown'}`;
 }
 
-// 凭据维度键：用户名不区分大小写（避免 `Admin` / `admin` 绕过同一个计数）。
-export function authLimitUserKey(username: string | null): string | null {
-  if (username === null || username === '') return null;
-  return `user:${username.toLowerCase()}`;
-}
-
-export function authLimitKeys(request: Request, username: string | null): string[] {
+// 本次请求的维度键：只有 IP。**刻意不做用户名维度** —— 它没有消费端（不封锁、无单列告警），
+// 只会多出 Map/持久化/prune 的状态；而已知真实用户名后换 IP 猜同一账户本就无法安全地按用户名封锁，
+// 这一情形由**全局 burst 告警**观察。
+export function authLimitKeys(request: Request): string[] {
   // 本地开发/测试（loopback）不参与限速：生产流量不可能来自 loopback。
   if (isLoopbackRequest(request)) return [];
-  const keys: string[] = [];
   // **归因制**：只有拿到 cf-connecting-ip 才启用 IP 维度。该头在生产恒由 Cloudflare 覆写、
   // 客户端不可伪造；而缺头时若把所有请求塞进同一个 `ip:unknown` 桶，10 次错凭据就能把
   // **全部客户端**一起锁 15 分钟（限速是削峰控制、不是鉴权边界，鉴权仍由 Basic 门把关）。
-  // 因此不可归因 ⇒ 不封锁（用户名维度若可得仍然生效，那是可归因的）。
-  if (request.headers.get('cf-connecting-ip')) keys.push(authLimitIpKey(request));
-  const userKey = authLimitUserKey(username);
-  if (userKey !== null) keys.push(userKey);
-  return keys;
+  return request.headers.get('cf-connecting-ip') ? [authLimitIpKey(request)] : [];
 }
 
 // 预检：命中封锁返回裁决（调用方据此返回 429 + Retry-After），否则 null。
@@ -215,11 +209,10 @@ export function authLimitKeys(request: Request, username: string | null): string
 export function checkAuthRateLimit(
   env: Bindings,
   request: Request,
-  username: string | null,
   ctx?: WaitUntil,
 ): AuthRateLimitVerdict | null {
   const now = Date.now();
-  const keys = authLimitKeys(request, username);
+  const keys = authLimitKeys(request);
   for (const key of keys) {
     const state = cache.limits.get(key);
     if (isAuthLimitBlocked(state, now)) {
@@ -237,14 +230,9 @@ export function checkAuthRateLimit(
 }
 
 // 记一次认证失败：本地立即计数（本 isolate 从第 11 次**请求**起即刻被拦），并异步上报 DO 汇总。
-export function noteAuthFailure(
-  env: Bindings,
-  request: Request,
-  username: string | null,
-  ctx?: WaitUntil,
-): void {
+export function noteAuthFailure(env: Bindings, request: Request, ctx?: WaitUntil): void {
   const now = Date.now();
-  const keys = authLimitKeys(request, username);
+  const keys = authLimitKeys(request);
   const config = authRateLimitConfig(env);
   cache.lastFailureAt = now;
   for (const key of keys) {
@@ -255,17 +243,12 @@ export function noteAuthFailure(
 }
 
 // 认证成功：清除该 key 的失败计数（本地立即清；仅当本地确有记录时才通知 DO，正常同步路径零 I/O）。
-export function noteAuthSuccess(
-  env: Bindings,
-  request: Request,
-  username: string | null,
-  ctx?: WaitUntil,
-): void {
+export function noteAuthSuccess(env: Bindings, request: Request, ctx?: WaitUntil): void {
   // 写成显式循环而不是 `authLimitKeys(...).filter((key) => cache.limits.delete(key))`：
   // 后者的「删除」是副作用却藏在 `filter` 里，读起来像在筛选；而且它把"本地确有记录"这个
   // 判据混在返回值里。这里先逐个删，只有真的删掉了东西才去通知 DO（正常同步路径零 I/O）。
   const cleared: string[] = [];
-  for (const key of authLimitKeys(request, username)) {
+  for (const key of authLimitKeys(request)) {
     if (cache.limits.delete(key)) cleared.push(key);
   }
   if (cleared.length > 0 && ctx) ctx.waitUntil(callHub(env, 'clear', cleared));
@@ -315,7 +298,7 @@ async function callHub(
   }
 }
 
-// 把 DO 的权威封锁合并进本地缓存（只升不降：本地已知的封锁时限不会被 DO 的短时限拉回）
+// 把 DO 的权威封锁合并进本地缓存（只升不降：本地已知的封锁时限不会被 DO 的短时限拉回）。
 function mergeBlocks(
   blocks: Record<string, number>,
   now: number,
