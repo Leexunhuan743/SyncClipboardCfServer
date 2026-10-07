@@ -134,8 +134,12 @@ V2 可以破坏性重构视觉/信息架构，但不能绕过同一套 UI API、
 | 层 | 工具 |
 |---|---|
 | 自动测试 | `test/ui*.test.ts`、相关协议/安全测试 |
-| 真实浏览器 | `test/manual/probe-ui-v1.mjs` / `test/manual/probe.mjs` |
+| 真实浏览器 | `test/manual/probe-ui-v1.mjs`（V1）/ `test/manual/probe.mjs`（V2） |
+| 交互状态 | `test/manual/states.mjs` |
 | 截图人工检查 | `test/manual/shoot.mjs` |
+
+四个脚本共用 `test/manual/cdp.mjs` 的 CDP 原语（起浏览器 / 发命令 / 登录注入 Cookie / 收错误）；
+该模块不含判据，只去重复。判据的“跳过”与“通过”必须区分，且必须影响退出码。
 
 三条纪律：
 
