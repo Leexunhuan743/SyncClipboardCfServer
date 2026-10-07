@@ -2,7 +2,7 @@
 // - 纯逻辑：multipart / serialization / hash
 // - 服务层：profile.ts（用内存 stub 驱动 R2/D1 接口）
 // - 数据层：db.ts（用 node:sqlite + schema.sql 建真实 SQLite，验证 SQL 语义）
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { zipSync, strToU8, Zip, ZipPassThrough } from 'fflate';
 import { createSqliteD1, readSchemaSql, type SqliteD1 } from './support/d1-sqlite';
@@ -19,7 +19,7 @@ import { R2Storage as RealR2Storage } from '../src/storage';
 import { runCleanup } from '../src/cleanup';
 import { createWebdavRoutes } from '../src/routes/webdav';
 import { createHistoryRoutes } from '../src/routes/history';
-import { purgeTrash } from '../src/historyOps';
+import { purgeTrash, clearAllHistory } from '../src/historyOps';
 import type { Bindings } from '../src/env';
 
 const sha256 = (data: Uint8Array | string) =>
@@ -855,6 +855,8 @@ class FakeBucket {
   // 存**字节**（不是只存 size）：`GET /file/{name}` 这类用例要断言回退后拿到的内容，
   // 而 `get()` 必须能交出可读的 body（`new Response(obj.body)` 需要真正的流）。
   objects = new Map<string, Uint8Array>();
+  /** 置为 true 时 `delete()` 抛错：注入 R2 清理失败，验证"已生效的删除不改判业务结果"。 */
+  failDelete = false;
 
   async put(key: string, body: unknown): Promise<void> {
     const bytes =
@@ -871,6 +873,7 @@ class FakeBucket {
     return { size: bytes.length, body: new Blob([bytes]).stream() };
   }
   async delete(keyOrKeys: string | string[]): Promise<void> {
+    if (this.failDelete) throw new Error('injected R2 delete failure');
     for (const k of Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]) this.objects.delete(k);
   }
   async list(opts: { prefix?: string; cursor?: string } = {}) {
@@ -1244,6 +1247,86 @@ describe('D29 · purgeTrash：只删已删除的行，并按同一集合清扫 R
     expect(await db.getByTypeAndHash(ProfileType.File, 'KEEP3'), '活跃记录的行还在').not.toBeNull();
     expect(await db.getByTypeAndHash(ProfileType.File, 'TRASH1'), '已删记录的行没了').toBeNull();
     expect(await db.getByTypeAndHash(ProfileType.File, 'TRASH2'), '已删记录的行没了').toBeNull();
+  });
+});
+
+describe('D29 · 删除成功后语义：R2 清理失败不改判业务结果（留孤儿给清理任务）', () => {
+  function fixture() {
+    const d1 = createSqliteD1(schemaSql);
+    const db = new HistoryDb(d1 as unknown as D1Database);
+    const bucket = new FakeBucket();
+    const env = { DB: d1, R2: bucket, HUB: hubStub() } as unknown as Bindings;
+    return { d1, db, bucket, env };
+  }
+  const rec = (hash: string, over: Partial<HistoryRecordEntity> = {}): HistoryRecordEntity => {
+    const now = Date.now();
+    return {
+      userId: 'default_user',
+      type: ProfileType.File,
+      text: `${hash}.bin`,
+      size: 3,
+      transferDataFile: `${hash}.bin`,
+      filePaths: [`${hash}.bin`],
+      hash,
+      createTime: now,
+      lastAccessed: now,
+      lastModified: now,
+      stared: false,
+      pinned: false,
+      version: 0,
+      isDeleted: false,
+      ...over,
+    };
+  };
+
+  it('purgeTrash：R2 删除抛错时仍返回删除条数，且行确实已删（不被 500 掩盖）', async () => {
+    const { db, bucket, env } = fixture();
+    await db.insert(rec('T1', { isDeleted: true }));
+    await new RealR2Storage(bucket as unknown as R2Bucket).putHistory(
+      ProfileType.File,
+      'T1',
+      'T1.bin',
+      new Uint8Array([1]),
+    );
+    bucket.failDelete = true;
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deleted = await purgeTrash(env);
+    expect(deleted, 'D1 删成功即业务成功，R2 失败不得改判').toBe(1);
+    expect(await db.getByTypeAndHash(ProfileType.File, 'T1'), '行确实已删').toBeNull();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('deferred R2 cleanup')), '打了可观测日志').toBe(true);
+    // 数据仍在（残留孤儿）⇒ 由清理任务的孤儿阶段回收
+    expect(bucket.objects.has('history/File_T1/T1.bin'), '字节留给孤儿阶段').toBe(true);
+  });
+
+  it('clearAllHistory：R2 删除抛错时仍返回删除条数（顺序仍是先 D1 后 R2）', async () => {
+    const { db, bucket, env } = fixture();
+    await db.insert(rec('A'));
+    await new RealR2Storage(bucket as unknown as R2Bucket).putHistory(
+      ProfileType.File,
+      'A',
+      'A.bin',
+      new Uint8Array([1]),
+    );
+    bucket.failDelete = true;
+
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deleted = await clearAllHistory(env);
+    expect(deleted).toBe(1);
+    expect(await db.getByTypeAndHash(ProfileType.File, 'A')).toBeNull();
+  });
+
+  it('阳性对照：R2 正常时目录确实被清（证明上两条的"残留"是注入故障造成的）', async () => {
+    const { db, bucket, env } = fixture();
+    await db.insert(rec('B', { isDeleted: true }));
+    await new RealR2Storage(bucket as unknown as R2Bucket).putHistory(
+      ProfileType.File,
+      'B',
+      'B.bin',
+      new Uint8Array([1]),
+    );
+    expect(await purgeTrash(env)).toBe(1);
+    expect(bucket.objects.has('history/File_B/B.bin'), '无故障时字节应被清掉').toBe(false);
   });
 });
 

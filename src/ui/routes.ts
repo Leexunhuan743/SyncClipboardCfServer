@@ -15,6 +15,7 @@ import { issueSession, clearSession } from './session';
 import { uiAuthMiddleware, authenticateUi } from './guard';
 import { parseProfileType, parseHistoryRecordUpdateDto, historySizeMB } from '../serialization';
 import { applyHistoryUpdate, clearAllHistory, purgeTrash } from '../historyOps';
+import { workingDirPrefix } from '../storage';
 import { broadcastMany } from '../hub';
 import { entityToDtoWire } from '../serialization';
 import { addRecordDto } from '../profile';
@@ -725,8 +726,16 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
       }
       // 行删掉了 ⇒ 顺手把它的数据目录清掉。**2026-09-22（ADR D29）起必需**：真回收站保留数据，
       // 不扫就等于把字节留给孤儿阶段（最长 20 分钟），而"彻底删除"的语义就是立刻没了。
-      // 成本：每条 +1 次 R2 列举（目录不存在/为空时只有这一次），仍是本端点最便宜的那一段。
-      await storage.deleteHistoryWorkingDir(ids.type!, ids.hash);
+      // **但 R2 清理失败不得把已生效的删除变成失败**：D1 删成功 = 业务成功，目录失败只留日志，
+      // 由孤儿阶段兜底。成本：每条 +1 次 R2 列举（目录不存在/为空时只有这一次）。
+      try {
+        await storage.deleteHistoryWorkingDir(ids.type!, ids.hash);
+      } catch (err) {
+        console.warn('[cleanup] deferred R2 cleanup', {
+          dir: workingDirPrefix(ids.type!, ids.hash),
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return null;
     });
     let purged = 0;
