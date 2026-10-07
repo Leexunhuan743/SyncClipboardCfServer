@@ -13,6 +13,9 @@
 // G6：SearchText 超过 D1 的 LIKE 模式字节上限时查询报错，表现为未处理的 500。
 //     修复：在协议与 UI 两个入口按**字节**校验（48 字节上限），超长回 400。
 //
+// G8：会话载荷的 `u` 只检查"是字符串"，没有比对当前 `env.USERNAME` ⇒ 改用户名后旧 Cookie 仍有效。
+//     修复：验签通过后追加 `payload.u !== env.USERNAME` 即拒。
+//
 // （G5 是 Group zip 条目名的校验，用例在 test/hash.test.ts 的 parseGroupZip 一组里。）
 import { describe, expect, it } from 'vitest';
 import { MAX_SEARCH_BYTES, normalizeSearchText } from '../src/serialization';
@@ -78,6 +81,32 @@ describe('G1 · 改口令后旧会话立即失效（派生密钥按口令值缓�
       exp: Date.now() + 60_000,
     });
     expect(await readSession(env, cookieRequest(newToken)), '阳性对照：新口令签发的令牌应被接受')
+      .not.toBeNull();
+  });
+});
+
+// G8：会话身份必须绑定**当前** `env.USERNAME`。签名只证明"载荷由当前 PASSWORD 派生的密钥签发过"，
+// 不证明 `u` 就是 `env.USERNAME` —— 少了那一句，改用户名后旧 Cookie 仍然有效（改密码已经会失效，
+// 两者应是同一性质）。判据是「同一 PASSWORD 下改用户名，旧令牌立刻失效」。
+describe('G8 · 改用户名后旧会话立即失效', () => {
+  it('用户名不变 → 有效；改了 USERNAME → 旧令牌失效；新用户名签发的令牌有效', async () => {
+    const env = { USERNAME: 'syncuser', PASSWORD: 'correct-horse-battery-staple' } as Bindings;
+    const oldToken = await forgeSessionCookie(env.PASSWORD, {
+      u: 'syncuser',
+      exp: Date.now() + 60_000,
+    });
+    expect(await readSession(env, cookieRequest(oldToken)), '改用户名前应被接受（否则本用例没有判别力）')
+      .not.toBeNull();
+
+    // 只改用户名、口令不变：旧令牌的 `u` 与新 USERNAME 不符 ⇒ 必须被拒
+    env.USERNAME = 'renamed-user';
+    expect(await readSession(env, cookieRequest(oldToken)), '改用户名后旧令牌必须立刻失效').toBeNull();
+
+    const newToken = await forgeSessionCookie(env.PASSWORD, {
+      u: 'renamed-user',
+      exp: Date.now() + 60_000,
+    });
+    expect(await readSession(env, cookieRequest(newToken)), '阳性对照：新用户名签发的令牌应被接受')
       .not.toBeNull();
   });
 });

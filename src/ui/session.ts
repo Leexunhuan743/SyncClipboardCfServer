@@ -1,23 +1,17 @@
 // UI 会话：无状态签名 Cookie（HMAC-SHA256）。
 //
-// 为什么不用服务端会话表：Workers 没有可依赖的进程内状态（实例随时回收、请求可能落到任意实例），
-// 而 D1 存会话表会让每次页面请求多一次写库。签名 Cookie 的语义等价于 clipserver 的登录会话，
-// 但零存储、天然可水平扩展；密钥由 PASSWORD 派生，因此**改密码即让全部已签发会话失效**。
+// 当前事实：
+//   - 密钥由 `PASSWORD` 经 HKDF-SHA256（盐 `HKDF_SALT`、用途 `HKDF_INFO`）派生，**按口令值缓存**
+//     （改口令即让全部已签发会话失效，缓存键用口令值而非 env 对象，避免 stale 窗口）；
+//   - 载荷 `{u, exp}`，`exp` 由服务端强制（24h，与 clipserver 的 `SESSION_EXPIRE_HOURS` 一致）；
+//   - 校验顺序是"先验签、再解析载荷"，且**绑定 `u === env.USERNAME`** —— 改口令或改用户名都让旧会话失效；
+//   - 不建服务端会话表：Workers 没有可依赖的进程内状态，签名 Cookie 零存储且可水平扩展。
 //
-// **复用了什么、刻意不复用什么**（2026-09-21 的取舍，读数与依据见 Git history）：
-//   ✅ `hono/utils/cookie` 的 `parse` / `serialize`：Cookie 的**属性拼装与解析**（此前手写 20 行）。
-//      选它而不是 `hono/cookie` 的 `getCookie`/`setCookie`，是因为那两个要 `Context`，
-//      而本模块的入口是 `Request`（`readSession(env, request)`）—— 没必要为此把 Context 穿到调用方。
-//   ✅ `hono/utils/encode` 的 `encodeBase64Url` / `decodeBase64Url`：base64url 编解码（此前手写 25 行）。
-//   ❌ **不用 `hono/jwt`**：它引入 `alg` 这个**可协商字段**（本模块没有该字段），且它的 `verify` 是
-//      "先 decode 载荷、再验签"，与本模块刻意的"验签通过才解析载荷"顺序相反。`exp` 与 HKDF 这两件
-//      要紧事在两条路线里都得自己做 ⇒ 换它只省约 40 行，换来两个额外的面（判断理由见 §106）。
-//   ❌ **不用 `hono/cookie` 的签名 Cookie**：它把 **secret 原样**当 HMAC 密钥（`utils/cookie.js` 的
-//      `getCryptoKey` 直接 utf8 编码），按文档传 `PASSWORD` 就等于用人口令当 HMAC 密钥 —— 违反
-//      RFC 7518 §3.2 对 HS256 的密钥长度要求，也失去与 Basic 口令的密钥分离；且它没有载荷，
-//      过期只能靠 `maxAge` 这个**浏览器属性**，而这里的 `exp` 在签名内、由服务端强制。
-import { parse as parseCookieHeader, serialize as serializeCookie } from 'hono/utils/cookie';
+// Cookie 属性与 base64url 编解码分别复用 `hono/utils/cookie` 与 `hono/utils/encode`；
+// 不使用 `hono/jwt`（它引入可协商的 `alg` 且"先 decode 再验签"）与 `hono/cookie` 的签名 Cookie
+// （把 secret 原样当 HMAC 密钥，且没有服务端强制的过期）。
 import type { CookieOptions } from 'hono/utils/cookie';
+import { parse as parseCookieHeader, serialize as serializeCookie } from 'hono/utils/cookie';
 import { decodeBase64Url, encodeBase64Url } from 'hono/utils/encode';
 import { Bindings } from '../env';
 import { isAuthConfigured } from '../auth';
@@ -197,5 +191,9 @@ export async function readSession(env: Bindings, request: Request): Promise<UiSe
   }
   if (typeof payload?.u !== 'string' || typeof payload?.exp !== 'number') return null;
   if (payload.exp <= Date.now()) return null;
+  // 会话身份必须就是**当前**用户名：签名只证明"这份载荷由当前 PASSWORD 派生密钥签发过"，
+  // 不证明 `u` 就是 `env.USERNAME`。少了这一句，任何用当前 PASSWORD 签出、但 `u` 为其它值的
+  // 令牌都会被接受（改用户名后旧 Cookie 仍然有效）。与"改密码即失效"同一性质：改用户名也失效。
+  if (payload.u !== env.USERNAME) return null;
   return { username: payload.u };
 }
