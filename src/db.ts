@@ -115,7 +115,7 @@ const UPDATE_ALL_SQL = `UPDATE HistoryRecords SET
   UserId=?1, Type=?2, Text=?3, Size=?4, TransferDataFile=?5, TransferDataHash=?6, FilePaths=?7, Hash=?8,
   CreateTime=?9, LastAccessed=?10, LastModified=?11, Stared=?12, Pinned=?13, Version=?14, IsDeleted=?15`;
 
-// 仅识别 (UserId,Type,Hash) 唯一约束冲突，避免把其它 INSERT 失败误判成「并发冲突」后静默吞掉（F5 回归）。
+// 仅识别 (UserId,Type,Hash) 唯一约束冲突，避免把其它 INSERT 失败误判成「并发冲突」后静默吞掉。
 // D1 会把底层 SQLite 错误包一层（message 形如 "D1_ERROR: UNIQUE constraint failed: ..."），
 // 细节也可能挂在 cause 上，故沿 cause 链取若干层文本再判定。
 function isUniqueConstraintError(err: unknown): boolean {

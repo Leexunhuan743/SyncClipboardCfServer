@@ -17,7 +17,7 @@ export interface MultipartResult {
   data: MultipartPart | null;
   // data 部分是否「存在」——含 0 字节的 data 部分。
   // 上游按 part 是否存在决定是否保存数据流（空流仍传），因此 `data===null` 不等于「没有 data 部分」；
-  // 两者的区别决定 Text 记录是走「接受数据」还是「无数据」分支（F14）。
+  // 两者的区别决定 Text 记录是走「接受数据」还是「无数据」分支。
   dataPresent: boolean;
 }
 

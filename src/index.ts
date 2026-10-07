@@ -19,8 +19,8 @@ import { maxRequestBodyBytes, isLoopbackHost, readBodyCapped } from './requestLi
 import { normalizeProtocolPath } from './pathCase';
 import { isUiEnabled, uiDisabledResponse } from './uiEnabled';
 
-// F8：明文跳转/HSTS 只对「浏览器可访问的 host」生效；loopback 一律不跳转、不加 HSTS，
-// 否则本地开发（wrangler dev 走明文）会被强行升级到不存在的 https。判定与 F7 的限速豁免共用。
+// 明文跳转/HSTS 只对「浏览器可访问的 host」生效；loopback 一律不跳转、不加 HSTS，
+// 否则本地开发（wrangler dev 走明文）会被强行升级到不存在的 https。判定与限速豁免共用同一套 loopback 判定。
 
 // Host 头 / Origin 的 host 可能带默认端口（https://a.example:443），比较前先归一
 function stripDefaultPort(host: string, proto: string): string {

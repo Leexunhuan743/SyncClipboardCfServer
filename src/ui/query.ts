@@ -158,7 +158,7 @@ export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
   }
 
   const searchText = (params.get('search') ?? '').trim();
-  // 搜索串的长度上限由 normalizeSearchText 判定（G6，48 字节）：它抛的是 InvalidQueryValueError，
+  // 搜索串的长度上限由 normalizeSearchText 判定（48 字节）：它抛的是 InvalidQueryValueError，
   // 必须在这里翻译成 UiQueryError —— 否则会刺穿上层路由的 `instanceof UiQueryError` 映射，
   // 变成未处理的 500（实测：49 字节的搜索词）。协议侧对同一个错误映射为 400，两边语义必须一致。
   let search: string | null;
@@ -253,7 +253,7 @@ export const UI_LIST_TEXT_LIMIT = 500;
 // SQL 侧的两处都是**码点**口径（`length(Text)` 与 `substr(Text, 1, 501)`），若 JS 侧按码元切，
 // 两者在含星平面字符（emoji 等，1 码点 = 2 码元）的正文上会分叉 —— 400 个 emoji 会被切到
 // 500 码元（= 250 个 emoji）却因 `length(Text)=400 ≤ 500` 报 `textTruncated=false` ⇒ 前端据此
-// 认定正文完整、跳过取全文 ⇒ 复制/预览/下载拿到**半截内容**（审计 R2#8，2026-10-04 修）。
+// 认定正文完整、跳过取全文 ⇒ 复制/预览/下载拿到**半截内容**。
 // 判据与切分量同一个单位，就不会再出现「切了却说不算切」。
 //
 // 代价：`codePointCount` 需要扫一遍字符串。可接受 —— SQL 侧已把正文限到 501 码点，
@@ -325,7 +325,7 @@ function toItem(row: DbRow & { TextFullLength?: number }): UiHistoryListItem {
     // 截断发生在 SQL 层（`substr(Text,1,501)`，**码点**口径），这里按完整长度列判定「原文是否超限」，
     // 不能用截断后的正文长度（那会把超长正文误判成没截断）。
     // `TextFullLength` 来自 SQL 的 `length(Text)`（码点），与 `codePointCount` 同口径 ——
-    // 两侧必须是**同一个单位**，否则含 emoji 的正文会出现「切了却报 false」（审计 R2#8）。
+    // 两侧必须是**同一个单位**，否则含 emoji 的正文会出现「切了却报 false」。
     textTruncated: (row.TextFullLength ?? codePointCount(item.text)) > UI_LIST_TEXT_LIMIT,
   };
 }
@@ -372,10 +372,8 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
 
 // 按类型计数（活跃 / 回收站两套视图，一次取回）+ 收藏计数（两个视图各一个）。
 // 为什么一次取两套：`byType` 要随**当前视图**走（回收站里显示活跃数会让列表头与控制条互相矛盾），
-// 而统计条「存储占用」的明细恒用活跃口径——两个消费方各要一套，旧实现为此打两条 `COUNT(*) GROUP BY`
-// 再加一条把全部行拉回 JS 的统计（后端能力评估 §3.1）。一条 `GROUP BY Type, IsDeleted, Stared` 就够。
-// （2026-09-25 曾把协议统计的四个计数也从这份结果集里算，2026-09-27 按 ADR D43 撤回：
-//   统计改由 `db.statistics()` 的一条聚合给出 —— 同一语义只留一份实现。）
+// 而统计条「存储占用」的明细恒用活跃口径——两个消费方各要一套，故这里的聚合要能同时供两者。
+// 一条 `GROUP BY Type, IsDeleted, Stared` 就够。
 // （`Stared` 进分组是为了顺带算出统计条「已收藏」那一格要的两个数：协议侧的 `starredCount`
 //   是**全库**口径（含已删除），而卡片与「收藏」筛选同屏，必须与它同源。）
 export async function countByTypeViews(db: D1Database): Promise<UiViewCounts> {
@@ -431,7 +429,7 @@ export async function readChangeMarker(db: D1Database): Promise<UiChangeMarker> 
  * 为什么单开一个而不是复用 `readChangeMarker`：`/ui/api/overview` 的行数**已经**从它自己那条
  * `GROUP BY`（`countByTypeViews`）里算出来了（`Σc` = `COUNT(*)`），再打一条带 `COUNT(*)` 的聚合
  * 就是白扫一遍全表。单列查询走 `idx_h_user_modify`（`schema.sql`：(UserId, LastModified)），
- * 不需要回表 —— 这正是审计 P1-3 建议的口径。
+ * 不需要回表。
  * `/ui/api/poll` 仍用 `readChangeMarker`：它每 10 s 被调一次，两个值必须**一条语句**取回。
  */
 export async function readLastModified(db: D1Database): Promise<number> {
@@ -442,7 +440,7 @@ export async function readLastModified(db: D1Database): Promise<number> {
   return res?.m ?? 0;
 }
 
-// ===== 活动趋势（docs/ui-v2-design.md §6.2 的 N2）=====
+// ===== 活动趋势 =====
 
 export interface ActivityDay {
   /** `YYYY-MM-DD`，按**调用方给的时区**切分 */
@@ -474,8 +472,7 @@ const TYPE_BUCKET: Record<number, 'Text' | 'Image' | 'File' | 'Group' | undefine
  * 做法：先把每个时间戳按 `-tz` 分钟**平移**，再按平移后的 UTC 日期分组。
  * `tz` 的符号与 `Date.prototype.getTimezoneOffset()` 一致（UTC+8 ⇒ `-480`）。
  *
- * **成本**：1 条聚合查询（`GROUP BY`，不是把行拉进 JS 循环 —— 后者是
- * GitHub issue #3 记的效率欠账，而统计在每次页面加载都会跑）。
+ * **成本**：1 条聚合查询（`GROUP BY`，不是把行拉进 JS 循环，而统计在每次页面加载都会跑）。
  * 代价是 `CreateTime` 上的索引用不上（表达式不是索引列），但候选集先被
  * `CreateTime >= ?` 的范围条件筛过，实际扫描量只与**窗口内的记录数**成正比，与库总量无关。
  *
@@ -540,7 +537,7 @@ export async function readActivity(
   return { days: out, max: Math.max(0, ...out.map((d) => d.total)) };
 }
 
-// ===== 批量取元数据（docs/ui-v2-design.md §6.2 的 N3）=====
+// ===== 批量取元数据 =====
 
 export interface BatchMetaItem {
   type: ProfileType;
@@ -551,8 +548,7 @@ export const BATCH_META_MAX_ITEMS = 100;
 
 /**
  * 按 `(type, hash)` 批量取记录。用于「选中多条 → 一起复制/下载」这类需要**完整正文**的场景：
- * 列表里的正文被截断到 500 字符（`UI_LIST_TEXT_LIMIT`），而逐条走单条端点是 O(N) 次请求
- * （GitHub issue #3 记的口径）。
+ * 列表里的正文被截断到 500 字符（`UI_LIST_TEXT_LIMIT`），而逐条走单条端点是 O(N) 次请求。
  *
  * 实现是 `IN` 查询而不是 N 条：每次 D1 往返都计入平台的子请求配额，100 条逐条查就是 100 次
  * —— 那正是这个端点存在的理由。**但要分片**（见下）。

@@ -54,11 +54,11 @@ const DELETED_RETENTION_DAYS = 30;
 // 单轮单阶段的**行字节预算**（估算，非精确计量）。为什么需要它：SUBREQUEST_BUDGET 只约束
 // **子请求数**，而平台的另一道约束是 CPU —— Free 的 Cron 与 HTTP 一样只有 **10 ms**
 // （Workers limits 的 `#cpu-time` / `#cron-triggers`）。这 10 ms 是**平均**预算：平台另有
-// **rollover CPU time**（偶发越界不报错，官方出处见文件头 P0-3 段），只有**持续**超限时平台才
+// **rollover CPU time**（偶发越界不报错，见文件头的 CPU 预算段），只有**持续**超限时平台才
 // **直接终止**整个调用：
 // 本文件的顶层 catch 与 `src/index.ts` 的 `ctx.waitUntil(...).catch` 都不执行 ⇒ 没有
 // `[cleanup] run …` 汇总行、游标与 lastError 不落库、UI 的清理可观测面停在旧值上
-// **看起来一切正常**（F11 的原始形态）。故除轮首心跳外，单轮工作量也必须按 CPU 收敛。
+// **看起来一切正常**。故除轮首心跳外，单轮工作量也必须按 CPU 收敛。
 //
 // **为什么是「行字节」而不是「条数」**：这一轮的 CPU 支配项是**字节数**，不是条数。
 // 软删阶段的 `UPDATE … RETURNING *`（db.ts 的 softDeleteOldest）把**整行**（含 Text）作为 JSON
@@ -353,7 +353,7 @@ function parseNonNegativeInt(raw: string | undefined, fallback: number): number 
   return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
 }
 
-// 记一次失败：进返回值（⇒ cleanup:lastError）+ 结构化日志。F11 的原始形态就是"没有任何 [cleanup] 行"。
+// 记一次失败：进返回值（⇒ cleanup:lastError）+ 结构化日志。没有 [cleanup] 行正是"静默失败"的形态。
 // 消息压成单行且不带堆栈：它会写进 Meta（UI 展示）与日志行，多行/堆栈会把结构化日志打散。
 function recordFailure(failures: string[], stage: CleanupStage, err: unknown): void {
   const raw = err instanceof Error ? err.message : String(err);
@@ -641,7 +641,7 @@ function cleanHardDeleted(run: CleanupRun, cutoffMs: number): Promise<PhaseOutco
 // 4) 孤儿对象清理：history/ 下存在对象、但 DB 无活记录引用的目录。
 // 比较双方**必须同为带尾斜杠的目录名**（映射的键从 R2 key 截取得 `Text_ABC/`，
 // `db.listReferencedWorkingDirs` 也返回带斜杠形式）。形式不一致会让 `active.has(dir)` 恒为 false，
-// 从而把**所有**历史数据目录当成孤儿删除 —— 曾因此每小时清空一次 history/（见 F33）。
+// 从而把**所有**历史数据目录当成孤儿删除 —— 曾因此每小时清空一次 history/。
 //
 // 与旧实现的差别只在成本（语义不变）：复用 `sweepWorkingDirs` 的分块清扫（按实际页数记账，
 // 1000 个一批删）；删不下的（预算耗尽）本轮收工，下一轮重新求差集继续 —— 不另立游标。
@@ -742,12 +742,12 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       nowMs: Date.now(),
       sweep: null,
     };
-    // 轮首心跳（P0-3）：**一进入就先写一次** `cleanup:lastRunAt`，与轮尾那次**共存**，两者语义不同：
+    // 轮首心跳：**一进入就先写一次** `cleanup:lastRunAt`，与轮尾那次**共存**，两者语义不同：
     //   · 这次 = 「本轮**尝试**开始」。**持续** CPU 超限时平台直接终止调用（Free 的 Cron 是 10 ms
-    //     的**平均**预算；偶发越界由平台的 rollover CPU time 吸收，见文件头 P0-3 段），
+    //     的**平均**预算；偶发越界由平台的 rollover CPU time 吸收，见文件头的 CPU 预算段），
     //     顶层 catch 与轮尾落库都不会执行；若只有轮尾那次写，UI 的清理可观测面会**停在旧值上**
-    //     而看起来一切正常 —— 那正是 F11 的原始形态。有了它，哪怕本轮被终止，lastRunAt 也已经
-    //     推进到本轮的起点，「清理到底还在不在跑」在任何时刻都可回答（§9 的「一轮跑不完、
+    //     而看起来一切正常。有了它，哪怕本轮被终止，lastRunAt 也已经
+    //     推进到本轮的起点，「清理到底还在不在跑」在任何时刻都可回答（「一轮跑不完、
     //     下轮续跑」是设计行为，这里只是把它变得**可见**）。
     //   · 轮尾那次 = 「本轮**完成**」，写的是**另一个键** `cleanup:lastCompletedAt`（值同为本轮起点
     //     startedAt）：界面的判据是「完成戳是否 ≥ 本轮起点」，所以「只有起点、没有完成戳」= 上一轮
@@ -761,7 +761,7 @@ export async function runCleanup(env: Bindings): Promise<CleanupResult> {
       recordFailure(run.failures, 'meta', err);
     }
 
-    // 保留策略：Meta 覆盖优先、env 回落（§2.5 在线可调）。读失败按「未配置」处理并记一条失败 ——
+    // 保留策略：Meta 覆盖优先、env 回落。读失败按「未配置」处理并记一条失败 ——
     // 与读游标同一条纪律：诊断面出问题不能把清理整体拖停（此时回落 env/内置默认，等价于改动前的行为）。
     // settings 整份留在外层：除了算生效值，它的**来源**字段还要写进每个阶段的 `reason=`（见 disabledReason）
     let settings: RetentionSettings;

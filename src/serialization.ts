@@ -310,7 +310,7 @@ export function parseProfileDto(json: string): ProfileDto {
   }
   // size 对齐上游 `ProfileDto.Size`（`long?`）的模型绑定：非空值必须是**整数**（且 JS 能精确
   // 表示 ⇒ Number.isSafeInteger），否则绑定失败 → 400。此前只判 `typeof === 'number'`：
-  // `1.5` / `1e400`（Infinity）都会被当成合法体积写进记录（F6）。符号不限（上游 long 可为负）。
+  // `1.5` / `1e400`（Infinity）都会被当成合法体积写进记录。符号不限（上游 long 可为负）。
   if (size !== undefined && size !== null) {
     if (typeof size !== 'number' || !Number.isSafeInteger(size)) {
       throw new Error(`size must be a long: ${String(size)}`);

@@ -99,7 +99,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
     }
     // 上游 GetSyncProfile 无文件时返回 new TextProfile(string.Empty).ToProfileDto：
     //   Hash = GetHash() = SHA256("")，Text = ""，HasData = false，DataName = null（整键省略），
-    //   Size = GetSize() = 0（Size 为 long?，仅 WhenWritingNull 才省略 → wire 必含 "size":0）（F11）
+    //   Size = GetSize() = 0（Size 为 long?，仅 WhenWritingNull 才省略 → wire 必含 "size":0）
     const empty: ProfileDto = {
       type: ProfileType.Text,
       hash: await textProfileHash(''),
@@ -118,7 +118,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
     const { db, storage } = stores(c);
     let dto: ProfileDto;
     try {
-      // 整包读也要过体量上限：F9 预检只信 content-length，chunked 请求会绕过它
+      // 整包读也要过体量上限：content-length 预检对 chunked 请求无效。
       const text = await readBodyTextCapped(c.req.raw, maxRequestBodyBytes(c.env));
       if (text === null) return c.text('Payload Too Large', 413);
       dto = parseProfileDto(text);
