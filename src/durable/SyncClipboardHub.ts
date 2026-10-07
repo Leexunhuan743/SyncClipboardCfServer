@@ -640,8 +640,8 @@ export class SyncClipboardHub {
     // "Worker 认为没封锁、DO 认为封锁"的分裂判定（两边都用 src/rateLimit.ts 的同一函数）。
     const limitConfig = authRateLimitConfig(this.env);
     if (op === 'report') {
-      // 全局 burst 按**失败请求**计一次（不按维度键重复计）：一次失败通常有 ip + user 两个键，
-      // 若在循环里 countBurst 就会被计两次，让 AUTH_RATE_LIMIT_BURST_WARN 的语义随维度数漂移。
+      // 全局 burst 按**一次失败报告**计一次（与报告里携带多少 key 无关）：若在 key 循环里
+      // countBurst，同一请求会被计多次，让 AUTH_RATE_LIMIT_BURST_WARN 的语义随 key 数漂移。
       this.countBurst(now, limitConfig.windowMs);
       for (const key of keys) {
         this.authLimits.set(key, applyAuthFailure(this.authLimits.get(key), now, limitConfig));

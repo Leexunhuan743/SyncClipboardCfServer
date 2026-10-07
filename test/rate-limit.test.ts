@@ -9,7 +9,7 @@
 // 并另有一组针对**真实 DO 类**（new SyncClipboardHub(...)）的端点/队列断言，避免 stub 自说自话。
 //
 // 限速缓存是 isolate 级（模块级 Map）且本文件所有用例共享同一份模块实例，因此**每个用例用一套
-// 独立的身份（用户名 + IP）**；否则上一个用例攒下的失败会把下一个用例的第一个请求打成 429。
+// 独立的身份（IP 唯一）**；否则上一个用例攒下的失败会把下一个用例的第一个请求打成 429。
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { Bindings } from '../src/env';
 import {
@@ -62,7 +62,7 @@ interface TestIdentity {
   ip: string;
 }
 
-// 每个用例一套独立身份：用户名维度与 IP 维度都必须唯一（见文件头的说明）
+// 每个用例一套独立 IP：限速缓存是模块级共享的（见文件头的说明）
 function createIdentity(): TestIdentity {
   const n = seq.value++;
   return { user: `syncuser-${n}`, pass: `correct-horse-battery-${n}`, ip: `198.51.100.${n}` };
@@ -932,8 +932,8 @@ describe('F9 长轮询队列封顶（真实 DO 类）', () => {
     expect(cleared.blocks).toEqual({});
   });
 
-  // burst 按**失败请求**计一次，不按维度键重复计：一次失败通常有 ip + user 两个键，
-  // 若在 key 循环里 countBurst，同一请求会被计两次，让 AUTH_RATE_LIMIT_BURST_WARN 的语义随维度数漂移。
+  // burst 按**一次失败报告**计一次，与报告里携带多少 key 无关（内部接口仍接受 keys[]，
+  // 这条测试防止将来有人把 countBurst 又塞回 key 循环）。
   it('report 的全局 burst 按请求计一次（多键不重复计）', async () => {
     const { env } = createEnv();
     const hub = new SyncClipboardHub(createDoState(), env);
