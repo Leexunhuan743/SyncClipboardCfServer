@@ -1,4 +1,4 @@
-// D1 访问层（docs/design.md §5.1，行为对照上游 HistoryService / HistoryHelper）
+// D1 访问层（行为对照上游 HistoryService / HistoryHelper）
 import {
   HARD_CODED_USER_ID,
   PAGE_SIZE,
@@ -18,14 +18,13 @@ import { formatWorkingDirName } from './storage';
 
 // 取路径末段。**协议面所有"从 dto 里取文件名"的地方都必须走它**：
 // 上游 `Path.GetFileName(dataName)` 在 PUT 与 PATCH 两条路径上都这么做，两处若各写一份，
-// 迟早对"含 `/` 的 dataName"给出不同解释（此前 src/profile.ts 就有一份逐字复制品 basenameOf，O1）。
+// 迟早对"含 `/` 的 dataName"给出不同解释。
 export function basename(p: string): string {
   const idx = p.lastIndexOf('/');
   return idx < 0 ? p : p.slice(idx + 1);
 }
 
-// 400 语义的**唯一**错误类型。此前 src/profile.ts 另有一份同名类，逼得两个路由要写
-// `BadRequestError as DbBadRequestError` 再分别 catch 两次（O1）。合并后两边 `instanceof` 同源。
+// 400 语义的**唯一**错误类型；两个路由据此 catch。
 export class BadRequestError extends Error {
   constructor(message: string) {
     super(message);
@@ -55,13 +54,10 @@ export interface DbRow {
 }
 
 export function rowToEntity(r: DbRow): HistoryRecordEntity {
-  // FilePaths 的**常见形态是 `'[]'`**（**内联 Text**（无数据文件）的记录就是它；带数据的 Text/File/Image 写 `[dataName]`、Group 写顶层条目，见 `src/profile.ts`），而列表一次
+  // FilePaths 的**常见形态是 `'[]'`**（**内联 Text**（无数据文件）的记录就是它；带数据的 Text/File/Image 写 `[dataName]`、Group 写顶层条目），而列表一次
   // 要映射 500 行 —— 逐行 JSON.parse 里绝大多数是在解析这两个字节。短路与解析**逐位等价**：
   // `JSON.parse('[]')` 得到空数组（length 0），`JSON.parse('')` 抛错后同样回落到空数组（下面的 catch）；
-  // 其余取值一律走原解析路径。于是所有调用方（协议分页、同名候选、批量元数据、UI 列表）拿到的
-  // 实体逐字段不变 —— 包括 `entityToDto` 那个 `filePaths.length > 0 || transferDataFile !== ''`
-  // 的 `hasData` 判据（短路只是把"解析出来的空数组"直接给出来）。
-  // 畸形 JSON（带外写入）仍按"解析失败 ⇒ 空数组"处理，与改动前一致。
+  // 其余取值一律走原解析路径。畸形 JSON（带外写入）仍按"解析失败 ⇒ 空数组"处理。
   let filePaths: string[] = [];
   if (r.FilePaths !== '[]' && r.FilePaths !== '') {
     try {
@@ -164,10 +160,8 @@ export class HistoryDb {
   constructor(private db: D1Database) {}
 
   // Type + Hash 查询。**大小写不敏感**（对齐上游 EF.Functions.Like 对 ASCII 的大小写行为），
-  // 但**只对齐这一半**：上游 `HistoryService.cs:255` 把 hash 当 LIKE 的**模式**，`%` 与 `_` 在那里是
-  // 通配符（`GET /api/history/Text-<前 8 位>%` 会在上游命中该记录，本实现返回 404）。这里用等值比较，
-  // 既更严格、也能走 ux_h_user_type_hash 的索引。完整对照与 A/B 实测见 docs/protocol.md §10
-  // 「hash 的匹配方式」，处置决定见 docs/upstream-defects.md 的 D1。
+  // 但**只对齐这一半**：上游把 hash 当 LIKE 的**模式**，`%` 与 `_` 在那里是通配符（`GET /api/history/Text-<前 8 位>%`
+  // 会在上游命中该记录，本实现返回 404）。这里用等值比较，既更严格、也能走 ux_h_user_type_hash 的索引。
   async getByTypeAndHash(type: ProfileType, hash: string): Promise<HistoryRecordEntity | null> {
     const res = await this.db
       .prepare(
@@ -180,12 +174,12 @@ export class HistoryDb {
 
   // 插入新记录，返回带 ID 的实体。
   // 若因 (UserId,Type,Hash) 唯一约束（schema.sql: ux_h_user_type_hash）失败，说明在
-  // 「查无 → 插入」之间被并发写入抢先建了同 hash 行（F5）。此时不裸覆盖，而是复刻上游
+  // 「查无 → 插入」之间被并发写入抢先建了同 hash 行。此时不裸覆盖，而是复刻上游
   // HistoryService.AddRecordDto.UpdateExistingRecordDto 的判定：
   //   - 仅当 existing.IsDeleted，或 ShouldUpdate(existing.Version, incoming.Version, …) 为真才合并；
   //   - 合并时 Version = Math.Max(incoming.Version, existing.Version + 1)，绝不倒退；
-  //   - 内容字段（Text/Size/TransferDataFile/FilePaths/Hash）沿用既有行，只拷元数据
-  //     （上游 UpdateEntityFields 语义）；incoming 更旧时直接 no-op 返回既有行。
+  //   - 内容字段（Text/Size/TransferDataFile/FilePaths/Hash）沿用既有行，只拷元数据（上游 UpdateEntityFields 语义）；
+  //     incoming 更旧时直接 no-op 返回既有行。
   // 其它原因的 INSERT 失败（瞬时故障 / NOT NULL / datatype 等）必须原样抛出——否则真实错误被
   // 静默吞掉、并被误当作冲突去覆盖既有行。调用方可传 onConflict 覆盖默认合并策略
   // （PUT /SyncClipboard.json 的 AddProfile 已存在分支语义不同）。
@@ -231,7 +225,7 @@ export class HistoryDb {
       .run();
   }
 
-  // 条件更新：仅当 Version 仍等于读取时的值才写入（乐观并发控制，防止并发 PATCH 丢更新，F5）。
+  // 条件更新：仅当 Version 仍等于读取时的值才写入（乐观并发控制，防止并发 PATCH 丢更新）。
   // 返回 false 表示期间已被其它写入修改，调用方应按冲突处理。
   async updateEntityIfVersion(entity: HistoryRecordEntity, expectedVersion: number): Promise<boolean> {
     const res = await this.db
@@ -283,11 +277,9 @@ export class HistoryDb {
     }
     if (q.searchText) {
       // **有意不转义 LIKE 元字符**：`%` 与 `_` 在这里是通配符，即搜索 `100%` 等价于"匹配任意"。
-      // 这是**对齐上游**（`HistoryService.cs:153` 同样 `EF.Functions.Like(r.Text, $"%{searchText}%")`），
-      // 属协议面行为，不能单方面收紧——改了会让"上游能搜到、这里搜不到"。
-      // 对照实现：UI 面**转义**（src/ui/query.ts 的 `LIKE … ESCAPE '\'`），那是本站自己的面，
-      // 用户搜 `100%` 不该退化成匹配任意。这里保持上游 LIKE 通配语义；现行决策见 docs/design.md D45
-      // （它**不是**协议差异 —— 协议面这边就是照上游做的，故不在 protocol.md §10 里）。
+      // 这是**对齐上游**（上游同样 `EF.Functions.Like(r.Text, $"%{searchText}%")`），属协议面行为，
+      // 不能单方面收紧——改了会让"上游能搜到、这里搜不到"。对照实现：UI 面**转义**（src/ui/query.ts 的
+      // `LIKE … ESCAPE '\'`），那是本站自己的面，用户搜 `100%` 不该退化成匹配任意。
       // 上限另有约束：超长搜索串会让 D1 的 LIKE 直接报错，故入口按 48 字节校验
       // （src/serialization.ts 的 normalizeSearchText）。
       where.push(`Text LIKE ?${idx++}`);
@@ -298,11 +290,11 @@ export class HistoryDb {
       params.push(q.starred ? 1 : 0);
     }
 
-    // 防御性钳制：越界 Page 由**路由层**校验（`src/routes/history.ts` 把 page 限进 int32）并返回
-    // 400；这里只兜住 `page` 不是正安全整数的情形，避免以 REAL（如 5e21）绑定到 LIMIT/OFFSET 而
-    // 触发 SQLite 'datatype mismatch' → 500（F9）。offset 的安全性由上面那道 int32 上界保证 ——
-    // 只判 `page` 是不是安全整数**不够**：`(2^53-1 - 1) * 50` 已经越过安全整数范围，而 JS 在那里是
-    // **丢精度**（不报错、也不变成 Infinity）⇒ 不能指望"它会炸"来兜底（2026-09-20 措辞订正）。
+    // 防御性钳制：越界 Page 由**路由层**校验（`src/routes/history.ts` 把 page 限进 int32）并返回 400；
+    // 这里只兜住 `page` 不是正安全整数的情形，避免以 REAL（如 5e21）绑定到 LIMIT/OFFSET 而触发
+    // SQLite 'datatype mismatch' → 500。offset 的安全性由上面那道 int32 上界保证 —— 只判 `page`
+    // 是不是安全整数**不够**：`(2^53-1 - 1) * 50` 已经越过安全整数范围，而 JS 在那里是**丢精度**
+    // （不报错、也不变成 Infinity）⇒ 不能指望"它会炸"来兜底。
     const page = Number.isSafeInteger(q.page) && q.page > 0 ? q.page : 1;
     const offset = (page - 1) * PAGE_SIZE;
     const sql =
@@ -319,17 +311,14 @@ export class HistoryDb {
   // **文件不存在时会继续回退到更旧的同名记录**；存在性依赖存储层，故这里只返回候选，
   // 由调用方逐个探测（本实现存储的 TransferDataFile 即文件名，与上游 GetPersistentPath 结果一致）。
   //
-  // **候选数不设上限**（2026-09-27，ADR D43）：此前取 32 是为"每条候选一次 R2 get"的子请求数设界
-  // （Free 单次调用上限 1,000 次），代价是**同名记录超过 32 条且目标不在最近 32 条之内 ⇒ 数据在、
-  // 下载 404** —— 那是正确性回退，不是性能取舍。现在与上游一致：候选数由库内容决定
-  // （正常库里同名只有几条：同名文件被反复覆盖上传）。曾经的偏离登记已从 docs/protocol.md §10 删除。
+  // **候选数不设上限**：取 32 是为"每条候选一次 R2 get"的子请求数设界，代价是
+  // **同名记录超过 32 条且目标不在最近 32 条之内 ⇒ 数据在、下载 404** —— 那是正确性回退，
+  // 不是性能取舍。候选数由库内容决定（正常库里同名只有几条：同名文件被反复覆盖上传）。
   // 只取调用方要用的三列（`src/routes/webdav.ts` 用它们拼 R2 key 与记录身份）：无上限之后再 `SELECT *`
   // 会把每行的 Text 一起读进 isolate —— 大文本 × 大量同名 = 白占内存。
   //
   // ⚠️ **预筛必须与调用方那道 JS 精确过滤等价**，否则 LIMIT 会被伪候选吃满、把真候选挤出候选集
-  // （数据在、下载却 404 —— 那是正确性回退，不是性能取舍）。此前预筛只做「后缀相等」，比 JS 的
-  // `basename(x) === fileName` **更宽**：`x = 'foo-c.pdf'`、`fileName = 'c.pdf'` 时后缀匹配成立，
-  // 而 `basename` 是 `'foo-c.pdf'` ⇒ 它是一条伪候选。现在的判据与 JS 逐位等价：
+  // （数据在、下载却 404 —— 那是正确性回退，不是性能取舍）。判据与 JS 逐位等价：
   //   · `instr(?2, '/') = 0` —— `basename` 的结果里不可能有 `/`，故 `fileName` 含 `/` 时 JS 侧恒不命中
   //     （路由层 `invalidFileName` 已挡掉含 `/`、`\` 的名字，这条是给直接调用本函数的调用方兜底）；
   //   · 后缀相等 `substr(x, -length(?2)) = ?2`；
@@ -339,11 +328,9 @@ export class HistoryDb {
   // 以及带目录前缀的形态逐一成立；`=` 对 TEXT 是 BINARY、JS 的 `===` 也大小写敏感 ⇒ 两侧同判据。
   // 下面那道 JS 过滤**保留**：它是语义的权威表述，也是将来改预筛时的第二道防线。
   //
-  // ⚠️ 预筛**不能用 LIKE**（2026-09-20 修）：D1 的 LIKE 模式上限是 50 字节
-  // （见 serialization.ts 的 MAX_LIKE_PATTERN_BYTES），而文件名由客户端给 ——
-  // 「Invoice_2026-08_ACME-Corporation_final-signed-version-2.pdf」就 59 字节（`%/` + 名字 = 61 > 50）。名字 ≥49 字节时
-  // 这条查询**直接报错**，`GET /file/{name}` 恒 500（实测：48 字节 404、49 字节 500；
-  // CJK 20 字 = 60 字节同样 500），而「下载」正是客户端唯一的取数据路径。
+  // ⚠️ 预筛**不能用 LIKE**：D1 的 LIKE 模式上限是 50 字节（见 serialization.ts 的
+  // MAX_LIKE_PATTERN_BYTES），而文件名由客户端给 —— 名字 ≥49 字节时这条查询**直接报错**，
+  // `GET /file/{name}` 恒 500，而「下载」正是客户端唯一的取数据路径。
   // 改用 `substr(…, -length(?2))`：没有通配符、没有模式长度限制。它与 LIKE 的差异只剩大小写
   // （`=` 对 TEXT 是 BINARY，而 LIKE 对 ASCII 不区分大小写）—— 而这里本来就**要与 JS 的 `===` 同侧**，
   // 故 `=` 是正确的选择。候选集的**语义**由调用方的 `basename(...) === fileName` 定义
@@ -371,13 +358,12 @@ export class HistoryDb {
       .filter((e) => e.transferDataFile !== '' && basename(e.transferDataFile) === fileName);
   }
 
-  // 数据完整性自检（GitHub issue #3）的候选集：`TransferDataFile != ''` 的**活跃**记录，
+  // 数据完整性自检的候选集：`TransferDataFile != ''` 的**活跃**记录，
   // 一次查询取回期望 R2 key 的全部组成部分（Type/Hash/文件名 + 汇报用的 Text/CreateTime/Size）。
   // 两个刻意的取舍：
-  //   · 不走 SELECT * / rowToEntity —— 自检只用这 6 列，而记录数上千（本机总数 2000+ 条），
-  //     逐行解析 FilePaths 的收益为零、成本不为零。
-  //   · **排除软删记录** —— 软删路径会立即删除其数据目录（historyOps），它们的对象不存在是设计如此；
-  //     不排除会把回收站整批（本机 1155 条）算成「缺数据」，清单全是假阳性。
+  //   · 不走 `SELECT *`/`rowToEntity` —— 自检只用这 6 列，而记录数上千，逐行解析 FilePaths 的收益为零、成本不为零。
+  //   · **排除软删记录** —— 软删记录的数据目录属于回收站（见 historyOps），它们的对象不存在是设计如此；
+  //     不排除会把回收站整批算成「缺数据」，清单全是假阳性。
   async listActiveRecordsWithData(): Promise<DataRecordRow[]> {
     const res = await this.db
       .prepare(
@@ -398,20 +384,16 @@ export class HistoryDb {
   }
 
   // 清空回收站（删行）。**同时返回被删记录的 (Type, Hash)** —— 调用方（historyOps.purgeTrash）
-  // 要用它去清扫 R2 目录。
+  // 要用它去清扫 R2 目录：回收站里躺的是**真的数据**，不扫就是"把行抹掉、字节留在 R2 里等孤儿阶段"，
+  // 而用户点「清空回收站」的期待就是立刻腾空间。
   //
-  // 2026-09-22（ADR D29）之前这里只删行就够：软删时数据目录已经清掉了。改成真回收站之后，
-  // 回收站里躺的是**真的数据**，不扫就是"把行抹掉、字节留在 R2 里等孤儿阶段"（最长 20 分钟，
-  // 而且用户点「清空回收站」的期待就是立刻腾空间）。
-  //
-  // 形态与 `clearAll()` **同一条纪律（F5）**：单条 `DELETE ... RETURNING` 保证"读到的集合"与
-  // "被删的行"是**同一集合**。2026-09-22 审核：此处一度写成 SELECT + 独立 DELETE，而那个间隙
-  // 在这条路径上正好会**多删** —— 期间有设备把某条恢复成活跃（`IsDeleted = 0`）⇒ 它躲过了 DELETE
-  // （行还在），却仍在 SELECT 的名单里 ⇒ 调用方照单清扫 R2，把一条**活跃记录**的数据删掉
-  // （行在、字节没了，且不可恢复）。单语句没有这个间隙，顺带还省一次 D1 子请求。
-  //
-  // 只 RETURNING 两列而不是整行：原注释里"不 RETURNING 整批行"的顾虑是 FilePaths/Text 会进
-  // isolate 内存（本机回收站 1000+ 行），而 (Type, Hash) 两列加起来的体积可以忽略。
+  // 形态与 `clearAll()` **同一条纪律**：单条 `DELETE ... RETURNING` 保证"读到的集合"与
+  // "被删的行"是**同一集合**。若写成 SELECT + 独立 DELETE，那个间隙会**多删** ——
+  // 期间有设备把某条恢复成活跃（`IsDeleted = 0`）⇒ 它躲过了 DELETE（行还在），却仍在 SELECT 的名单里
+  // ⇒ 调用方照单清扫 R2，把一条**活跃记录**的数据删掉（行在、字节没了，且不可恢复）。
+  // 单语句没有这个间隙，顺带还省一次 D1 子请求。
+  // 只 RETURNING 两列而不是整行：FilePaths/Text 会进 isolate 内存（回收站可达 1000+ 行），
+  // 而 (Type, Hash) 两列加起来的体积可以忽略。
   async purgeDeletedRecords(): Promise<{
     deleted: number;
     entries: { type: ProfileType; hash: string }[];
@@ -427,15 +409,15 @@ export class HistoryDb {
     };
   }
 
-  // 彻底删除**一条已删除的记录**（回收站每行的「彻底删除」）。2026-09-21 新增。
+  // 彻底删除**一条已删除的记录**（回收站每行的「彻底删除」）。
   //
   // 判据全在 SQL 里，且是这个接口的**安全前提**：只删 `IsDeleted != 0` 的行 ⇒
   //   · 活跃记录删不掉（想真删必须先软删 —— 不允许绕过回收站）；
   //   · 不存在 / 已被清掉的返回 false，由调用方计进"未生效"。
   // 成本 = **1 次 D1 子请求**（无预读、不广播、不碰 R2）。**R2 目录由调用方清扫**：
-  // 2026-09-22（ADR D29）起回收站里是真数据，删行不清目录就是把字节留给孤儿阶段（最长 20 分钟）——
-  // 路由那侧在删成功后调 `deleteHistoryWorkingDir`（与 `purgeTrash` 同一条判据）。
-  // 对照：软删每条要 1 读 + 1 写 + 1 广播（现在**不再**清目录），所以"彻底删除"仍略贵一点（多一次列举）。
+  // 回收站里是真数据，删行不清目录就是把字节留给孤儿阶段 —— 路由那侧在删成功后调
+  // `deleteHistoryWorkingDir`（与 `purgeTrash` 同一条判据）。
+  // 对照：软删每条要 1 读 + 1 写 + 1 广播（且**不再**清目录），所以"彻底删除"仍略贵一点（多一次列举）。
   async purgeDeletedRecord(type: ProfileType, hash: string): Promise<boolean> {
     const res = await this.db
       .prepare(
@@ -447,16 +429,13 @@ export class HistoryDb {
   }
 
   // 统计（上游 GetStatisticsAsync）。四个计数**一条聚合查询**出齐：旧实现先把全部行的
-  // Stared/IsDeleted 拉回 JS 再循环，而统计在每次页面加载、星标、删除、切视图时都会跑
-  // （后端能力评估 §3.1）。语义与原实现逐条对齐：starred 在**整个结果集**上累加，不区分已删/活跃。
+  // Stared/IsDeleted 拉回 JS 再循环，而统计在每次页面加载、星标、删除、切视图时都会跑。
+  // 语义：starred 在**整个结果集**上累加，不区分已删/活跃。
   // 体积（`totalFileSizeMB`）**不在这里给**：它是 R2 实列的事实，调用方自己
-  // `{ ...counts, totalFileSizeMB: historySizeMB(bytes) }` 补上 —— 于是它仍能与 R2 列举并发，
-  // 不必为了拿字节数把两条往返串起来。
+  // `{ ...counts, totalFileSizeMB: historySizeMB(bytes) }` 补上 —— 于是它仍能与 R2 列举并发。
   //
   // 调用方 = 协议端点 `/api/history/statistics`（`src/routes/history.ts`）**与界面**
-  // （`/ui/api/statistics`、`/ui/api/overview`）。界面 2026-09-25 曾改由 `countByTypeViews` 的
-  // 分组结果就地组装这四个计数（省掉一条同表聚合，审计 P1-3）；2026-09-27 按 ADR D43 撤回，
-  // 同一语义只留这一份实现 —— 多打的那条聚合换来"界面与协议不会各算各的"。
+  // （`/ui/api/statistics`、`/ui/api/overview`）：同一语义只留这一份实现，界面与协议不会各算各的。
   async statistics(): Promise<Omit<HistoryStatisticsDto, 'totalFileSizeMB'>> {
     const res = await this.db
       .prepare(
@@ -479,8 +458,8 @@ export class HistoryDb {
 
   // 清空（上游 ClearAllAsync），返回被删除的记录。
   // 用单条 DELETE ... RETURNING 保证「读到的集合」与「被删除的行」是同一集合：
-  // 此前 SELECT + 独立 DELETE 之间有间隙，并发插入的行会被删掉却不在返回列表里，
-  // 路由据此只删返回实体的 R2 目录，留下 DB 已删而 R2 残留的孤儿对象（F5）。
+  // 若写成 SELECT + 独立 DELETE，两者之间的间隙里并发插入的行会被删掉却不在返回列表里，
+  // 路由据此只删返回实体的 R2 目录，留下 DB 已删而 R2 残留的孤儿对象。
   // 只 RETURNING Type/Hash（调用方只需要目录名与条数）：整行返回会把每行的大块 Text
   // 一起读进 isolate，大库上清空一次就是数百 MB（同 `purgeDeletedRecords` 的口径）。
   async clearAll(): Promise<{ type: ProfileType; hash: string }[]> {
@@ -507,8 +486,7 @@ export class HistoryDb {
     // 缺省时间戳**单调**（`max(now, 已有+1)`），不是裸 `Date.now()`：`shouldUpdate` 在时间差
     // 超过 5 分钟时要求 `newLastModified >= oldLastModified`，而客户端时钟偏快会让记录的
     // lastModified 落在未来 ⇒ 用裸 now 的调用方（本站 UI 的 PATCH / batch-update）会拿到
-    // 伪冲突、删不掉。**放在这里而不是各调用点**：调用方因此不必先自己读一遍来算这两个值
-    // （2026-09-21 之前路由层正是这么干的：每条记录多一次 D1 读 ⇒ 批量里白花 100 次子请求）。
+    // 伪冲突、删不掉。**放在这里而不是各调用点**：调用方因此不必先自己读一遍来算这两个值。
     // 协议写路径（`PATCH /api/history`）恒自带 lastModified，故不受这条缺省影响。
     const newLastModified = dto.lastModified ? fromIso(dto.lastModified) : Math.max(Date.now(), existing.lastModified + 1);
 
@@ -516,10 +494,9 @@ export class HistoryDb {
       return { updated: false, entity: existing };
     }
 
-    // 上游这里有一条守卫：「已删除 + 有数据文件 + IsDelete=false」→ 拒绝（上游 `HistoryService.Update`
-    // 返回 (null,null)，本实现原样移植为 notFound）。**2026-09-22 去掉**（ADR D29）：既然软删不再
-    // 毁掉数据（见 historyOps.ts），恢复就该连数据一起回来 —— 否则"回收站"对图片/文件仍然是个
-    // 单向门。协议面的这条偏离登记在 `docs/protocol.md` §10。
+    // 恢复已删除记录时**不再**拒绝「已删除 + 有数据文件 + IsDelete=false」（上游有一道这样的守卫）：
+    // 既然软删不毁数据（见 historyOps.ts），恢复就该连数据一起回来 —— 否则"回收站"对图片/文件
+    // 仍然是个单向门。
 
     const versionBeforeUpdate = existing.version;
 
@@ -530,7 +507,7 @@ export class HistoryDb {
     if (dto.lastAccessed) existing.lastAccessed = fromIso(dto.lastAccessed);
     existing.version = newVersion;
 
-    // 乐观并发：若期间已有其它写入（Version 已变），按冲突返回，避免静默覆盖对方的更新（F5）
+    // 乐观并发：若期间已有其它写入（Version 已变），按冲突返回，避免静默覆盖对方的更新
     const applied = await this.updateEntityIfVersion(existing, versionBeforeUpdate);
     if (!applied) {
       const current = await this.getByTypeAndHash(type, hash);
@@ -546,14 +523,11 @@ export class HistoryDb {
   // 同一个 `QueryDeleteOrderBy` = MAX(LastModified, LastAccessed)）。**单份 SQL 两种形态**：
   // `?2 IS NULL` 时不做保留期过滤（trim），否则按过期时间过滤（retention）—— 占位符编号因此
   // 不随形态漂移，软删判据（豁免列 + 排序键）只此一份，将来加豁免列不会漏改一条路径。
-  // ⚠️ 两处与上游的**语义边界**（2026-10-03 逐行核对；行为等价，写下来免得以后被"顺手改"掉）：
-  //   · 上游的**计数与候选查询不带 UserId 过滤**（`HistoryManagerHelper` 的 `QueryCount` /
-  //     `QueryToDeleteByOverCount` 只过滤 IsDeleted/Stared/Pinned，且 `HistoryDbContext.OnModelCreating`
-  //     里**没有** `HasQueryFilter`）；本实现一律按 `default_user` 收窄。本仓库全链路恒用
-  //     `HARD_CODED_USER_ID` ⇒ 单用户部署下等价，多用户表里本实现更严格。
-  //   · 排序键上游只有 `MAX(LastModified, LastAccessed)`（同值时次序**未指定**，SQLite 实际多半按
-  //     rowid）；本实现补 `ID ASC` 作确定性 tiebreak（方向与 rowid 一致）⇒ 同一库上两侧删的**条数**
-  //     相同（都是 excess），只有"同值时删哪一条"被本实现定死、可复现。
+  // ⚠️ 两处与上游的**语义边界**（行为等价，写下来免得以后被"顺手改"掉）：
+  //   · 上游的**计数与候选查询不带 UserId 过滤**（只过滤 IsDeleted/Stared/Pinned）；本实现一律按
+  //     `default_user` 收窄。本仓库全链路恒用 `HARD_CODED_USER_ID` ⇒ 单用户部署下等价，多用户表里更严格。
+  //   · 排序键上游只有 `MAX(LastModified, LastAccessed)`（同值时次序**未指定**）；本实现补 `ID ASC`
+  //     作确定性 tiebreak ⇒ 同一库上两侧删的**条数**相同，只有"同值时删哪一条"被本实现定死、可复现。
   private async softDeleteOldest(
     userId: string,
     cutoffMs: number | null,
@@ -579,8 +553,8 @@ export class HistoryDb {
   // 保留期过期（未删除、未收藏、未置顶）→ **软删**并返回受影响实体。
   // 上游 RemoveOutOfRetentionRecords → RemoveExpiredInBatchesAsync → MarkForDeletionAsync：
   //   IsDeleted = true、Version++、LastModified = now（行保留，由 30 天硬删任务最终清理），
-  //   随后 OnRecordDeletedAsync 删数据目录并广播。**本实现不删数据目录**（ADR D29：回收站要能
-  //   连数据拿回来），只广播；目录由 30 天硬删阶段批量清扫。差异登记在 docs/protocol.md §10。
+  //   随后 OnRecordDeletedAsync 删数据目录并广播。**本实现不删数据目录**（回收站要能连数据拿回来），
+  //   只广播；目录由 30 天硬删阶段批量清扫。
   async softDeleteExpiredRecords(cutoffMs: number, nowMs: number, limit: number): Promise<HistoryRecordEntity[]> {
     return this.softDeleteOldest(HARD_CODED_USER_ID, cutoffMs, nowMs, limit);
   }
@@ -644,21 +618,19 @@ export class HistoryDb {
   // 活记录的工作目录集合，用于孤儿对象判定。
   // **必须带尾斜杠**：调用方（cleanup.ts）把它与 `R2Storage.listHistoryObjectsByDir()` 的结果比较，
   // 而后者由 R2 key 截取得来、形如 `Text_ABC/`（尾斜杠是 deletePrefix 的语义所需 —— 少了它，
-  // `history/Text_AB` 会误匹配 `history/Text_ABC/…`）。
-  // 此前这里返回的是不带斜杠的 `Text_ABC`，导致 cleanup 的 `active.has(dir)` **恒为 false**：
-  // 每小时 Cron 把 history/ 下**所有**工作目录（含活跃记录的数据文件）全部删除。
-  // 列举**所有**记录（含已删除）的工作目录名 —— 孤儿阶段的"被引用"参照集。
+  // `history/Text_AB` 会误匹配 `history/Text_ABC/…`）。形式不一致会让 `active.has(dir)` **恒为 false**，
+  // 于是每小时 Cron 把 history/ 下**所有**工作目录（含活跃记录的数据文件）全部删除。
   //
-  // ⚠️ 名字与查询在 2026-09-22 一起改（ADR D29）：此前是 `listActiveWorkingDirs` + `IsDeleted = 0`，
-  // 那是因为软删时数据目录已被清掉、已删记录不可能有目录。改成真回收站（软删保留数据）之后，
-  // **已删记录的目录必须算"有人引用"** —— 否则孤儿阶段会把整个回收站的数据每 20 分钟删一次，
-  // 而且看不出来（回收站里那行还在，只是点恢复/预览时数据不见了）。
+  // 列举**所有**记录（含已删除）的工作目录名 —— 孤儿阶段的"被引用"参照集。
+  // ⚠️ 查询**不能**收窄成 `IsDeleted = 0`：真回收站里已删记录的数据目录必须算"有人引用"，
+  // 否则孤儿阶段会把整个回收站的数据每 20 分钟删一次，而且看不出来（回收站里那行还在，
+  // 只是点恢复/预览时数据不见了）。
   async listReferencedWorkingDirs(): Promise<Set<string>> {
     const res = await this.db
       .prepare(`SELECT Type, Hash FROM HistoryRecords WHERE UserId = ?1`)
       .bind(HARD_CODED_USER_ID)
       .all<{ Type: number; Hash: string }>();
-    // 目录名格式与 storage.ts 的 `formatWorkingDirName` 同源（F33：形式不一致 = 每小时清空一次 history/）
+    // 目录名格式与 storage.ts 的 `formatWorkingDirName` 同源（形式不一致 = 每小时清空一次 history/）
     return new Set((res.results ?? []).map((r) => formatWorkingDirName(r.Type as ProfileType, r.Hash)));
   }
 

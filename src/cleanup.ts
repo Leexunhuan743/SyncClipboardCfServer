@@ -5,23 +5,20 @@
 //   CleanOrphanedFoldersTask 每 12 小时 → CleanOrphanedFolders（删无活记录的 {Type}_{hash} 目录）
 // CF 侧由 Cron Trigger 触发（wrangler.toml [triggers]），一次批量执行全部三类。
 //
-// F11：Cron 的每个外部调用都算子请求配额（Free 计划 1,000/Cron、Paid 10,000/Cron）。
-// 此前四阶段线性串联、没有预算守卫，饱和批实测 12,060 次子请求 —— 平台中断后**排在后面的阶段
-// （含 30 天硬删与孤儿回收）整体不执行**，且 scheduled handler 只做 `waitUntil` ⇒ 失败静默。
-// 现在：
+// 每个外部调用都算子请求配额（Free 计划 1,000/Cron、Paid 10,000/Cron）。四阶段线性串联、没有预算守卫时，
+// 饱和批可超上限 —— 平台中断后**排在后面的阶段（含 30 天硬删与孤儿回收）整体不执行**，
+// 且 scheduled handler 只做 `waitUntil` ⇒ 失败静默。现在：
 //   · 每阶段独立 try/catch；子请求先记账再花，耗尽只**截断当前阶段**并落库，不影响其它阶段；
 //   · 排在后面的阶段有保底配额（PHASE_RESERVE），不会被前面的阶段吃光预算而跳过；
 //   · 阶段进度写进 Meta 游标（CLEANUP_META_KEYS.cursors），本轮没跑完的下轮接着跑；
 //   · 每阶段一行 `[cleanup]` 结构化日志 + `cleanup:lastRunAt` / `cleanup:lastError` 落库。
 //
-// P0-3（CPU）：子请求预算只管**子请求数**，而平台的另一道约束是 **CPU** —— Free 的 Cron 同样只有
-// 10 ms（**平均**预算）。⚠️ 这 10 ms 不是"单次硬顶"：平台另有 **rollover CPU time** 机制（官方
-// workers/observability/metrics-and-analytics 原文「更高的分位可能看起来超过 CPU 时间上限而不产生
-// 调用错误」；limits 页的 built-in flexibility 段同义）⇒ **偶发越界不报错，持续越界才终止**。
-// 但**持续**超限时平台确实会直接终止整个调用 ⇒ 上面的日志与落库**全都不会执行**，F11 的形态会以
-// 「看起来一切正常」的方式回归。两处补上：① runCleanup **轮首**先写一次心跳（即使本轮被终止，
-// UI 也能看到「最近一次尝试」在动）；② 单轮工作量按**行字节**（CPU 的真正驱动量）收敛，
-// 推导见下面「CPU 预算」段。
+// 子请求预算只管**子请求数**，而平台的另一道约束是 **CPU** —— Free 的 Cron 同样只有
+// 10 ms（**平均**预算）。⚠️ 这 10 ms 不是"单次硬顶"：平台另有 **rollover CPU time** 机制
+// ⇒ **偶发越界不报错，持续越界才终止**。但**持续**超限时平台确实会直接终止整个调用 ⇒ 上面的
+// 日志与落库**全都不会执行**，失败会以「看起来一切正常」的方式回归。两处补上：
+// ① runCleanup **轮首**先写一次心跳（即使本轮被终止，UI 也能看到「最近一次尝试」在动）；
+// ② 单轮工作量按**行字节**（CPU 的真正驱动量）收敛，推导见下面「CPU 预算」段。
 //
 // 契约（调用方依赖）：**runCleanup 不向调用方抛裸错**。scheduled handler 只有 ctx.waitUntil，
 // 抛出去就是「静默失败」；一切失败都记进返回值、`[cleanup]` 日志与 `cleanup:lastError`。
@@ -83,12 +80,11 @@ const DELETED_RETENTION_DAYS = 30;
 //   · 两个软删阶段（retention / trim）各 2.5 ms ⇒ 2.5 ms × 100 MB/s ≈ **256 KiB**；
 //   · 硬删阶段的行只有 (Type, Hash) 两列（db.ts 的 hardDeleteOldDeletedRecords），1,000 条
 //     ≈ 70 KB ⇒ 条数上限先起作用；同样给 256 KiB 是**统一的兜底**（积压 20,000 条时它才会先触发）。
-// 预算怎么才能真正**硬**约束住（2026-09-26 第二轮审查后定稿）：软删/条数上限两阶段每批先跑一条只读的
+// 预算怎么才能真正**硬**约束住：软删/条数上限两阶段每批先跑一条只读的
 // `length(Text)` 扫描（db.scanSoftDeleteCandidateBytes，列顺序与删除语句的 ORDER BY 逐字一致）量出候选逐行
 // 字节，再按前缀和定量 —— 于是"取回的字节"不依赖行大小是否均匀。**硬删/孤儿阶段不扫、也不设字节预算**：
 // 候选行只 `RETURNING (Type, Hash)`，一轮的上限（MAX_BATCHES_PER_PHASE × HARD_DELETE_BATCH_LIMIT = 20,000 条）
-// 也只有约 0.6 MB，条数上限先起作用。曾经的"首批 5 条探路 + 按已处理均值收窄"已被删除：均值会被
-// "先小后大"骗过，实测单轮 6,553,600 字节 = 25 × 预算（Git history）。
+// 也只有约 0.6 MB，条数上限先起作用。**按已处理行的均值外推是错的**：均值会被"先小后大"骗过。
 // **本轮第一批至少取一条**（`rowsWithinBytes` 的 `minTake`）：单行就超过整个预算时若一条都不取，
 // 该阶段会每轮 0 条、永远没有进度（D1 单行上限够得着 256 KiB 的预算）。本轮已有产出之后不再破例，
 // 于是单轮 materialize 的正文最多比预算多出**一行**。
@@ -101,12 +97,12 @@ const ENTITY_ROW_FIXED_BYTES = 256; // RETURNING * 的固定部分（16 个列�
 // ===== 子请求记账模型 =====
 // 每个外部调用 = 1 次子请求：D1 语句、R2 调用、DO fetch 各计一次。
 //
-// **批内目录清扫**（2026-09-15）：硬删与孤儿阶段不做逐条 `deleteHistoryWorkingDir`
+// **批内目录清扫**：硬删与孤儿阶段不做逐条 `deleteHistoryWorkingDir`
 //（那是"每条 2 次 R2 调用：列举 + 删除"，见 storage.ts 的 deletePrefix），而是每轮**列举一次**
 // history/ 拿到「目录 → key」映射（按实际页数记账），再**每批一次**批量删（R2 delete 单次可带
 // 1000 个 key）。逐条删除时 500 条 = 1500 次子请求，会撞上平台单次调用 1000 次的上限。
 //   · 保留期/条数上限（软删）：每条 1 次广播（`RemoteHistoryChanged`），**不清数据目录**
-//     —— 回收站要能连数据拿回来（ADR D29）；字节留到硬删或用户「彻底删除」时才清。
+//     —— 回收站要能连数据拿回来；字节留到硬删或用户「彻底删除」时才清。
 //   · 硬删：每条 0 次（上游语义也不广播），每批额外 1 次批量删。
 const SUBREQUESTS_PER_D1_STATEMENT = 1;
 const SUBREQUESTS_PER_BROADCAST = 1;
@@ -132,7 +128,7 @@ const PHASE_RESERVE: Record<CleanupPhase, number> = {
 
 // 轮尾落库的固定成本：完成戳 + `lastError` + 四个游标在**一条** `setMetaValues` 里写完。
 // 它必须从**每个**阶段的额度里预留出来（含最后一个阶段：`RESERVED_AFTER['orphans'] = 0`，
-// 不预留的话最后阶段能一路吃到 800，轮尾那次写就把记账顶到 801 —— 2026-09-26 审查 R1 slot 1 实测）。
+// 不预留的话最后阶段能一路吃到 800，轮尾那次写就把记账顶到 801）。
 const SUBREQUESTS_ROUND_END = SUBREQUESTS_PER_D1_STATEMENT;
 
 // 每个阶段**之后**所有阶段的保底配额之和 **+ 轮尾落库**（模块加载时算一次，避免每轮重复计算）
@@ -182,7 +178,7 @@ const META_KEYS_ALL: string[] = [
 // cleanup:lastError 落库长度上限（UI 只展示一行；完整清单在返回值与 [cleanup] 日志里）
 const META_LAST_ERROR_MAX = 300;
 
-// ===== 保留策略（Meta 覆盖 / env 回落，GitHub issue #3）=====
+// ===== 保留策略（Meta 覆盖 / env 回落）=====
 
 // 在线可调的覆盖键：存在即覆盖 env。**清除覆盖 = 删键**，不是写空串 ——
 // 空串经 `Number('')` 会解析成 0，而 0 的语义是「关闭该阶段」（见 disabledReason），
@@ -196,14 +192,14 @@ export const SETTINGS_META_KEYS = {
 const SETTINGS_META_KEY_LIST: string[] = Object.values(SETTINGS_META_KEYS);
 
 // 清理可观测面（六键）+ 保留策略（两键）的**合并键表**：UI 的 `/ui/api/info` 与 `/ui/api/overview`
-// 两批都要读，分成两次 `getMetaValues` 就是两次 D1 子请求（审计 P1-3）。
-// 键名仍只在本文件定义（src/ui/routes.ts 从这里 import，不再自己拼一份字面量）。
+// 都要读，合并成一次 `getMetaValues`，避免为同一页面数据多一次 D1 子请求。
+// 键名仍只在本文件定义（src/ui/routes/ 从这里 import，不再自己拼一份字面量）。
 export const CLEANUP_AND_SETTINGS_META_KEYS: string[] = [...META_KEYS_ALL, ...SETTINGS_META_KEY_LIST];
 
 // env 未提供时的内置默认（与 wrangler.toml [vars] 的取值一致：0 = 不限制保留时长 / 1000 条）。
-// ⚠️ 保留期这一项 2026-09-22 由 10080（7 天）改成 **0**：对齐上游 3.3.0 的
-// `AppSettings.HistoryRetentionMinutes` 默认值（上游 #402/#426 把它改成了「0 = 不限制」，
-// 只有条数上限兜底）。改动带出两个连带面，见 `RetentionSource` 与 `DISABLED_KEY` 的注释。
+// ⚠️ 保留期这一项是 **0**：对齐上游 3.3.0 的 `AppSettings.HistoryRetentionMinutes` 默认值
+// （上游把它改成「0 = 不限制」，只有条数上限兜底）。改动带出两个连带面，见 `RetentionSource`
+// 与 `DISABLED_KEY` 的注释。
 // **不出现在 API 响应里**：接口报的是「配置值」，把引擎默认回填成配置值会让「未设置」这个状态消失。
 const DEFAULT_RETENTION_MINUTES = 0;
 const DEFAULT_MAX_SAVED_HISTORY_COUNT = 1000;
@@ -255,9 +251,9 @@ export function retentionSettingsFromMeta(meta: Map<string, string>, env: Bindin
     retentionMinutes: parseSettingValue(meta.get(SETTINGS_META_KEYS.retentionMinutes)),
     maxSavedHistoryCount: parseSettingValue(meta.get(SETTINGS_META_KEYS.maxSavedHistoryCount)),
   };
-  // 来源按**生效值的实际出处**取，三档缺一不可：内置默认自 2026-09-22 起是 0（关闭保留期），
+  // 来源按**生效值的实际出处**取，三档缺一不可：内置默认是 0（关闭保留期），
   // 「两处都没设」这一态因此**真的会**关掉一个阶段 —— 只报 `env` 会把维护者指向一个根本没配的变量
-  // （见 `disabledReason` 的注释与 `docs/ui.md` 的保留策略小节）。
+  // （见 `disabledReason` 的注释）。
   const sourceOf = (metaValue: number | null, envValue: number | null): RetentionSource =>
     metaValue !== null ? 'meta' : envValue !== null ? 'env' : 'default';
   const base = settingsFromEnv(env);
@@ -448,9 +444,7 @@ async function drainBatches<T extends CleanupRow>(
           : 0;
     // CPU 口径：把本阶段**剩余**的行字节预算交给 `fetchBatch` —— 软删两条路径会先用一条**只读**的
     // `length(...)` 扫描量出下一批候选的逐行字节，再据此决定取回几条 ⇒ 每批真正 materialize 的字节
-    // 都被预算硬约束，**与行大小是否均匀无关**。
-    // ⚠️ 2026-09-26 修（合并前审查 High）：此前按"已处理行"的均值外推，首批 5 条小行后紧跟一批大行
-    // 即可数量级越界 —— 实测 100 条 × 64 KiB = 6,553,600 字节 = 25 × 预算，见 Git history。
+    // 都被预算硬约束，**与行大小是否均匀无关**（按已处理行的均值外推会被"先小后大"骗过）。
     const limit = Math.min(spec.batchLimit, subrequestLimit);
     if (limit < 1) return { processed, batches, truncated: true };
     run.budget.spend(spec.queryCost);
@@ -473,8 +467,7 @@ async function drainBatches<T extends CleanupRow>(
 }
 
 // 取（并按需列举一次）history/ 的目录 → key 映射。**逐页记账、逐页检查预算**（1 页 = 1 次子请求）：
-// 先前是"列举完再一次性扣页数"，页数超过当轮剩余额度时那次列举**已经发生** ⇒ 记账事后补，
-// 自设的 800 被越过（2026-09-26 审查实测：810 页 ⇒ 记账 818/800，还写了完成戳）。
+// "列举完再一次性扣页数"会让页数超过当轮剩余额度时那次列举**已经发生** ⇒ 记账事后补，自设的 800 被越过。
 // ⚠️ 预算不足中断列举时**必须放弃这一轮**（返回 null）：只列了一半的映射会把**活目录**当成孤儿 ⇒ 误删。
 // 将来对象规模真到数百页时，应把"未列完"做成**跨轮可续**（持久化游标），而不是放弃。
 async function historyGroups(run: CleanupRun, phase: CleanupPhase): Promise<Map<string, string[]> | null> {
@@ -506,9 +499,8 @@ async function sweepWorkingDirs(
 
   // ⚠️ 必须按 R2_DELETE_BATCH **分块**：`keys` 是按**目录**收进来的，而单个目录能装下任意多个
   // 对象（正常写路径是每目录 1 个，异常/历史数据不然）。不分块时 `deleteHistoryKeys` 的断言
-  // （>1000 个直接抛）会让**该目录每轮都删不掉**：失败被记成 failure、对象永远留在 R2 里
-  // （2026-09-20 实测：一个目录放 1200 个对象，修改前一个都不少）。每块各记一次子请求；
-  // 正常数据永远只有一块，与改动前逐位相同。
+  // （>1000 个直接抛）会让**该目录每轮都删不掉**：失败被记成 failure、对象永远留在 R2 里。
+  // 每块各记一次子请求；正常数据永远只有一块。
   const flush = async (): Promise<boolean> => {
     if (keys.length === 0) return true;
     for (let i = 0; i < keys.length; i += R2_DELETE_BATCH) {
@@ -543,9 +535,7 @@ async function sweepWorkingDirs(
 }
 
 // 软删阶段的收尾：逐条广播 `RemoteHistoryChanged`（上游 OnRecordDeletedAsync）。
-// **不清数据目录** —— 回收站要能连数据把记录拿回来（ADR D29，与 `historyOps.applyHistoryUpdate`
-// 的软删同一语义）；字节留到 30 天硬删或用户「彻底删除」时才清。上游在这里会调
-// `DeleteProfileDataIfNeed` 立即删目录，那条偏离登记在 `docs/protocol.md` §10。
+// **不清数据目录** —— 回收站要能连数据把记录拿回来；字节留到 30 天硬删或用户「彻底删除」时才清。
 // 广播仍逐条隔离失败：一条失败不影响同批其余记录。
 async function broadcastRecords(
   run: CleanupRun,
@@ -713,10 +703,9 @@ const DISABLED_KEY = {
  *
  * ⚠️ 成因里的键名必须按**生效值的实际来源**取：生效值来自 `readRetentionSettings`（Meta 覆盖优先、
  * env 只是回落、都没有才是内置默认），所以那个 0 **通常来自界面**（`PUT /ui/api/settings` 写下的 Meta 覆盖）
- * —— 恒写 env 变量名会把维护者指向一个**不是来源**的旋钮（实测：界面把保留期填成 0 之后，日志正是
- * `reason=HISTORY_RETENTION_MINUTES=0`，而那一刻部署变量仍是 10080）。
+ * —— 恒写 env 变量名会把维护者指向一个**不是来源**的旋钮。
  * 三种形态：`settings:retentionMinutes=0` / `HISTORY_RETENTION_MINUTES=0` / `DEFAULT_RETENTION_MINUTES=0`。
- * 第三种自 2026-09-22 起**可达**：保留期的内置默认就是 0（对齐上游 3.3.0「默认不限制」），
+ * 第三种**可达**：保留期的内置默认就是 0（对齐上游 3.3.0「默认不限制」），
  * 于是「两处都没配」的部署每轮都会关掉 retention 阶段并如实把它归给内置默认。
  */
 function disabledReason(

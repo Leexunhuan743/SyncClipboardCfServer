@@ -13,7 +13,7 @@ import { isValidProfileHash } from './types';
 import type { HistoryRecordEntity, HistoryRecordUpdateDto, ProfileType } from './types';
 
 // 清空全部历史：协议 `DELETE /api/history/clear` 与 UI `POST /ui/api/history/clear`（scope=all）
-// **共用这一份实现** —— 两份实现里只有一份会随下次改动更新，另一份静默分叉（复核发现的重复面）。
+// **共用这一份实现** —— 两份实现里只有一份会随下次改动更新，另一份静默分叉。
 //
 // 两条纪律：
 //   ① 先删行、再删数据目录（反过来一旦 DELETE 失败就是整库悬空）；
@@ -28,7 +28,7 @@ export async function clearAllHistory(env: Bindings): Promise<number> {
   return entities.length;
 }
 
-// 清空**回收站**：删行 + 清扫它们的数据目录（2026-09-22，ADR D29）。
+// 清空**回收站**：删行 + 清扫它们的数据目录。
 //
 // 与上面的 `clearAllHistory` 同一个形状（先删行、再按集合清扫，避免"先清前缀再删行"那种
 // DELETE 失败就整库悬空的顺序）；差别只在取行的范围（已删除 vs 全部）。
@@ -78,7 +78,7 @@ export async function applyHistoryUpdate(
   type: ProfileType,
   hash: string,
   dto: HistoryRecordUpdateDto,
-  // `deferBroadcast`（2026-09-22，ADR D33）：**批量写**用。逐条广播 = 每条 1 次 DO 子请求，
+  // `deferBroadcast`：**批量写**用。逐条广播 = 每条 1 次 DO 子请求，
   // 批量路径改为"收集载荷、最后 `broadcastMany` 投一次" ⇒ 100 条从 100 次降到 1 次。
   // 单条调用点一律不传（保持原样：写完立刻广播，且在响应返回前 await 完成）。
   { deferBroadcast = false }: { deferBroadcast?: boolean } = {},
@@ -89,12 +89,12 @@ export async function applyHistoryUpdate(
   if (result.updated === false) return { kind: 'conflict', entity: result.entity };
 
   // 与 PUT /SyncClipboard.json、POST /api/history 一致：广播在响应返回前 await 完成。
-  // 裸调用是 floating promise，Workers 不保证响应后继续执行，推送会非确定性丢失（F6）。
+  // 裸调用是 floating promise，Workers 不保证响应后继续执行，推送会非确定性丢失。
   // 批量路径（`deferBroadcast`）由调用方在整批跑完后**同样 await** 一次合并广播 —— 纪律不变。
   if (!deferBroadcast) await broadcast(env, 'RemoteHistoryChanged', entityToDtoWire(result.entity));
-  // **软删不再清数据目录**（2026-09-22，ADR D29）：回收站要能真的把记录（连同它的图片/文件）
-  // 拿回来，所以数据留到"真的没了"那一刻 —— 30 天硬删（`cleanup.ts` 的 hardDelete 阶段，
+  // **软删不再清数据目录**：回收站要能真的把记录（连同它的图片/文件）拿回来，
+  // 所以数据留到"真的没了"那一刻 —— 30 天硬删（`cleanup.ts` 的 hardDelete 阶段，
   // 它本来就带批次清扫）或用户点「彻底删除」（`/ui/api/history/batch-purge`）时清。
-  // 与上游的差异（上游 `DeleteProfileDataIfNeed` 是 IsDeleted 为真就删）登记在 `docs/protocol.md` §10。
+  // 与上游的差异（上游 `DeleteProfileDataIfNeed` 是 IsDeleted 为真就删）是有意为之。
   return { kind: 'updated', entity: result.entity };
 }

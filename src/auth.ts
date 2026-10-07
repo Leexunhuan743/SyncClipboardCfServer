@@ -11,7 +11,7 @@ import type { WaitUntil } from './rateLimit';
 const AUTH_HEADER = 'Authorization';
 const WWW_AUTHENTICATE = 'Basic realm="SyncClipboard"';
 
-// 已知文档化默认值（F1 弱凭据告警）。静态查找表用 Record（见工程约定）。
+// 已知文档化默认值（弱凭据告警）。静态查找表用 Record（见工程约定）。
 const WEAK_CREDENTIAL_VALUES: Record<string, true> = {
   admin: true,
   password: true,
@@ -87,7 +87,7 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-// 凭据未配置时给出可诊断的错误，而不是让调用方对着 401 反复猜（同类项目审计项 2.3）。
+// 凭据未配置时给出可诊断的错误，而不是让调用方对着 401 反复猜。
 // 注意：本实现**不使用**上游的 admin/admin 默认值（fail-closed，避免弱默认凭据上生产）。
 export function isAuthConfigured(env: Bindings): boolean {
   return (
@@ -96,7 +96,7 @@ export function isAuthConfigured(env: Bindings): boolean {
   );
 }
 
-// 弱凭据判定（F1）：命中已知文档化默认值，或长度不足 8。
+// 弱凭据判定：命中已知文档化默认值，或长度不足 8。
 export function hasWeakCredentials(env: Bindings): boolean {
   if (!isAuthConfigured(env)) return false; // 未配置走 500 fail-closed 的诊断，不重复报告
   const user = env.USERNAME.toLowerCase();
@@ -112,7 +112,7 @@ export function hasWeakCredentials(env: Bindings): boolean {
 // 每个 isolate 只告警一次，避免刷日志
 let weakCredentialWarned = false;
 
-// 弱凭据告警（F1）。**不阻断服务**：线上当前用的就是文档化默认口令，硬失败会直接切断用户同步；
+// 弱凭据告警。**不阻断服务**：线上当前用的就是文档化默认口令，硬失败会直接切断用户同步；
 // 轮换完成后可用 ENFORCE_STRONG_CREDENTIALS=true 收紧为 fail-closed。返回是否弱（供响应头/判定复用）。
 export function warnWeakCredentials(env: Bindings): boolean {
   const weak = hasWeakCredentials(env);
@@ -136,7 +136,7 @@ export function authFailure(env: Bindings, request: Request, ctx?: WaitUntil): R
       { status: 500 },
     );
   }
-  // F1：弱凭据只告警不阻断（默认）；ENFORCE_STRONG_CREDENTIALS=true 时才 fail-closed
+  // 弱凭据只告警不阻断（默认）；ENFORCE_STRONG_CREDENTIALS=true 时才 fail-closed
   if (warnWeakCredentials(env) && env.ENFORCE_STRONG_CREDENTIALS === 'true') {
     return new Response(
       'Server credentials are too weak: rotate USERNAME/PASSWORD to high-entropy values (at least ' +

@@ -34,7 +34,7 @@ export const AUTH_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000;
 // 全局失败告警阈值（只 console.warn，不封锁）
 export const AUTH_RATE_LIMIT_BURST_WARN = 50;
 
-// ===== 可被 GitHub 仓库变量覆盖（2026-09-15 接线）=====
+// ===== 可被 GitHub 仓库变量覆盖 =====
 //
 // **四个参数都不建议改**（README「部署开关」里也这么写）。它们是"削峰 + 防爆破"的纵深防御，
 // 不是访问控制边界（真正的门是 Basic 凭据）。把它们调松会缩短暴力破解的代价，调紧则可能
@@ -98,7 +98,7 @@ function warnRateLimitOverrideOnce(got: string, range: string): void {
 export const AUTH_RATE_LIMIT_PATH = '/auth-rate-limit';
 // DO 侧落盘的 storage key（形态 `{persistedAt, limits}`；落盘时机见 SyncClipboardHub.persistAuthLimits：
 // 封锁开始/延长与计数清零**立即**落，纯计数按「每 AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES 次失败
-// 或距上次落盘 ≥15 s」节流落 —— hibernate 会清空 DO 内存态，故落盘是封锁语义的一部分，见 ADR D42）
+// 或距上次落盘 ≥15 s」节流落 —— hibernate 会清空 DO 内存态，故落盘是封锁语义的一部分）
 export const AUTH_RATE_LIMIT_STORAGE_KEY = 'authRateLimits';
 export const AUTH_RATE_LIMIT_PERSIST_EVERY_FAILURES = 20;
 // 热状态下拉取 DO 权威快照的最小间隔（避免被攻击流量放大成 DO 打点）
@@ -245,8 +245,8 @@ export function noteAuthFailure(env: Bindings, request: Request, ctx?: WaitUntil
 // 认证成功：清除该 key 的失败计数（本地立即清；仅当本地确有记录时才通知 DO，正常同步路径零 I/O）。
 export function noteAuthSuccess(env: Bindings, request: Request, ctx?: WaitUntil): void {
   // 写成显式循环而不是 `authLimitKeys(...).filter((key) => cache.limits.delete(key))`：
-  // 后者的「删除」是副作用却藏在 `filter` 里，读起来像在筛选；而且它把"本地确有记录"这个
-  // 判据混在返回值里。这里先逐个删，只有真的删掉了东西才去通知 DO（正常同步路径零 I/O）。
+  // 后者的「删除」是副作用却藏在 `filter` 里，读起来像在筛选。这里先逐个删，
+  // 只有真的删掉了东西才去通知 DO（正常同步路径零 I/O）。
   const cleared: string[] = [];
   for (const key of authLimitKeys(request)) {
     if (cache.limits.delete(key)) cleared.push(key);

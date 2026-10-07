@@ -2,7 +2,8 @@
 import { Hono } from 'hono';
 import { Bindings } from '../env';
 import { basename, BadRequestError } from '../db';
-import { putSyncProfile, NotFoundError, PayloadTooLargeError } from '../profile';
+import { NotFoundError, PayloadTooLargeError } from '../profile';
+import { putSyncProfile } from '../profileWrite';
 import { parseProfileDto, profileDtoToJson, classifyStoredProfile } from '../serialization';
 import type { StoredProfileHealth } from '../serialization';
 import { textProfileHash } from '../hash';
@@ -22,7 +23,6 @@ function invalidFileName(name: string): boolean {
 
 export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
-  // （此前这句写在声明行行尾，把分号一起注释掉了 —— 语句只是靠 ASI 才成立。）
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
   // GET / —— 浏览器访问站点根时引导到 Web UI；其余调用方（含官方客户端的探活）保持原响应。
@@ -30,7 +30,7 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // 这里的 Accept 判断只是让任何按文本协议探活的脚本行为完全不变。
   // 界面被关闭时（GitHub 变量 UI_ENABLED=false）不再把人引到不存在的界面，直接返回探活响应。
   //
-  // 跳转目标是 **`/ui_v1/`**（V1 是默认界面，2026-09-19 改名后挂在 `/ui_v1/`）—— 少一跳：
+  // 跳转目标是 **`/ui_v1/`**（V1 是默认界面）—— 少一跳：
   // `/ui/` 那层壳（老书签的入口）自己也会 meta refresh 到同一个地址，两处必须一致，
   // 守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
   // （V2 —— `public/ui_v2/` —— 是**开发测试版**，应用本体在 `/ui_v2/app/`。）
@@ -174,14 +174,13 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
     const fileName = c.req.param('fileName')!;
     // 写入侧额外拒含 **NUL** 的名字（GET/DELETE 不收紧，保持上游口径）。
     // 上游对它是**未处理异常**：`Path.Combine` + `FileStream` 遇到非法路径字符 ⇒ 抛 ⇒ 控制器兜底 **500**
-    // （`SyncClipboardController.cs:107-122` 只拦 `\` 与 `/`），而 NUL 这个名字在本实现里**确实能到达**
-    // handler —— 实测 `PUT /file/a%00b.txt` 到得了（URL 解析不会归一化它），落到 R2 上会成为一个
-    // 带 NUL 的键。判据与 zip 条目名的 `assertSafeEntryName` 同一套（那里拒 NUL 是因为文件系统会截断；
-    // 这里是为了不制造"上游拒、我们收"的新分叉），并给可诊断的 400 而不是 500。
-    // ⚠️ 不要把 `.`/`..` 也加进来（试过，2026-10-03 撤回）：**平台在 Worker 之前就把点段归一化了** ——
-    // 实测原始请求（`node:http`，不经 URL 库）`PUT /file/..`、`/file/.`、`/file/%2E%2E`、`/file/%2E`
-    // 全部落到别处（`/` 或 `/file/`）→ **404**，连 handler 都进不来 ⇒ 那种名字根本存不进 R2，
-    // 也就不存在"客户端 `PreciseDelete` 删不掉"的泄漏（见 `docs/protocol.md` §10 与 Git history）。
+    // （上游只拦 `\` 与 `/`），而 NUL 这个名字在本实现里**确实能到达** handler，
+    // 落到 R2 上会成为一个带 NUL 的键。判据与 zip 条目名的 `assertSafeEntryName` 同一套
+    // （那里拒 NUL 是因为文件系统会截断；这里是为了不制造"上游拒、我们收"的新分叉），
+    // 并给可诊断的 400 而不是 500。
+    // ⚠️ 不要把 `.`/`..` 也加进来：**平台在 Worker 之前就把点段归一化了** ——
+    // `PUT /file/..`、`/file/.`、`/file/%2E%2E`、`/file/%2E` 全部落到别处（`/` 或 `/file/`）→ **404**，
+    // 连 handler 都进不来 ⇒ 那种名字根本存不进 R2，也就不存在"客户端 `PreciseDelete` 删不掉"的泄漏。
     // 可达性：官方客户端发的是 `EscapeDataString(Path.GetFileName(localPath))`（真实文件名），
     // 而任何文件系统都不允许含 NUL 的文件 ⇒ 不可达，属"更严但不伤兼容"的入口校验。
     if (invalidFileName(fileName) || fileName.includes('\0')) {

@@ -93,9 +93,9 @@ public/** ── ASSETS binding ──> /ui_v1 /ui_v2 /ui_shared /ui
 |---|---|
 | `src/routes/` | 官方 API 与 WebDAV 路由 |
 | `src/durable/` | SignalR/DO 连接状态 |
-| `src/ui/` | UI API、会话、维护端点 |
+| `src/ui/` | UI API、会话、维护端点（HTTP 面拆在 `src/ui/routes/`） |
 | `src/db.ts` | D1 数据访问与并发判定 |
-| `src/storage.ts` / `src/profile.ts` / `src/historyOps.ts` | R2、Profile 与历史写路径 |
+| `src/storage.ts` / `src/profile*.ts` / `src/historyOps.ts` | R2、Profile 写路径与历史写路径 |
 | `src/cleanup.ts` | 定时清理与预算收敛 |
 | `public/ui_v1/` | 默认产品界面 |
 | `public/ui_v2/` | 开发测试版 |

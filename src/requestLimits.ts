@@ -1,18 +1,16 @@
-// 请求体上限（F9）。单独成模块的原因：Worker 入口模块（src/index.ts）的**额外导出**会被运行时
+// 请求体上限。单独成模块的原因：Worker 入口模块（src/index.ts）的**额外导出**会被运行时
 // 当成 handler map 校验（`Incorrect type for map entry ...: the provided value is not of type
 // 'function or ExportedHandler'`，wrangler dev 直接起不来），故入口只能导出 default 与 DO 类。
 import { drainRequestBody } from './auth';
 
 // 整包读入内存的写端点（PUT /SyncClipboard.json、POST /api/history、PATCH /api/history/*）的体量上限。
-// 默认 **48 MiB**（2026-09-15 定稿：先由 32 提到 64，再按"并发余量"回落到 48）。依据与推导见
-// README「为什么默认 48 MiB、上限 64 MiB」：真正的约束不是"平台单请求 100 MiB"，而是
-// **isolate 128 MiB 且被并发共享** —— 默认值贴着"实际会发生的大小"取，才留得住并发余量。
+// 默认 **48 MiB**：真正的约束不是"平台单请求 100 MiB"，而是 **isolate 128 MiB 且被并发共享** ——
+// 默认值贴着"实际会发生的大小"取，才留得住并发余量。
 export const MAX_REQUEST_BODY_BYTES = 48 * 1024 * 1024;
 
-// 可由 GitHub 仓库变量 `MAX_REQUEST_BODY_BYTES` 覆盖（2026-09-15 接线，见 README「部署开关」）。
+// 可由 GitHub 仓库变量 `MAX_REQUEST_BODY_BYTES` 覆盖（见 README「部署开关」）。
 // 场景：官方客户端的 `MaxFileByte` **可调到 GB 级**（默认 20 MB，低于这里的默认上限）——
-// 客户端调大之后才会出现「客户端允许传、服务端回 413」，想同步更大的文件时必须有办法调大，
-// 否则只能改代码重部署。
+// 客户端调大之后才会出现「客户端允许传、服务端回 413」，想同步更大的文件时必须有办法调大。
 export const MAX_REQUEST_BODY_BYTES_FLOOR = 256 * 1024; // 256 KiB：再小会连正常文本/小文件都拒
 // 64 MiB：`100 MiB` 的平台上限之下留 36 MiB 余量。不上 80：65–80 MiB 那一段里 Group 解压预算
 // 只剩 ≤16 MiB（body 越大解压预算越小），本来就是名存实亡的一档，不值得为它牺牲并发余量。
@@ -56,7 +54,7 @@ export function maxRequestBodyBytes(env: { MAX_REQUEST_BODY_BYTES?: string }): n
   return MAX_REQUEST_BODY_BYTES;
 }
 
-// 本地回环 host 判定（F8 的明文跳转/HSTS 与 F7 的失败限速共用同一套判定，避免两处漂移）。
+// 本地回环 host 判定（明文跳转/HSTS 与失败限速共用同一套判定，避免两处漂移）。
 // 依据：生产流量一律经边缘进入（Host 是部署域名，且 cf-connecting-ip 由 Cloudflare 覆写、客户端不可伪造），
 // 因此「来自 loopback」只可能是本地开发/测试；对这类请求做 https 升级或失败封锁只会自伤，不增加防护。
 const LOOPBACK_HOSTS: Record<string, true> = {
@@ -74,7 +72,7 @@ export function isLoopbackRequest(request: Request): boolean {
   return isLoopbackHost(new URL(request.url).hostname);
 }
 
-// 整包读取请求体并**强制**体量上限。为什么必须存在：入口的 F9 预检只信 `content-length`，
+// 整包读取请求体并**强制**体量上限。为什么必须存在：入口的 content-length 预检只信声明值，
 // chunked / HTTP/2 无长度头的请求会整条绕过它，而平台允许的请求体（Free/Pro 100 MiB）远超
 // isolate 128 MiB —— 一个不带长度头的 100MB body 就能把整个 isolate 打爆，连累并发中的其它请求
 // 一起 503。所有「整包读入内存」的读取点都必须走这里：边读边计数，超限立即中断（调用方回 413）。
@@ -113,17 +111,16 @@ export async function readBodyCapped(raw: Request, limit: number): Promise<Uint8
  * 为什么是独立函数（而不是在每个调用点 inline 那三行）：**9 处调用点**必须同款处理
  * `null`（直接回 413）与"已经排空过"这两个约定，inline 出去必然漂移。
  *
- * 为什么需要它（2026-10-03 补）：入口的 F9 预检与各 handler 的 `readBodyCapped`
- * 只覆盖了**协议面**的写端点。UI 面的 JSON 写端点（`/ui/api/history`、`/batch-update`、
- * `/batch-purge`、`/clear`、`/batch-meta`、`/ui/api/settings`）此前一律直接 `c.req.json()`
- * / `c.req.text()` —— 那是平台 `Request` 的原生读取，**没有任何上限**：一条 chunked 请求
- * （不带 `content-length`，预检看不见）发 90 MiB JSON 就能把整个 isolate 撑爆，后果与
- * `requestLimits.ts` 顶部记的那条一样（并发中的其它请求一起 503）。这些端点都在鉴权之后，
- * 所以实际风险面是"凭据泄漏后的放大器"，但代价是每个请求 90 MiB 内存 ⇒ 一律封顶。
+ * 为什么需要它：入口的预检与各 handler 的 `readBodyCapped` 只覆盖了**协议面**的写端点。
+ * UI 面的 JSON 写端点（`/ui/api/history`、`/batch-update`、`/batch-purge`、`/clear`、
+ * `/batch-meta`、`/ui/api/settings`）若直接 `c.req.json()` / `c.req.text()`，那是平台 `Request`
+ * 的原生读取，**没有任何上限**：一条 chunked 请求（不带 `content-length`，预检看不见）发 90 MiB
+ * JSON 就能把整个 isolate 撑爆，后果与 `requestLimits.ts` 顶部记的那条一样（并发中的其它请求
+ * 一起 503）。这些端点都在鉴权之后，所以实际风险面是"凭据泄漏后的放大器"，但代价是每个请求
+ * 90 MiB 内存 ⇒ 一律封顶。
  *
  * 返回 `null` 时请求体**已被处理到"可安全提前响应"的状态**，调用方据此直接回 413 即可；
- * **不要在调用方再调一次 drainRequestBody**（重复排空无害，但那是多余的读）。
- * ⚠️ **措辞精确**（2026-10-04，验证单元 V1 指出）：两个超限分支的处理方式**不同** ——
+ * ⚠️ **措辞精确**：两个超限分支的处理方式**不同** ——
  * ① `content-length` 预检超限走 `drainRequestBody`（**真正读完**再丢弃）；
  * ② 流式读取中途超限只做 `reader.cancel()`（**不读完**）。在 workerd 上 `cancel()` 之后
  *    `read()` 立即返回 `done:true`（流已终结），实测四种分支（cancel / 读完丢弃 / drain /

@@ -10,7 +10,11 @@ import { createSqliteD1, readSchemaSql, type SqliteD1 } from './support/d1-sqlit
 import { parseMultipart } from '../src/multipart';
 import { classifyStoredProfile, parseProfileDto, parseHistoryRecordUpdateDto, profileDtoToJson } from '../src/serialization';
 import { parseGroupZip, sha256Hex, textProfileHash } from '../src/hash';
-import { addRecordDto, entityToProfileDto, putSyncProfile, ProfileDataInvalidError, IncomingRecord } from '../src/profile';
+import { entityToProfileDto, ProfileDataInvalidError } from '../src/profile';
+import { putSyncProfile } from '../src/profileWrite';
+import { addRecordDto } from '../src/profileHistory';
+import { createNewGroupDataFileName, createNewTextDataFileName } from '../src/profileHistory';
+import type { IncomingRecord } from '../src/profileHistory';
 import { HistoryDb, shouldUpdate } from '../src/db';
 import { ProfileType } from '../src/types';
 import type { HistoryRecordEntity, ProfileDto } from '../src/types';
@@ -210,7 +214,6 @@ function buildZipWithDuplicateNames(name: string, contents: Uint8Array[]): Uint8
 // ============================================================ F7 / F8 / F11 序列化
 describe('F27 · 服务端生成的传输数据文件名（对齐上游 Utility.CreateTimeBasedFileName）', () => {
   it('Group：File_{stamp}_{8chars}.{3chars}.zip；Text：Text_..._.txt', async () => {
-    const { createNewGroupDataFileName, createNewTextDataFileName } = await import('../src/profile');
     const group = createNewGroupDataFileName();
     // 上游 CreateTimeBasedFileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}_{Path.GetRandomFileName()}"，
     // 而 Path.GetRandomFileName() 形如 "abcd1234.xyz"（随机段自带一个点）

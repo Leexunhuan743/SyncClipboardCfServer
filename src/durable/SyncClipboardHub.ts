@@ -15,12 +15,10 @@
 // 「No WebSocket standard API is used」这一条 hibernate 前置条件不成立 ⇒ 对象在**整个连接期间**
 // 计 duration（官方 pricing 脚注 4：Calling `accept()` on a WebSocket in an Object will incur
 // duration charges for the entire time the WebSocket is connected），与是否真被回收无关。
-// 实测代价：本 DO 吃掉 Free 日额度的 84.5–85.5%（11,014–11,103 GB-s/天，activeTime 99.6%）；
-// 迁移后同样的 15 s alarm 心跳下 duration 降到满额的 0.076–0.1%。
-// 依据与回归面：docs/design.md D42；真实账户读数见 docs/free-plan-account-facts.md。
+// 依据：docs/design.md D42（账户读数见 docs/free-plan-account-facts.md）。
 // ⚠️ 两种 API **不可并用**：`acceptWebSocket` 之后 `addEventListener` 收不到事件。
 // ⚠️ SSE 与长轮询**仍是**不可 hibernate 的（活着的 `writer` / 未兑现的 `pending` 无法迁移）
-// ⇒ 有这两类连接在线时，本对象照样全程计费。这是已知且已登记的边界（D42）。
+// ⇒ 有这两类连接在线时，本对象照样全程计费。
 import {
   parseClientMessage,
   handshakeResponse,
@@ -66,14 +64,13 @@ const IDLE_TIMEOUT_MS = 60_000;
 const POLL_TIMEOUT_MS = 25_000;
 const TOKEN_PREFIX = 'tok:';
 // 认证失败计数的落盘节流（详见 persistAuthLimits）：两次「纯计数推进」落盘之间的最小间隔。
-// 取 15 s 与 hibernate 的静默阈值（10 s）同一量级 —— 节流窗口决定「hibernate 会抹掉多少失败次数」
-// （即攻击者停手等 hibernate 能多试几次），而写率上界是 1 行 / 15 s，与攻击流量无关。
+// 取 15 s 与 hibernate 的静默阈值（10 s）同一量级 —— 该窗口决定攻击者停手等 hibernate
+// 能多试几次；写率上界则是 1 行 / 15 s，与攻击流量无关。
 const AUTH_RATE_LIMIT_PERSIST_MIN_INTERVAL_MS = 15_000;
 
 // 认证失败计数的落盘形态（单个 storage key ⇒ 一次落盘 = 1 行写）。
 // `persistedAt` 必须**一起**落盘：节流判据的内存基线会被 hibernate 清掉，只有把「上次落盘时刻」
-// 本身存下来，唤醒后「距上次落盘多久」才仍然算得对 —— 否则每段静默都会把节流重置成「刚落过盘」，
-// 于是节流形同虚设（每次失败都落一行）。
+// 本身存下来，唤醒后「距上次落盘多久」才仍然算得对 —— 否则节流形同虚设（每次失败都落一行）。
 interface PersistedAuthLimits {
   persistedAt: number;
   limits: Record<string, AuthLimitState>;
@@ -91,9 +88,9 @@ function isAuthLimitState(value: unknown): value is AuthLimitState {
  * `Record<string, AuthLimitState>`（逐条用 `isAuthLimitState` 校验后接收，`persistedAt` 取 0
  * ⇒ 下一次落盘立刻写成新形态）。其余（损坏值）一律返回 `null` ⇒ 按空表起算。
  *
- * 为什么旧形态要**迁移**而不是丢弃：master 落的就是平铺表，直接丢弃会让**部署那一刻仍在有效期内的
- * 封锁与失败计数全部归零**（攻击者只要等到发布窗口就能重来，且慢速试探的进度白攒）。迁移的代价为零 ——
- * 两条路径读出来的都是同一批 `AuthLimitState`。
+ * 为什么旧形态要**迁移**而不是丢弃：旧版落的就是平铺表，直接丢弃会让**升级那一刻仍在有效期内
+ * 的封锁与失败计数全部归零**（攻击者只要等到发布窗口就能重来，且慢速试探的进度白攒）。
+ * 迁移的代价为零 —— 两条路径读出来的都是同一批 `AuthLimitState`。
  * 只有「不是对象 / 完全没有可识别的条目」才算损坏：`limits` 为空表与旧形态的空表等价（都按空表起算）。
  */
 function readPersistedAuthLimits(raw: unknown): PersistedAuthLimits | null {
@@ -118,9 +115,8 @@ function pickAuthLimitStates(source: Record<string, unknown>): Record<string, Au
   return limits;
 }
 
-// 长轮询单连接队列上限（F9 第四类封顶）：无上限时一次写可让 N 条连接各积压整条消息
-// （实测 30 连接 × 1.6MB = 48MB，单连接累积 4.5MB）。超限按「服务端关闭」语义结束该连接
-// （下一次轮询 204，客户端据此停止轮询），不发明新的状态码。
+// 长轮询单连接队列上限：无上限时一次写可让 N 条连接各积压整条消息。
+// 超限按「服务端关闭」语义结束该连接（下一次轮询 204，客户端据此停止轮询），不发明新的状态码。
 // ⚠️ `MAX_QUEUED_BYTES` 判的是**UTF-16 码元数**（`message.length`，见 `LongPollClient.queuedBytes`
 // 的字段注释），它是体积的保守代理——1 码元 ≤ 2 字节，故实际占用不会超过这里的两倍。
 // 名字沿用"字节"是因为它表达的是「队列体积上限」这个意图，改名字要连 test/rate-limit.test.ts 一起改。
@@ -183,7 +179,7 @@ export class SyncClipboardHub {
   private lpClients = new Map<string, LongPollClient>();
   private state: DurableObjectState;
   private env: Bindings;
-  // 认证失败计数的权威副本（F7；Worker 侧 src/rateLimit.ts 调用本 DO 的 AUTH_RATE_LIMIT_PATH）。
+  // 认证失败计数的权威副本（Worker 侧 src/rateLimit.ts 调用本 DO 的 AUTH_RATE_LIMIT_PATH）。
   // DO 单线程，计数天然串行化，无需额外的锁或事务。
   // ⚠️ hibernate 会**常规性**地清空这份内存态（每段静默约 10 s），而封锁窗口是分钟级 ⇒ 落盘
   // 不再是「尽力而为」，而是封锁语义的一部分（详见 persistAuthLimits 与 docs/design.md D42）。
@@ -206,13 +202,13 @@ export class SyncClipboardHub {
   /**
    * 落盘快照的**按需**加载（只在首次用到限速状态时读一次）。
    *
-   * 为什么不在构造函数里读（2026-09-25 微优化，理由带实测）：hibernate 之后构造函数
-   * **每次唤醒都会重跑**，而绝大多数唤醒根本用不到限速状态 —— 客户端 15 s keepalive、每次广播、
-   * 每条连接事件都会唤醒它（合并后估算 1.2 万–2.9 万次唤醒/天）⇒ 原来的写法就是同量级的 storage 读，
-   * 而且给**每次**唤醒都加一个存储往返的延迟，这些读全部白费。改成按需后：**只有**真正要判定或
-   * 查询限速的那两条入口（`handleAuthRateLimit` / `connectionAuthFailure`）会读。
-   * memo 一个 Promise：DO 单线程下并发调用共享同一次读取；读失败不重试（与旧写法同侧 ——
-   * 该实例按空表起算，下一次唤醒是新实例、会重新读）。
+   * 为什么不在构造函数里读：hibernate 之后构造函数**每次唤醒都会重跑**，而绝大多数唤醒
+   * 根本用不到限速状态 —— 客户端 15 s keepalive、每次广播、每条连接事件都会唤醒它
+   * ⇒ 在构造函数里读就是给**每次**唤醒加一个存储往返，而这些读全部白费。
+   * 改成按需后：**只有**真正要判定或查询限速的那两条入口（`handleAuthRateLimit` /
+   * `connectionAuthFailure`）会读。
+   * memo 一个 Promise：DO 单线程下并发调用共享同一次读取；读失败不重试 ——
+   * 该实例按空表起算，下一次唤醒是新实例、会重新读。
    */
   private loadAuthLimitsOnce(): Promise<void> {
     this.authLimitsLoaded ??= (async () => {
@@ -241,15 +237,15 @@ export class SyncClipboardHub {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // 认证失败限速端点：仅 Worker（src/rateLimit.ts）经 HUB binding 调用，
-    // 外部请求不会路由到这里（index.ts 只把 HUB_PATH / negotiate 转发给 DO）。
+    // 认证失败限速端点：Worker 内部经 HUB binding 调用，外部请求到不了这里
+    // （index.ts 只把 HUB_PATH / negotiate 转发给 DO）。
     if (url.pathname === AUTH_RATE_LIMIT_PATH && request.method === 'POST') {
       return this.handleAuthRateLimit(request);
     }
 
     // 广播入口（Worker 写操作后调用；上游 _hubContext.Clients.All 等价）
     if (url.pathname === BROADCAST_PATH && request.method === 'POST') {
-      // 两种形态（2026-09-22，ADR D33）：
+      // 两种形态：
       //   · `{target, payload}`   —— 单条写（PUT / POST / PATCH）
       //   · `{target, payloads}`  —— **批量写**：一次子请求投递整批。消息仍然**逐条**入队，
       //     顺序与内容与"逐条广播 N 次"完全一致；省掉的只是 N-1 次 DO 子请求
@@ -293,10 +289,9 @@ export class SyncClipboardHub {
     }
 
     // 无 `id` 的连接请求 ⇒ **400**（对齐上游 `HttpConnectionDispatcher` 的
-    // 「Connection ID required」，审计 R3#2，2026-10-04 修）。此前缺 id 时会继续往下走，
-    // 在 id 为空串的情况下**以空 id 建连接**（每次都是同一个连接槽 ⇒ 白占 DO 内存与一条 storage 写入；
-    // `/SyncClipboardHub/` 那种尾斜杠形态正是尾斜杠归一后新放行的入口）。
-    // ⚠️ **必须排在鉴权之后**（2026-10-04，验证单元 V3 的真 A/B 纠正）：上游是 hub 类级 `[Authorize]`，
+    // 「Connection ID required」）。缺 id 会以**空 id 建连接**（每次都是同一个连接槽 ⇒
+    // 白占 DO 内存与一条 storage 写入）；`/SyncClipboardHub/` 这类尾斜杠形态正是这条分支的入口。
+    // ⚠️ **必须排在鉴权之后**：上游是 hub 类级 `[Authorize]`，
     // 无凭据请求一律 **401 + `WWW-Authenticate`**（与 id 有无无关）；先判 id 会让无凭据请求变 400
     // （丢掉 WWW-Authenticate、且绕过认证失败限速）。
     // 注意：长轮询客户端**必带** `?id=`（negotiate 签发），故正常路径不受影响。
@@ -340,12 +335,11 @@ export class SyncClipboardHub {
     // 16,384 字节；且「改完之后不重新序列化就不保留」⇒ 每次触碰都要重写一次。
     server.serializeAttachment({ lastSeen: Date.now() });
     void this.scheduleHeartbeat();
-    // P3 打点：accept 之后再记，`ws:` 计数才含这一条
     console.log(`[hub] connect transport=ws clients=${this.transportBreakdown()}`);
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // 消息：握手响应 / Close 回帧 / Ping 忽略（与旧的 message 监听器逐句等价）。
+  // 消息：握手响应 / Close 回帧 / Ping 忽略（与标准 API 的 message 监听器逐句等价）。
   // 参数是 `string | ArrayBuffer`；hibernate 过的连接被唤醒后本方法同样会被调用，
   // 因此**不得**依赖任何内存态（连接集合与 lastSeen 都不在内存里）。
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -358,7 +352,7 @@ export class SyncClipboardHub {
       ws.send(reply.kind === 'close' ? closeMessage() : reply.text);
       if (reply.kind !== 'send') ws.close();
     } catch {
-      // 连接集合由平台代管 ⇒ 这里只需结束这条连接（旧实现是从内存 Map 里删掉）
+      // 连接集合由平台代管 ⇒ 这里只需结束这条连接
       try {
         ws.close();
       } catch {
@@ -384,7 +378,7 @@ export class SyncClipboardHub {
     console.log(`[hub] disconnect transport=ws reason=close clients=${this.transportBreakdown()}`);
   }
 
-  // 错误：与旧的 error 监听器等价（结束该连接 + 重算心跳）。
+  // 错误：结束该连接 + 重算心跳（与标准 API 的 error 监听器等价）。
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
     void this.scheduleHeartbeat();
     try {
@@ -451,7 +445,7 @@ export class SyncClipboardHub {
 
   // ---------- 长轮询 ----------
 
-  // GET：取消息。首次请求建立连接并立即返回（与 ASP.NET 一致：首个轮询用于完成初始化）；
+  // GET：取消息。首个轮询建立连接并立即返回（与 ASP.NET 一致：它用于完成初始化）；
   // 有排队消息立即返回；否则挂起至多 POLL_TIMEOUT_MS（超时返回 200 空体，客户端会重新轮询）；
   // 服务端主动关闭时返回 204（客户端据此结束轮询）。
   private async handleLongPoll(url: URL): Promise<Response> {
@@ -517,9 +511,8 @@ export class SyncClipboardHub {
     const sse = this.sseClients.get(id);
     if (sse) sse.lastSeen = Date.now();
 
-    // 整包读取**必须**过同一上限（F9 的第二层）：hub 的 POST 不进 Hono ⇒ F9 的 content-length
-    // 预检与 `readBodyCapped` 都够不到它，此前这里的 `request.text()` 是**唯一**无上限的整包读取
-    // （审计 R1#1 / R4#2，2026-10-04 修：实测上限设 256 KiB 时，20 MiB 的 POST 仍返回 200）。
+    // 整包读取**必须**过同一上限：hub 的 POST 不进 Hono ⇒ 请求体上限的 content-length
+    // 预检与 `readBodyCapped` 都够不到它，`request.text()` 会是**唯一**无上限的整包读取。
     // 超限时 `readBodyTextCapped` 已把请求体排空，直接回 413。
     const body = await readBodyTextCapped(request, maxRequestBodyBytes(this.env));
     if (body === null) return new Response('Payload Too Large', { status: 413 });
@@ -597,7 +590,7 @@ export class SyncClipboardHub {
         lp.queue.push(message);
         lp.queuedBytes += message.length;
         // 排队意味着客户端已停止轮询；超过上限说明它不会再来取，按「服务端关闭」结束连接，
-        // 避免广播被无界地堆在内存里（F9：一次写 30 连接 × 1.6MB = 48MB）。
+        // 避免广播被无界地堆在内存里。
         if (lp.queue.length > MAX_QUEUED_MESSAGES || lp.queuedBytes > MAX_QUEUED_BYTES) {
           console.log(
             `[hub] queue overflow, closing client id=${lp.id} messages=${lp.queue.length} bytes=${lp.queuedBytes}`,
@@ -614,7 +607,7 @@ export class SyncClipboardHub {
     }
   }
 
-  // ---------- 认证失败限速（F7）----------
+  // ---------- 认证失败限速 ----------
 
   // Worker 侧 src/rateLimit.ts 的内部端点。op：
   //   report   —— 记一次失败（窗口内累加；达阈值即产生封锁），返回这些 key 的封锁状态
@@ -677,7 +670,7 @@ export class SyncClipboardHub {
   // 它在响应送出前已持久化，所以「不 await」不等于「不保证」。
   //
   // ⚠️ 为什么落盘是**安全语义**而不是「尽力而为」：hibernate 会**常规性**地清空内存态
-  // （每段静默约 10 s 一次；P1 之后更频繁），而封锁窗口是分钟级（默认 15 min）⇒ 只靠内存时
+  // （每段静默约 10 s），而封锁窗口是分钟级（默认 15 min）⇒ 只靠内存时
   // 「被封禁的来源停手 10 秒就能重来」。因此封锁状态必须落盘；节流窗口则决定攻击者能多试几次。
   //
   // 落盘触发（都是「状态实质变化」，且**不**按失败次数写一行）：
@@ -758,10 +751,8 @@ export class SyncClipboardHub {
   /**
    * 传输构成（日志用）：`ws:a sse:b lp:c`。
    *
-   * 由来（P3 判据，2026-09-26）：Free 计划下 hibernate 能不能生效，取决于**有没有非 WS 连接**——
-   * 真机旁挂实测「长轮询在线 ⇒ duration 满速 103%（收益归零）」「SSE 待判」。而在此之前服务端
-   * **没有任何按传输打点的口**（`clientCount()` 只有总数），生产到底用了哪些传输**无从判定**
-   * （Git history§189.4）。这三行日志就是那条判据的数据来源。
+   * 由来：Free 计划下 hibernate 能不能生效，取决于**有没有非 WS 连接**（长轮询在线 ⇒ duration
+   * 满速），而仅靠 `clientCount()` 只有总数 ⇒ 生产上用了哪些传输无从判定。这三行日志就是判据。
    *
    * ⚠️ 不落连接 id：SSE/长轮询的 `id` 就是 negotiate 签发的 **connectionToken**，SignalR 传输规范
    * 明确要求它保密；不要把 connectionToken 写入日志。
@@ -778,7 +769,7 @@ export class SyncClipboardHub {
    *  ⚠️ `getAlarm()` 在 `alarm()` **正在执行**时返回 `null`（除非期间又 `setAlarm` 过）⇒ 不能把它
    *  读成「从未排程」；按官方示例的 `if (!currentAlarm)` 形态理解即可：只有「确实已有一个待触发的
    *  alarm」才跳过。`alarm()` 内重排时它必然是 `null`，于是会重新排程 —— 这正是要的语义。
-   *  为什么必须防重排：直接 `setAlarm(now+15s)` 会覆盖已有 alarm，而连接建立/关闭（8 个调用点）
+   *  为什么必须防重排：直接 `setAlarm(now+15s)` 会覆盖已有 alarm，而连接建立/关闭等 8 个调用点
    *  都会调 scheduleHeartbeat —— 若连接事件来得比 15s 更勤，心跳将**永远不触发**，
    *  WebSocket/SSE 客户端在 30s ServerTimeout 处被自己判超时并反复重连。 */
   private async scheduleHeartbeat(): Promise<void> {
@@ -796,7 +787,7 @@ export class SyncClipboardHub {
 
   // 向全部连接发送 Ping：WebSocket 直接发；SSE 写 data 帧；长轮询入队（下次轮询立即取走）。
   // 长轮询尤其依赖它——空轮询响应不会重置客户端 ServerTimeout，必须有真实消息。
-  // ⚠️ 这里**不**刷新 WS 的 `lastSeen`（与迁移前一致）：客户端的 15s keepalive Ping 会经
+  // ⚠️ 这里**不**刷新 WS 的 `lastSeen`：客户端的 15s keepalive Ping 会经
   // `webSocketMessage` 刷新它，而服务端 ping 若也刷新，半开 TCP 就永远不会被 `closeIdleClients` 回收。
   private sendPings(): void {
     const ping = pingMessage();
@@ -821,7 +812,7 @@ export class SyncClipboardHub {
     }
   }
 
-  // 关闭静默超过 IDLE_TIMEOUT_MS 的连接（半开 TCP 不会有 close/error 事件，F10）
+  // 关闭静默超过 IDLE_TIMEOUT_MS 的连接（半开 TCP 不会有 close/error 事件）
   private closeIdleClients(): void {
     const now = Date.now();
     for (const ws of this.state.getWebSockets()) {
@@ -872,7 +863,7 @@ export class SyncClipboardHub {
     await this.state.storage.put(TOKEN_PREFIX + token, now + TOKEN_TTL_MS);
   }
 
-  // 连接鉴权 + 失败限速（F7）。WS/SSE/长轮询的鉴权在 DO 内完成、不经过 Worker 的 authFailure，
+  // 连接鉴权 + 失败限速。WS/SSE/长轮询的鉴权在 DO 内完成、不经过 Worker 的 authFailure，
   // 因此这里用**同一套 key 约定与同一个状态机**直接在 DO 内判定（DO 自己就是权威存储，零额外往返）。
   // 返回 Response 表示拒绝（401/429），null 表示通过。
   private async connectionAuthFailure(url: URL, request: Request): Promise<Response | null> {

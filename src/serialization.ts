@@ -21,8 +21,7 @@ export function toIso(ms: number): string {
 // 历史数据体积（字节 → 上游口径的 MB）。
 // 口径来自上游 `GetStatisticsAsync`：保留两位小数；**有数据但不足 0.01MB 时取 0.01**，
 // 让「非零体积」在界面上不会显示成 0。
-// 单独成函数是因为它出现在三处（官方 statistics、UI statistics、UI info），
-// 此前 UI info 用了整数四舍五入，同一个数在统计页显示 0.48、在 info 里显示 0。
+// 单独成函数是因为它出现在三处（官方 statistics、UI statistics、UI info），必须同一个数。
 export function historySizeMB(bytes: number): number {
   let mb = bytes / (1024.0 * 1024.0);
   mb = Math.round(mb * 100) / 100;
@@ -88,7 +87,7 @@ export function parseProfileType(s: string | null | undefined): ProfileType | un
 // ProfileTypeFilter 位掩码解析：支持 "All"、"Text,Image"、"FileAndGroup"、"None"，大小写不敏感。
 // 与上游模型绑定一致：字段缺失或空白 → 默认 All（DTO 初始化值）；
 // **非法名称 → 抛 InvalidQueryValueError**（上游 [ApiController] 对枚举绑定失败自动 400），
-// 此前静默回退 All 会把「拼错的过滤条件」变成「返回全部记录」。
+// 静默回退 All 会把「拼错的过滤条件」变成「返回全部记录」。
 const FILTER_FLAG_NAMES: Record<string, number> = {
   NONE: ProfileTypeFilter.None,
   TEXT: ProfileTypeFilter.Text,
@@ -114,7 +113,7 @@ export function parseProfileTypeFilter(
   if (s == null || s.trim() === '') return ProfileTypeFilter.All;
   const trimmed = s.trim();
   // 上游 `Enum.TryParse<ProfileTypeFilter>(value)` **接受数字**（如 "5" = Text|Image）；
-  // 数字与名称不能混用（TryParse("Text,5") 失败）。此前数字一律 400，与上游相左（F27）。
+  // 数字与名称不能混用（TryParse("Text,5") 失败）。
   if (/^[+-]?\d+$/.test(trimmed)) {
     const n = Number(trimmed);
     if (!Number.isSafeInteger(n) || n < INT32_MIN || n > INT32_MAX) {
@@ -158,7 +157,7 @@ export function profileDtoToJson(dto: ProfileDto): string {
 }
 
 // 请求体必须是 JSON **对象**：上游是 `[FromBody] ProfileDto`，反序列化失败即 400。
-// 此前 `[]` / `null` / `123` 会被当成「字段全缺失的 DTO」继续处理，最终写入一条空文本历史
+// 否则 `[]` / `null` / `123` 会被当成「字段全缺失的 DTO」继续处理，最终写入一条空文本历史
 // 记录并把它设为当前 profile——客户端发错 body 会静默污染数据（PUT /SyncClipboard.json）。
 export function requireJsonObject(json: string, what: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(json);
@@ -193,9 +192,8 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
 
   // ① Type：键缺失 → STJ 用默认 Text（不抛错）；数字 → JsonStringEnumConverter 接受**任意 Int32**
   //    （STJ 对 `int` 目标只拒非整数与越界，**不要求是已定义的枚举值** ⇒ 上游会把 `1e30`/`2.0`/`3e12`
-  //    里能进 Int32 的照单收下）。此前只判 `Number.isInteger`，于是 `1e30` 这类**越 Int32** 的值被判 ok
-  //    并**原样透给客户端** ⇒ 客户端 `ReadFromJsonAsync<ProfileDto>` 抛异常 ⇒ 同步停摆
-  //    （正是本段开头要防的那件事；审计 R6#7，2026-10-04 修）。
+  //    里能进 Int32 的照单收下）。只判 `Number.isInteger` 会让 `1e30` 这类**越 Int32** 的值被判 ok
+  //    并**原样透给客户端** ⇒ 客户端 `ReadFromJsonAsync<ProfileDto>` 抛异常 ⇒ 同步停摆。
   const type = obj.type;
   if (type !== undefined) {
     if (typeof type === 'number') {
@@ -209,8 +207,7 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
 
   // ② Hash：既要类型对，也要能安全参与 R2 key 构造（见 types.isValidProfileHash）——含路径分隔符的
   //    存储值若原样返回，客户端会用同一规则构造本地路径 → 抛异常/产生非法路径。视同损坏并降级。
-  //    ⚠️ 这两条**不能**被 Type 的判定短路：`{"hash":"A/B"}`（**没有 type 键**）同样是坏值 ——
-  //    此前 `type === undefined` 直接 return 'ok'，把这种值放了过去（与 F31 那条同类，2026-10-03 修）。
+  //    ⚠️ 这一条**不能**被 Type 的判定短路：`{"hash":"A/B"}`（**没有 type 键**）同样是坏值。
   const hash = obj.hash;
   if (hash !== undefined && hash !== null) {
     if (typeof hash !== 'string') return 'corrupt';
@@ -222,17 +219,15 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
   //    `Deserialize<ProfileDto>` 抛 JsonException → catch → 空 TextProfile（同步继续）；
   //    本实现若不拦，坏值会**原样发给客户端** → `ReadFromJsonAsync<ProfileDto>` 抛异常 →
   //    **剪贴板同步中断**（本段开头写的目标正是"不把坏 JSON 发给客户端"）。
-  //    可达性：CF 自己的写入路径永远产出规范形状 ⇒ 只有"库被外部改坏/迁移工具写错"才谈得上
-  //    （与 ② 的 hash 支同一场景），而那一档的代价是同步整体停摆，值得逐字段判死。
+  //    可达性：CF 自己的写入路径永远产出规范形状 ⇒ 只有"库被外部改坏/迁移工具写错"才谈得上。
   for (const value of [obj.text, obj.dataName, obj.transferDataHash]) {
     if (value !== undefined && value !== null && typeof value !== 'string') return 'corrupt';
   }
   if (obj.hasData !== undefined && typeof obj.hasData !== 'boolean') return 'corrupt';
-  //    ⚠️ `Size` 是上游 `long?` ⇒ 有效域是 **Int64**。此前用 `Number.isSafeInteger`（≤2^53）判，
-  //    把 `2^53..2^63-1` 之间的合法 long **误判成 corrupt 并降级为空 profile**（丢数据）。
+  //    ⚠️ `Size` 是上游 `long?` ⇒ 有效域是 **Int64**。用 `Number.isSafeInteger`（≤2^53）判会把
+  //    `2^53..2^63-1` 之间的合法 long **误判成 corrupt 并降级为空 profile**（丢数据）。
   //    改用 Int64 上界（`Number.isInteger` + 绝对值 < 2^63）：既不再误杀合法 long，也**仍然拦住**
-  //    `1e30` 这类越界值（它虽满足 `Number.isInteger`，但远超 `LONG_MAX` ⇒ 上游 STJ 会拒，
-  //    这里也必须拒，否则坏值原样透给客户端）。审计 R6#7，2026-10-04。
+  //    `1e30` 这类越界值（它虽满足 `Number.isInteger`，但远超 `LONG_MAX` ⇒ 上游 STJ 会拒，这里也必须拒）。
   const size = obj.size;
   const LONG_MAX_EXCLUSIVE = 9.223372036854776e18; // 2^63；JS 在 2^53 以上无整数精度，故用上界而非等值
   if (
@@ -247,11 +242,9 @@ export function classifyStoredProfile(raw: string): StoredProfileHealth {
 
 // 字段的 JSON 类型必须与上游 `[FromBody] ProfileDto` 的模型绑定同口径：类型不符在
 // System.Text.Json 里是**反序列化失败 ⇒ 400**。
-// 此前四个字段一律 `as string` / `as boolean` 强转，于是 `{"hash":123}`、`{"text":[1,2]}`、
-// `{"dataName":123,"hasData":true}` 会一路走到字符串运算里抛 TypeError ⇒ 未处理的 **500**
-// （2026-09-20 实测 5 例；`{"hasData":"false"}` 更糟：字符串被当真值，于是「没有数据」被判成
-// 「有数据」，只是恰好被后面那条 400 文案掩盖了）。F6 已按同一口径收紧 size / version，
-// 这里补齐其余四个字段。
+// 若一律 `as string` / `as boolean` 强转，`{"hash":123}`、`{"text":[1,2]}`、
+// `{"dataName":123,"hasData":true}` 会一路走到字符串运算里抛 TypeError ⇒ 未处理的 **500**；
+// 而 `{"hasData":"false"}` 更糟：字符串被当真值，于是「没有数据」被判成「有数据」。
 //
 // ⚠️ `null` 的处置**按字段的可空性分两类**（判据就是上游 `ProfileDto` 的声明）：
 //   · 非空**引用**类型 —— `Hash` / `Text`（`string`）、`DataName`（`string?`）：STJ 允许 null
@@ -277,7 +270,7 @@ function readBool(value: unknown, field: string): boolean | null {
 // 解析：大小写不敏感取值（客户端总发 camelCase，防御性容忍其他大小写）
 // type 处理与上游一致：键缺失 → Text；非法枚举名 → 抛错（上游 JsonException → 400）；
 // Unknown/None → 抛错（上游 Profile.Create 抛 NotSupportedException）。
-// 禁止静默降级为 Text —— 否则畸形输入会覆盖当前 profile 并写入历史（F8）。
+// 禁止静默降级为 Text —— 否则畸形输入会覆盖当前 profile 并写入历史。
 export function parseProfileDto(json: string): ProfileDto {
   const raw = requireJsonObject(json, 'ProfileDto');
   const get = (key: string): unknown => {
@@ -444,8 +437,8 @@ export function parseHistoryRecordUpdateDto(json: string): HistoryRecordUpdateDt
   if (typeof pinned === 'boolean') dto.pinned = pinned;
   if (typeof isDelete === 'boolean') dto.isDelete = isDelete;
   // version 对齐上游 `HistoryRecordUpdateDto.Version`（`int?`）的模型绑定：非空值必须是
-  // 落在 int32 内的**有限整数**，否则绑定失败 → 400。此前只判 `typeof === 'number'`：
-  // `1.5` 被原样持久化（污染该记录的版本语义）、`1e400` 解析为 Infinity 后落库触发 500（F6）。
+  // 落在 int32 内的**有限整数**，否则绑定失败 → 400。只判 `typeof === 'number'` 会让
+  // `1.5` 被原样持久化（污染该记录的版本语义）、`1e400` 解析为 Infinity 后落库触发 500。
   // 符号不限（上游 int? 不限制负数；负值由 shouldUpdate 自然判成 409/不更新）。
   if (version !== undefined && version !== null) {
     if (
@@ -462,9 +455,8 @@ export function parseHistoryRecordUpdateDto(json: string): HistoryRecordUpdateDt
   //   · `null` / 键缺失 → 「未提供」（上游得到 null，该字段不参与更新）
   //   · 其余取值**必须**是能解析的日期串 —— 类型不符（数字/对象/数组）与**空串**
   //     在 System.Text.Json 里都是反序列化失败 ⇒ **400**
-  // 此前只判 `typeof === 'string' && !== ''`，于是 `{"lastModified":123}` 被**静默忽略**：
-  // 请求方以为改掉了、服务端没改（F6 给 version 收紧类型时是同一条口径，这里补齐）。
-  // F7 的原有作用保持不变：非法串在解析期抛错，不会拖到 fromIso 才炸成 500。
+  // 只判 `typeof === 'string' && !== ''` 会让 `{"lastModified":123}` 被**静默忽略**：
+  // 请求方以为改掉了、服务端没改。非法串在解析期抛错，不会拖到 fromIso 才炸成 500。
   for (const [field, value] of [
     ['lastModified', lastModified],
     ['lastAccessed', lastAccessed],
@@ -507,9 +499,9 @@ export function entityToUpdateDto(e: HistoryRecordEntity): HistoryRecordUpdateDt
   };
 }
 
-// ===== LIKE 模式上限（G6）=====
+// ===== LIKE 模式上限 =====
 // 约束不是「搜索串有多长」，而是**拼出来的 LIKE 模式**有多长：D1 上越过它的查询直接报错，
-// 表现为未处理的 500（非资源类缺陷）。实测（2026-09-20 本地 dev server，两个 LIKE 站点各测一次）：
+// 表现为未处理的 500（非资源类缺陷）。实测（本地 dev server，两个 LIKE 站点各测一次）：
 //   · `Text LIKE '%…%'`                 —— 搜索串 48 字节 ⇒ 模式 50 字节 **通过**；49 字节 ⇒ 51 **报错**
 //   · `TransferDataFile LIKE '%/' || ?` —— 名字   48 字节 ⇒ 模式 50 字节 **通过**；49 字节 ⇒ 51 **报错**
 // 即引擎口径是「模式 ≤ MAX_LIKE_PATTERN_BYTES」，下面的「搜索串预算」由它减掉前后两个 % 推出。

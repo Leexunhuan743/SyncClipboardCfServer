@@ -393,7 +393,9 @@ src/
 ├── index.ts            Worker 入口，路由装配、鉴权中间件与 Cron 调度
 ├── auth.ts             HTTP Basic 鉴权处理与常量时间防时序攻击比较
 ├── hash.ts             Text、File、Image、Group 数据的哈希计算（逐字节对齐官方实现）
-├── profile.ts          剪贴板 Profile 数据校验与状态持久化
+├── profile.ts          剪贴板 Profile 的共享原语（校验、持久化、错误类型）
+├── profileWrite.ts     PUT /SyncClipboard.json 写编排
+├── profileHistory.ts   POST /api/history 写编排
 ├── db.ts               D1 数据库访问层与乐观并发控制
 ├── storage.ts          R2 对象存储读写、暂存区维护与孤儿文件回收
 ├── cleanup.ts          保留期裁剪、条数限制与孤儿清理后台任务

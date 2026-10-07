@@ -3,7 +3,9 @@ import { Hono } from 'hono';
 import { Bindings } from '../env';
 import { basename, BadRequestError } from '../db';
 import { stores } from '../stores';
-import { addRecordDto, NotFoundError, ProfileDataInvalidError, IncomingRecord } from '../profile';
+import { NotFoundError, ProfileDataInvalidError } from '../profile';
+import { addRecordDto } from '../profileHistory';
+import type { IncomingRecord } from '../profileHistory';
 import {
   entityToDto,
   entityToUpdateDto,
@@ -39,7 +41,7 @@ function problemDetails(detail: string): Response {
   );
 }
 
-// 上游 3.3.0 #413：`POST /api/history` 的**可选**请求头，声明传输数据文件的 SHA-256。
+// `POST /api/history` 的**可选**请求头，声明传输数据文件的 SHA-256。
 // 语义逐字对齐上游 `HistoryController.GetDeclaredTransferDataHash` + `Utility.NormalizeSHA256`：
 //   · 未出现 ⇒ null（旧客户端不受影响）
 //   · 重复值 ⇒ 400（Headers 把重复头合并成逗号串；SHA-256 十六进制不含逗号，按 `,` 切分安全）
@@ -87,8 +89,7 @@ function formGet(form: MultipartResult, key: string): string | null {
 }
 
 // 时间字段：解析不了时**忽略该项**（有意偏离：上游 `[FromForm] DateTimeOffset?` 绑定失败是 400；
-// 取舍与代价见 docs/protocol.md §10 的「query 的时间字段无法解析」一行 —— 返 400 会让客户端
-// 整轮历史同步失败，而忽略只让该条件失效）。
+// 返 400 会让客户端整轮历史同步失败，而忽略只让该条件失效）。
 // ⚠️ 但"忽略"必须留痕：丢掉的过滤条件与"范围内确实没有记录"在响应上**同形**，不留日志就只能靠
 // 比对两次请求才能发现（客户端侧的表现是「增量同步莫名空一轮」）。故这里打一条 warn；状态码不变。
 // 值由客户端给定 ⇒ 压成单行并截断（同 cleanup.ts 的 recordFailure：多行会打散结构化日志）。
@@ -128,8 +129,8 @@ function parsePage(form: MultipartResult): number {
   const raw = formGet(form, 'Page');
   if (raw === null || raw.trim() === '') return 1; // 缺省 → DTO 默认值 1
   const n = parseCSharpInt32(raw);
-  // 非 int32 绑定失败 → 400。此前把 5e21 这类值原样带进 offset，以 REAL 绑定到
-  // LIMIT/OFFSET 会触发 SQLite 'datatype mismatch' → 500（F9）。
+  // 非 int32 绑定失败 → 400。否则 5e21 这类值会原样带进 offset，以 REAL 绑定到
+  // LIMIT/OFFSET 会触发 SQLite 'datatype mismatch' → 500。
   if (n === null) throw new BadRequestError('Page is out of range');
   return n < 1 ? 1 : n;
 }
@@ -169,7 +170,7 @@ function parseIncomingForm(form: MultipartResult): IncomingRecord {
   const toInt = (v: string | null): number => {
     const raw = (v ?? '').trim();
     if (raw === '') return 0;
-    // 此前用 parseInt：'3abc' → 3、'3.9' → 3、'0x10' → 16，与 int.TryParse 的「整体必须合法」相左（F27）
+    // 必须整体合法（不用 parseInt：'3abc' → 3、'3.9' → 3、'0x10' → 16 与 int.TryParse 相左）
     return parseCSharpInt32(raw) ?? 0;
   };
   const toLong = (v: string | null): number => {
@@ -178,8 +179,7 @@ function parseIncomingForm(form: MultipartResult): IncomingRecord {
     if (!/^[+-]?\d+$/.test(raw)) return 0;
     const n = Number(raw);
     // long.TryParse 接受负数；但 JS 无法精确表示 |n| > 2^53，超界取 0（客户端不会发这种值）。
-    // 此前用 Number() 会让 '1e999' 变成 Infinity，而 Infinity 绑定进 D1 会存成 NULL
-    // （即便列声明 NOT NULL）（F9）
+    // 用 Number() 直传会让 '1e999' 变成 Infinity，而 Infinity 绑定进 D1 会存成 NULL（即便列声明 NOT NULL）。
     return Number.isSafeInteger(n) ? n : 0;
   };
   const text = formGet(form, 'text') ?? '';
@@ -271,7 +271,7 @@ async function parseFormBody(
     return new Response('Invalid or missing multipart/form-data boundary', { status: 400 });
   }
   try {
-    // 整包读取同样走 capped：F9 预检只信 content-length，chunked 请求会绕过它
+    // 整包读取同样走 capped：content-length 预检只信声明值，chunked 请求会绕过它
     const bytes = await readBodyCapped(c.req.raw, limit);
     if (bytes === null) {
       await drainRequestBody(c.req.raw);
@@ -286,7 +286,6 @@ async function parseFormBody(
 
 export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
   // `strict: false` = 尾斜杠容忍，对齐 ASP.NET 路由（客户端 AdjustDirectoryUrl 会加 `/`）。
-  // （此前这句写在声明行行尾，把分号一起注释掉了 —— 语句只是靠 ASI 才成立。）
   const app = new Hono<{ Bindings: Bindings }>({ strict: false });
 
   // GET /api/history/statistics —— 先于 :profileId 注册（Hono 同段静态优先，注册顺序保险）
@@ -328,8 +327,7 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     // 库里的坏行（hash 含路径分隔符，只能带外写入）：`storage` 层的 key 构造会断言抛错 ⇒ 500。
     // 这种记录声称有数据但**取不到**（本实现的 key 规则构造不出它）⇒ 422 + `history_data_invalid`
     // —— 上游 3.3.0（#413）把「记录有数据但数据不可用」从 404 改成 422（ProblemDetails
-    // `History transfer data is invalid` / `code: history_data_invalid`），本实现同状态码、同形的
-    // ProblemDetails JSON（见 docs/protocol.md §10 的传输数据 SHA-256 行）。
+    // `History transfer data is invalid` / `code: history_data_invalid`），本实现同状态码、同形 JSON。
     if (!isValidProfileHash(rec.hash)) {
       return problemDetails('Stored transfer data is invalid and cannot be regenerated.');
     }
@@ -340,9 +338,8 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
       return problemDetails('Stored transfer data is invalid and cannot be regenerated.');
     }
     // 出口统一编码（与 `contentTypes.ts` 的 `fileHeaders()`、`ui/routes.ts` 的数据端点同款）：
-    // 写路径不拦控制字符
-    // （既有坏数据也必须可下载），因此 dataName 可能含 CR/LF/NUL——原样拼进头值会让
-    // Response 构造抛 TypeError，使该条记录的 /data 恒 500（F5）。
+    // 写路径不拦控制字符（既有坏数据也必须可下载），因此 dataName 可能含 CR/LF/NUL——原样拼进头值
+    // 会让 Response 构造抛 TypeError，使该条记录的 /data 恒 500。
     //   filename=   ASCII 兜底串（控制字符与非 ASCII → `_`；去掉会破坏引号串的 `"` 与 `\`）
     //   filename*=  RFC 5987，encodeURIComponent 把控制字符编码为 %XX（仍是合法头值）
     const asciiName = fileName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '');
@@ -351,12 +348,12 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
       'x-content-type-options': 'nosniff',
       'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
     };
-    // 上游 3.3.0 #413：响应头回带传输数据文件的 SHA-256，客户端下载时增量校验。
+    // 响应头回带传输数据文件的 SHA-256，客户端下载时增量校验。
     // ⚠️ **只有已知且合法时才发**：空串/非法值会让客户端的 `ReadTransferDataHash` 直接抛
     // `RemoteHistoryDataRejectedException`（"must contain exactly one value"）⇒ 旧记录（迁移前入库、
     // 该列为 '') 的下载会整体失败。故旧记录**不带**这个头，客户端据此跳过校验（上游靠
     // `PrepareTransferData` 惰性回填，本实现不做回填 —— 重算一个 R2 对象的 SHA-256 要把对象
-    // 整体读进内存，代价不成比例，见 docs/protocol.md §10）。
+    // 整体读进内存，代价不成比例）。
     if (/^[0-9a-fA-F]{64}$/.test(rec.transferDataHash ?? '')) {
       headers['x-syncclipboard-transfer-data-hash'] = rec.transferDataHash!.toUpperCase();
     }
@@ -408,12 +405,12 @@ export function createHistoryRoutes(): Hono<{ Bindings: Bindings }> {
     }
 
     // data 部分「存在」即视为有传输数据——含 0 字节的部分。上游按 part 是否存在决定是否
-    // 保存数据流（空流仍传），把空部分当作「无 data」会让 Text 记录静默入库（F14）。
+    // 保存数据流（空流仍传），把空部分当作「无 data」会让 Text 记录静默入库。
     const content = parsed.dataPresent
       ? parsed.data?.content ?? new Uint8Array(0)
       : null;
 
-    // 上游 3.3.0 #413：声明头（可选）。**没有 data 却带了这个头** ⇒ 400（自相矛盾）。
+    // 声明头（可选）。**没有 data 却带了这个头** ⇒ 400（自相矛盾）。
     // 形状错误（重复/空/非 hex）也在 readDeclaredTransferDataHash 里就地 400。
     let declaredTransferDataHash: string | null = null;
     try {

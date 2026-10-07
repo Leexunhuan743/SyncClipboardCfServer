@@ -78,7 +78,7 @@
 
 ## 5. UI API
 
-完整路由表以 `src/ui/routes.ts` 和 `test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES` 为准，不在文档复制数量。
+完整路由表以 `src/ui/routes.ts`（装配）与 `src/ui/routes/*.ts`（各路由组）及 `test/ui-guard.test.ts` 的 `EXPECTED_API_ROUTES` 为准，不在文档复制数量。
 
 | 能力 | 当前约束 |
 |---|---|
