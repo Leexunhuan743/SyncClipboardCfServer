@@ -1,0 +1,4 @@
+# CI 的 shell 脚本必须是 LF：GitHub Actions 跑在 Linux 的 bash 上，CRLF 会让
+# `set -euo pipefail` / 函数定义等行尾的 \r 变成语法错误。本项目其余文件在 Windows 上
+# 用 core.autocrlf=true，这里显式固定 shell 脚本的换行，避免 checkout 时被转成 CRLF。
+*.sh text eol=lf
