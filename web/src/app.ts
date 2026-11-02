@@ -307,7 +307,31 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   const OVERVIEW_FULL_EVERY_MS = 10 * 60_000;
   let lastFullOverview = 0;
 
+  // 后台发现变化（轮询 / 推送信号）时的刷新：列表要跟上，但**总览不必每次都重取**。
+  // 总览的分组计数要读整张表（含回收站，约 2×行数），而官方客户端同步得很勤（线上实测每 20–30 秒新增一条）——
+  // 开着页面时「每次变化都 列表 + 总览 全刷」就是每半分钟读几千行，一小时十几万。
+  // 侧栏计数晚几十秒更新无关紧要，所以：列表立即刷；总览每 60 秒最多一次，被压下的那次在窗口结束时补一次（保证最终一致）。
+  const OVERVIEW_MIN_GAP_MS = 60_000;
+  let lastOverviewAt = 0;
+  let overviewTimer = 0;
+
+  async function refreshFromBackground(): Promise<void> {
+    const wait = OVERVIEW_MIN_GAP_MS - (Date.now() - lastOverviewAt);
+    if (wait <= 0) {
+      await refreshAll(true);
+      return;
+    }
+    await loadList(true);
+    if (overviewTimer === 0) {
+      overviewTimer = window.setTimeout(() => {
+        overviewTimer = 0;
+        if (!stopped && !document.hidden) void loadOverview();
+      }, wait);
+    }
+  }
+
   async function loadOverview(forceFull = false): Promise<void> {
+    lastOverviewAt = Date.now();
     const full = forceFull || !state.overview || Date.now() - lastFullOverview > OVERVIEW_FULL_EVERY_MS;
     try {
       const overview = await api.overview({ deleted: state.filters.deleted, light: !full });
@@ -1212,7 +1236,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       state.stale = false;
       if (recovered || marker.lastModified !== lastMarker.lastModified) {
         lastMarker = { lastModified: marker.lastModified };
-        await refreshAll(true);
+        await refreshFromBackground();
       } else render();
     } catch (error) {
       guard(error, '');
@@ -1300,6 +1324,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   function stop(): void {
     stopped = true;
     clearTimeout(pollTimer);
+    clearTimeout(overviewTimer);
     push.stop();
     listAbort?.abort();
     document.removeEventListener('visibilitychange', onVisibility);

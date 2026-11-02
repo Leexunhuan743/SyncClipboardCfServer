@@ -50,6 +50,20 @@ try {
   // 清理
   await read(`(async () => { const c = [...document.querySelectorAll('.card')].find(c => c.querySelector('.card__text')?.textContent === ${JSON.stringify(text)}); if (c) await fetch('/ui/api/history/batch-update', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ items:[{ type: c.dataset.type, hash: c.dataset.key.split('-').slice(1).join('-') }], update:{ isDelete:true } }) }); return 1; })()`);
 
+  // 4b) 客户端勤快同步（线上实测每 20–30 秒一条）：列表要跟上，总览（读整张表）每 60 秒最多重取一次
+  hits.length = 0;
+  const burst = `burst-${Date.now()}`;
+  for (let i = 0; i < 4; i++) {
+    await read(`fetch('/ui/api/history', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ text: ${JSON.stringify(burst + '-' + i)} }) }).then(r => r.status)`);
+    await wait(4000);
+  }
+  await wait(4000);
+  const lists = count('/ui/api/history', 0);
+  const overviews = count('/ui/api/overview', 0);
+  check('连续 4 条新记录：列表跟上了', lists >= 2, `list=${lists}`);
+  check('连续 4 条新记录：总览没有跟着每条都重取（≤1 次）', overviews <= 1, `overview=${overviews}`);
+  await read(`(async () => { const items = [...document.querySelectorAll('.card')].filter(c => c.querySelector('.card__text')?.textContent.startsWith(${JSON.stringify(burst)})).map(c => ({ type: c.dataset.type, hash: c.dataset.key.split('-').slice(1).join('-') })); if (items.length) await fetch('/ui/api/history/batch-update', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ items, update:{ isDelete:true } }) }); return 1; })()`);
+
   // 5) 手机：不取趋势图；变宽后补取
   hits.length = 0;
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
