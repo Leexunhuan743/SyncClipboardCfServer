@@ -13,7 +13,7 @@ import type { PersistedData, NotifyHandlers } from './profile';
 // 因此落库的 Type 是 Image 而非 File。扩展名表取自上游 `ImageTool.ImageExtensions`
 // （不含 webp/heic/avif —— 那些在 ImageHelper.ExImageExtensions，仅供本机转换判断）。
 // 只有本路径做提升；POST /api/history 直接用 dto.Type 建 profile。
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.gif', '.bmp', '.png']);
+export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(['.jpg', '.jpeg', '.gif', '.bmp', '.png']);
 
 export function resolveCreateProfileType(dto: ProfileDto): ProfileType {
   if (dto.type === ProfileType.File && dto.dataName) {

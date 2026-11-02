@@ -25,9 +25,17 @@ SyncClipboard 官方客户端支持三类服务端，能力不同：
 
 部署完成后，在电脑或手机浏览器中打开 Worker 地址，根路径会自动跳转至 Web 界面。使用与客户端相同的用户名和密码登录。
 
-| Web 历史记录管理主界面（桌面） | 同一界面（手机竖版 480×1040） | 登录验证与状态提示 |
+| 记录流 + 详情面板（桌面） | 同一界面（手机竖版） | 登录与错误提示 |
 | :---: | :---: | :---: |
-| ![Web 历史管理主界面](docs/images/07-ui-v1.png) | ![手机竖版的 Web 历史管理界面](docs/images/07-ui-v1-mobile.png) | ![登录验证与状态提示](docs/images/18-state-login-error.png) |
+| ![Web 界面：记录流与详情面板](docs/images/detail.png) | ![手机竖版的 Web 界面](docs/images/list-mobile.png) | ![登录页与错误提示](docs/images/login-error.png) |
+
+**四套界面风格**（侧栏调色盘 / 快捷键 `t` / 登录页底部圆点，随时切换并记住）：
+
+| 海岸暮色 | 暖纸田园 | 网点俱乐部 |
+| :---: | :---: | :---: |
+| ![海岸暮色：深蓝夜空与橙色落日](docs/images/theme-coast.png) | ![暖纸田园：米黄纸与层叠山丘](docs/images/theme-paper.png) | ![网点俱乐部：双色粗线波普](docs/images/theme-pop.png) |
+
+另有默认风格（上图），支持浅色 / 深色 / 跟随系统。切换风格时，浏览器标签页的图标也会跟着变。
 
 ### 已知限制（会影响使用的行为差异）
 
@@ -365,9 +373,11 @@ npx wrangler d1 execute DB --local --file=./schema.sql
 # 配置本地环境变量与测试凭据
 cp .dev.vars.example .dev.vars
 
-# 启动本地开发服务（默认监听 127.0.0.1:8787）
+# 启动本地开发服务（默认监听 127.0.0.1:8787；启动前会自动构建 Web 界面）
 npm run dev
 ```
+
+改 Web 界面源码（`web/`，TypeScript）时，另开一个终端运行 `npm run dev:web` 监听并重建到 `public/ui/`，刷新浏览器即可看到变化。界面的结构、构建与验证方式见 [docs/ui.md](docs/ui.md)。
 
 运行测试：
 
@@ -402,7 +412,8 @@ src/
 ├── routes/             WebDAV 与官方 history 相关业务路由
 ├── ui/                 Web 界面服务端接口与会话管理
 └── durable/            SignalR Hub（WebSocket 连接维持、心跳与广播）
-public/                 静态资源：robots.txt + _headers + ui_v1/（默认界面 V1）+ ui_v2/（开发测试版 V2）+ ui_shared/（两版共用的品牌图标与图标表）+ ui/（/ui/ 的跳转壳）
+web/                    Web 界面源码（TypeScript，esbuild 打包；见 docs/ui.md）
+public/                 静态资源：robots.txt + _headers；`public/ui/` 是 `web/` 的构建产物（不进仓库）
 schema.sql              D1 数据库建表与初始元数据语句
 wrangler.toml           Cloudflare Worker 配置文件与绑定声明
 test/                   测试套件（协议回归、UI、部署/迁移契约）

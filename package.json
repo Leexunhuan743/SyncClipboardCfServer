@@ -7,9 +7,11 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
+    "dev:web": "node web/build.mjs --watch",
+    "build:web": "node web/build.mjs",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint public/ui_v2/js public/ui_v1/js public/ui_shared/js test/manual",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web",
+    "lint": "eslint test/manual",
     "check": "npm run typecheck && npm run lint",
     "test": "vitest run --no-file-parallelism",
     "test:watch": "vitest"
@@ -23,6 +25,7 @@
     "@cloudflare/workers-types": "^5.20260915.1",
     "@microsoft/signalr": "^8.0.7",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.25.12",
     "eslint": "^10.10.0",
     "globals": "^17.12.0",
     "typescript": "^5.6.0",

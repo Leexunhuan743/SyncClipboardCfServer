@@ -84,18 +84,31 @@ export async function readBodyCapped(raw: Request, limit: number): Promise<Uint8
   }
   const reader = raw.body?.getReader();
   if (reader === undefined) return new Uint8Array(0);
+  // 声明了长度（且在上限内）就按它一次性分配、边读边写进去：收集分块再拼接会让峰值内存翻倍
+  // （48 MiB 的体 = 分块 48 + 拼接 48 ≈ 96 MiB，贴着 isolate 的 128 MiB）。声明值只是提示 ——
+  // 实际多读了就退回「收集分块」，少读了就截出实际长度。
+  let buffer: Uint8Array | null = Number.isFinite(declared) && declared > 0 ? new Uint8Array(declared) : null;
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    total += value.byteLength;
-    if (total > limit) {
+    if (total + value.byteLength > limit) {
       await reader.cancel().catch(() => {});
       return null;
     }
-    chunks.push(value);
+    if (buffer !== null && total + value.byteLength <= buffer.byteLength) {
+      buffer.set(value, total);
+    } else {
+      if (buffer !== null) {
+        chunks.push(buffer.subarray(0, total));
+        buffer = null;
+      }
+      chunks.push(value);
+    }
+    total += value.byteLength;
   }
+  if (buffer !== null) return total === buffer.byteLength ? buffer : buffer.slice(0, total);
   const out = new Uint8Array(total);
   let offset = 0;
   for (const c of chunks) {

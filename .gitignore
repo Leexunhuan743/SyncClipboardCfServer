@@ -1,4 +1,6 @@
 node_modules/
+# Web 界面的构建产物（源码在 web/，由 `node web/build.mjs` 生成）
+/public/ui/
 .wrangler/
 dist/
 dev.vars
@@ -27,3 +29,6 @@ dogfood-output/
 # 它们同样只是证据工件，不进仓库。加这条是为了让 `git status` 干净，
 # 也免得有人用 `git add -A` 把几十张 PNG 卷进提交（ADR D11 明确禁止 `-A`）。
 .shots-*/
+
+# 本地开发工具目录（预览配置等），不进仓库
+.claude/

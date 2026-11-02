@@ -1,0 +1,106 @@
+// 界面里流动的数据形状。服务端 DTO 在 `src/types.ts` / `src/ui/query.ts`；
+// 这里是**归一化之后**的前端视角（见 api.ts 的 normalizeItem）。
+
+export type ItemType = 'Text' | 'Image' | 'File' | 'Group';
+
+export interface Item {
+  id: number;
+  type: ItemType;
+  hash: string;
+  /** `Type-hash`：行对账与选择集的稳定标识 */
+  key: string;
+  /** 列表里被服务端截断到 500 字符；完整正文要 `api.get` */
+  text: string;
+  textTruncated: boolean;
+  size: number;
+  hasData: boolean;
+  dataName: string | null;
+  starred: boolean;
+  pinned: boolean;
+  isDeleted: boolean;
+  version: number;
+  createTime: string;
+  lastModified: string;
+  lastAccessed: string;
+}
+
+export type SortField = 'createTime' | 'lastModified' | 'lastAccessed' | 'size' | 'type';
+export type RangeKey = 'all' | 'today' | '7d' | '30d' | 'custom';
+export type TypeFilter = 'All' | ItemType;
+
+export interface Filters {
+  page: number;
+  pageSize: number;
+  types: TypeFilter;
+  starred: boolean;
+  deleted: boolean;
+  search: string;
+  range: RangeKey;
+  after: number | null;
+  before: number | null;
+  sort: SortField;
+  order: 'asc' | 'desc';
+}
+
+export type ByType = Partial<Record<ItemType, number>>;
+
+export interface Retention {
+  maxSavedHistoryCount: number;
+  retentionMinutes: number;
+  maxCountSource: 'meta' | 'env' | 'default';
+  retentionSource: 'meta' | 'env' | 'default';
+}
+
+export interface DeploymentInfo {
+  version: string;
+  serverUrl: string;
+  hubTransports: { transport: string; transferFormats: string[] }[];
+  retention: Retention;
+  /** 轻量概览（`?storage=0`）里为 null：沿用上一次取到的值 */
+  storage: { totalBytes: number | null; totalFileSizeMB: number | null };
+  limits: { maxUploadBytes: number };
+  counts: { total: number; active: number; starred: number; deleted: number; byType: ByType };
+  cleanup: {
+    lastRunAt: string | null;
+    lastCompletedAt: string | null;
+    lastError: string | null;
+    cursors: Record<string, number>;
+  };
+}
+
+export interface Overview {
+  stats: {
+    totalCount: number;
+    activeCount: number;
+    starredCount: number;
+    deletedCount: number;
+    totalFileSizeMB: number | null;
+  };
+  byType: ByType;
+  byTypeActive: ByType;
+  starredCountActive: number;
+  starredCountDeleted: number;
+  marker: { count: number; lastModified: number };
+  info: DeploymentInfo;
+  serverTime: string;
+}
+
+export interface ActivityDay {
+  day: string;
+  total: number;
+  Text: number;
+  Image: number;
+  File: number;
+  Group: number;
+}
+
+export interface IntegrityReport {
+  checkedAt: string;
+  recordsWithData: number;
+  historyObjects: number;
+  missingCount: number;
+  missingTruncated: boolean;
+  missing: { type: string; hash: string; text: string; createTime: string; size: number }[];
+}
+
+export type PushState = 'offline' | 'connecting' | 'live';

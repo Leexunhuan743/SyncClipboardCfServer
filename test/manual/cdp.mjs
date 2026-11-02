@@ -1,4 +1,4 @@
-// 四个手动探针（probe / probe-ui-v1 / states / shoot）共用的 CDP 原语。
+// 手动探针（probe-ui / shoot）共用的 CDP 原语。
 //
 // 抽出来的理由：这几份脚本各自复制过一整套「找浏览器 / 起无头实例 / 连 CDP / 等 DevTools 就绪 /
 // 登录并注入会话 Cookie」的代码，改动一处要同步四处。这里只放**不含判据**的原语 ——
@@ -10,7 +10,15 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// 环境变量 CHROME_PATH 优先；其余按平台常见安装位置找（Windows Edge/Chrome、macOS、Linux chromium）。
 const BROWSERS = [
+  process.env.CHROME_PATH ?? '',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -18,7 +26,7 @@ const BROWSERS = [
 ];
 
 export function findBrowser() {
-  for (const path of BROWSERS) if (existsSync(path)) return path;
+  for (const path of BROWSERS) if (path && existsSync(path)) return path;
   throw new Error(`未找到 Edge/Chrome：\n  ${BROWSERS.join('\n  ')}`);
 }
 
@@ -83,6 +91,9 @@ export async function launchBrowser({ port, width, height, touch = false }) {
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profileDir}`,
       `--window-size=${width},${height}`,
+      '--hide-scrollbars',
+      // 容器 / root 环境里 Chromium 的沙箱起不来；只在需要时关（本地普通用户保持默认）
+      ...(process.env.CHROME_NO_SANDBOX === '1' || process.getuid?.() === 0 ? ['--no-sandbox'] : []),
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-extensions',

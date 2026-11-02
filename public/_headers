@@ -2,17 +2,12 @@
 #
 # 为什么需要它：Worker 只把静态资源转回去、自己不设头，所以这批文件的响应头只能在这里声明。两件事：
 #   1. **安全头**：整站同源、私有实例，故给最严的一套——脚本/样式只许本站、不许被嵌入、
-#      不开 inline（首帧主题脚本外置为 `/ui_v1/js/theme-init.js`、`/ui_v2/js/theme-init.js` 正是为了这条）；
+#      不开 inline（首帧主题脚本外置为 `/ui/js/theme-init.js` 正是为了这条）；
 #   2. **缓存**：代码资源没有内容指纹，每次导航都须重验证，允许用 ETag 返回 304。
-#      禁止直接复用旧代码：新 HTML 搭配旧模块会出现缺失功能和重复标题，已在本轮实测。
+#      禁止直接复用旧代码：新 HTML 搭配旧模块会出现缺失功能和重复标题。
 #
-# ⚠️ **下面每一行的路径都是按挂载点写死的**：改目录名 / 加挂载点必须同步这里。
-# 2026-09-19 的 `ui_old` → `ui_v1` / `ui` → `ui_v2` 改名就漏改过它一次 —— 规则全留在
-# `/ui_old/*`（目录已不存在），于是两版前端**同时**退回平台默认的 `max-age=0`，
-# 而 `docs/frontend-checklist.md` 还把这件事记成"已完成"。这条漂移能成立，是因为当时
-# **没有任何守卫读这个文件**（旧结构的挂载点与这个文件的路径列表是两份独立的事实）。
-# 现在由 `test/ui-guard.test.ts` 的两条结构判据盯着：规则路径必须真实存在、
-# 四个挂载点（含 2026-09-21 起的 `ui_shared`）的 js/css 必须各有一条禁令。见 `docs/progress.md` §90。
+# ⚠️ 下面每一行的路径都是按挂载点写死的：改目录名必须同步这里。
+# `test/ui-guard.test.ts` 读这个文件：入口与哈希资源的缓存策略必须各有一条规则。
 
 /*
   Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss: ws:; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
@@ -23,39 +18,27 @@
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Resource-Policy: same-origin
 
-# ── 无指纹的 JS/CSS 必须重验证；引入构建指纹后才可改成长缓存 ──
-# `_headers` 不支持一条规则覆盖多个前缀，故四个挂载点各写一份。
-# `/ui/` 现在只剩一层跳转壳，但它的 `js/redirect-hash.js` 同样是代码资源 ⇒ 保留 `/ui/js/*`。
-/ui/js/*
+# ── 带内容哈希的构建产物：长缓存 ──
+# `/ui/assets/*` 的文件名里带 esbuild 的内容哈希（见 web/build.mjs），内容变 ⇒ 文件名变，所以可以 immutable。
+/ui/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# ── 入口与无哈希的静态文件：每次重验证（ETag 命中返回 304）──
+# 入口 HTML 指向带哈希的资源：它必须重验证，否则部署后用户会拿着旧入口去请求已被清掉的旧哈希。
+/ui/
   Cache-Control: public, no-cache, must-revalidate
 
-/ui_v1/js/*
+/ui/index.html
   Cache-Control: public, no-cache, must-revalidate
 
-/ui_v1/css/*
+/ui/theme-init.js
   Cache-Control: public, no-cache, must-revalidate
 
-/ui_v2/js/*
-  Cache-Control: public, no-cache, must-revalidate
-
-/ui_v2/css/*
-  Cache-Control: public, no-cache, must-revalidate
-
-# 共用层里的 JS 与我们自己的代码资源同理：无指纹 ⇒ 每次回源验证
-/ui_shared/js/*
-  Cache-Control: public, no-cache, must-revalidate
-
-# ── 品牌图标（**V1/V2 共用一份**，2026-09-21 起放在 `ui_shared/brand/`）与各版 manifest ──
-# 图标改动极少 ⇒ 长缓存；它们**没有**内容指纹，但那三张图的文件名与内容在"换品牌"这件事上是一起变的，
-# 换图时改的是文件本身、不是 URL —— 真要强刷，`?v=` 由页面侧负责（见 `docs/ui.md` §3.4）。
-# 注意 `/ui/` 下**没有**这些文件（跳转壳不含图标），故不给它写图标规则。
-/ui_shared/brand/*
+# ── 品牌图标与 manifest ──
+/ui/brand/*
   Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
-/ui_v1/manifest.webmanifest
-  Cache-Control: public, max-age=3600
-
-/ui_v2/manifest.webmanifest
+/ui/manifest.webmanifest
   Cache-Control: public, max-age=3600
 
 /robots.txt

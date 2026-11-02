@@ -11,8 +11,11 @@ import {
 import { applyHistoryUpdate, clearAllHistory, purgeTrash } from '../../historyOps';
 import { broadcast, broadcastMany } from '../../hub';
 import { addRecordDto } from '../../profileHistory';
-import { maxRequestBodyBytes, readBodyTextCapped } from '../../requestLimits';
-import { textProfileHash } from '../../hash';
+import { maxRequestBodyBytes, readBodyCapped, readBodyTextCapped } from '../../requestLimits';
+import { fileProfileHashFromContentHash, sha256Hex, textProfileHash } from '../../hash';
+import { BadRequestError, basename } from '../../db';
+import { ProfileDataInvalidError } from '../../profile';
+import { IMAGE_EXTENSIONS } from '../../profileWrite';
 import { isValidProfileHash, ProfileType } from '../../types';
 import type { HistoryRecordUpdateDto } from '../../types';
 import { BATCH_META_MAX_ITEMS, readBatchMeta, toUiItem } from '../query';
@@ -21,9 +24,33 @@ import { parsePathIds } from './shared';
 
 // 「编辑文本」保存时的体积上限（UTF-8 字节）。1 MiB 是**编辑器的**上限而不是协议的：
 // 协议侧的记录可以有 48 MiB，但把这个量级的正文塞进 `<textarea>` 只会把页面卡死
-// （前端同一条判据见 `preview.js` 的 `EDIT_MAX_BYTES` —— 两处必须一致，改一处就要改另一处）。
+// （前端同一条判据是 `web/src/lib/format.ts` 的 `TEXT_MAX_BYTES` —— 两处必须一致，改一处就要改另一处）。
 // 超限时服务端回 400 `text_too_large`（前端在按钮上就拦下，正常走不到这里；这是纵深防御）。
 export const UI_TEXT_CREATE_MAX_BYTES = 1024 * 1024;
+
+// 上传文件名的长度上限（字符）。R2 键里还要拼类型与哈希前缀，255 是各常见文件系统的单段上限。
+export const UI_UPLOAD_NAME_MAX_CHARS = 255;
+
+/**
+ * 校验并归一上传文件名：取 basename（去掉路径）、去首尾空白，拒绝空名、控制字符与超长。
+ * 返回 `null` = 不合法。文件名最终会进 R2 对象键与 `Content-Disposition`，所以这里是第一道门；
+ * 下载侧还有 `fileHeaders` 的转义，两处各管各的，不互相依赖。
+ */
+export function sanitizeUploadName(raw: string | null): string | null {
+  if (raw === null) return null;
+  const name = basename(raw.trim());
+  if (name === '' || name === '.' || name === '..') return null;
+  if ([...name].length > UI_UPLOAD_NAME_MAX_CHARS) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(name)) return null;
+  return name;
+}
+
+/** 按扩展名决定记录类型：与协议 `PUT /SyncClipboard.json` 的"File+图片扩展名 ⇒ Image"同一张表。 */
+export function uploadProfileType(name: string): ProfileType {
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot).toLowerCase()) ? ProfileType.Image : ProfileType.File;
+}
 
 // 批量写的有界并发（见本文件里 batch-update 的注释）。
 // 10 是保守值：生产实测串行 663ms/条，10 路并行把 100 条从 ~66s 压到 ~5s，同时
@@ -176,6 +203,76 @@ export function createHistoryMutationRoutes(): Hono<{ Bindings: Bindings }> {
     return Response.json(toUiItem(entity));
   });
 
+  // POST /ui/api/upload?name=<文件名> —— 从浏览器上传一个文件/图片，存成一条记录。
+  //
+  // 请求体就是**原始字节**（不是 multipart）：浏览器可以直接把 `File` 当 body 流出去，不必在内存里
+  // 拼表单；类型取 `application/octet-stream`。这同时是 CSRF 的一层纵深 —— 跨站表单只能发
+  // text/plain、multipart、urlencoded 这三种"简单"类型，`octet-stream` 会触发 CORS 预检而被拦下
+  // （与本文件其它写端点要求 `application/json` 同一条理由）；来源校验是另一层。
+  //
+  // 走的是协议 `POST /api/history` 的同一套写路径 `addRecordDto`：哈希按协议口径算
+  // （`fileProfileHash(name, bytes)`）、数据进 R2 历史区、广播 `RemoteHistoryChanged`
+  // （**不碰当前剪贴板**：别的设备只是多一条历史）。所以界面传的东西，官方客户端读到的就是普通记录。
+  // 类型：图片扩展名 ⇒ Image，其余 ⇒ File（Group 是官方客户端的多文件包，界面不生成）。
+  // 同名同内容再传一次：哈希相同 ⇒ 走"更新已存在记录"分支，不会产生重复记录。
+  app.post('/ui/api/upload', async (c) => {
+    if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/octet-stream')) {
+      await drainRequestBody(c.req.raw);
+      return Response.json({ error: 'unsupported_media_type' }, { status: 415 });
+    }
+    const name = sanitizeUploadName(new URL(c.req.url).searchParams.get('name'));
+    if (name === null) {
+      await drainRequestBody(c.req.raw);
+      return Response.json({ error: 'invalid_name' }, { status: 400 });
+    }
+    const limit = maxRequestBodyBytes(c.env);
+    const content = await readBodyCapped(c.req.raw, limit);
+    if (content === null) {
+      return Response.json({ error: 'file_too_large', detail: `超过上限 ${limit} 字节` }, { status: 413 });
+    }
+    if (content.byteLength === 0) return Response.json({ error: 'empty_file' }, { status: 400 });
+
+    const type = uploadProfileType(name);
+    const hash = await fileProfileHashFromContentHash(name, await sha256Hex(content));
+    const { db, storage } = stores(c);
+    const now = Date.now();
+    try {
+      await addRecordDto(
+        db,
+        storage,
+        {
+          hash,
+          type,
+          text: name,
+          size: content.byteLength,
+          createTime: now,
+          lastModified: now,
+          lastAccessed: now,
+          starred: false,
+          pinned: false,
+          version: 0,
+          isDeleted: false,
+        },
+        content,
+        {
+          notifyProfile: (p) => broadcast(c.env, 'RemoteProfileChanged', p),
+          notifyHistory: (h) => broadcast(c.env, 'RemoteHistoryChanged', h),
+        },
+      );
+    } catch (err) {
+      if (err instanceof ProfileDataInvalidError) {
+        return Response.json({ error: 'invalid_data', detail: err.message }, { status: 422 });
+      }
+      if (err instanceof BadRequestError) {
+        return Response.json({ error: 'invalid_request', detail: err.message }, { status: 400 });
+      }
+      throw err;
+    }
+    const entity = await db.getByTypeAndHash(type, hash);
+    if (!entity) return Response.json({ error: 'not_found' }, { status: 500 });
+    return Response.json(toUiItem(entity));
+  });
+
   // POST /ui/api/history/batch-update —— 批量写（收藏 / 置顶 / 删除 / 恢复）
   //
   // 逐条走 `applyHistoryUpdate`（与单条 PATCH、官方 PATCH **同一条写路径**）：各自广播、
@@ -189,11 +286,11 @@ export function createHistoryMutationRoutes(): Hono<{ Bindings: Bindings }> {
   //
   // 成本（子请求记账）：一条记录 ≈ 1 读 + 1 写 + 1 广播（删除时再 +2 的 R2 目录清理），
   // 100 条封顶 ≈ 500 次，留一倍余量（200 条正好顶到单次调用 1000 次的内部子请求上限、零余量）。
-  // 超出的部分由调用方分片（js/api.js 的 batchUpdate），不是拒绝服务。
+  // 超出的部分由调用方分片（web/src/lib/api.ts 的 batchUpdate），不是拒绝服务。
   app.post('/ui/api/history/batch-update', async (c) => {
     // 只接受 application/json：跨站**表单**（`enctype=text/plain` 或 `multipart/form-data`）能直接
     // 发出 POST 且不经过 CORS 预检，而 JSON 必须由脚本构造（那类请求会被来源校验挡下）。它与来源
-    // 校验是纵深的两层，且不改变本页自身的行为 —— `js/api.js` 的 `request()` 对所有带 body
+    // 校验是纵深的两层，且不改变本页自身的行为 —— `web/src/lib/api.ts` 的 `request()` 对所有带 body
     // 的调用恒带 `content-type: application/json`。
     if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/json')) {
       await drainRequestBody(c.req.raw);
@@ -215,7 +312,7 @@ export function createHistoryMutationRoutes(): Hono<{ Bindings: Bindings }> {
     // 上限 100 而不是 200：每条记录 ≈5 次子请求（1 读 + 1 写 + 1 次 DO 广播，删除再 +2 次 R2
     // 目录清理），200 条正好等于单次调用的 1000 次内部子请求上限、**零余量** —— 任一条走到冲突回读
     // 或目录多一页 list 就会中途超限。100 条 = 约 500 次，留一倍余量。
-    // 调用方（js/api.js 的 batchUpdate）按 100 分片串行发，选 200 条也能一次做完。
+    // 调用方（web/src/lib/api.ts 的 batchUpdate）按 100 分片串行发，选 200 条也能一次做完。
     if (items.length > 100) {
       return Response.json({ error: 'too_many_items' }, { status: 400 });
     }
@@ -296,7 +393,7 @@ export function createHistoryMutationRoutes(): Hono<{ Bindings: Bindings }> {
       return Response.json({ error: 'items_required' }, { status: 400 });
     }
     // 上限与 batch-update 对齐（100）：这里每条只要 1 次子请求，本可以放更宽，但**接口口径统一**
-    // 比"每个端点各自算自己的上限"更好记；调用方（js/api.js 的 batchPurge）同样按 100 分片。
+    // 比"每个端点各自算自己的上限"更好记；调用方（web/src/lib/api.ts 的 batchPurge）同样按 100 分片。
     if (items.length > 100) {
       return Response.json({ error: 'too_many_items' }, { status: 400 });
     }

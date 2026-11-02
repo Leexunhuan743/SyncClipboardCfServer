@@ -6,6 +6,7 @@ on:
     branches: [master]
     paths:
       - 'src/**'
+      - 'web/**'
       - 'public/**'
       - 'schema.sql'
       - 'tools/migrate-d1.mjs'
@@ -191,10 +192,9 @@ jobs:
         # ② 已认证 /api/version → 200 且 body 等于 wrangler.toml 的 VERSION：凭据可用 **且**这次部署真生效
         # ③ 已认证 /api/history/statistics → 200 JSON：D1 绑定与查询路径可用
         # ④ 已认证 /SyncClipboard.json → 200 JSON：Meta /「当前 profile」读路径可用
-        # ⑤ 界面可达性按 UI_ENABLED 断言：true → 四个挂载点（/ui_v1/ = 默认界面 V1、
-        #    /ui_v2/ 与 /ui_v2/app/ = 开发测试版 V2、/ui/ = 跳转壳）的页面与入口 JS
+        # ⑤ 界面可达性按 UI_ENABLED 断言：true → /ui/ 的页面、入口 JS、样式与图标
         #    各 200，且 Content-Type 对得上（守住 run_worker_first + ASSETS 转发链路 ——
-        #    它坏了界面就整片 404）；false → 四个挂载点都必须 404
+        #    它坏了界面就整片 404）；false → 挂载点必须 404
         # 未配置 USERNAME/PASSWORD secrets 时 ②③④ 降级为 ::notice:: 跳过（本仓库按 README「方式 A」
         # 把凭据只放在 Cloudflare —— 那是预期状态，不该让部署变红）。
         env:

@@ -46,7 +46,7 @@ export interface UiHistoryQuery {
    * （`sort` 恒有值），若只在某一档里插置顶，"置顶"就会随用户点的列时灵时不灵
    * （同一个动作一半的排序里有用、另一半没用，读起来就是坏掉了）。
    * 唯一的例外是调用方显式传 `pinnedFirst=false` —— 那是给"**全库**最新的那一条"
-   * 这类查询用的（V1 的「复制最近一条」）：它问的是时间上的最新，不是"当前列表的第一行"，
+   * 这类查询用的（早期界面的「复制最近一条」）：它问的是时间上的最新，不是"当前列表的第一行"，
    * 让它跟着置顶走会答非所问。
    */
   pinnedFirst: boolean;
@@ -274,11 +274,11 @@ export function codePointCount(text: string): number {
 
 // 按**码点**截断（绝不切出半个代理对）。导出给 `src/ui/maintenance.ts` 的自检摘要复用。
 //
-// ⚠️ 与前端 `public/ui_v{1,2}/js/format.js` 的 `truncateText` **同名但不同义**，别去"统一"：
+// ⚠️ 与前端 `web/src/lib/format.ts` 的 `charCount` **口径不同**，别去"统一"：
 // 那一边量的是**用户看到的字符**（`Intl.Segmenter` 字素簇，一个家庭 emoji 算 1 个），
 // 这一边量的是**码点** —— 因为这里的 500 是**服务端协议上限**（约束 JSON 体积，且必须与
 // SQL 的 `length()`/`substr()` 同口径），不是展示口径。
-// 两版都按 Unicode 码点处理截断/计数；对应回归测试负责防止退回 UTF-16 码元口径。
+// 这里按 Unicode 码点处理截断/计数；对应回归测试负责防止退回 UTF-16 码元口径。
 export function truncateText(text: string, limit: number): string {
   let n = 0;
   let i = 0;

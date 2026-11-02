@@ -25,10 +25,10 @@
 
 ## 4. Web UI
 
-- `public/ui_v1/` 是默认产品界面；`public/ui_v2/` 是开发测试版；`public/ui_shared/` 只放真正无版本耦合的共享资产。
-- 增删界面挂载点时必须一起检查 `wrangler.toml`、`src/index.ts`、`public/_headers` 与 `test/ui-guard.test.ts`。
-- V1/V2 同名 `messages.js` 的正文由测试保持一致；不要绕过守卫制造静默文案漂移。
-- 视觉或交互改动除了测试，还要用对应 manual probe 至少检查一档桌面和一档窄屏。
+- 界面源码在 `web/`（TypeScript，esbuild 打包），构建产物是 `public/ui/`（不进仓库，**不要手改**）；构建由 `wrangler.toml` 的 `[build]` 钩子触发，本地改源码用 `npm run dev:web` 监听。
+- 界面只有 `/ui/` 一个挂载点。改挂载点时必须一起检查 `wrangler.toml`（`run_worker_first`）、`src/index.ts`、`public/_headers` 与 `test/ui-guard.test.ts`。
+- CSP 是 `script-src 'self'; style-src 'self'`：不写内联脚本/样式属性，不用 `innerHTML` 注入用户内容；守卫在 `test/ui-guard.test.ts`。
+- 前端纯逻辑（`web/src/lib/`）的单元测试在 `web/test/`；视觉或交互改动除了测试，还要用 `test/manual/probe-ui.mjs` 至少检查一档桌面和一档窄屏。改了风格（`themes.css`）或带阴影的组件后，再跑 `test/manual/shadow-clip.mjs`（阴影被 `overflow` 祖先裁掉会非 0 退出）。
 
 ## 5. 完成条件
 
@@ -41,7 +41,7 @@ npm test
 ```
 
 - 黑盒套件需要先启动 `wrangler dev --test-scheduled` 并初始化本地 D1。
-- 改前端时再运行 `test/manual/` 下对应 probe；未执行的验证必须在 PR 中明确写出。
+- 改前端时再运行 `node test/manual/probe-ui.mjs`（需要本地 dev server）；未执行的验证必须在 PR 中明确写出。
 - 不把“文档同步”扩张成维护历史过程；只更新仍承担当前事实的 README / design / protocol / ui 等文档。
 
 ## 6. 不要碰

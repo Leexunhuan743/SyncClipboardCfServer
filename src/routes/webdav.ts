@@ -30,13 +30,10 @@ export function createWebdavRoutes(): Hono<{ Bindings: Bindings }> {
   // 这里的 Accept 判断只是让任何按文本协议探活的脚本行为完全不变。
   // 界面被关闭时（GitHub 变量 UI_ENABLED=false）不再把人引到不存在的界面，直接返回探活响应。
   //
-  // 跳转目标是 **`/ui_v1/`**（V1 是默认界面）—— 少一跳：
-  // `/ui/` 那层壳（老书签的入口）自己也会 meta refresh 到同一个地址，两处必须一致，
-  // 守卫见 `test/ui-guard.test.ts` 的「默认界面的入口链一致」。
-  // （V2 —— `public/ui_v2/` —— 是**开发测试版**，应用本体在 `/ui_v2/app/`。）
+  // 跳转目标是 **`/ui/`**（唯一的界面入口，`public/ui/index.html`）。
   app.get('/', (c) => {
     const accept = c.req.header('accept') ?? '';
-    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui_v1/', 302);
+    if (accept.includes('text/html') && isUiEnabled(c.env)) return c.redirect('/ui/', 302);
     return c.text('Server is running.');
   });
 

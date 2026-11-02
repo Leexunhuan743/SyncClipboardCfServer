@@ -39,7 +39,7 @@ VERSION = "3.3.0-beta1"
 # ⚠️ 保留期的上游语义是「0 = 不限制」：默认不做按时间的清理，只由条数上限兜底。
 MAX_SAVED_HISTORY_COUNT = "1000"
 HISTORY_RETENTION_MINUTES = "0"
-# Web 界面开关（默认开）。设为 "false" 时四个挂载点（/ui、/ui_v1、/ui_v2、/ui_shared 及静态资源）
+# Web 界面开关（默认开）。设为 "false" 时界面挂载点（/ui 及其静态资源）
 # 与 /ui/api/* 一律 404，根路径对浏览器也不再跳转；协议面完全不受影响。
 # 判定与行为见 src/uiEnabled.ts；**只有显式 "false" 才关**，其余（含未设置）都是开。
 UI_ENABLED = "true"
@@ -57,25 +57,30 @@ crons = ["7,27,47 * * * *"]
 enabled = true
 
 # ============ 静态资源（Web UI）============
-# 四个挂载点：
-#   /ui_shared/ ← public/ui_shared/   V1/V2 共用的静态资产（品牌图标 + 共用图标表）
-#   /ui_v1/     ← public/ui_v1/       V1，默认界面（产品面）
-#   /ui_v2/     ← public/ui_v2/       V2，开发测试版；应用本体在 /ui_v2/app/
-#   /ui/        ← public/ui/          只留一层跳转壳，把人送到 /ui_v1/
-#                                     （接口命名空间 `/ui/api/*` 是服务端路由，见 src/ui/routes.ts）
-# 这四个前缀统一受 UI_ENABLED 管：关掉界面时都不该还能拿到界面的东西。
-# 协议路径（/、/api/*、/SyncClipboard.json、/file/*、Hub）落在 Worker 上，与它们无重叠。
+# 界面是 TypeScript 单页应用：源码在 `web/`，`[build]` 钩子用 esbuild 打包到 `public/ui/`
+# （构建产物，不进仓库）。`wrangler dev` 与 `wrangler deploy` 都会先跑它；改源码后本地用
+# `npm run dev:web` 监听重建。
+# 界面只有一个挂载点：
+#   /ui/  ← public/ui/   单页应用
+#                        接口命名空间 `/ui/api/*` 是服务端路由，见 src/ui/routes.ts
+# 它受 UI_ENABLED 管：关掉界面时不该还能拿到界面的任何东西。
+# 协议路径（/、/api/*、/SyncClipboard.json、/file/*、Hub）落在 Worker 上，与它没有重叠。
 # 注意：这里**不能**放 public/index.html —— 根路径要留给 PROPFIND（客户端的探活与目录列举）。
 #
 # run_worker_first：让界面前缀的请求**先进 Worker**，由 Worker 按 UI_ENABLED 决定转静态资源
 # （env.ASSETS.fetch）还是 404。不加这一条时静态资源在 Worker 之前就被托管掉了，界面开关无从生效
 # （对**已存在的资源**，边缘命中即返回、请求到不了 Worker）。代价：界面请求多过一层 Worker。
-# binding = "ASSETS" 是 run_worker_first 的前提。挂载点判据由 test/ui-guard.test.ts 从 public/ 动态发现。
+# binding = "ASSETS" 是 run_worker_first 的前提。
+[build]
+command = "node web/build.mjs"
+# 自定义构建的 watch_dir 会**取代**默认值（默认是 main 所在目录）：只写 web 的话，本地改 src/ 不再热重载。两个都要监听。
+watch_dir = ["web", "src"]
+
 [assets]
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "none"
-run_worker_first = ["/ui", "/ui/*", "/ui_v1", "/ui_v1/*", "/ui_v2", "/ui_v2/*", "/ui_shared", "/ui_shared/*"]
+run_worker_first = ["/ui", "/ui/*"]
 
 # ============ Secrets（wrangler secret put，不要写进仓库）============
 # USERNAME / PASSWORD —— 与官方服务器相同的 HTTP Basic Auth 凭据

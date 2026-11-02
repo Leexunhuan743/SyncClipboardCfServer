@@ -71,7 +71,7 @@ fi
 # ⑤ 界面可达性：按 UI_ENABLED 的实际生效值断言（无副作用，只是 GET）。
 # 断言的单位是「页面 + 入口 JS」成对，且**校验 Content-Type**：模块脚本拿到 HTML 错误页时状态码可能
 # 仍是 200，但浏览器解析会失败、整张模块图挂掉（页面停在骨架屏）—— 只看状态码抓不到这一种。
-# ⚠️ 入口名必须跟着界面走（V2 是 js/boot.js、V1 是 js/main.js）；挂载点改名时这些路径要同步。
+# ⚠️ 界面脚本/样式是带内容哈希的构建产物，路径从入口 HTML 里取；挂载点改名时这些路径要同步。
 # $1=路径 $2=说明 $3=期望的 Content-Type 前缀
 check_asset() {
   local p="$1" what="$2" want="$3" code ctype
@@ -92,8 +92,8 @@ check_asset() {
 }
 
 if [ "${UI_ENABLED:-true}" = "false" ]; then
-  # 关掉界面时四个挂载点都必须 404（与 test/ui-guard.test.ts 的同名断言对应）。
-  for p in /ui/ /ui_v1/ /ui_v2/ /ui_shared/; do
+  # 关掉界面时挂载点必须 404（与 test/ui-guard.test.ts 的同名断言对应）。
+  for p in /ui/ /ui/theme-init.js; do
     code=$(curl -s -o /dev/null -w '%{http_code}' "$base$p" || echo 000)
     if [ "$code" = "404" ]; then
       echo "✓ UI_ENABLED=false：$p → 404（界面已关闭）"
@@ -103,14 +103,17 @@ if [ "${UI_ENABLED:-true}" = "false" ]; then
     fi
   done
 else
-  check_asset '/ui/' '跳转壳（老书签入口，指向默认界面 /ui_v1/）' 'text/html' || fail=1
-  check_asset '/ui/js/redirect-hash.js' '跳转壳脚本（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
-  check_asset '/ui_v1/' '默认界面入口（V1）' 'text/html' || fail=1
-  check_asset '/ui_v1/js/main.js' 'V1 模块（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
-  check_asset '/ui_v2/app/' 'V2 开发测试版本体' 'text/html' || fail=1
-  check_asset '/ui_v2/js/boot.js' 'V2 模块（经 Worker → ASSETS 转发）' 'text/javascript' || fail=1
-  check_asset '/ui_shared/brand/favicon.svg' '共用品牌图标（V1/V2 同一份）' 'image/svg+xml' || fail=1
-  check_asset '/ui_shared/js/icons.js' '共用层模块（两版同一份图标表）' 'text/javascript' || fail=1
+  check_asset '/ui/' '界面入口（单页应用）' 'text/html' || fail=1
+  check_asset '/ui/theme-init.js' '首帧主题脚本' 'text/javascript' || fail=1
+  check_asset '/ui/brand/favicon.svg' '品牌图标' 'image/svg+xml' || fail=1
+  # 入口里的带哈希资源（`/ui/assets/app-<hash>.js`）：从入口 HTML 里取，守住"构建产物确实被发布"
+  ui_html=$(curl -s "$base/ui/" || true)
+  ui_js=$(printf '%s' "$ui_html" | grep -oE '/ui/assets/app-[A-Za-z0-9_-]+\.js' | head -1)
+  ui_css=$(printf '%s' "$ui_html" | grep -oE '/ui/assets/app-style-[A-Za-z0-9_-]+\.css' | head -1)
+  if [ -n "$ui_js" ]; then check_asset "$ui_js" '界面脚本（带内容哈希）' 'text/javascript' || fail=1
+  else echo "::error::/ui/ 的入口里找不到 /ui/assets/app-<hash>.js（构建没跑或没发布？）"; fail=1; fi
+  if [ -n "$ui_css" ]; then check_asset "$ui_css" '界面样式（带内容哈希）' 'text/css' || fail=1
+  else echo "::error::/ui/ 的入口里找不到 /ui/assets/app-style-<hash>.css"; fail=1; fi
 fi
 
 # 无论冒烟是否通过，都把「地址 + 怎么用」写进 run summary：fork 之后要的就是这个地址；没配凭据时
@@ -123,7 +126,7 @@ fi
 if [ "${UI_ENABLED:-true}" = "false" ]; then
   ui_line='**当前 `UI_ENABLED=false`，界面已关闭**（只有协议面）'
 else
-  ui_line='Web 历史界面：\`/ui_v1/\`（默认界面 V1；地址 = 上面在 Cloudflare 控制台拿到的服务器地址 + \`/ui_v1/\`）'
+  ui_line='Web 历史界面：\`/ui/\`（地址 = 上面在 Cloudflare 控制台拿到的服务器地址 + \`/ui/\`）'
 fi
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {

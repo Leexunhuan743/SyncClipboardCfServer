@@ -1,0 +1,113 @@
+/* 设计令牌。语义命名（--accent / --surface），浅/深主题同构：换值不换名。
+ *
+ * 方言：效率型工具 —— 冷灰蓝的中性底、一个靠得住的强调色、四个克制的类型色。
+ * 层级靠「底色 → 卡片 → 浮层」三级而不是满屏描边；圆角大一档（卡片 16、控件 12）。
+ * 字体用系统栈：面向国内网络，外部字体 CDN 大概率加载失败（先无字后有字的闪烁比系统栈更糟）。 */
+:root {
+  color-scheme: light;
+
+  --bg: #f5f6fa;
+  --surface: #ffffff;
+  --surface-2: #f0f2f8;
+  --surface-3: #e5e8f2;
+  --ink: #141a2e;
+  --ink-2: #444d69;
+  --ink-3: #5d6784; /* 最浅的正文级文字：在 surface-2 上仍 ≥ 4.5:1 */
+  --line: #e3e6f0;
+  --line-strong: #cbd1e3;
+
+  --accent: #4c5fef;
+  --accent-hover: #3d4fdc;
+  --accent-ink: #ffffff;
+  --accent-soft: #f3f4ff;
+  --accent-line: #c8cffc;
+
+  --danger: #c62f31;
+  --danger-hover: #b92d2f;
+  --danger-soft: #fdecec;
+  --danger-ink: #ffffff;
+  --warn: #9a5b06;
+  --warn-soft: #fff3d9;
+  --ok: #17794f;
+  --ok-soft: #e1f5eb;
+  --star: #d98a0b;
+
+  /* 类型色：低饱和，避免彩虹感。每种类型 前景 + 底色 一对。 */
+  --t-text: #3560cf;
+  --t-text-bg: #e6edff;
+  --t-image: #b5307a;
+  --t-image-bg: #fde8f2;
+  --t-file: #98590a;
+  --t-file-bg: #fff0d6;
+  --t-group: #0f7a70;
+  --t-group-bg: #dcf5f1;
+
+  --shadow-1: 0 1px 2px rgb(20 26 46 / 6%);
+  --shadow-2: 0 2px 6px rgb(20 26 46 / 6%), 0 14px 28px -14px rgb(20 26 46 / 20%);
+  --shadow-3: 0 8px 20px rgb(20 26 46 / 10%), 0 36px 72px -24px rgb(20 26 46 / 38%);
+  --overlay: rgb(12 16 32 / 48%);
+
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --r-pill: 999px;
+
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sidebar-w: 248px;
+  /* 详情面板：随屏宽放大（带鱼屏上 468px 的阅读器太窄），上限 760px */
+  --pane-w: clamp(468px, 25vw, 760px);
+  --topbar-h: 68px;
+  --gutter: clamp(28px, 2.2vw, 64px);
+  /* 内容区的最大宽度：带鱼屏上卡片会排成多列，而不是在中间留一条窄带 */
+  --content-max: 3200px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur: 180ms;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0d111f;
+  --surface: #151a2b;
+  --surface-2: #1b2136;
+  --surface-3: #262d47;
+  --ink: #eceffa;
+  --ink-2: #b2bad4;
+  --ink-3: #8c96b6;
+  --line: #252c45;
+  --line-strong: #363f61;
+
+  --accent: #7b8cff;
+  --accent-hover: #98a5ff;
+  --accent-ink: #0b0f24;
+  --accent-soft: #1e2650;
+  --accent-line: #34417f;
+
+  --danger: #f2706f;
+  --danger-hover: #ff8e8d;
+  --danger-soft: #3a2024;
+  --danger-ink: #2b0d0e;
+  --warn: #f0b255;
+  --warn-soft: #3a2d12;
+  --ok: #52d49b;
+  --ok-soft: #123626;
+  --star: #f5b84d;
+
+  --t-text: #8fb0ff;
+  --t-text-bg: #1b2750;
+  --t-image: #f5a3c7;
+  --t-image-bg: #3a2030;
+  --t-file: #f6c27a;
+  --t-file-bg: #3a2c16;
+  --t-group: #5ee0d1;
+  --t-group-bg: #123530;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-2: 0 2px 6px rgb(0 0 0 / 35%), 0 14px 28px -14px rgb(0 0 0 / 60%);
+  --shadow-3: 0 8px 20px rgb(0 0 0 / 40%), 0 36px 72px -24px rgb(0 0 0 / 70%);
+  --overlay: rgb(2 4 12 / 62%);
+}

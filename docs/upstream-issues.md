@@ -512,7 +512,7 @@ scheduler.AddJob<OrphanedHistoryCleanupJob>(TimeSpan.FromHours(6));      // 按�
 | 7 | 提供出口：回收站软删保留数据（≤30 天）+「彻底删除」+「清空回收站」；清理任务同样受预算约束 | `src/ui/routes.ts` 的 `batch-purge` / `clear`、`src/historyOps.ts` |
 | 8 | 不复刻缓存：当前 profile 直接存在 D1 `Meta`，每次直读 | `src/profile.ts` 的 `saveAndNotifyCurrentProfile` |
 | 9 | 不复刻整轮中断：每阶段独立 try/catch，失败按阶段隔离，游标续跑 | `src/cleanup.ts` |
-| 10 | 不复刻静默：条数上限裁到无可删对象时日志留痕；界面上写明"收藏与置顶不受清理" | `src/cleanup.ts`、`public/ui_v1/js/components/info.js` |
+| 10 | 不复刻静默：条数上限裁到无可删对象时日志留痕；界面上写明"收藏与置顶不受清理" | `src/cleanup.ts`、`web/src/views/settings.ts` |
 | 11 | 不复刻全表物化：同名候选**不设上限**由库内容决定，但只取调用方要用的三列（避免把 Text 全读进 isolate） | `src/db.ts` 的 `getRecentTransferFile` |
 | 12 | 不复刻静默吞异常：清理的每个失败都落 `cleanup:lastError` 并在界面暴露；清空走分批 | `src/cleanup.ts`、`src/historyOps.ts` |
 | 13 | 同构（单账号），但已在 README「已知限制」显式声明该边界 | `README.md` |

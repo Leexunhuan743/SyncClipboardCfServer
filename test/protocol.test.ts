@@ -115,8 +115,8 @@ describe('路径字面段大小写（对齐 ASP.NET Core 路由）', () => {
       ['/api/history/Text-ABC', null],
       ['/api/history/Text-ABC/data', null], // 末段已是规范写法，取值未被触碰
       ['/api/version/x', null], // 位置错了就不动（宁可 404，也不猜）
-      ['/ui_v2/API/session', null], // 超出协议面（/ui、/ui_v1、/ui_v2 都是我们自己的界面面，上游无对应物）
-      ['/ui_v2/JS/main.js', null],
+      ['/ui/API/session', null], // 超出协议面（/ui 是我们自己的界面面，上游无对应物）
+      ['/ui/JS/app.js', null],
       ['/', null],
       ['/robots.txt', null],
     ];
@@ -239,7 +239,7 @@ describe('路径字面段大小写（对齐 ASP.NET Core 路由）', () => {
     for (const p of paths) {
       const segs = p.split('/');
       const first = (segs[1] ?? '').toLowerCase();
-      // 只审协议面；`/ui_v2/*` 与静态资源不在归一范围内（见 src/pathCase.ts 顶部约束 2）
+      // 只审协议面；`/ui/*` 与静态资源不在归一范围内（见 src/pathCase.ts 顶部约束 2）
       if (!['api', 'file', 'syncclipboard.json', 'syncclipboardhub'].includes(first)) continue;
 
       // 构造"字面段全大写 + 参数段用哨兵"的请求路径，期望归一后回到路由本身

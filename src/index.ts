@@ -145,8 +145,8 @@ app.use('/ui/api/*', async (c, next) => {
 
 // 全局 Basic Auth（所有端点，含 /api/version、/api/time —— 上游 [Authorize] 类级）
 app.use('*', async (c, next) => {
-  // 界面四面（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`、`/ui_shared/*`）是本站页面自己的面，鉴权由 src/ui/guard.ts 负责
-  // （会话 Cookie 或 Basic）。四个挂载点下的**静态资源**都已在外层 fetch 处理掉（开关开着时转
+  // 界面（`/ui/*`）是本站页面自己的面，鉴权由 src/ui/guard.ts 负责
+  // （会话 Cookie 或 Basic）。`/ui/` 下的**静态资源**都已在外层 fetch 处理掉（开关开着时转
   // `ASSETS.fetch()` 直接返回、关着时 404），根本走不到这个中间件 —— 因此这条 `startsWith('/ui/')`
   // 跳过真正覆盖的就是 `/ui/api/*`（它的守卫在 src/ui/routes.ts 里逐条注册）。
   // 若走这里的 Basic-only 中间件，浏览器拿 Cookie 打进来的每个请求都会被 401。
@@ -203,9 +203,8 @@ export default {
     const url = new URL(request.url);
 
     // Web 界面开关（GitHub 变量 UI_ENABLED，默认开；判定见 src/uiEnabled.ts）。
-    // 三个界面挂载点：/ui_v1（V1，默认界面）/ /ui_v2（V2，开发测试版）/ /ui（只剩一层跳转壳）。
-    // 它们**共用**同一个开关 —— 关掉时必须全部 404，否则"关掉界面"会留下一个仍可访问的界面，
-    // 那正是这个开关要消除的东西。
+    // 界面只有一个挂载点：`/ui/`（`public/ui/`，单页应用）。关掉开关时它整体 404，
+    // 否则"关掉界面"会留下一个仍可访问的界面，那正是这个开关要消除的东西。
     //
     // `/ui/api/*` 与界面资源**同前缀但不同族**：它是服务端接口（`src/ui/routes.ts` 的路由），
     // 必须原样交给下面的 Hono，绝不能被当成界面资源去问静态资源，也不能在关闭态被换成 404 页
@@ -215,18 +214,9 @@ export default {
     // 而 Hono 侧的守卫中间件与 `app.all('/ui/api/*')` **都**匹配裸形态 ⇒ 交给 Hono 才是
     // 「API 命名空间返回 JSON」那条路；否则它会落进界面资源分支、回一张 HTML 404 页。
     const isUiApi = path.startsWith('/ui/api/') || path === '/ui/api';
-    // ⚠️ 这份前缀清单**不是**唯一事实源：`public/` 下的 `ui*` 目录才算数，`wrangler.toml` 的
-    // run_worker_first、`public/_headers` 的规则是另外两处副本。三处由 `test/ui-guard.test.ts` 钉在一起
-    // （这条的判据是「前缀集合 == `public/` 的挂载点集合」）—— 新增/改名挂载点时三处必须一起改。
-    const isUiAsset =
-      path === '/ui' ||
-      path.startsWith('/ui/') ||
-      path === '/ui_v1' ||
-      path.startsWith('/ui_v1/') ||
-      path === '/ui_v2' ||
-      path.startsWith('/ui_v2/') ||
-      path === '/ui_shared' ||
-      path.startsWith('/ui_shared/');
+    // ⚠️ 这份前缀不是唯一事实源：`wrangler.toml` 的 run_worker_first 与 `public/_headers` 是另外两处副本，
+    // 由 `test/ui-guard.test.ts` 钉在一起 —— 改挂载点时三处必须一起改。
+    const isUiAsset = path === '/ui' || path.startsWith('/ui/');
 
     if (isUiAsset && !isUiApi) {
       // ⚠️ 这条分支只在请求**到达 Worker** 时才跑：`wrangler.toml` 的 run_worker_first 必须
@@ -234,9 +224,7 @@ export default {
       // （守卫见 test/ui-guard.test.ts）。
       if (!isUiEnabled(env)) return uiDisabledResponse(false);
       // 先把请求转给静态资源；**未命中资源（404）时回落**到那张设计过的 404 页
-      // （与"静态资源直接托管 + not_found_handling=none"时平台的回落行为同形：
-      //  `/ui_v1/不存在的路径` 拿到的是那张页，而不是平台默认的纯文本 404）。
-      // 三面共用这条链是因为它们的形状完全相同 —— 都没有自己的服务端路由。
+      // （`/ui/不存在的路径` 拿到的是那张页，而不是平台默认的纯文本 404）。
       const asset = await env.ASSETS.fetch(request);
       if (asset.status !== 404) return asset;
       return notFoundPage();

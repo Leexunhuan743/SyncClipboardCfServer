@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { Bindings } from '../../env';
 import { stores } from '../../stores';
 import { drainRequestBody } from '../../auth';
+import { maxRequestBodyBytes } from '../../requestLimits';
 import { historySizeMB } from '../../serialization';
 import {
   UiQueryError,
@@ -51,8 +52,9 @@ export function readIntParam(
 }
 
 export interface UiDeploymentStats {
-  bytes: number;
-  stats: HistoryStatisticsDto;
+  /** 存储体积（字节）。`null` = 本次没有统计（轻量模式，见 deploymentStats 的 `withStorage`） */
+  bytes: number | null;
+  stats: Omit<HistoryStatisticsDto, 'totalFileSizeMB'> & { totalFileSizeMB: number | null };
   views: UiViewCounts;
 }
 
@@ -65,15 +67,17 @@ export interface UiDeploymentStats {
  * 单次首屏 = 2×R2 全桶列举 + 2×statistics + 2×countByTypeViews）。
  * 四个计数统一走协议端点那条 `db.statistics()`：同一语义不留两份实现，代价是这条路径多一条全表聚合。
  */
-export async function deploymentStats(env: Bindings): Promise<UiDeploymentStats> {
+export async function deploymentStats(env: Bindings, withStorage = true): Promise<UiDeploymentStats> {
   const { storage, db } = stores({ env });
   // R2 列举与两条 D1 聚合互不依赖 ⇒ 并发（这条路径是首屏必经，别把它们串起来）。
+  // `withStorage=false`（轻量模式）跳过 R2 全桶列举：那是 Class A 操作（收费、占免费额度），而界面的
+  // 日常刷新（收藏、移到回收站、轮询发现变化…）只需要计数，存储体积变得很慢。体积只在需要时才取。
   const [bytes, views, counts] = await Promise.all([
-    storage.totalHistorySize(),
+    withStorage ? storage.totalHistorySize() : Promise.resolve(null),
     countByTypeViews(env.DB),
     db.statistics(),
   ]);
-  return { bytes, stats: { ...counts, totalFileSizeMB: historySizeMB(bytes) }, views };
+  return { bytes, stats: { ...counts, totalFileSizeMB: bytes === null ? null : historySizeMB(bytes) }, views };
 }
 
 /**
@@ -112,6 +116,8 @@ export async function deploymentMeta(
       retentionSource: retention.retentionSource,
     },
     storage: { totalBytes: ds.bytes, totalFileSizeMB: ds.stats.totalFileSizeMB },
+    // 界面上传的单文件上限（= 请求体上限）：前端据此在选文件时就拦下，而不是传到一半才被 413
+    limits: { maxUploadBytes: maxRequestBodyBytes(env) },
     counts: {
       total: ds.stats.totalCount,
       active: ds.stats.activeCount,
@@ -171,7 +177,7 @@ export function createInfoRoutes(): Hono<{ Bindings: Bindings }> {
   // 它走会话 Cookie 鉴权，DO 侧只校验该 token 已登记且未过期（10 分钟，仅约束「登记后多久
   // 内必须发起连接」；连上后由连接本身维持）。
   //
-  // 前端两条纪律（写在 public/ui_v1/js/signalr.js 里）：① 60 秒内至少发一条消息，否则 DO 的
+  // 前端两条纪律（实现在 web/src/lib/push.ts）：① 60 秒内至少发一条消息，否则 DO 的
   // 静默清理会关掉它；② 保留轮询作为降级路径——推送链路任何一段出问题，界面都还能收敛。
   app.post('/ui/api/hub-ticket', async (c) => {
     await drainRequestBody(c.req.raw);
@@ -245,12 +251,12 @@ export function createInfoRoutes(): Hono<{ Bindings: Bindings }> {
 
   // GET /ui/api/overview —— 首屏总览（**合并端点**）
   //
-  // 为什么要有它：V1 的首屏打三次请求（`history` + `statistics` + `info`），而 `statistics`
-  // 内部还要跑三条查询。V2 的概览带需要的是它们**合并后的一个快照** —— 更重要的是，概览带与列表
+  // 为什么要有它：分开取的话首屏要打三次请求（`history` + `statistics` + `info`），而 `statistics`
+  // 内部还要跑三条查询。概览带需要的是它们**合并后的一个快照** —— 更重要的是，概览带与列表
   // 必须在**同一次往返**里对齐，否则用户会看到"数字说 1009 条、列表说 1008 条"这种两个瞬间的差异。
   //
   // 只读、无副作用。`activity` 不在这里返回：它是独立的一天粒度查询，
-  // 首屏让它阻塞列表可见不值得（前端在列表落地后单独拉，见 boot.js）。
+  // 首屏让它阻塞列表可见不值得（前端在列表落地后单独拉，见 web/src/app.ts 的 loadActivity）。
   //
   // 统计层**只算一次**：`deploymentStats()` 的结果同时喂给响应的 `stats` 与 `info`，
   // 否则单次请求要列举两遍 R2 全桶。
@@ -260,8 +266,10 @@ export function createInfoRoutes(): Hono<{ Bindings: Bindings }> {
     const deleted = flag.value;
     // 行数来自统计层那条 GROUP BY 的 `Σc`（= `COUNT(*)`），故这里只再取 `MAX(LastModified)`
     // ——单列、走 idx_h_user_modify，不再为同一个数多扫一遍全表。
+    // `?storage=0` = 轻量模式：不列举 R2，`info.storage` 与 `stats.totalFileSizeMB` 为 null（调用方沿用上一次的值）
+    const withStorage = new URL(c.req.url).searchParams.get('storage') !== '0';
     const [ds, lastModified] = await Promise.all([
-      deploymentStats(c.env),
+      deploymentStats(c.env, withStorage),
       readLastModified(c.env.DB),
     ]);
     const marker = { count: ds.views.total, lastModified };

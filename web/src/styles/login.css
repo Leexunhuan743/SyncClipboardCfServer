@@ -1,0 +1,17 @@
+/* 登录页：应用外壳之前的一个独立状态。一张居中的凭据卡 + 柔和的色彩光晕。 */
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 24px;
+  background:
+    radial-gradient(60% 50% at 88% 0%, color-mix(in srgb, #9b5cf6 16%, transparent), transparent 70%),
+    radial-gradient(70% 60% at 8% 0%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 66%),
+    var(--bg);
+}
+.login__panel { width: min(400px, 100%); display: flex; flex-direction: column; gap: 22px; }
+.login__brand { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.login__brand h1 { margin-top: 10px; font-size: 26px; }
+.login__brand p { color: var(--ink-3); }
+.login__card { display: flex; flex-direction: column; gap: 16px; padding: 28px; border: 1px solid var(--line); border-radius: 26px; background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: var(--shadow-3); backdrop-filter: blur(10px); }
+.login__note { font-size: 12.5px; line-height: 1.7; color: var(--ink-3); text-align: center; }

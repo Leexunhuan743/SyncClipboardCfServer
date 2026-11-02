@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>剪贴板 · SyncClipboard</title>
+    <meta name="color-scheme" content="light dark" />
+    <!-- 私有实例，不该被搜索引擎收录 -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="description" content="自托管 SyncClipboard 服务器的 Web 界面：查看、搜索、预览与管理跨设备同步的剪贴板历史。" />
+    <meta name="theme-color" content="#f5f6fa" />
+    <!-- 添加到主屏幕后以独立应用运行（iOS 与 Android 各读自己那条） -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="剪贴板" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="icon" href="/ui/brand/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/ui/brand/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/ui/brand/apple-touch-icon.png" />
+    <link rel="manifest" href="/ui/manifest.webmanifest" />
+    <!-- 首帧主题：阻塞式经典脚本，外链（CSP 是 script-src 'self'，不允许内联脚本） -->
+    <script src="/ui/theme-init.js"></script>
+    <!-- 下面两处由 web/build.mjs 换成带内容哈希的真实路径 -->
+    <link rel="stylesheet" href="%APP_CSS%" />
+    <script type="module" src="%APP_JS%"></script>
+  </head>
+  <body>
+    <div id="app" class="boot" aria-busy="true"></div>
+    <noscript><p class="noscript">本页面需要 JavaScript 才能显示剪贴板历史。</p></noscript>
+  </body>
+</html>

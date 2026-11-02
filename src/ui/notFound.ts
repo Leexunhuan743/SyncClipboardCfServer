@@ -1,18 +1,11 @@
-// 界面命名空间（`/ui`、`/ui_v1`、`/ui_v2`）下未匹配路径的 404 页。
+// 界面命名空间（`/ui`）下未匹配路径的 404 页。
 //
 // 只对界面前缀生效：协议路径（`/api/*`、`/SyncClipboard.json`、`/file/*`）的 404 语义是
 // 客户端依赖的契约（例如 `GET /api/history/{id}/data` 缺数据必须 404），不能换成 HTML 页面。
 //
-// 四个前缀共用这一张：它是**站点的** 404，不属于任何一版界面。代价是它的样式取自
-// `/ui_v2/css/*`（V2 的设计系统）—— 为一页 404 在两套设计系统里各写一份才是浪费。
-// 页内那个"返回剪贴板历史"指向**默认界面**（`/ui_v1/`，2026-09-18 起的定位，见 ADR D17）。
-// 图标取 `/ui_shared/brand/`（两版共用面，2026-09-21 起品牌图标在那里）。
-//
-// ⚠️ **类名刻意不用 BEM 形态**（`page404__title` 之类）：`test/ui-contract.test.ts` 的
-// 「CSS 定义但无人使用的类必须为零」守卫只采集 `block__element` / `block--modifier` 形态。
-// 这一页的样式全部内联在下面的 `<style>` 里（它由 Worker 出，不经过静态资源层），
-// 若用 BEM 命名就会被那道守卫抽到、再因为"两份 HTML 里没有它"而报死规则。
-// 这是刻意的形态选择，不是疏漏。
+// 这一页由 Worker 直接出（不经静态资源层），样式全部内联在下面的 `<style>` 里，
+// 不依赖界面的任何 CSS —— 界面资源本身 404 时，这一页仍然自洽。
+// 图标取 `/ui/brand/`。
 
 const HTML = `<!doctype html>
 <html lang="zh-CN">
@@ -22,10 +15,27 @@ const HTML = `<!doctype html>
     <title>页面不存在 · 剪贴板历史</title>
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex, nofollow" />
-    <link rel="icon" href="/ui_shared/brand/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/ui_v2/css/tokens-v2.css" />
-    <link rel="stylesheet" href="/ui_v2/css/base-v2.css" />
+    <link rel="icon" href="/ui/brand/favicon.svg" type="image/svg+xml" />
     <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7fb;
+        --ink: #151a2d;
+        --ink-muted: #5a6280;
+        --accent: #4c5fef;
+        --accent-ink: #fff;
+        --surface-3: #e7eaf4;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg: #0e1220; --ink: #eef0fa; --ink-muted: #9aa3c2; --accent: #7a8bff; --accent-ink: #0b0f22; --surface-3: #232a44; }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
       .wrap {
         max-width: 30rem;
         margin: 0 auto;
@@ -62,12 +72,11 @@ const HTML = `<!doctype html>
     <main class="wrap">
       <h1>这个地址没有页面</h1>
       <p>
-        你要找的界面不在这个地址下。剪贴板历史在 <a href="/ui_v1/">/ui_v1/</a>（默认界面），
-        开发测试版在 <code>/ui_v2/app/</code>，
+        剪贴板历史在 <a href="/ui/">/ui/</a>。
         SyncClipboard 客户端用的接口在站点根路径（<code>/SyncClipboard.json</code>、
         <code>/api/history/*</code>、<code>/file/*</code>）。
       </p>
-      <a class="home" href="/ui_v1/">返回剪贴板历史</a>
+      <a class="home" href="/ui/">返回剪贴板历史</a>
     </main>
   </body>
 </html>
@@ -84,7 +93,7 @@ export function notFoundPage(): Response {
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'same-origin',
       'content-security-policy':
-        "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     },
   });
 }

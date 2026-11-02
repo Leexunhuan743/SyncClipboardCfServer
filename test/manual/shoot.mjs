@@ -1,21 +1,12 @@
-// 视觉回归截图工具（手动运行，不属于 npm test 套件）
+// 视觉回归截图（手动运行，不属于 npm test 套件）。驱动本机 Chromium/Chrome/Edge 的无头实例，
+// 把真实页面渲染成 PNG，用来「看一眼界面长什么样」—— DOM 存在不等于用户看得见。
 //
-// 为什么需要它：这个仓库的前端是**零构建的原生 ES 模块**，没有编译器、也没有浏览器端测试，
-// 「改完之后界面上长什么样」只能靠人打开浏览器看。本脚本驱动本机 Edge/Chrome 的无头实例，
-// 把真实页面渲染成 PNG。
+// 用法（需要本地 dev server 已启动，且库里有些记录）：
+//   node test/manual/shoot.mjs --out .shots
+//   node test/manual/shoot.mjs --only list,detail --width 1440 --height 900
+//   node test/manual/shoot.mjs --out docs/images          # 重出 README 用的三张图
 //
-// 用法（需 dev server 已启动）：
-//   node test/manual/shoot.mjs --out .shots --user admin --pass admin
-//   node test/manual/shoot.mjs --only list,dark --width 1440 --height 900
-//
-// 设计约束：
-//   · **零依赖**：只用 node: builtins 与全局 WebSocket（Node ≥ 22）；仓库的 devDependencies 里
-//     没有 playwright/puppeteer，为截图引入一个浏览器内核是重资产。
-//   · **不写入仓库目录**：截图落在 --out（默认 .shots/，已加 .gitignore）。
-//   · 登录走真实接口（POST /ui/api/login），拿到服务端签发的会话 Cookie，
-//     因此截到的是使用者看到的页面（而不是靠注入脚本伪造已登录状态）。
-//
-// 起浏览器/登录/注入 Cookie/CDP 原语都在 ./cdp.mjs 里（与 probe / probe-ui-v1 / states 共用）。
+// 登录走真实接口（POST /ui/api/login）拿会话 Cookie 再注入，所以截到的就是使用者看到的页面。
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { launchBrowser, loginAndSetCookie } from './cdp.mjs';
@@ -24,7 +15,6 @@ const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 };
-
 const BASE = arg('base', 'http://127.0.0.1:8787');
 const USER = arg('user', 'admin');
 const PASS = arg('pass', 'admin');
@@ -32,118 +22,187 @@ const OUT = resolve(arg('out', '.shots'));
 const PORT = Number(arg('port', '9333'));
 const WIDTH = Number(arg('width', '1440'));
 const HEIGHT = Number(arg('height', '900'));
-const SCALE = Number(arg('scale', '1'));
 const ONLY = arg('only', null);
-const DARK = process.argv.includes('--dark');
+const wants = (name) => !ONLY || ONLY.split(',').includes(name);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 mkdirSync(OUT, { recursive: true });
-
-const { send, close } = await launchBrowser({ port: PORT, width: WIDTH, height: HEIGHT });
+const { send, read, close } = await launchBrowser({ port: PORT, width: WIDTH, height: HEIGHT });
 try {
-  // 缩放：launchBrowser 不设 deviceScaleFactor，这里连同窗口尺寸一起定下来
-  await send('Emulation.setDeviceMetricsOverride', {
-    width: WIDTH,
-    height: HEIGHT,
-    deviceScaleFactor: SCALE,
-    mobile: false,
-  });
-  await loginAndSetCookie(send, { base: BASE, user: USER, pass: PASS });
-
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  if (DARK) {
-    await send('Emulation.setEmulatedMedia', {
-      features: [{ name: 'prefers-color-scheme', value: 'dark' }],
-    });
-  }
-
-  async function goto(url, { settleMs = 1800 } = {}) {
+  const metrics = (width, height, mobile = false) =>
+    send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile });
+  const goto = async (url, settle = 1500) => {
     await send('Page.navigate', { url });
-    await wait(settleMs);
-  }
-
-  async function shoot(name, { fullPage = false } = {}) {
-    const params = { format: 'png' };
-    if (fullPage) params.captureBeyondViewport = true;
-    const { data } = await send('Page.captureScreenshot', params);
+    await wait(settle);
+  };
+  const shoot = async (name) => {
+    const { data } = await send('Page.captureScreenshot', { format: 'png' });
     const file = join(OUT, `${name}.png`);
     writeFileSync(file, Buffer.from(data, 'base64'));
     console.log(`[shoot] → ${file}`);
-    return file;
+  };
+  const theme = (mode) => read(`localStorage.setItem('clip-theme', '${mode}')`);
+
+  // 登录页要在**未登录**状态下拍：先拍它，再注入 Cookie
+  await metrics(WIDTH, HEIGHT);
+  if (wants('login')) {
+    await goto(`${BASE}/ui/`);
+    await read(`document.querySelector('#login-user').value = 'admin'; 1`);
+    await read(`document.querySelector('#login-pass').value = 'wrong'; document.querySelector('form').requestSubmit(); 1`);
+    await wait(800);
+    await shoot('login-error');
   }
 
-  const wants = (name) => !ONLY || ONLY.split(',').includes(name);
-
-  // 本脚本出的是 **V2**（`/ui_v2/app/`）的图。`/ui/` 是只做跳转的壳，它把人送到默认界面 V1
-  // `/ui_v1/` —— V1 自己的出图在 probe-ui-v1.mjs 的 `--shots`。
-  const APP = `${BASE}/ui_v2/app/`;
-
-  await goto(APP);
-  // 等列表真的渲染出来：骨架 → 真行；失败时是空状态或错误态，两者都算"有结果"，
-  // 不能因为等不到行就拍一张还在转的骨架。
-  await send('Runtime.evaluate', {
-    expression: `new Promise((resolve) => {
-      const deadline = Date.now() + 15000;
-      const tick = () => {
-        const item = document.querySelector('.item');
-        if (item) return setTimeout(() => resolve('rows'), 600);
-        if (document.querySelector('.blank') || document.querySelector('.ghost')) return resolve('state');
-        if (Date.now() > deadline) return resolve('timeout');
-        setTimeout(tick, 150);
-      };
-      tick();
-    })`,
-    awaitPromise: true,
-  });
-
-  if (wants('list')) await shoot('01-list-light');
-  if (wants('list-dark')) {
-    await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
-    await send('Runtime.evaluate', { expression: `document.documentElement.dataset.theme='dark'` });
-    await wait(500);
-    await shoot('02-list-dark');
-    await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
-    await send('Runtime.evaluate', { expression: `document.documentElement.dataset.theme='light'` });
-    await wait(300);
-  }
-  if (wants('drawer')) {
-    await send('Runtime.evaluate', { expression: `document.getElementById('overview').click()` });
+  await loginAndSetCookie(send, { base: BASE, user: USER, pass: PASS });
+  await goto(`${BASE}/ui/`, 600); // localStorage 需要一个真实的同源文档，about:blank 上读会抛 SecurityError
+  await theme('light');
+  await goto(`${BASE}/ui/`);
+  if (wants('list')) await shoot('list-light');
+  if (wants('detail')) {
+    await read(`document.querySelector('.card').click(); 1`);
     await wait(700);
-    await shoot('03-drawer');
-    await send('Runtime.evaluate', { expression: `document.querySelector('.drawer')?.close()` });
+    await shoot('detail');
+    await read(`document.querySelector('.pane__close').click(); 1`);
+  }
+  if (wants('dark')) {
+    await theme('dark');
+    await goto(`${BASE}/ui/`);
+    await shoot('list-dark');
+    await theme('light');
   }
   if (wants('trash')) {
-    await goto(`${APP}?deleted=1`, { settleMs: 1800 });
-    await shoot('04-trash');
+    await goto(`${BASE}/ui/?trash=1`);
+    await shoot('trash');
   }
-  if (wants('login')) {
-    await goto(`${BASE}/ui_v2/app/login.html`);
-    await shoot('05-login');
+  if (wants('settings')) {
+    await goto(`${BASE}/ui/`);
+    await read(`document.querySelector('.sidebar__settings').click(); 1`);
+    await wait(1200);
+    await shoot('settings');
   }
-  if (wants('404')) {
-    await goto(`${BASE}/ui/nope-not-here`);
-    await shoot('06-notfound');
+  if (wants('image')) {
+    // 打开最新的一条图片记录（库里需要有图片）
+    await goto(`${BASE}/ui/?type=Image`);
+    await read(`document.querySelector('.card')?.click(); 1`);
+    await wait(900);
+    await shoot('detail-image');
   }
-  if (wants('v1')) {
-    await goto(`${BASE}/ui_v1/`, { settleMs: 1200 });
-    await shoot('07-ui-v1');
+  if (wants('mobile-detail') || wants('mobile-nav')) {
+    await metrics(390, 844, true);
+    await goto(`${BASE}/ui/`, 1800);
+    if (wants('mobile-nav')) {
+      await read(`[...document.querySelectorAll('.tabbar__item')].find((b) => b.textContent === '更多').click(); 1`);
+      await wait(600);
+      await shoot('mobile-nav');
+      await read(`document.querySelector('.scrim').click(); 1`);
+      await wait(400);
+    }
+    if (wants('mobile-detail')) {
+      await read(`document.querySelector('.card').click(); 1`);
+      await wait(900);
+      await shoot('mobile-detail');
+    }
   }
-  if (wants('empty')) {
-    // 用一个不可能命中的搜索词逼出空状态（不写库、不改数据）
-    await goto(`${APP}?search=zzz-no-such-record-zzz`, { settleMs: 1800 });
-    await shoot('08-empty-filter');
+  if (wants('compact')) {
+    await read(`localStorage.setItem('clip-density', 'compact')`);
+    await goto(`${BASE}/ui/`);
+    await shoot('compact');
+    await metrics(390, 844, true);
+    await goto(`${BASE}/ui/`, 1800);
+    await shoot('compact-mobile');
+    await read(`localStorage.removeItem('clip-density')`);
+    await metrics(WIDTH, HEIGHT);
+  }
+  if (wants('select')) {
+    await goto(`${BASE}/ui/`);
+    await read(`document.querySelectorAll('.card .tile')[1].click(); document.querySelectorAll('.card .tile')[2].click(); 1`);
+    await wait(500);
+    await shoot('select');
+    await metrics(390, 844, true);
+    await goto(`${BASE}/ui/`, 1800);
+    await read(`document.querySelectorAll('.card .tile')[0].click(); document.querySelectorAll('.card .tile')[1].click(); 1`);
+    await wait(500);
+    await shoot('select-mobile');
+    await metrics(WIDTH, HEIGHT);
+  }
+  if (wants('ultrawide')) {
+    // 带鱼屏（21:9 / 32:9）：list / detail / settings 三张
+    await metrics(3440, 1440);
+    await goto(`${BASE}/ui/`);
+    await shoot('ultrawide-list');
+    await read(`document.querySelector('.card').click(); 1`);
+    await wait(900);
+    await shoot('ultrawide-detail');
+    await read(`document.querySelector('.pane__close').click(); document.querySelector('.sidebar__settings').click(); 1`);
+    await wait(1400);
+    await shoot('ultrawide-settings');
+    await metrics(WIDTH, HEIGHT);
+  }
+  if (wants('hover')) {
+    // 悬停态 + 选择态的勾选框（对着用户报过的"框压在框上"回归看）：先裁出前几张卡的区域
+    await goto(`${BASE}/ui/`);
+    const box = await read(`(() => { const r = document.querySelector('.card').getBoundingClientRect(); return { x: Math.round(r.left + 200), y: Math.round(r.top + r.height / 2) }; })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+    await wait(400);
+    await shoot('check-hover');
+    await read(`document.querySelectorAll('.card .tile')[1].click(); 1`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
+    await wait(400);
+    await shoot('check-selected');
+    await read(`localStorage.setItem('clip-density', 'compact')`);
+    await goto(`${BASE}/ui/`);
+    await read(`document.querySelectorAll('.card .tile')[1].click(); 1`);
+    await wait(400);
+    await shoot('check-compact');
+    await read(`localStorage.removeItem('clip-density')`);
+  }
+  if (wants('themes')) {
+    // 三套风格 × （列表 + 详情 + 外观对话框 + 登录页）
+    for (const style of ['coast', 'paper', 'pop']) {
+      await read(`localStorage.setItem('clip-style', '${style}')`);
+      await goto(`${BASE}/ui/`);
+      await shoot(`theme-${style}-list`);
+      await read(`document.querySelectorAll('.card')[2].click(); 1`);
+      await wait(900);
+      await shoot(`theme-${style}-detail`);
+      await read(`document.querySelector('.pane__close').click(); document.querySelector('.sidebar .icon-btn[aria-label="外观与主题"]').click(); 1`);
+      await wait(700);
+      await shoot(`theme-${style}-appearance`);
+      await read(`document.querySelector('dialog[open] .modal__head .icon-btn').click(); fetch('/ui/api/logout', { method: 'POST' }).then(() => location.reload()); 1`);
+      await wait(1500);
+      await shoot(`theme-${style}-login`);
+      await loginAndSetCookie(send, { base: BASE, user: USER, pass: PASS });
+    }
+    await read(`localStorage.removeItem('clip-style')`);
+  }
+  if (wants('themes-mobile')) {
+    await metrics(390, 844, true);
+    for (const style of ['coast', 'paper', 'pop']) {
+      await read(`localStorage.setItem('clip-style', '${style}')`);
+      await goto(`${BASE}/ui/`, 1800);
+      await read(`document.querySelectorAll('.card .tile')[1].click(); 1`);
+      await wait(400);
+      await shoot(`theme-${style}-mobile`);
+    }
+    await read(`localStorage.removeItem('clip-style')`);
+    await metrics(WIDTH, HEIGHT);
+  }
+  if (wants('check-image')) {
+    for (const style of ['default', 'pop']) {
+      if (style !== 'default') await read(`localStorage.setItem('clip-style', '${style}')`);
+      await goto(`${BASE}/ui/?type=Image`);
+      await read(`document.querySelector('.card .tile').click(); 1`);
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 600 });
+      await wait(500);
+      await shoot(`check-image-${style}`);
+    }
+    await read(`localStorage.removeItem('clip-style')`);
   }
   if (wants('mobile')) {
-    await send('Emulation.setDeviceMetricsOverride', {
-      width: 390,
-      height: 844,
-      deviceScaleFactor: 2,
-      mobile: true,
-    });
-    await goto(APP, { settleMs: 2000 });
-    await shoot('09-mobile');
+    await metrics(390, 844, true);
+    await goto(`${BASE}/ui/`, 2000);
+    await shoot('list-mobile');
   }
-
   console.log('[shoot] 完成');
 } finally {
   close();

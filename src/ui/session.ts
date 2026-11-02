@@ -119,12 +119,24 @@ async function signPayload(key: CryptoKey, payload: SessionPayload): Promise<str
 // Secure 仅 https 下加（本地 http 调试时加了会让浏览器直接丢弃 Cookie）。
 // 拼装交给 `hono/utils/cookie` 的 `serialize`：它按 RFC 排列属性、对值做 `encodeURIComponent`
 // （本模块的令牌是 base64url，编码是恒等变换），并会拒绝 `Max-Age > 400 天` 这类非法组合。
+/**
+ * 这次请求在**用户那一侧**是不是 https。部署在 Workers 上时请求 URL 本身就是 https；
+ * 但经 cloudflared 隧道 / 反代访问本地开发服务时，Worker 看到的是回源的 http，用户浏览器用的却是 https ——
+ * 此时要看 Cloudflare 边缘加的 `X-Forwarded-Proto` / `CF-Visitor`。
+ * 这两个头客户端也能伪造，但伪造它只会让**它自己**那份 Cookie 多带一个 Secure 属性（更严格），不构成提权。
+ */
+export function isHttpsRequest(request: Request): boolean {
+  if (new URL(request.url).protocol === 'https:') return true;
+  if ((request.headers.get('x-forwarded-proto') ?? '').split(',')[0]?.trim().toLowerCase() === 'https') return true;
+  return /"scheme"\s*:\s*"https"/.test(request.headers.get('cf-visitor') ?? '');
+}
+
 function cookieOptions(request: Request, maxAgeSeconds: number): CookieOptions {
   return {
     path: '/',
     httpOnly: true,
     sameSite: 'Strict',
-    secure: new URL(request.url).protocol === 'https:',
+    secure: isHttpsRequest(request),
     maxAge: maxAgeSeconds,
   };
 }

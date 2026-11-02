@@ -1,0 +1,255 @@
+/* 记录流：列表头、按日分组、记录卡、骨架与空状态、分页。 */
+.feed { display: flex; flex-direction: column; gap: 10px; transition: opacity var(--dur) var(--ease); }
+.feed[data-busy="true"] .feed__list { opacity: 0.72; }
+
+.feedhead { position: sticky; top: 0; z-index: 8; display: flex; align-items: center; gap: 12px; height: 52px; min-height: 52px; margin: 0 calc(-1 * var(--gutter)); padding: 8px var(--gutter); background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(12px); }
+.feedhead__count { font-size: 13px; font-weight: 650; color: var(--ink-2); white-space: nowrap; }
+.chips { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+
+.feed__list { display: flex; flex-direction: column; gap: 22px; }
+.group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; }
+.group__title { grid-column: 1 / -1; margin: 0 4px 2px; font-size: 12.5px; font-weight: 650; letter-spacing: 0.04em; color: var(--ink-3); }
+
+/* 宽屏多列：按**滚动区此刻的宽度**决定列数（详情面板打开会让它变窄，列数自动回落）。
+ * 舒适卡片每列至少 ~560px；紧凑行每列要放下"正文 + 232px 信息列"，所以门槛更高。 */
+@container scroller (min-width: 1280px) { .feed[data-density="comfortable"] .group, .feed__state[data-kind="loading"] { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container scroller (min-width: 1900px) { .feed[data-density="comfortable"] .group, .feed__state[data-kind="loading"] { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container scroller (min-width: 2500px) { .feed[data-density="comfortable"] .group, .feed__state[data-kind="loading"] { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@container scroller (min-width: 3100px) { .feed[data-density="comfortable"] .group, .feed__state[data-kind="loading"] { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@container scroller (min-width: 1500px) { .feed[data-density="compact"] .group { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container scroller (min-width: 2300px) { .feed[data-density="compact"] .group { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container scroller (min-width: 3000px) { .feed[data-density="compact"] .group { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+/* ---- 记录卡 ---- */
+.card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 4px 14px;
+  align-items: start;
+  padding: 14px 14px 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.card:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.card[data-selected="true"] { background: var(--accent-soft); border-color: var(--accent-line); }
+.card[data-open="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent), var(--shadow-1); }
+.card[data-deleted="true"] .card__text { color: var(--ink-3); }
+@media (hover: hover) { .card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-2); } }
+
+
+.tile { position: relative; display: grid; place-items: center; width: 46px; height: 46px; flex: none; overflow: hidden; border-radius: 14px; background: var(--surface-3); color: var(--ink-2); }
+.tile[data-type="Text"] { color: var(--t-text); background: var(--t-text-bg); }
+.tile[data-type="Image"] { color: var(--t-image); background: var(--t-image-bg); }
+.tile[data-type="File"] { color: var(--t-file); background: var(--t-file-bg); }
+.tile[data-type="Group"] { color: var(--t-group); background: var(--t-group-bg); }
+.tile--lg { width: 72px; height: 72px; border-radius: 22px; }
+.tile--thumb { background: var(--surface-3); }
+.thumb { width: 100%; height: 100%; object-fit: cover; }
+
+.card__main { display: flex; flex-direction: column; gap: 7px; min-width: 0; padding-top: 1px; }
+.card__text { margin: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.6; color: var(--ink); }
+.card__text--name { font-weight: 600; }
+.card__text--empty { color: var(--ink-3); font-style: italic; }
+.card__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: 12.5px; color: var(--ink-3); }
+.card__time { white-space: nowrap; }
+/* 标记（置顶 / 星标 / 长文本…）装进一个容器：默认不参与布局（display: contents），紧凑桌面模式里它是固定宽度的一列 */
+.card__flags { display: contents; }
+
+.card__actions { display: flex; align-items: center; gap: 2px; margin: -4px -4px 0 0; opacity: 0; transition: opacity var(--dur) var(--ease); }
+.card:hover .card__actions, .card:focus-within .card__actions, .card[data-open="true"] .card__actions, .feed[data-selecting="true"] .card__actions { opacity: 1; }
+@media (pointer: coarse) { .card__actions { opacity: 1; } }
+
+/* 紧凑密度：每条一行，信息在右侧对齐成一列；操作按钮悬停/聚焦时浮在最右侧（不占位，所以信息列不会被挤歪） */
+.feed[data-density="compact"] .feed__list { gap: 16px; }
+.feed[data-density="compact"] .group { gap: 4px; }
+.feed[data-density="compact"] .card { grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 0 12px; min-height: 48px; padding: 7px 14px 7px 12px; border-radius: var(--r-md); box-shadow: none; }
+.feed[data-density="compact"] .tile { width: 34px; height: 34px; border-radius: 10px; }
+.feed[data-density="compact"] .tile svg { width: 16px; height: 16px; }
+.feed[data-density="compact"] .card__main { flex-direction: row; align-items: center; gap: 16px; padding-top: 0; }
+.feed[data-density="compact"] .card__text { -webkit-line-clamp: 1; flex: 1; min-width: 0; font-size: 14px; line-height: 1.5; }
+/* 紧凑桌面：类型 / 大小 / 时间 / 标记各占固定宽度的一列，每一行的列都对齐 ——
+   原来是一条右对齐的 flex 行，有没有星标会让整行的类型、大小、时间左右错位 */
+.feed[data-density="compact"] .card__meta { flex: none; display: grid; grid-template-columns: auto 60px 92px 76px; align-items: center; justify-content: end; column-gap: 10px; }
+.feed[data-density="compact"] .card__size, .feed[data-density="compact"] .card__time { text-align: right; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.feed[data-density="compact"] .card__flags { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+.feed[data-density="compact"] .card__actions { position: absolute; right: 8px; top: 50%; margin: 0; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-2); transform: translateY(-50%); }
+
+/* ---- 骨架 / 空状态 ---- */
+.feed__state[data-kind="loading"] { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.skeleton { display: flex; align-items: center; gap: 14px; height: 78px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.skeleton__tile { width: 46px; height: 46px; flex: none; border-radius: 14px; }
+.skeleton__lines { display: flex; flex: 1; flex-direction: column; gap: 10px; }
+.skeleton__lines > span { height: 12px; border-radius: 6px; }
+.skeleton__lines > span:last-child { width: 38%; }
+.skeleton__tile, .skeleton__lines > span { background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%) 0 0 / 200% 100%; animation: sheen 1.4s linear infinite; }
+@keyframes sheen { to { background-position: -200% 0; } }
+
+.empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 64px 24px; text-align: center; }
+.empty__art { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 6px; border-radius: 22px; background: var(--accent-soft); color: var(--accent); }
+.empty__art--error { background: var(--danger-soft); color: var(--danger); }
+.empty__title { font-size: 18px; }
+.empty__text { max-width: 38ch; color: var(--ink-3); line-height: 1.7; }
+.empty .row { justify-content: center; margin-top: 8px; }
+
+/* ---- 分页 ---- */
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 0 0; }
+.pager__nav { display: flex; align-items: center; gap: 4px; }
+.pager__step, .pager__page { display: inline-grid; place-items: center; min-width: 36px; height: 36px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--r-md); background: none; color: var(--ink-2); font-weight: 600; transition: background-color var(--dur), color var(--dur); }
+.pager__page[aria-current="page"] { background: var(--accent); color: var(--accent-ink); }
+.pager__step:disabled { opacity: 0.35; }
+.pager__gap { padding: 0 4px; color: var(--ink-3); }
+@media (hover: hover) { .pager__step:hover:not(:disabled), .pager__page:hover:not([aria-current="page"]) { background: var(--surface-3); color: var(--ink); } }
+@media (pointer: coarse) { .pager__step, .pager__page { min-width: 44px; height: 44px; } }
+
+/* ---- 小屏 ---- */
+@media (max-width: 700px) {
+  .card { grid-template-columns: 42px minmax(0, 1fr); padding: 12px; }
+  .tile { width: 42px; height: 42px; border-radius: 12px; }
+  /* 舒适密度：操作行换到卡片下方 */
+  .card__actions { grid-column: 1 / -1; justify-content: flex-end; margin: 4px -4px -4px 0; opacity: 1; }
+  .feedhead { gap: 8px; }
+
+  /* 紧凑密度：一行正文 + 一行信息 + 右侧只留两个主要动作（复制 / 下载、移到回收站），一屏能看到更多条；收藏、置顶在详情与长按多选的批量条里 */
+  .feed[data-density="compact"] .card { grid-template-columns: 34px minmax(0, 1fr) auto; min-height: 56px; padding: 6px 4px 6px 12px; }
+  .feed[data-density="compact"] .card__main { flex-direction: column; align-items: stretch; gap: 2px; }
+  .feed[data-density="compact"] .card__meta { display: flex; flex-wrap: wrap; width: auto; justify-content: flex-start; font-size: 12px; }
+  .feed[data-density="compact"] .card__flags { display: contents; }
+  /* 单行截断：允许在任意字符处断开，否则带连字符的长标题会在连字符处换行、只剩第一段 */
+  .feed[data-density="compact"] .card__text { word-break: break-all; }
+  .feed[data-density="compact"] .card__actions { position: static; grid-column: auto; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; transform: none; opacity: 1; }
+  .feed[data-density="compact"] .card__actions .icon-btn[data-act="star"], .feed[data-density="compact"] .card__actions .icon-btn[data-act="pin"] { display: none; }
+}
+
+/* ---- 部署信息 / 设置 / 快捷键 ---- */
+.settings-wrap { display: flex; flex-direction: column; gap: 14px; }
+/* 部署信息：多栏瀑布。卡片高矮差很多（连接 ~370px、同步健康 ~150px），网格会硬生生排出空白；
+ * CSS columns 让浏览器按内容平衡各栏高度。窄屏 1 栏、桌面 2 栏、带鱼屏 3 栏。 */
+.settings { column-count: 1; column-gap: 14px; }
+.settings > .card-section { break-inside: avoid; margin-bottom: 14px; }
+@media (min-width: 1000px) { .settings { column-count: 2; } }
+@media (min-width: 1900px) { .settings { column-count: 3; } }
+.card-section { display: flex; flex-direction: column; gap: 12px; padding: 18px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.card-section--danger { border-color: color-mix(in srgb, var(--danger) 28%, var(--line)); background: color-mix(in srgb, var(--danger-soft) 40%, var(--surface)); }
+.kvs { display: flex; flex-direction: column; gap: 10px; }
+.kv { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 4px 14px; font-size: 13.5px; }
+.kv dt { color: var(--ink-3); }
+.kv dd { overflow-wrap: anywhere; }
+.kv dd[data-tone="warn"] { color: var(--warn); font-weight: 600; }
+.kv dd[data-tone="ok"] { color: var(--ok); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.danger-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.plain-list { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.ok-line { display: flex; align-items: center; gap: 8px; color: var(--ok); font-weight: 550; }
+.settings__foot { text-align: center; }
+.integrity:empty { display: none; }
+@media (max-width: 600px) { .kv { grid-template-columns: 1fr; } .grid2 { grid-template-columns: 1fr; } .danger-row { flex-direction: column; align-items: stretch; } }
+
+.shortcuts { display: flex; flex-direction: column; gap: 20px; }
+.shortcuts__group { display: flex; flex-direction: column; gap: 10px; }
+.shortcuts__list { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px 14px; align-items: center; }
+.shortcuts__list dt { display: flex; gap: 4px; }
+
+/* 搜索命中高亮 */
+.hit { padding: 0 2px; border-radius: 4px; background: color-mix(in srgb, var(--star) 28%, transparent); color: inherit; }
+
+/* 首次打开（库是空的）：告诉用户客户端该填什么 */
+.onboard { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 12px; padding: 18px 20px; border: 1px dashed var(--line-strong); border-radius: var(--r-lg); background: var(--surface); text-align: left; max-width: min(520px, 100%); }
+.onboard__title { font-weight: 650; align-self: flex-start; }
+.onboard .row { align-self: stretch; flex-wrap: nowrap; }
+.onboard__url { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 9px 12px; border-radius: var(--r-md); background: var(--surface-2); font: 13px/1.4 var(--mono); }
+
+/* ============ 多选 ============
+ * 入口有四个：点图标块、悬停出现的勾选框、Ctrl/⌘+点击（Shift+点击选范围）、触屏长按。
+ *
+ * 勾选框**替换**图标块：大小、位置与图标块完全重合（像邮箱里头像变勾选框），所以不会出现"框压在框上"。
+ * 图片缩略图例外（不能遮住图片）：勾选框缩成缩略图左上角的小角标。
+ * 未选中 = 空心方块；选中 = 实心强调色 + 对勾，两种状态同一个位置、同一个大小。 */
+.card__check {
+  position: absolute;
+  left: 16px;
+  top: 14px;
+  z-index: 2;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), background-color var(--dur), border-color var(--dur), color var(--dur);
+}
+.card__check svg { width: 22px; height: 22px; }
+.card .tile { cursor: pointer; transition: opacity var(--dur) var(--ease); }
+
+/* 勾选框出现的时机：鼠标悬停 / 键盘聚焦到卡片 / 已选中 / 进入了选择状态（至少选了一条） */
+.card:hover .card__check, .card:focus-visible .card__check, .card__check:focus-visible, .card__check[aria-checked="true"], .feed[data-selecting="true"] .card__check { opacity: 1; transform: none; }
+/* 勾选框出现时，它下面的图标块让位（不是半透明叠着） */
+.card:hover .card__check ~ .tile:not(.tile--thumb), .card:focus-visible .card__check ~ .tile:not(.tile--thumb), .feed[data-selecting="true"] .card__check ~ .tile:not(.tile--thumb) { opacity: 0; }
+.card__check[aria-checked="false"] { background: var(--surface); border-width: 2px; }
+
+/* 图片缩略图：勾选框和其它卡片**同位置、同大小**（盖在缩略图上），只是做成半透明罩：
+ * 未选 = 淡罩 + 空心框，缩略图仍然认得出是哪张；选中 = 强调色罩 + 对勾。 */
+.card:has(.tile--thumb) .card__check[aria-checked="false"] { background: color-mix(in srgb, var(--surface) 58%, transparent); backdrop-filter: blur(1.5px); border-color: color-mix(in srgb, var(--ink) 55%, transparent); }
+.card:has(.tile--thumb) .card__check[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 82%, transparent); backdrop-filter: none; border-color: var(--accent); }
+
+/* 紧凑密度：图标块 34px，竖直居中 */
+.feed[data-density="compact"] .card__check { left: 12px; top: 50%; width: 34px; height: 34px; margin-top: -17px; border-radius: 10px; }
+.feed[data-density="compact"] .card__check svg { width: 18px; height: 18px; }
+
+@media (max-width: 700px) {
+  .card__check { left: 12px; top: 12px; width: 42px; height: 42px; border-radius: 12px; }
+  .feed[data-density="compact"] .card__check { left: 12px; top: 50%; width: 34px; height: 34px; margin-top: -17px; }
+}
+
+/* 触屏：平时不放勾选框（长按/点图标进入多选），选择状态里才出现，且不响应悬停；卡片文字不可划选（避免长按选字抢手势） */
+@media (pointer: coarse) {
+  .card:hover .card__check, .card:focus-visible .card__check { opacity: 0; pointer-events: none; }
+  .card .card__check[aria-checked="true"], .feed[data-selecting="true"] .card__check { opacity: 1; pointer-events: auto; transform: none; }
+  .card:hover .card__check ~ .tile:not(.tile--thumb) { opacity: 1; }
+  .feed[data-selecting="true"] .card__check ~ .tile:not(.tile--thumb) { opacity: 0; }
+  .card { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+}
+
+/* ============ 部署信息 ============ */
+.settings-wrap { display: flex; flex-direction: column; gap: 14px; }
+.health { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-radius: var(--r-lg); }
+.health[data-tone="ok"] { background: var(--ok-soft); color: var(--ok); }
+.health[data-tone="warn"] { background: var(--warn-soft); color: var(--warn); }
+.health__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.health__text strong { font-size: 15px; }
+.health__text ul { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--ink-2); }
+.health__warn { color: inherit; font-weight: 600; }
+.health__sub { font-size: 13px; color: var(--ink-2); }
+.health .btn--ghost { color: inherit; }
+.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; }
+.row--nowrap { flex-wrap: nowrap; }
+.row--nowrap .input { flex: 1; min-width: 0; }
+.storage__total { display: flex; align-items: baseline; gap: 10px; }
+.storage__total strong { font-size: 26px; letter-spacing: -0.02em; }
+.storage__total span { color: var(--ink-3); font-size: 13px; }
+.field__row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.field__live { font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.field__live[data-tone="error"] { color: var(--danger); }
+.field .chips { gap: 6px; flex-wrap: wrap; }
+.chip-btn--reset { border-style: dashed; }
+
+/* 类型构成条（概览与存储共用） */
+.typebar { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.typebar__bar { display: flex; gap: 2px; height: 10px; overflow: hidden; border-radius: var(--r-pill); background: var(--surface-3); }
+.typebar__seg { min-width: 6px; height: 100%; background: var(--ink-3); }
+.typebar__seg[data-type="Text"], .typebar__dot[data-type="Text"] { background: var(--t-text); }
+.typebar__seg[data-type="Image"], .typebar__dot[data-type="Image"] { background: var(--t-image); }
+.typebar__seg[data-type="File"], .typebar__dot[data-type="File"] { background: var(--t-file); }
+.typebar__seg[data-type="Group"], .typebar__dot[data-type="Group"] { background: var(--t-group); }
+.typebar__legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--ink-2); }
+.typebar__legend li { display: inline-flex; align-items: center; gap: 6px; }
+.typebar__dot { width: 8px; height: 8px; border-radius: 50%; }
+
+/* 列表头高度固定：选择前后「共 N 条」与「已选 N 项 + 取消选择」同高，列表不会被顶下去。
+ * 粗指针下按钮要 44px，所以高度跟着放大（仍是固定值）。 */
+@media (pointer: coarse) { .feedhead { height: 60px; min-height: 60px; } }
+.feedhead > * { flex-shrink: 0; }
+.feedhead .chips { flex-shrink: 1; min-width: 0; }

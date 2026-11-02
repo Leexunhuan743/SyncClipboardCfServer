@@ -9,9 +9,9 @@
 //      `/file/{fileName}` 与 `/api/history/{profileId}` 的**取值语义必须保留大小写**：
 //      `/file/Statistics` 是一个名为 "Statistics" 的文件，归一成 `statistics` 就会查错对象。
 //      这正是"部分不区分"比"全都不区分"更安全的原因。
-//   2. 覆盖范围**只到协议面**：界面前缀（`/ui/*`、`/ui_v1/*`、`/ui_v2/*`）与静态资源不在其列 ——
-//      这三个前缀是本项目自己的面，上游没有对应路由可对齐。
-//      ⚠️ 它们**确实**会先进 Worker（`run_worker_first` 里有这六个模式）—— 但那是界面开关
+//   2. 覆盖范围**只到协议面**：界面前缀（`/ui/*`）与静态资源不在其列 ——
+//      这个前缀是本项目自己的面，上游没有对应路由可对齐。
+//      ⚠️ 它们**确实**会先进 Worker（`run_worker_first` 里有这两个模式）—— 但那是界面开关
 //      `UI_ENABLED` 的需要，与"对齐 ASP.NET 的字面段大小写"无关，故不参与归一。
 //   3. **表漏项必须能被测试发现**：`test/protocol.test.ts` 有一条守卫遍历 `app.routes`，断言协议面
 //      每一个字面段都落在本表覆盖的位置上；新增端点若引入新的字面段而忘记登记，守卫会红。
@@ -47,7 +47,7 @@ export function normalizeProtocolPath(path: string): string | null {
     }
   };
 
-  // 第一段决定这条路径属于哪一族；不属于协议面（如界面前缀 /ui/*、/ui_v1/*、/ui_v2/*）一律不动
+  // 第一段决定这条路径属于哪一族；不属于协议面（如界面前缀 /ui/*）一律不动
   switch ((segs[1] ?? '').toLowerCase()) {
     case 'api':
       setIfMatch(1, SEGMENT_1);
