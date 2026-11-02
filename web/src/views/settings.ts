@@ -29,6 +29,9 @@ const PROJECT_URL = 'https://github.com/Leexunhuan743/SyncClipboardCfServer';
 const COUNT_MAX = 1_000_000;
 const MINUTES_MAX = 525_600;
 
+// 部署信息卡片网格在这个视口宽度起是三栏（与 styles/feed.css 的 `.settings { column-count: 3 }` 同一个断点）
+const THREE_COLUMNS = '(min-width: 1900px)';
+
 const COUNT_PRESETS: [string, number][] = [['不限制', 0], ['500 条', 500], ['1000 条', 1000], ['5000 条', 5000]];
 const MINUTES_PRESETS: [string, number][] = [['不限制', 0], ['7 天', 7 * 1440], ['30 天', 30 * 1440], ['90 天', 90 * 1440]];
 
@@ -40,7 +43,9 @@ function skewText(ms: number): string {
 
 export function openSettings(ctx: SettingsContext): void {
   const body = h('div', { class: 'settings-wrap' }, h('div', { class: 'pane__loading' }, h('span', { class: 'spinner' }), '正在读取部署信息…'));
-  const modal = openModal({ title: '部署信息', subtitle: '服务器地址、同步健康、存储与保留策略', content: body, size: 'xl' });
+  // 三栏布局下卡片顺序会换（见 paint 里的 place）：监听器要在对话框关闭 / 重画时摘掉，否则会一直引用已脱离页面的节点
+  let unwatchLayout: (() => void) | null = null;
+  const modal = openModal({ title: '部署信息', subtitle: '服务器地址、同步健康、存储与保留策略', content: body, size: 'xl', onClose: () => unwatchLayout?.() });
 
   const section = (title: string, className: string, ...children: (Node | null)[]): HTMLElement =>
     h('section', { class: `card-section ${className}`.trim() }, h('h3', { class: 'section-title', text: title }), ...children);
@@ -221,10 +226,21 @@ export function openSettings(ctx: SettingsContext): void {
       h('div', { class: 'danger-row' }, h('div', null, h('strong', { text: '清空全部记录' }), h('p', { class: 'note', text: '删除所有记录（含收藏、置顶和收藏夹里的）和全部数据文件，无法恢复；收藏夹本身（空的）会保留。' })), h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => { await ctx.onClearAll(); void reload(); } }, '清空全部')),
     );
 
+    // 卡片高矮差很多：用 CSS 多栏（columns）让浏览器自己平衡各栏高度，而不是网格硬排出空白。
+    // 但多栏是按 DOM 顺序依次填的：三栏时「存储 + 保留策略」一起落进中间列、右列只剩两张矮卡，三列高低不均。
+    // 所以三栏宽度下把保留策略挪到最后（落进右列），中间列是「存储 + 数据维护 + 危险操作」；窄屏的顺序不变。
+    const grid = h('div', { class: 'settings' });
+    const narrowOrder = [connection, health, storage, retention, maintenance, danger];
+    const wideOrder = [connection, health, storage, maintenance, danger, retention];
+    const wide = window.matchMedia(THREE_COLUMNS);
+    const place = (): void => grid.append(...(wide.matches ? wideOrder : narrowOrder));
+    unwatchLayout?.();
+    wide.addEventListener('change', place);
+    unwatchLayout = () => wide.removeEventListener('change', place);
+    place();
     body.append(
       overview(info),
-      // 卡片高矮差很多：用 CSS 多栏（columns）让浏览器自己平衡各栏高度，而不是网格硬排出空白
-      h('div', { class: 'settings' }, connection, health, storage, retention, maintenance, danger),
+      grid,
       h('p', { class: 'note settings__foot' }, h('button', { class: 'linkish', type: 'button', text: '键盘快捷键', onclick: () => { modal.close(); ctx.onShortcuts(); } })),
     );
   }
