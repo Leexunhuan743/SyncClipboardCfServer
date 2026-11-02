@@ -433,9 +433,16 @@ export function parseHistoryRecordUpdateDto(json: string): HistoryRecordUpdateDt
   const version = get('version');
   const lastModified = get('lastModified');
   const lastAccessed = get('lastAccessed');
-  if (typeof starred === 'boolean') dto.starred = starred;
-  if (typeof pinned === 'boolean') dto.pinned = pinned;
-  if (typeof isDelete === 'boolean') dto.isDelete = isDelete;
+  // `bool?`：缺省 / null = 未提供；其余必须是布尔，否则 STJ 绑定失败 ⇒ 400（静默忽略会让请求方以为改成了）
+  for (const [field, value] of [
+    ['starred', starred],
+    ['pinned', pinned],
+    ['isDelete', isDelete],
+  ] as const) {
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`);
+    dto[field] = value;
+  }
   // version 对齐上游 `HistoryRecordUpdateDto.Version`（`int?`）的模型绑定：非空值必须是
   // 落在 int32 内的**有限整数**，否则绑定失败 → 400。只判 `typeof === 'number'` 会让
   // `1.5` 被原样持久化（污染该记录的版本语义）、`1e400` 解析为 Infinity 后落库触发 500。

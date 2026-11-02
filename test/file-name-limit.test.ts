@@ -71,3 +71,16 @@ describe('parseClientMessage · 非对象 JSON', () => {
     expect(parseClientMessage(`${raw}\x1e`).kind).toBe('unknown');
   });
 });
+
+import { parseHistoryRecordUpdateDto } from '../src/serialization';
+describe('parseHistoryRecordUpdateDto · 布尔字段', () => {
+  it.each(['starred', 'pinned', 'isDelete'])('%s 不是布尔 ⇒ 抛错（路由回 400）', (field) => {
+    for (const bad of ['"yes"', '1', '"true"', '[]']) {
+      expect(() => parseHistoryRecordUpdateDto(`{"${field}":${bad}}`)).toThrow();
+    }
+  });
+  it('null / 缺省 = 未提供；布尔正常通过', () => {
+    expect(parseHistoryRecordUpdateDto('{"starred":null}')).toEqual({});
+    expect(parseHistoryRecordUpdateDto('{"starred":true,"pinned":false}')).toEqual({ starred: true, pinned: false });
+  });
+});
