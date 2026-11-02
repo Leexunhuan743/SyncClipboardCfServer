@@ -40,6 +40,13 @@ CREATE INDEX IF NOT EXISTS idx_h_user_create   ON HistoryRecords(UserId, CreateT
 CREATE INDEX IF NOT EXISTS idx_h_user_access   ON HistoryRecords(UserId, LastAccessed);
 CREATE INDEX IF NOT EXISTS idx_h_user_modify   ON HistoryRecords(UserId, LastModified);
 
+-- 界面列表用的复合索引（本站独有，上游没有）：`WHERE UserId=? AND IsDeleted=? ORDER BY Pinned DESC, CreateTime DESC, ID DESC`。
+-- 没有它时，每次列表 / 计数都是**全表扫描**，而回收站里的行（软删保留 30 天）也一并被扫：线上曾因回收站占到 70% 的行数，
+-- 一次列表加载读 ~9,000 行；有了它，活跃视图只读活跃行、一页只读一页（~30 行），回收站再大也不影响。
+-- 索引条目隐含 rowid（= ID），所以倒序扫描正好满足 `ID DESC` 的 tiebreak，不需要临时排序。
+-- ⚠️ 只用已存在的老列：部署先跑本文件、再跑 tools/migrate-d1.mjs 加新列，索引里不能出现新列（见文末 Folders 的说明）。
+CREATE INDEX IF NOT EXISTS idx_h_user_list ON HistoryRecords(UserId, IsDeleted, Pinned, CreateTime);
+
 -- 收藏（Stared）维度的复合索引：对齐上游 EF 的 IX_History_User_Stared_CreateTime_ID /
 -- IX_History_User_Stared_Type_CreateTime_ID（HistoryDbContext.OnModelCreating）。上游加这两个索引
 -- 是为了让「收藏 + 时间范围 + 翻页」「收藏 + 类型 + 翻页」这类查询走索引；官方客户端的收藏筛选

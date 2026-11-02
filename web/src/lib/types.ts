@@ -92,7 +92,8 @@ export interface Overview {
   byTypeActive: ByType;
   starredCountActive: number;
   starredCountDeleted: number;
-  marker: { count: number; lastModified: number };
+  /** 变更信号：只有 lastModified 一个值（与 /ui/api/poll 同口径；以前还有 count，需要扫全表） */
+  marker: { lastModified: number };
   folders: Folder[];
   info: DeploymentInfo;
   serverTime: string;

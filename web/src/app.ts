@@ -31,9 +31,11 @@ import { icon } from './lib/dom';
 import { closeMenu, openMenu } from './ui/menu';
 
 const DENSITY_KEY = 'clip-density';
+// 轮询节奏：页面可见且推送断开 10 秒（轮询是唯一的收敛手段）；推送连着时只是看门狗，2 分钟一次；
+// **页面隐藏时不轮询** —— 后台标签页没人看，切回来时立刻补一次（见 onVisibility）。
+// 轮询每次是一个 Worker 请求 + 一条读 1 行的 D1 查询；隐藏时还轮询，一个忘在后台的标签页一天就是 2,880 个请求。
 const POLL_VISIBLE_MS = 10_000;
-const POLL_PUSH_MS = 60_000;
-const POLL_HIDDEN_MS = 30_000;
+const POLL_PUSH_MS = 120_000;
 
 function loadDensity(): Density {
   try {
@@ -57,7 +59,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   state.user = user;
   let listTicket = 0;
   let listAbort: AbortController | null = null;
-  let lastMarker = { count: -1, lastModified: -1 };
+  let lastMarker = { lastModified: -1 };
   let pollTimer = 0;
   let pollFailures = 0;
   let anchorKey: string | null = null; // Shift 范围选择的锚点
@@ -332,7 +334,16 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     render();
   }
 
+  // 趋势图（近 14 天柱状图）只在宽屏显示（styles/shell.css：≤1180px 时 `.stat--spark` 隐藏）。
+  // 它的查询要扫近 14 天的全部记录，隐藏着还去取就是白读 —— 只在看得见时取，窗口变宽时再补取。
+  const sparkVisible = window.matchMedia('(min-width: 1181px)');
+  const onSparkChange = (): void => {
+    if (sparkVisible.matches && state.activity === null) void loadActivity();
+  };
+  sparkVisible.addEventListener('change', onSparkChange);
+
   async function loadActivity(): Promise<void> {
+    if (!sparkVisible.matches) return;
     try {
       state.activity = (await api.activity(14)).days;
       render();
@@ -1199,8 +1210,8 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       pollFailures = 0;
       const recovered = state.stale;
       state.stale = false;
-      if (recovered || marker.count !== lastMarker.count || marker.lastModified !== lastMarker.lastModified) {
-        lastMarker = { count: marker.count, lastModified: marker.lastModified };
+      if (recovered || marker.lastModified !== lastMarker.lastModified) {
+        lastMarker = { lastModified: marker.lastModified };
         await refreshAll(true);
       } else render();
     } catch (error) {
@@ -1215,8 +1226,8 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
 
   function schedulePoll(): void {
     clearTimeout(pollTimer);
-    if (stopped) return;
-    const interval = document.hidden ? POLL_HIDDEN_MS : state.push === 'live' ? POLL_PUSH_MS : POLL_VISIBLE_MS;
+    if (stopped || document.hidden) return;
+    const interval = state.push === 'live' ? POLL_PUSH_MS : POLL_VISIBLE_MS;
     pollTimer = window.setTimeout(async () => {
       await checkChanges();
       schedulePoll();
@@ -1292,6 +1303,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     push.stop();
     listAbort?.abort();
     document.removeEventListener('visibilitychange', onVisibility);
+    sparkVisible.removeEventListener('change', onSparkChange);
     window.removeEventListener('popstate', onPop);
     document.removeEventListener('dragenter', onDragEnter);
     document.removeEventListener('dragover', onDragOver);

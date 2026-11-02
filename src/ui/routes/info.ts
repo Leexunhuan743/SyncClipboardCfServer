@@ -65,19 +65,19 @@ export interface UiDeploymentStats {
  * 叠元信息。**不能**把它做成 `deploymentInfo` 的必填参数 —— 那样 `/ui/api/info` 那一路也得先自己算
  * 一遍，等于没省（`overview` 曾把这一层跑两遍：自己跑一次 + `deploymentInfo` 内部再跑一次，
  * 单次首屏 = 2×R2 全桶列举 + 2×statistics + 2×countByTypeViews）。
- * 四个计数统一走协议端点那条 `db.statistics()`：同一语义不留两份实现，代价是这条路径多一条全表聚合。
+ * 四个计数**从 `countByTypeViews` 那次分组里算出**（与协议端点的 `db.statistics()` 同口径，由 test/ui-query-plan.test.ts 钉成同值）：
+ * 以前这里再单独打一条 `db.statistics()`，等于把整张表（含回收站）多扫一遍 —— 总览是页面加载与每次刷新的必经路径。
  */
 export async function deploymentStats(env: Bindings, withStorage = true): Promise<UiDeploymentStats> {
-  const { storage, db } = stores({ env });
+  const { storage } = stores({ env });
   // R2 列举与两条 D1 聚合互不依赖 ⇒ 并发（这条路径是首屏必经，别把它们串起来）。
   // `withStorage=false`（轻量模式）跳过 R2 全桶列举：那是 Class A 操作（收费、占免费额度），而界面的
   // 日常刷新（收藏、移到回收站、轮询发现变化…）只需要计数，存储体积变得很慢。体积只在需要时才取。
-  const [bytes, views, counts] = await Promise.all([
+  const [bytes, views] = await Promise.all([
     withStorage ? storage.totalHistorySize() : Promise.resolve(null),
     countByTypeViews(env.DB),
-    db.statistics(),
   ]);
-  return { bytes, stats: { ...counts, totalFileSizeMB: bytes === null ? null : historySizeMB(bytes) }, views };
+  return { bytes, stats: { ...views.stats, totalFileSizeMB: bytes === null ? null : historySizeMB(bytes) }, views };
 }
 
 /**
@@ -203,18 +203,14 @@ export function createInfoRoutes(): Hono<{ Bindings: Bindings }> {
   //                        `totalCount` 的「全库 N 条」）。保留它是因为接口契约与 `test/ui.test.ts`
   //                        在钉这条分法 —— 别按"没人用"删掉。
   app.get('/ui/api/statistics', async (c) => {
-    const { storage, db } = stores(c);
+    const { storage } = stores(c);
     const flag = readDeletedFlagOr400(new URL(c.req.url).searchParams);
     if (!flag.ok) return flag.response;
     const deleted = flag.value;
-    // 四个计数走 `db.statistics()`（与协议端点 `/api/history/statistics` 同一实现）；
-    // byType 来自同一次 GROUP BY。R2 列举与两条 D1 查询互不依赖 ⇒ 并发。
-    const [bytes, views, counts] = await Promise.all([
-      storage.totalHistorySize(),
-      countByTypeViews(c.env.DB),
-      db.statistics(),
-    ]);
-    const stats = { ...counts, totalFileSizeMB: historySizeMB(bytes) };
+    // 四个计数与 byType 来自同一次 GROUP BY（与协议端点 `/api/history/statistics` 的 `db.statistics()` 同口径）；
+    // R2 列举与 D1 查询互不依赖 ⇒ 并发。
+    const [bytes, views] = await Promise.all([storage.totalHistorySize(), countByTypeViews(c.env.DB)]);
+    const stats = { ...views.stats, totalFileSizeMB: historySizeMB(bytes) };
     // byType 随视图走（工具栏的类型计数必须与列表同源），byTypeActive 恒为活跃口径。
     // 两个 starred 计数**都进响应**（各自是全表聚合，与这次请求的视图无关），由前端按当前
     // 视图取用：统计条「已收藏」那一格与工具栏「收藏」筛选同屏，必须给出同一个数
@@ -268,13 +264,15 @@ export function createInfoRoutes(): Hono<{ Bindings: Bindings }> {
     // ——单列、走 idx_h_user_modify，不再为同一个数多扫一遍全表。
     // `?storage=0` = 轻量模式：不列举 R2，`info.storage` 与 `stats.totalFileSizeMB` 为 null（调用方沿用上一次的值）
     const withStorage = new URL(c.req.url).searchParams.get('storage') !== '0';
-    const [ds, lastModified, folders] = await Promise.all([
+    const [ds, lastModified, folderRows] = await Promise.all([
       deploymentStats(c.env, withStorage),
       readLastModified(c.env.DB),
-      // 收藏夹列表（含各自的活跃条数）：侧栏每次刷新都要，所以随概览一起返回，不另开端点
-      stores(c).db.listFolders(),
+      // 收藏夹列表：侧栏每次刷新都要，所以随概览一起返回，不另开端点；条数来自 deploymentStats 那次分组，不再单独扫表
+      stores(c).db.listFolderRows(),
     ]);
-    const marker = { count: ds.views.total, lastModified };
+    const folders = folderRows.map((f) => ({ ...f, count: ds.views.folders[f.id] ?? 0 }));
+    // 变更信号只有 lastModified 一个值（与 /ui/api/poll 同口径，见 readChangeMarker 的说明）
+    const marker = { lastModified };
     const info = await deploymentMeta(c.env, new URL(c.req.url).origin, ds);
     return Response.json({
       stats: ds.stats,

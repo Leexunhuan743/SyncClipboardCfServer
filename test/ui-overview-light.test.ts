@@ -8,7 +8,7 @@ const AUTH = 'Basic ' + Buffer.from(`${process.env.SYNC_USER ?? 'admin'}:${proce
 interface Overview {
   stats: { totalCount: number; activeCount: number; totalFileSizeMB: number | null };
   byType: Record<string, number>;
-  marker: { count: number; lastModified: number };
+  marker: { lastModified: number };
   info: { storage: { totalBytes: number | null; totalFileSizeMB: number | null }; counts: { active: number } };
   serverTime: string;
 }
@@ -33,7 +33,7 @@ describe('GET /ui/api/overview 的轻量模式', () => {
     expect(light.stats.totalFileSizeMB).toBeNull();
     expect(light.stats.activeCount).toBe(full.stats.activeCount);
     expect(light.info.counts.active).toBe(full.info.counts.active);
-    expect(light.marker.count).toBe(full.marker.count);
+    expect(light.marker.lastModified).toBe(full.marker.lastModified);
     expect(Number.isNaN(Date.parse(light.serverTime))).toBe(false);
   });
 

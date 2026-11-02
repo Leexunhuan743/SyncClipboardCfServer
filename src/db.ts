@@ -604,13 +604,29 @@ export class HistoryDb {
   // 所以官方客户端的任何写入（重传同一条记录、PATCH starred=false…）都改不了它。
   // 移动记录**不**改 Version / LastModified：这是界面自己的整理动作，不该被别的设备当成一次内容变更去同步。
 
+  /** 收藏夹行本身（不带条数）：总览那一路的条数来自它自己的分组查询，不必再扫一遍表。 */
+  async listFolderRows(): Promise<Omit<FolderInfo, 'count'>[]> {
+    const res = await this.db
+      .prepare(`SELECT Id AS id, Name AS name, SortOrder AS sortOrder FROM Folders WHERE UserId = ?1 ORDER BY SortOrder ASC, Id ASC`)
+      .bind(HARD_CODED_USER_ID)
+      .all<Omit<FolderInfo, 'count'>>();
+    return res.results ?? [];
+  }
+
+  /**
+   * 收藏夹 + 各自的活跃成员条数。一次分组取全部条数（只扫活跃行），而不是每个收藏夹一条相关子查询
+   * （那是 收藏夹数 × 全表扫描）。
+   */
   async listFolders(): Promise<FolderInfo[]> {
     const res = await this.db
       .prepare(
-        `SELECT f.Id AS id, f.Name AS name, f.SortOrder AS sortOrder,
-                (SELECT COUNT(*) FROM HistoryRecords h
-                  WHERE h.UserId = f.UserId AND h.FolderId = f.Id AND h.IsDeleted = 0) AS count
-         FROM Folders f WHERE f.UserId = ?1 ORDER BY f.SortOrder ASC, f.Id ASC`,
+        `SELECT f.Id AS id, f.Name AS name, f.SortOrder AS sortOrder, COALESCE(c.n, 0) AS count
+         FROM Folders f
+         LEFT JOIN (
+           SELECT FolderId, COUNT(*) AS n FROM HistoryRecords
+           WHERE UserId = ?1 AND IsDeleted = 0 AND FolderId != 0 GROUP BY FolderId
+         ) c ON c.FolderId = f.Id
+         WHERE f.UserId = ?1 ORDER BY f.SortOrder ASC, f.Id ASC`,
       )
       .bind(HARD_CODED_USER_ID)
       .all<FolderInfo>();

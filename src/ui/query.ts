@@ -83,6 +83,13 @@ export interface UiViewCounts {
   starredDeleted: number;
   /** 全库总行数（= `COUNT(*)`） */
   total: number;
+  /** 活跃（未进回收站）记录里，各收藏夹的成员条数：收藏夹 id → 条数（只含非 0 的收藏夹） */
+  folders: Record<number, number>;
+  /**
+   * 协议统计的四个计数，**从同一次分组里算出**（与 `db.statistics()` 同口径：starred / deleted / active 各自在全库上累加），
+   * 总览不必为它们再扫一遍表。协议端点 `/api/history/statistics` 仍走 `db.statistics()`，两边由 test/ui-query-plan.test.ts 钉成同值。
+   */
+  stats: { totalCount: number; starredCount: number; deletedCount: number; activeCount: number };
 }
 
 export class UiQueryError extends Error {
@@ -350,14 +357,12 @@ function toItem(row: DbRow & { TextFullLength?: number }): UiHistoryListItem {
   };
 }
 
-export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<UiHistoryPage> {
+/**
+ * 列表的两条 SQL（总数 + 一页）与它们的参数。单独导出是为了让**查询计划**可测试
+ * （test/ui-query-plan.test.ts 对它们跑 EXPLAIN QUERY PLAN：必须走 `idx_h_user_list`、不能有临时排序）。
+ */
+export function buildListSql(q: UiHistoryQuery): { countSql: string; countParams: (string | number)[]; pageSql: string; pageParams: (string | number)[] } {
   const { clause, params } = buildWhere(q);
-  const countRes = await db
-    .prepare(`SELECT COUNT(*) AS c FROM HistoryRecords WHERE ${clause}`)
-    .bind(...params)
-    .first<{ c: number }>();
-  const total = countRes?.c ?? 0;
-
   const column = SORT_COLUMNS[q.sort];
   const direction = q.order === 'asc' ? 'ASC' : 'DESC';
   const offset = (q.page - 1) * q.pageSize;
@@ -376,15 +381,30 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
   // 另取 `length(Text)` 用于「原文是否超限」的判定（见 toItem）。
   // 注意占位符编号：`substr` 的 `?` 在 where 参数**之后**（`limitIdx` 起始），
   // 且 `?${limitIdx + 2}` 是 OFFSET —— 绑定时按 (…where, 501, pageSize, offset) 顺序展开。
-  const rows = await db
-    .prepare(
+  return {
+    countSql: `SELECT COUNT(*) AS c FROM HistoryRecords WHERE ${clause}`,
+    countParams: params,
+    pageSql:
       `SELECT Id, UserId, Type, substr(Text, 1, ?${limitIdx}) AS Text, Size, TransferDataFile, FilePaths, Hash,
               CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted, FolderId,
               length(Text) AS TextFullLength
        FROM HistoryRecords WHERE ${clause} ` +
-        `ORDER BY ${orderBy} LIMIT ?${limitIdx + 1} OFFSET ?${limitIdx + 2}`,
-    )
-    .bind(...params, UI_LIST_TEXT_LIMIT + 1, q.pageSize, offset)
+      `ORDER BY ${orderBy} LIMIT ?${limitIdx + 1} OFFSET ?${limitIdx + 2}`,
+    pageParams: [...params, UI_LIST_TEXT_LIMIT + 1, q.pageSize, offset],
+  };
+}
+
+export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<UiHistoryPage> {
+  const { countSql, countParams, pageSql, pageParams } = buildListSql(q);
+  const countRes = await db
+    .prepare(countSql)
+    .bind(...countParams)
+    .first<{ c: number }>();
+  const total = countRes?.c ?? 0;
+
+  const rows = await db
+    .prepare(pageSql)
+    .bind(...pageParams)
     .all<DbRow & { TextFullLength?: number }>();
 
   return { total, page: q.page, pageSize: q.pageSize, items: (rows.results ?? []).map(toItem) };
@@ -399,20 +419,27 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
 export async function countByTypeViews(db: D1Database): Promise<UiViewCounts> {
   const rows = await db
     .prepare(
-      `SELECT Type, IsDeleted, Stared, COUNT(*) AS c FROM HistoryRecords WHERE UserId = ?1
-       GROUP BY Type, IsDeleted, Stared`,
+      `SELECT Type, IsDeleted, Stared, FolderId, COUNT(*) AS c FROM HistoryRecords WHERE UserId = ?1
+       GROUP BY Type, IsDeleted, Stared, FolderId`,
     )
     .bind(USER_ID)
-    .all<{ Type: number; IsDeleted: number; Stared: number; c: number }>();
+    .all<{ Type: number; IsDeleted: number; Stared: number; FolderId: number; c: number }>();
   const byActive: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
   const byDeleted: UiTypeCounts = { Text: 0, Image: 0, File: 0, Group: 0 };
   let starredActive = 0;
   let starredDeleted = 0;
   // `total` = `Σc`，与 `COUNT(*)` 同值。
   let total = 0;
+  const folders: Record<number, number> = {};
+  let activeRows = 0; // 不分类型：未知类型的行 db.statistics() 也计入，这里必须同口径
+  let deletedRows = 0;
   for (const row of rows.results ?? []) {
     const isDeleted = row.IsDeleted !== 0;
     total += row.c;
+    if (isDeleted) deletedRows += row.c;
+    else activeRows += row.c;
+    // 收藏夹的活跃成员数（FolderId=0 = 不在任何收藏夹，不记）
+    if (!isDeleted && row.FolderId > 0) folders[row.FolderId] = (folders[row.FolderId] ?? 0) + row.c;
     // 累加而不是赋值：`Stared` 进了分组，同一个 (Type, IsDeleted) 现在会有两行（收藏 / 未收藏）
     if (row.Stared !== 0) {
       if (isDeleted) starredDeleted += row.c;
@@ -424,33 +451,44 @@ export async function countByTypeViews(db: D1Database): Promise<UiViewCounts> {
     else if (row.Type === ProfileType.File) bucket.File += row.c;
     else if (row.Type === ProfileType.Group) bucket.Group += row.c;
   }
-  return { byActive, byDeleted, starredActive, starredDeleted, total };
+  return {
+    byActive,
+    byDeleted,
+    starredActive,
+    starredDeleted,
+    total,
+    folders,
+    // 与 db.statistics() 同口径：starred 在全库（含回收站）上累加
+    stats: { totalCount: total, starredCount: starredActive + starredDeleted, deletedCount: deletedRows, activeCount: activeRows },
+  };
 }
 
 // 变更信号：前端的自动刷新用它判断「要不要重新拉列表」。
 // 取 (总行数, 最大 LastModified) 两个值——插入/硬删改前者，更新/软删改后者，
 // 故任何写路径都会让这个二元组变化。
 export interface UiChangeMarker {
-  count: number;
   lastModified: number;
 }
 
+/**
+ * 变更信号 = `MAX(LastModified)` **一个值**（走 `idx_h_user_modify`，读 1 行）。
+ *
+ * 以前是 `(COUNT(*), MAX(LastModified))`：`COUNT(*)` 要把整张表（含回收站）扫一遍，而这个接口是被每个打开的
+ * 页面轮询的 —— 一个标签页一小时就是几十万行读取（D1 免费额度 500 万行/天，线上曾因此用到 83%）。
+ * 去掉计数后，任何会改变用户看到的内容的写入都仍会抬高 `LastModified`：新增（= now）、改星标 / 置顶 / 软删 / 恢复
+ * （`Version` 与 `LastModified` 一起推进）、清理软删。唯一看不到的是「只减少行数、不改任何行」的硬删
+ * （30 天后的回收站清理、彻底删除、清空）：发起它的那个页面自己会刷新，别的标签页要等下一次变化或下次打开才收敛，
+ * 只影响回收站里的数字，可接受。
+ */
 export async function readChangeMarker(db: D1Database): Promise<UiChangeMarker> {
-  const res = await db
-    .prepare(`SELECT COUNT(*) AS c, COALESCE(MAX(LastModified), 0) AS m FROM HistoryRecords WHERE UserId = ?1`)
-    .bind(USER_ID)
-    .first<{ c: number; m: number }>();
-  return { count: res?.c ?? 0, lastModified: res?.m ?? 0 };
+  return { lastModified: await readLastModified(db) };
 }
 
 /**
  * 只取 `MAX(LastModified)`（变更信号的后一半）。
  *
- * 为什么单开一个而不是复用 `readChangeMarker`：`/ui/api/overview` 的行数**已经**从它自己那条
- * `GROUP BY`（`countByTypeViews`）里算出来了（`Σc` = `COUNT(*)`），再打一条带 `COUNT(*)` 的聚合
- * 就是白扫一遍全表。单列查询走 `idx_h_user_modify`（`schema.sql`：(UserId, LastModified)），
- * 不需要回表。
- * `/ui/api/poll` 仍用 `readChangeMarker`：它每 10 s 被调一次，两个值必须**一条语句**取回。
+ * 单列查询走 `idx_h_user_modify`（`schema.sql`：(UserId, LastModified)），不需要回表。
+ * `/ui/api/overview` 与 `/ui/api/poll` 的变更信号都是它（两者必须同一个口径，否则前端会把差异当成变化而反复刷新）。
  */
 export async function readLastModified(db: D1Database): Promise<number> {
   const res = await db
