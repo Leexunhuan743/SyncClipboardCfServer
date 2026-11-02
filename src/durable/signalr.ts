@@ -24,7 +24,10 @@ export interface ParsedClientMessage {
 export function parseClientMessage(text: string): ParsedClientMessage {
   let msg: Record<string, unknown>;
   try {
-    msg = JSON.parse(text.replace(/\x1e+$/g, '')) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(text.replace(/\x1e+$/g, ''));
+    // `null` / 数字 / 字符串也是合法 JSON：不拦的话下面读 `msg.protocol` 会对 null 抛 TypeError（POST ⇒ 500）
+    if (typeof parsed !== 'object' || parsed === null) return { kind: 'unknown' };
+    msg = parsed as Record<string, unknown>;
   } catch {
     return { kind: 'unknown' };
   }

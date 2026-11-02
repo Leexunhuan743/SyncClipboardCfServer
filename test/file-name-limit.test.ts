@@ -63,3 +63,11 @@ describe('协议接口：超长文件名是 400 而不是 500（黑盒）', () =
     expect(res.status).toBe(400);
   });
 });
+
+// 与文件名无关，但同属「畸形输入不该让接口 500」：合法 JSON 但不是对象的 SignalR 帧
+import { parseClientMessage } from '../src/durable/signalr';
+describe('parseClientMessage · 非对象 JSON', () => {
+  it.each(['null', '123', '"x"', 'true', '[]'])('%s ⇒ unknown，不抛', (raw) => {
+    expect(parseClientMessage(`${raw}\x1e`).kind).toBe('unknown');
+  });
+});

@@ -23,6 +23,11 @@ export function isFileNameTooLong(name: string): boolean {
   return new TextEncoder().encode(name).length > MAX_FILE_NAME_BYTES;
 }
 
+// 孤儿判定的宽限期：写路径是「先 put 到 R2、再 insert 行」，这两步之间对象已存在而行还没有。
+// 清理的孤儿阶段若恰好在这个间隙里读到「R2 有、库里没有」，会把刚上传的对象当孤儿删掉，
+// 随后行插入成功 ⇒ 行在、数据没了。列举时跳过这么新的对象（下一轮再看）即可消除该窗口。
+export const ORPHAN_GRACE_MS = 10 * 60_000;
+
 export function tempKey(name: string): string {
   return `${TEMP_PREFIX}${name}`;
 }
@@ -165,6 +170,7 @@ export class R2Storage {
     const groups = new Map<string, string[]>();
     let pages = 0;
     let aborted = false;
+    const youngerThan = Date.now() - ORPHAN_GRACE_MS;
     let cursor: string | undefined;
     do {
       if (onPage && !onPage()) {
@@ -174,6 +180,8 @@ export class R2Storage {
       const listed = await this.bucket.list({ prefix: HISTORY_PREFIX, cursor });
       pages++;
       for (const obj of listed.objects) {
+        // 太新的对象不参与（见 ORPHAN_GRACE_MS）；取不到上传时间的按「够旧」处理
+        if (obj.uploaded instanceof Date && obj.uploaded.getTime() > youngerThan) continue;
         const rest = obj.key.slice(HISTORY_PREFIX.length);
         const slash = rest.indexOf('/');
         if (slash <= 0) continue;
