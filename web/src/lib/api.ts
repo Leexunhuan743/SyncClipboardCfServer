@@ -163,6 +163,19 @@ export const api = {
     };
   },
 
+  /**
+   * 全库最新的一条（按创建时间倒序取 1 条）：给「复制最近一条」用。
+   * 刻意**不用当前列表的第一行**：列表可能被筛选、换了排序，而「最近一条」指的是全库最新的那条；
+   * 也不让置顶抢位（`pinnedFirst=false`），否则「最近」会变成「最近置顶的」。
+   */
+  async latest(): Promise<Item | null> {
+    const raw = await request<{ items?: unknown[] }>(
+      `${API_BASE}/history?${buildQuery({ pageSize: 1, sort: 'createTime', order: 'desc', pinnedFirst: 'false' })}`,
+    );
+    const first = raw.items?.[0];
+    return first === undefined ? null : normalizeItem(first);
+  },
+
   /** 单条（含**完整正文**）。 */
   async get(item: ItemRef, signal?: AbortSignal): Promise<Item> {
     const result = normalizeItem(await request(itemPath(item), { signal }));

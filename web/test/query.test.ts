@@ -57,10 +57,15 @@ describe('pageWindow', () => {
     expect(pageWindow(1, 1)).toEqual([1]);
     expect(pageWindow(3, 7)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
-  it('页数多时保留首尾与当前页前后各一页，中间折叠', () => {
-    expect(pageWindow(1, 20)).toEqual([1, 2, '…', 19, 20]);
-    expect(pageWindow(10, 20)).toEqual([1, 2, '…', 9, 10, 11, '…', 19, 20]);
-    expect(pageWindow(20, 20)).toEqual([1, 2, '…', 19, 20]);
-    expect(pageWindow(4, 9)).toEqual([1, 2, 3, 4, 5, '…', 8, 9]);
+  it('页数多时保留前 3 页、后 2 页与当前页前后各一页，中间折叠', () => {
+    expect(pageWindow(1, 20)).toEqual([1, 2, 3, '…', 19, 20]);
+    expect(pageWindow(10, 20)).toEqual([1, 2, 3, '…', 9, 10, 11, '…', 19, 20]);
+    expect(pageWindow(20, 20)).toEqual([1, 2, 3, '…', 19, 20]);
+    expect(pageWindow(2, 100)).toEqual([1, 2, 3, '…', 99, 100]);
+  });
+  it('被折叠的只有一页时直接显示它，不放一个什么都没说的 …', () => {
+    expect(pageWindow(1, 8)).toEqual([1, 2, 3, '…', 7, 8]); // 折叠的是 4、5、6 三页：照常用 …
+    expect(pageWindow(5, 9)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]); // 6 与 8 之间只隔一个 7：显示 7
+    expect(pageWindow(6, 12)).toEqual([1, 2, 3, 4, 5, 6, 7, '…', 11, 12]); // 3 与 5 之间只隔 4
   });
 });

@@ -58,6 +58,55 @@ export async function writeText(text: string): Promise<boolean> {
   }
 }
 
+// ===== 读剪贴板（「粘贴剪贴板内容」入口用）=====
+// 读比写更受限：必须是安全上下文、需要用户手势，浏览器还会弹权限框 —— 所以结果要能区分
+// 「不支持」「用户/策略不让读」「剪贴板是空的」，调用方对这三种说的话完全不同。
+export type ClipboardRead =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; blob: Blob; mime: string }
+  | { kind: 'empty' }
+  | { kind: 'unsupported' }
+  | { kind: 'denied'; reason: string };
+
+interface ReadableClipboardItem {
+  readonly types: readonly string[];
+  getType(type: string): Promise<Blob>;
+}
+
+/**
+ * 从 `navigator.clipboard.read()` 的结果里挑一份要保存的内容。
+ * 文字优先：从网页 / 表格里复制常常同时带 text/plain 与一张 image/png 渲染图，用户要的是文字；
+ * 只有没有可用文字时才取图片。纯空白的文字当作没有。
+ */
+export async function pickClipboardPayload(items: readonly ReadableClipboardItem[]): Promise<ClipboardRead> {
+  for (const item of items) {
+    if (!item.types.includes('text/plain')) continue;
+    const text = await (await item.getType('text/plain')).text();
+    if (text.trim() !== '') return { kind: 'text', text };
+  }
+  for (const item of items) {
+    const mime = item.types.find((type) => type.startsWith('image/'));
+    if (mime) return { kind: 'image', blob: await item.getType(mime), mime };
+  }
+  return { kind: 'empty' };
+}
+
+export async function readClipboard(): Promise<ClipboardRead> {
+  const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
+  if (!window.isSecureContext || !clipboard) return { kind: 'unsupported' };
+  try {
+    if (typeof clipboard.read === 'function') return await pickClipboardPayload(await clipboard.read());
+    if (typeof clipboard.readText === 'function') {
+      const text = await clipboard.readText();
+      return text.trim() === '' ? { kind: 'empty' } : { kind: 'text', text };
+    }
+    return { kind: 'unsupported' };
+  } catch (error) {
+    // 用户拒绝 / 策略不允许 / 页面没有焦点：都是 NotAllowedError（或 SecurityError）
+    return { kind: 'denied', reason: error instanceof Error ? error.name : String(error) };
+  }
+}
+
 export function canWriteImage(): boolean {
   return Boolean(
     window.isSecureContext && typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write,

@@ -8,6 +8,7 @@ import { api, ApiError } from '../lib/api';
 import { itemIsImage } from '../lib/clipboard';
 import { charCount, formatAbsolute, formatSize, isTextLikeName, singleUrl, TEXT_MAX_BYTES, titleOf, typeLabel, utf8Bytes } from '../lib/format';
 import { iconForKind } from '../lib/icons';
+import { toast } from '../ui/toast';
 import type { Folder, Item } from '../lib/types';
 import { isCopyable } from './feed';
 
@@ -131,8 +132,13 @@ export function createDetail(ctx: DetailActions) {
     const item = current;
     if (!item || item.type !== 'Text' || item.isDeleted) return;
     if (item.textTruncated && fullText === null) return; // 全文还没到，不开放编辑（会把截断的正文存成新记录）
-    editing = true;
     const original = fullText ?? item.text;
+    // 超过保存上限的正文开放编辑只会得到一个卡顿的巨型输入框和一个永远点不了的保存：开始前就说清楚
+    if (utf8Bytes(original) > TEXT_MAX_BYTES) {
+      toast('这条文本超过 1 MiB，在浏览器里编辑会卡住，也存不了；请先「下载」，在本地编辑后再上传。', { tone: 'warn' });
+      return;
+    }
+    editing = true;
     const area = h('textarea', { class: 'textarea', rows: 12, spellcheck: 'false', 'aria-label': '编辑正文', value: original });
     const note = h('p', { class: 'field__hint' });
     const save = h('button', { class: 'btn btn--primary', type: 'button', disabled: true }, icon('check', { size: 16 }), h('span', { text: '保存为新记录' }));

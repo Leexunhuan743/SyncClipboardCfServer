@@ -11,7 +11,7 @@
 //     写入被拒 → failed + 底层 message；转码失败 → failed + 明确原因
 //   - `writeText`：现代 API 优先，失败退 execCommand，两者都失败才返回 false
 import { describe, expect, it, afterEach } from 'vitest';
-import { isImageName, itemIsImage, writeImage, writeText, canWriteImage } from '../src/lib/clipboard';
+import { isImageName, itemIsImage, writeImage, writeText, canWriteImage, pickClipboardPayload, readClipboard } from '../src/lib/clipboard';
 
 const g = globalThis as unknown as Record<string, unknown>;
 
@@ -223,3 +223,57 @@ describe('clipboard.writeText 的降级链', () => {
 function blobSize(blob: Blob): number {
   return Number((blob as { size?: number }).size ?? 0);
 }
+
+// ===== 读剪贴板（「粘贴剪贴板内容」）=====
+const blob = (content: string, type: string) => new Blob([content], { type });
+const item = (parts: Record<string, Blob>) => ({ types: Object.keys(parts), getType: async (t: string) => parts[t]! });
+
+describe('pickClipboardPayload：从剪贴板条目里挑要保存的内容', () => {
+  it('文字优先：同时有 text/plain 与 image/png（网页 / 表格里复制常见）取文字', async () => {
+    const result = await pickClipboardPayload([item({ 'text/plain': blob('你好', 'text/plain'), 'image/png': blob('PNG', 'image/png') })]);
+    expect(result).toEqual({ kind: 'text', text: '你好' });
+  });
+
+  it('只有图片 → 图片，并带上 mime', async () => {
+    const result = await pickClipboardPayload([item({ 'image/webp': blob('WEBP', 'image/webp') })]);
+    expect(result.kind).toBe('image');
+    expect(result.kind === 'image' && result.mime).toBe('image/webp');
+  });
+
+  it('纯空白文字当作没有：落到图片；图片也没有就是 empty（不存空记录）', async () => {
+    const withImage = await pickClipboardPayload([item({ 'text/plain': blob('  \n\t ', 'text/plain'), 'image/png': blob('PNG', 'image/png') })]);
+    expect(withImage.kind).toBe('image');
+    expect(await pickClipboardPayload([item({ 'text/plain': blob('   ', 'text/plain') })])).toEqual({ kind: 'empty' });
+    expect(await pickClipboardPayload([])).toEqual({ kind: 'empty' });
+  });
+
+  it('多个条目：取第一个有可用文字的；不认识的类型（text/html 单独存在）忽略', async () => {
+    const result = await pickClipboardPayload([item({ 'text/html': blob('<b>x</b>', 'text/html') }), item({ 'text/plain': blob('B', 'text/plain') })]);
+    expect(result).toEqual({ kind: 'text', text: 'B' });
+  });
+});
+
+describe('readClipboard：三种失败要分得清（调用方对它们说的话完全不同）', () => {
+  const env = (secure: boolean, clipboard: unknown): void => stubGlobals({ window: { isSecureContext: secure }, navigator: { clipboard } });
+
+  it('非安全上下文 / 没有 clipboard 对象 → unsupported', async () => {
+    env(false, { read: async () => [] });
+    expect(await readClipboard()).toEqual({ kind: 'unsupported' });
+    env(true, undefined);
+    expect(await readClipboard()).toEqual({ kind: 'unsupported' });
+  });
+
+  it('read 与 readText 都没有 → unsupported；只有 readText 时走 readText', async () => {
+    env(true, {});
+    expect(await readClipboard()).toEqual({ kind: 'unsupported' });
+    env(true, { readText: async () => '内容' });
+    expect(await readClipboard()).toEqual({ kind: 'text', text: '内容' });
+    env(true, { readText: async () => '  ' });
+    expect(await readClipboard()).toEqual({ kind: 'empty' });
+  });
+
+  it('权限被拒（NotAllowedError）→ denied，且带上底层原因', async () => {
+    env(true, { read: async () => { throw Object.assign(new Error('blocked'), { name: 'NotAllowedError' }); } });
+    expect(await readClipboard()).toEqual({ kind: 'denied', reason: 'NotAllowedError' });
+  });
+});

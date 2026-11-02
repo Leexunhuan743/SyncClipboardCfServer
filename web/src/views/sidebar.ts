@@ -2,7 +2,7 @@
 // 宽屏常驻；窄屏是抽屉（由 `state.navOpen` 控制，见 styles/shell.css）。
 import { h, icon } from '../lib/dom';
 import { iconForKind, type IconName } from '../lib/icons';
-import { typeLabel } from '../lib/format';
+import { formatAbsolute, formatRelative, typeLabel } from '../lib/format';
 import type { ItemType, TypeFilter } from '../lib/types';
 import { openAppearance } from './appearance';
 import { currentNav, type AppState, type NavView } from '../state';
@@ -84,7 +84,9 @@ export function createSidebar(actions: SidebarActions) {
 
   const pushDot = h('span', { class: 'status__dot' });
   const pushText = h('span', { class: 'status__text' });
-  const status = h('button', { class: 'status', type: 'button', title: '同步通道状态 · 点击查看部署信息', onclick: () => actions.onSettings() }, pushDot, pushText);
+  // 「最近同步」：回答「刚在另一台设备上复制了，这里有没有过来」—— 以前只能靠刷新一下来试
+  const pushAgo = h('span', { class: 'status__ago' });
+  const status = h('button', { class: 'status', type: 'button', title: '同步通道状态 · 点击查看部署信息', onclick: () => actions.onSettings() }, pushDot, pushText, pushAgo);
 
   const themeButton = h('button', { class: 'icon-btn', type: 'button', 'aria-label': '外观与主题', title: '外观与主题（t）', onclick: () => openAppearance() }, icon('palette'));
 
@@ -155,6 +157,8 @@ export function createSidebar(actions: SidebarActions) {
       pushText.textContent = PUSH_LABEL[state.push];
       status.dataset.state = state.stale ? 'stale' : state.push;
       if (state.stale) pushText.textContent = '连接中断';
+      pushAgo.textContent = state.lastSyncAt === null ? '' : formatRelative(state.lastSyncAt);
+      status.title = state.lastSyncAt === null ? '同步通道状态 · 点击查看部署信息' : `最近一次与服务器同步：${formatAbsolute(state.lastSyncAt)}（点击查看部署信息）`;
       userName.textContent = state.user;
       el.dataset.open = String(state.navOpen);
     },

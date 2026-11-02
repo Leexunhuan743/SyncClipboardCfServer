@@ -28,6 +28,8 @@ export interface AppState {
   stale: boolean;
   density: Density;
   navOpen: boolean;
+  /** 最近一次成功跟服务器对上账的时间（毫秒）；侧栏同步状态旁显示「N 分钟前」 */
+  lastSyncAt: number | null;
   /** 滚离顶部时后台又进来的新记录数（显示「↑ N 条新记录」） */
   fresh: number;
 }
@@ -52,6 +54,7 @@ export function createState(filters: Filters, density: Density): AppState {
     density,
     navOpen: false,
     fresh: 0,
+    lastSyncAt: null,
   };
 }
 

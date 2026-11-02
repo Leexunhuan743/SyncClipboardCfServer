@@ -79,6 +79,8 @@
 /* ---- 顶栏 ---- */
 .topbar { display: flex; align-items: center; gap: 12px; min-height: var(--topbar-h); padding: 14px var(--gutter) 10px; background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(14px); z-index: 20; }
 .topbar__menu { display: none; }
+.topbar__quick { display: flex; align-items: center; gap: 2px; flex: none; margin-left: auto; }
+.topbar__quick + .topbar__new { margin-left: 4px; }
 .topbar__tools { display: flex; align-items: center; gap: 8px; flex: none; }
 .search { position: relative; display: flex; align-items: center; flex: 1 1 320px; min-width: 0; max-width: clamp(560px, 32vw, 820px); }
 .search__icon { position: absolute; left: 14px; color: var(--ink-3); pointer-events: none; }
@@ -88,7 +90,7 @@
 .search__input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .search__clear { position: absolute; right: 8px; display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 8px; background: var(--surface-3); color: var(--ink-2); }
 .search__hint { position: absolute; right: 12px; pointer-events: none; }
-.topbar__new { margin-left: auto; }
+/* 「新建」靠右由 .topbar__quick 的 margin-left: auto 负责（快捷按钮在它左边） */
 
 /* ---- 概览 ---- */
 .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.25fr); gap: 12px; }
@@ -183,8 +185,9 @@
   .sidebar { position: fixed; inset: 0 auto 0 0; width: min(300px, 86vw); transform: translateX(-102%); transition: transform 260ms var(--ease), box-shadow 260ms; box-shadow: none; }
   .app[data-nav="true"] .sidebar { transform: none; box-shadow: var(--shadow-3); }
   .app[data-nav="true"] .scrim { display: block; position: fixed; inset: 0; z-index: 35; background: var(--overlay); animation: fade-in 200ms; }
-  .sidebar__close, .topbar__menu { display: inline-grid; }
-  .topbar { gap: 8px; padding-top: 10px; }
+  .sidebar__close { display: inline-grid; }
+  /* 抽屉的入口：≥861px 侧栏常驻，不需要；≤860px 底部标签栏的「更多」已经能打开它，顶栏再放一个是重复 —— 让出的位置给「复制最近一条 / 粘贴」 */
+  .topbar { gap: 8px; padding-top: 10px; transition: margin-top 220ms var(--ease); }
   .topbar__tools .chip-btn__label, .topbar__tools .chip-btn > svg:last-child { display: none; }
   .topbar__tools .chip-btn { padding: 0 10px; }
   .topbar__new span { display: none; }
@@ -202,6 +205,7 @@
   .topbar { flex-wrap: wrap; row-gap: 8px; }
   .topbar__menu { order: 0; }
   .search { order: 1; flex: 1 1 0; }
+  .topbar__quick { order: 2; margin-left: 0; }
   .topbar__new { order: 2; margin-left: 0; }
   .topbar__tools { order: 3; flex: 1 1 100%; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
   .topbar__tools .chip-btn__label { display: inline; }

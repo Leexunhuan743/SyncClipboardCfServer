@@ -168,8 +168,9 @@
 :root[data-style="pop"] .tag, :root[data-style="pop"] .kbd { border: 2px solid currentColor; }
 :root[data-style="pop"] .nav__item { border: 2.5px solid transparent; font-weight: 700; }
 /* 硬偏移阴影会超出元素盒子：带 overflow 的容器（侧栏导航要滚动、chips 要换行）必须给阴影留出位置，否则被裁成一刀切 */
-:root[data-style="pop"] .nav { padding: 0 6px 6px 0; }
-:root[data-style="pop"] .chips { padding: 0 4px 5px 0; }
+:root[data-style="pop"] .nav { padding: 2px 6px 6px 2px; margin: -2px -6px -6px -2px; }
+/* 悬停时按钮上移 1px、阴影涨到 4px：四边都要留位置（上、左 1px；右、下 3px），再用等量负外边距抵消，布局不变 */
+:root[data-style="pop"] .chips { padding: 2px 5px 5px 2px; margin: -2px -5px -5px -2px; }
 :root[data-style="pop"] .nav__item[aria-current="page"] { background: var(--ink); color: var(--surface); border-color: var(--ink); box-shadow: 3px 3px 0 var(--pop-red); }
 :root[data-style="pop"] .nav__item[aria-current="page"] .nav__count { color: var(--surface); }
 :root[data-style="pop"] .tabbar__item[aria-current="page"] { background: var(--ink); color: var(--surface); }

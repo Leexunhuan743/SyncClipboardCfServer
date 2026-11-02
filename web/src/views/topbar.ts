@@ -13,6 +13,10 @@ export interface TopbarActions {
   onDensity(density: Density): void;
   onRefresh(): Promise<void>;
   onNew(anchor: HTMLElement): void;
+  /** 复制全库最新的一条到本机剪贴板 */
+  onCopyLatest(button: HTMLElement): void;
+  /** 把本机剪贴板的内容存成最新的一条 */
+  onPasteClipboard(button: HTMLElement): void;
   onOpenNav(): void;
 }
 
@@ -148,12 +152,19 @@ export function createTopbar(actions: TopbarActions) {
     }
   });
 
+  // 一对互为镜像的快捷入口：把服务器上最新的一条拿到本机剪贴板 / 把本机剪贴板的内容送上去。
+  // 手机上它们就是这个页面最常用的两个动作（在一台设备上复制、到另一台上取），所以不藏进菜单里。
+  const copyLatestBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': '复制最近一条', title: '复制最近一条（l）：把最新的一条放进本机剪贴板', onclick: (event: Event) => actions.onCopyLatest(event.currentTarget as HTMLElement) }, icon('copy'));
+  const pasteBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': '粘贴剪贴板内容', title: '粘贴剪贴板内容（v）：把本机剪贴板存成最新的一条', onclick: (event: Event) => actions.onPasteClipboard(event.currentTarget as HTMLElement) }, icon('paste'));
+  const quick = h('div', { class: 'topbar__quick' }, copyLatestBtn, pasteBtn);
+
   const el = h(
     'header',
     { class: 'topbar' },
     h('button', { class: 'icon-btn topbar__menu', type: 'button', 'aria-label': '打开导航', onclick: () => actions.onOpenNav() }, icon('menu')),
     search,
     h('div', { class: 'topbar__tools' }, rangeBtn, sortBtn, densityBtn, refreshBtn),
+    quick,
     h('button', { class: 'btn btn--primary topbar__new', type: 'button', 'aria-haspopup': 'menu', onclick: (event: Event) => actions.onNew(event.currentTarget as HTMLElement), title: '新建文本（n）或上传文件（u）' }, icon('plus', { size: 18 }), h('span', { text: '新建' })),
   );
 

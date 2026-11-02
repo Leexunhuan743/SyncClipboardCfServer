@@ -21,9 +21,28 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const scan = `(() => {
   const out = [];
   const sel = (e) => e.tagName.toLowerCase() + (e.className && typeof e.className === 'string' ? '.' + e.className.trim().split(/\\s+/).slice(0,2).join('.') : '');
-  for (const el of document.querySelectorAll('body *')) {
+  for (const el of (window.__only ? [window.__only] : document.querySelectorAll('body *'))) {
     const cs = getComputedStyle(el);
     if (cs.boxShadow === 'none' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+    // 悬停态还要看**元素自身**：风格里的按钮悬停时会位移（如 translate(-1px,-1px)），位移后它的边框
+    // 本身可能越出带 overflow 的容器 —— 被切掉的是按钮上边 / 左边那一圈线，而不是阴影。
+    // 只在悬停扫描里做（静止态的元素本来就贴着容器边也合法；越出 ≤4px 才算"被切"，更多是滚出视野了）。
+    if (window.__only) {
+      const own = el.getBoundingClientRect();
+      for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+        const pc = getComputedStyle(p);
+        if (pc.overflowX === 'visible' && pc.overflowY === 'visible') continue;
+        const pr = p.getBoundingClientRect();
+        const bw = (n) => parseFloat(pc['border' + n + 'Width']) || 0;
+        const box = { left: pr.left + bw('Left'), right: pr.right - bw('Right'), top: pr.top + bw('Top'), bottom: pr.bottom - bw('Bottom') };
+        const hit = [];
+        if (pc.overflowX !== 'visible' && own.left < box.left - 0.5 && own.left > box.left - 4) hit.push('左 ' + (box.left - own.left).toFixed(1));
+        if (pc.overflowX !== 'visible' && own.right > box.right + 0.5 && own.right < box.right + 4) hit.push('右 ' + (own.right - box.right).toFixed(1));
+        if (pc.overflowY !== 'visible' && own.top < box.top - 0.5 && own.top > box.top - 4) hit.push('上 ' + (box.top - own.top).toFixed(1));
+        if (pc.overflowY !== 'visible' && own.bottom > box.bottom + 0.5 && own.bottom < box.bottom + 4) hit.push('下 ' + (own.bottom - box.bottom).toFixed(1));
+        if (hit.length) out.push(sel(el) + ' 自身被 ' + sel(p) + ' 切到 ' + hit.join('/'));
+      }
+    }
     // 每段外阴影 → 向外扩出的范围
     const parts = cs.boxShadow.split(/,(?![^(]*\\))/).map((s) => s.trim()).filter((s) => !s.includes('inset'));
     let l = 0, t = 0, r = 0, b = 0;
@@ -62,6 +81,38 @@ const scan = `(() => {
   return [...new Set(out)];
 })()`;
 
+// 悬停态：风格里的按钮悬停时会位移并加大阴影（如网点俱乐部 translate(-1px,-1px) + 4px 阴影），
+// 静止时没被裁、悬停时才被裁的情形只有真的把鼠标放上去才看得到。用真实鼠标逐个悬停，再只扫那一个元素。
+const hoverCandidates = (root) => `(() => {
+  const seen = new Set();
+  const out = [];
+  for (const el of document.querySelector(${JSON.stringify(root)}).querySelectorAll('.chip-btn, .btn, .icon-btn, .nav__item, .stat, .card, .pager__page')) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0 || r.bottom < 0 || r.top > innerHeight) continue;
+    if (el.closest('[hidden]')) continue;
+    const key = el.className + '|' + (el.closest('.chips') ? 'chips' : el.closest('.nav') ? 'nav' : el.closest('.settings') ? 'settings' : 'page');
+    if (seen.has(key)) continue; // 同一类按钮悬停一个代表即可
+    seen.add(key);
+    out.push(el);
+  }
+  window.__cands = out;
+  return out.map((el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; });
+})()`;
+
+async function scanHover(root = 'body') {
+  const points = await read(hoverCandidates(root));
+  const found = [];
+  for (let i = 0; i < points.length; i++) {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points[i].x, y: points[i].y });
+    await wait(260); // 过渡 100ms
+    await read(`window.__only = window.__cands[${i}]; 1`);
+    for (const hit of await read(scan)) found.push(`悬停 ${hit}`);
+    await read(`window.__only = null; 1`);
+  }
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
+  return [...new Set(found)];
+}
+
 const problems = [];
 try {
   await loginAndSetCookie(send, { base: BASE, user: USER, pass: PASS });
@@ -72,9 +123,11 @@ try {
     await send('Page.navigate', { url: `${BASE}/ui/` });
     await wait(1800);
     const views = { 主界面: await read(scan) };
+    views['主界面（悬停）'] = await scanHover('.app');
     await read(`document.querySelector('.sidebar__settings').click(); 1`);
     await wait(1500);
     views['部署信息'] = await read(scan);
+    views['部署信息（悬停）'] = await scanHover('dialog[open]');
     await read(`document.querySelector('dialog[open] .modal__head .icon-btn').click(); document.querySelectorAll('.card')[2]?.click(); 1`);
     await wait(900);
     views['详情'] = await read(scan);
@@ -85,6 +138,10 @@ try {
     await read(`document.querySelector('dialog[open] .modal__head .icon-btn').click(); document.querySelectorAll('.card .tile')[1]?.click(); 1`);
     await wait(700);
     views['批量条'] = await read(scan);
+    // 收藏视图：列表头的类型按钮（全部 / 文本 / 图片…）只在这类视图里出现，主界面扫不到它们
+    await send('Page.navigate', { url: `${BASE}/ui/?starred=1` });
+    await wait(1800);
+    views['收藏视图（悬停）'] = await scanHover('.app');
     for (const [view, list] of Object.entries(views)) for (const item of list) problems.push(`[${style}] ${view}：${item}`);
   }
   await read(`localStorage.removeItem('clip-style'); 1`);

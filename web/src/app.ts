@@ -4,10 +4,10 @@
 //   · 列表请求带 ticket + AbortController：迟到的响应不能覆盖新状态，被取代的请求不算失败；
 //   · action 返回结果，视图呈现结果 —— 请求发出不等于成功，成功态只由真实结果驱动；
 //   · 推送是轮询的加速器，不是替代品：WS 在线时轮询退为 60 秒看门狗，失联回 10 秒，页面隐藏 30 秒。
-import { api, ApiError } from './lib/api';
-import { canWriteImage, itemIsImage, writeImage, writeText } from './lib/clipboard';
+import { api, ApiError, rateLimitMessage } from './lib/api';
+import { canWriteImage, itemIsImage, readClipboard, writeImage, writeText } from './lib/clipboard';
 import { clear, h, setIcon } from './lib/dom';
-import { charCount, downloadNameForText, formatSize, safeFileName, typeLabel } from './lib/format';
+import { charCount, downloadNameForText, formatRelative, formatSize, safeFileName, TEXT_MAX_BYTES, typeLabel, utf8Bytes } from './lib/format';
 import { deepLinkFor, DEFAULT_FILTERS, membershipChanged, parseDeepLink, parseFilters, serializeFilters, toApiParams } from './lib/filters';
 import { createPushChannel } from './lib/push';
 import type { Filters, Folder, Item } from './lib/types';
@@ -101,6 +101,8 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       await refreshAll(false, true);
     },
     onNew: (anchor) => newMenu(anchor),
+    onCopyLatest: (button) => void copyLatest(button),
+    onPasteClipboard: (button) => void pasteClipboard(button),
     onOpenNav: () => setNav(true),
   });
   const tabbar = createTabbar({
@@ -174,11 +176,29 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   } }, '跳到记录列表');
   const app = h('div', { class: 'app', dataset: { pane: 'closed' } }, skip, sidebar.el, scrim, h('main', { class: 'main' }, topbar.el, scroller, fresh, batch.el), detail.el, tabbar.el, dropzone, picker);
   clear(root).append(app);
+  // 手机上顶栏占两行（约 100px），而列表才是主角：向下滚时收起、向上滚（或回到顶部、点搜索框）时恢复。
+  // 只在窄屏生效；用负外边距收起，布局高度随之让出，不是盖在内容上。
+  const narrow = window.matchMedia('(max-width: 700px)');
+  let topbarHidden = false;
+  let lastScrollTop = 0;
+  function setTopbarHidden(hide: boolean): void {
+    if (hide === topbarHidden) return;
+    topbarHidden = hide;
+    topbar.el.style.marginTop = hide ? `-${topbar.el.offsetHeight}px` : '';
+    app.dataset.topbar = hide ? 'hidden' : 'shown';
+  }
+  topbar.el.addEventListener('focusin', () => setTopbarHidden(false));
   scroller.addEventListener('scroll', () => {
     if (state.fresh > 0 && scroller.scrollTop < 80) {
       state.fresh = 0;
       render();
     }
+    const top = scroller.scrollTop;
+    const delta = top - lastScrollTop;
+    lastScrollTop = top;
+    if (!narrow.matches || top < 60) setTopbarHidden(false);
+    else if (delta > 8) setTopbarHidden(true);
+    else if (delta < -8) setTopbarHidden(false);
   }, { passive: true });
 
   // ---------- 渲染 ----------
@@ -220,6 +240,8 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       endSession('expired');
       return '登录已过期';
     }
+    // 限速：服务端的响应体是纯文本，真正有用的信息（还要等多久）在 Retry-After 头里
+    if (error instanceof ApiError && error.status === 429) return rateLimitMessage(error);
     return error instanceof ApiError ? error.message : error instanceof Error ? error.message : fallback;
   }
 
@@ -254,6 +276,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       state.status = 'ready';
       state.error = null;
       state.stale = false;
+      state.lastSyncAt = Date.now();
       const present = new Set(result.items.map((i) => i.key));
       state.selection = new Set([...state.selection].filter((key) => present.has(key)));
       if (state.activeKey && !present.has(state.activeKey)) state.activeKey = null;
@@ -296,6 +319,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       state.skewMs = Date.parse(overview.serverTime) - Date.now();
       lastMarker = { ...overview.marker };
       state.stale = false;
+      state.lastSyncAt = Date.now();
       // 正在看的收藏夹已经不存在了（在别处被删了）：回到全部，而不是对着一个空列表发呆
       if (state.filters.folder !== null && !overview.folders.some((f) => f.id === state.filters.folder)) {
         toast('这个收藏夹已经不存在了（可能在别处被删除）', { tone: 'warn' });
@@ -474,6 +498,13 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     }
   }
 
+  /**
+   * 批量只有一部分生效时的说明。不叫「失败」：批量是服务端逐条判定的，没生效的通常只是那几条
+   * 已经被别的设备改过或删掉了，其余的早已生效 —— 说成「失败」会让人把整批白重做一遍。
+   */
+  const partial = (done: number, failed: number, verb: string): string =>
+    `${done} 条已${verb}，${failed} 条未生效（通常是已被其它设备或别的标签页改过 / 删掉，列表已刷新）`;
+
   /** 就地反馈：按钮自己变成对勾 1.4 秒（toast 只负责补充说明）。 */
   function flashOk(button: HTMLElement | null): void {
     if (!button?.isConnected) return;
@@ -511,7 +542,9 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     return item.textTruncated ? (await api.get(item)).text : item.text;
   }
 
-  async function copyItem(item: Item, button: HTMLElement | null): Promise<void> {
+  /** `note`：附在成功提示后面的一句话（「复制最近一条」用它说明复制的是哪一条） */
+  async function copyItem(item: Item, button: HTMLElement | null, note = ''): Promise<boolean> {
+    let copied = false;
     await withPending(button, async () => {
       try {
         if (item.type === 'Text') {
@@ -521,7 +554,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
             openItem(item);
             return;
           }
-          toast(`已复制 ${charCount(text)} 个字符`, { tone: 'success' });
+          toast(`已复制 ${charCount(text)} 个字符${note}`, { tone: 'success' });
         } else if (itemIsImage(item)) {
           if (!item.hasData) {
             toast('这条记录的图片数据不在服务器上', { tone: 'error' });
@@ -536,11 +569,12 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
             toast(`复制图片失败${result.reason ? `：${result.reason}` : ''}`, { tone: 'error', action: { label: '改为下载', run: () => void downloadItem(item, null) } });
             return;
           }
-          toast('已复制图片', { tone: 'success' });
+          toast(`已复制图片${note}`, { tone: 'success' });
         } else {
           await downloadItem(item, null);
           return;
         }
+        copied = true;
         flashOk(button);
         // 「使用了这条记录」：推进访问时间（静默，失败不打扰）
         api.touch(item).then(merge, () => {});
@@ -548,6 +582,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
         toast(`复制失败：${guard(error, '未知错误')}`, { tone: 'error' });
       }
     });
+    return copied;
   }
 
   async function downloadItem(item: Item, button: HTMLElement | null): Promise<void> {
@@ -603,7 +638,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   async function cardAct(act: CardAct, item: Item, button: HTMLElement): Promise<void> {
     const current = state.items.find((i) => i.key === item.key) ?? item;
     switch (act) {
-      case 'copy': return copyItem(current, button);
+      case 'copy': await copyItem(current, button); return;
       case 'download': return downloadItem(current, button);
       case 'star': return toggleFlag(current, 'starred', button);
       case 'pin': return toggleFlag(current, 'pinned', button);
@@ -615,7 +650,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
 
   async function detailAct(act: DetailAct, item: Item, button: HTMLElement): Promise<void> {
     switch (act) {
-      case 'copy': return copyItem(item, button);
+      case 'copy': await copyItem(item, button); return;
       case 'download': return downloadItem(item, button);
       case 'star': return toggleFlag(item, 'starred', button);
       case 'pin': return toggleFlag(item, 'pinned', button);
@@ -670,9 +705,11 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     if (state.openKey && items.some((i) => i.key === state.openKey)) closeDetail();
     render();
     const undo = { label: '撤销', run: () => void restoreItems(items, true) };
-    if (result.failed > 0) toast(`${result.done} 条已移到回收站，${result.failed} 条失败`, { tone: 'warn' });
-    else if (result.aborted) toast(`已中止：${result.done} 条已移到回收站`, { tone: 'info', action: undo });
-    else toast(items.length === 1 ? '已移到回收站' : `已将 ${result.done} 条移到回收站`, { tone: 'success', action: undo });
+    // 软删会同步到所有设备（官方客户端也会看到这条消失）：撤销之外，这也是用户按下去前该知道的事
+    const syncNote = '所有同步设备上也会消失，30 天内可恢复';
+    if (result.failed > 0) toast(partial(result.done, result.failed, '移到回收站'), { tone: 'warn', action: undo });
+    else if (result.aborted) toast(`已中止：停下之前已有 ${result.done} 条移到回收站（${syncNote}）`, { tone: 'info', action: undo });
+    else toast(`${items.length === 1 ? '已移到回收站' : `已将 ${result.done} 条移到回收站`} · ${syncNote}`, { tone: 'success', action: undo });
     void refreshAll(true);
   }
 
@@ -690,7 +727,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       if (state.openKey && items.some((i) => i.key === state.openKey)) closeDetail();
     }
     render();
-    toast(result.failed > 0 ? `${result.done} 条已恢复，${result.failed} 条失败` : fromUndo ? '已撤销' : `已恢复 ${result.done} 条`, { tone: result.failed > 0 ? 'warn' : 'success' });
+    toast(result.failed > 0 ? partial(result.done, result.failed, '恢复') : fromUndo ? '已撤销' : `已恢复 ${result.done} 条`, { tone: result.failed > 0 ? 'warn' : 'success' });
     void refreshAll(true);
   }
 
@@ -715,7 +752,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     state.selection = new Set();
     if (state.openKey && items.some((i) => i.key === state.openKey)) closeDetail();
     render();
-    toast(result.failed > 0 ? `${result.done} 条已删除，${result.failed} 条失败` : `已彻底删除 ${result.done} 条`, { tone: result.failed > 0 ? 'warn' : 'success' });
+    toast(result.failed > 0 ? partial(result.done, result.failed, '彻底删除') : `已彻底删除 ${result.done} 条`, { tone: result.failed > 0 ? 'warn' : 'success' });
     void refreshAll(true, true);
   }
 
@@ -835,7 +872,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       setFolders(result.folders);
       for (const item of items) merge({ ...(state.items.find((i) => i.key === item.key) ?? item), folderId: folderId ?? 0 });
       const name = folderId === null ? null : result.folders.find((f) => f.id === folderId)?.name;
-      if (result.failed > 0) toast(`${result.updated} 条已${folderId === null ? '移出' : '放入'}，${result.failed} 条失败（可能已被清理）`, { tone: 'warn' });
+      if (result.failed > 0) toast(partial(result.updated, result.failed, folderId === null ? '移出' : '放入'), { tone: 'warn' });
       else if (folderId === null) toast(`已移出收藏夹（${result.updated} 条）`, { tone: 'success' });
       else toast(`已放入「${name ?? '收藏夹'}」（${result.updated} 条）· 不会被自动清理`, { tone: 'success' });
       void refreshAll(true);
@@ -874,7 +911,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       return { done: r.updated, failed: r.failed, aborted: r.aborted };
     });
     if (!result) return;
-    toast(result.failed > 0 ? `${result.done} 条成功，${result.failed} 条失败` : `${done}（${result.done} 条）`, { tone: result.failed > 0 ? 'warn' : 'success' });
+    toast(result.failed > 0 ? partial(result.done, result.failed, '更新') : `${done}（${result.done} 条）`, { tone: result.failed > 0 ? 'warn' : 'success' });
     clearSelection();
     void refreshAll(true);
   }
@@ -931,13 +968,77 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     openMenu(anchor, [
       { label: '新建文本', icon: 'edit', hint: 'n', run: () => newText() },
       { label: '上传文件或图片…', icon: 'upload', hint: 'u', run: () => picker.click() },
-    ], { align: 'end' });
+      { label: '粘贴剪贴板内容', icon: 'paste', hint: 'v', separatorBefore: true, run: () => void pasteClipboard(null) },
+      { label: '复制最近一条', icon: 'copy', hint: 'l', run: () => void copyLatest(null) },
+    ], { align: 'end', minWidth: 230 });
+  }
+
+  // ---------- 一对镜像入口：复制最近一条 / 粘贴剪贴板内容 ----------
+  // 这个界面最常见的用法就是「在一台设备上复制、到另一台上取」：
+  //   · 复制最近一条：服务器上最新的一条 → 本机剪贴板（全库最新，不受当前筛选 / 排序影响）；
+  //   · 粘贴剪贴板内容：本机剪贴板 → 服务器上最新的一条。
+  // 两者都吃用户手势（点击 / 按键），并且读剪贴板还要浏览器权限，失败时必须说清是哪种原因。
+  async function copyLatest(button: HTMLElement | null): Promise<void> {
+    await withPending(button, async () => {
+      try {
+        const latest = await api.latest();
+        if (!latest) {
+          toast('还没有任何记录', { tone: 'info' });
+          return;
+        }
+        // 这里传 null：外层 withPending 已经占住了这个按钮，里层再占一次会被当成「重复点击」直接返回（按钮就成了摆设）
+        if (await copyItem(latest, null, `（最近一条 · ${formatRelative(latest.createTime)}）`)) flashOk(button);
+      } catch (error) {
+        toast(`复制失败：${guard(error, '未知错误')}`, { tone: 'error' });
+      }
+    });
+  }
+
+  async function pasteClipboard(button: HTMLElement | null): Promise<void> {
+    await withPending(button, async () => {
+      const payload = await readClipboard();
+      switch (payload.kind) {
+        case 'unsupported':
+          toast('当前环境不能直接读取剪贴板（需要 https 页面与较新的浏览器）。在页面上按 Ctrl/⌘+V 也能粘贴。', { tone: 'warn' });
+          return;
+        case 'denied':
+          toast('浏览器没有允许读取剪贴板：点地址栏左侧的权限图标放开，或者直接在页面上按 Ctrl/⌘+V。', { tone: 'warn' });
+          return;
+        case 'empty':
+          toast('本机剪贴板是空的', { tone: 'info' });
+          return;
+        case 'image': {
+          const ext = payload.mime.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'png';
+          const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+          await uploadFiles([new File([payload.blob], `剪贴板-${stamp}.${ext}`, { type: payload.mime })], { open: false });
+          flashOk(button);
+          return;
+        }
+        case 'text': {
+          if (utf8Bytes(payload.text) > TEXT_MAX_BYTES) {
+            toast('剪贴板里的文字超过 1 MiB，放不进文本记录；请存成文件再上传。', { tone: 'error' });
+            return;
+          }
+          try {
+            await api.createText(payload.text);
+            toast(`已把剪贴板存为最新一条（${charCount(payload.text)} 个字符）`, { tone: 'success' });
+            flashOk(button);
+            showNewest();
+            await refreshAll(true);
+          } catch (error) {
+            toast(`保存失败：${guard(error, '未知错误')}`, { tone: 'error' });
+          }
+          return;
+        }
+      }
+    });
   }
 
   // ---------- 上传（选择 / 拖拽 / 粘贴 三个入口，一条路径） ----------
   let uploading = false;
 
-  async function uploadFiles(input: File[]): Promise<void> {
+  /** `open`：只传一个文件时是否随后打开它的详情（「粘贴剪贴板」入口不要弹出详情，所以传 false） */
+  async function uploadFiles(input: File[], { open = true }: { open?: boolean } = {}): Promise<void> {
     if (input.length === 0) return;
     if (uploading) {
       toast('上一批文件还在上传，请稍候。', { tone: 'warn' });
@@ -981,7 +1082,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     }
     if (done.length > 0) {
       showNewest();
-      if (done.length === 1 && done[0]) openItem(done[0]);
+      if (open && done.length === 1 && done[0]) openItem(done[0]);
       await refreshAll(true, true);
     }
     if (abort.signal.aborted) toast(done.length > 0 ? `已取消，已上传 ${done.length} 个` : '已取消上传', { tone: 'info' });
@@ -1045,7 +1146,6 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     selectAll(true);
   };
   document.addEventListener('keydown', onSelectAllKey);
-
   function pageTitle(): string {
     const f = state.filters;
     const view = currentNav(f);
@@ -1095,6 +1195,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     try {
       const marker = await api.poll();
       state.skewMs = Date.parse(marker.serverTime) - Date.now();
+      state.lastSyncAt = Date.now();
       pollFailures = 0;
       const recovered = state.stale;
       state.stale = false;
@@ -1153,6 +1254,8 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   const pageCount = (): number => Math.max(1, Math.ceil(state.total / state.filters.pageSize));
   registerShortcuts([
     { keys: ['/'], label: '聚焦搜索', group: '全局', run: () => topbar.focusSearch() },
+    { keys: ['l'], label: '复制最近一条', group: '全局', run: () => void copyLatest(null) },
+    { keys: ['v'], label: '粘贴剪贴板内容（存为最新一条）', group: '全局', run: () => void pasteClipboard(null) },
     { keys: ['n'], label: '新建文本', group: '全局', run: () => newText() },
     { keys: ['u'], label: '上传文件或图片', group: '全局', run: () => picker.click(), when: () => !state.filters.deleted },
     { keys: ['r'], label: '刷新', group: '全局', run: () => void refreshAll(false, true) },
