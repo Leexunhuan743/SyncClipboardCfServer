@@ -124,3 +124,32 @@ describe('总览：四个计数与收藏夹条数来自同一次分组，且与�
     expect(p).not.toMatch(/CORRELATED/);
   });
 });
+
+describe('协议路径：哈希查找是点查，不是把该类型的行逐行扫一遍', () => {
+  // 官方客户端的每次同步（PUT /SyncClipboard.json、POST /api/history）与每次 GET /api/history/{id} 都会走 getByTypeAndHash。
+  // 它写成 `LOWER(Hash) = LOWER(?)`：函数包着列时 (UserId, Type, Hash) 唯一索引用不上，只能扫该类型的全部行。
+  // 线上实测 ~540 行/次、两台客户端一小时 ~700 次 ⇒ 一天单独烧光 D1 免费额度。
+  const LOOKUP = `SELECT * FROM HistoryRecords WHERE UserId = ?1 AND Type = ?2 AND LOWER(Hash) = LOWER(?3) LIMIT 1`;
+
+  it('getByTypeAndHash 的查询走表达式索引 idx_h_user_type_lhash，等值条件覆盖到 LOWER(Hash)', () => {
+    const { d1 } = setup();
+    const p = plan(d1, LOOKUP, ['default_user', 0, 'abc']).join('\n');
+    expect(p, p).toMatch(/idx_h_user_type_lhash \(UserId=\? AND <expr>=\? AND Type=\?\)/);
+  });
+
+  it('SQL 与 db.ts 里真正执行的那条一致（索引表达式必须与查询逐字匹配规划器才会选它）', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../src/db.ts', import.meta.url), 'utf8');
+    expect(src).toContain('UserId = ?1 AND Type = ?2 AND LOWER(Hash) = LOWER(?3) LIMIT 1');
+    expect(readSchemaSql()).toContain('ON HistoryRecords(UserId, LOWER(Hash), Type)');
+  });
+
+  it('语义不变：大小写不敏感（小写查大写行）、类型与用户仍然隔离', async () => {
+    const { db } = setup();
+    await db.insert(record('ABCDEF0123'));
+    expect((await db.getByTypeAndHash(ProfileType.Text, 'abcdef0123'))?.hash).toBe('ABCDEF0123');
+    expect(await db.getByTypeAndHash(ProfileType.Image, 'abcdef0123')).toBeNull();
+    expect(await db.getByTypeAndHash(ProfileType.Text, 'nope')).toBeNull();
+  });
+});
+

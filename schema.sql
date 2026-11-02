@@ -47,6 +47,16 @@ CREATE INDEX IF NOT EXISTS idx_h_user_modify   ON HistoryRecords(UserId, LastMod
 -- ⚠️ 只用已存在的老列：部署先跑本文件、再跑 tools/migrate-d1.mjs 加新列，索引里不能出现新列（见文末 Folders 的说明）。
 CREATE INDEX IF NOT EXISTS idx_h_user_list ON HistoryRecords(UserId, IsDeleted, Pinned, CreateTime);
 
+-- 哈希查找的表达式索引：`getByTypeAndHash` 与批量放入收藏夹都写成 `LOWER(Hash) = LOWER(?)`（哈希比较大小写不敏感），
+-- 而函数包着列时上面那个 (UserId, Type, Hash) 唯一索引**用不上**，只能用 (UserId, Type) 前缀把该类型的行逐行扫一遍
+-- （线上实测 ~540 行/次）。官方客户端的每次同步、每次 `GET /api/history/{id}` 都会走它：两台客户端一小时 ~700 次，
+-- 一天就能把 D1 免费额度（500 万行读/天）单独烧光 —— 线上因此真的被 D1 拒绝过服务。
+-- 索引表达式必须与查询里的 `LOWER(Hash)` 逐字一致，规划器才会选它；语义不变（大小写不敏感）。
+-- 同样只引用老列（部署先跑本文件、再跑迁移）。
+-- 列序是 (UserId, LOWER(Hash), Type)：哈希点查的三个等值条件照样全用上；而 Type 放最后，按类型筛选的列表就不会被这个索引的
+-- (UserId, Type) 前缀抢走（那会让列表重新扫该类型的全部行、含回收站），仍然走上面的 idx_h_user_list。
+CREATE INDEX IF NOT EXISTS idx_h_user_type_lhash ON HistoryRecords(UserId, LOWER(Hash), Type);
+
 -- 收藏（Stared）维度的复合索引：对齐上游 EF 的 IX_History_User_Stared_CreateTime_ID /
 -- IX_History_User_Stared_Type_CreateTime_ID（HistoryDbContext.OnModelCreating）。上游加这两个索引
 -- 是为了让「收藏 + 时间范围 + 翻页」「收藏 + 类型 + 翻页」这类查询走索引；官方客户端的收藏筛选

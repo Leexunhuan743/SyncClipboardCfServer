@@ -73,6 +73,7 @@
 | D49 | `readBodyCapped` 在请求声明了 `content-length` 时按它一次性分配并边读边写，不再「收集分块 + 拼接」：后者让 48 MiB 的体峰值接近 96 MiB，贴着 isolate 的 128 MiB。声明值只是提示，读多了退回收集分块，读少了截出实际长度；上限判定不变。 |
 | D50 | 收藏夹（界面独有）：`Folders` 表 + `HistoryRecords.FolderId`；一条记录至多一个收藏夹，独立于星标；`FolderId != 0` 不参与自动清理；删除收藏夹只把成员移出、不删记录。`FolderId` 不进协议 DTO 与整行覆盖写，客户端改不掉它，也不改 `Version` / `LastModified`。不复用上游保留列 `Tags`（语义归上游）；`HistoryRecords.FolderId` 不建索引（部署先跑 `schema.sql` 再跑迁移，老库此时还没有这一列）。 |
 | D51 | 控制 D1 读行数（免费额度 500 万/天，按扫描行数计）：线上实测某天用到 83%、99% 来自网页界面，根因是列表 / 计数 / 总览 / 轮询几乎每条都全表扫描，而回收站（软删保留 30 天）也一并被扫（占 70% 行数时成本 ×3.4）。对策：① `idx_h_user_list (UserId, IsDeleted, Pinned, CreateTime)`，列表一页与总数只读需要的行；② 变更信号只用 `MAX(LastModified)`（读 1 行），代价是别的标签页发现不了「只减少行数」的硬删，只影响回收站数字；③ 总览的四个计数与收藏夹条数从 `countByTypeViews` 同一次分组算出（与协议 `db.statistics()` 同口径，测试钉成同值），不再多扫两遍；④ 隐藏页不轮询、推送在线时看门狗放宽到 2 分钟、趋势图只在可见时查。索引只引用老列：部署先跑 `schema.sql` 再跑迁移，索引里出现新列会让老库的 schema 步骤失败。 |
+| D52 | D1 免费额度用完时（平台报 `exceeded D1's free tier daily row read limit`，UTC 0 点恢复）返回 `503 d1_quota_exceeded` + `Retry-After` + 一句人话，而不是裸 500（`src/errors.ts` 的 `app.onError`）：界面能原样显示原因，官方客户端也能当成「稍后再试」。同时修协议路径上真正烧额度的查询：`getByTypeAndHash` 写成 `LOWER(Hash) = LOWER(?)`，函数包着列让唯一索引用不上，每次同步 / `GET /api/history/{id}` 都把该类型的几百行逐行扫一遍（线上 ~540 行/次、两台客户端一小时 ~700 次，一天单独烧光 500 万额度），新增表达式索引 `idx_h_user_type_lhash (UserId, LOWER(Hash), Type)` 后是点查；列序把 `Type` 放最后，避免抢走按类型筛选列表的 `idx_h_user_list`。D51 之后仍超额的原因是只优化了界面一侧，没看协议一侧。 |
 
 ## 3. 架构
 

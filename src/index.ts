@@ -18,6 +18,7 @@ import { runCleanup } from './cleanup';
 import { maxRequestBodyBytes, isLoopbackHost, readBodyCapped } from './requestLimits';
 import { normalizeProtocolPath } from './pathCase';
 import { isUiEnabled, uiDisabledResponse } from './uiEnabled';
+import { handleAppError } from './errors';
 
 // 明文跳转/HSTS 只对「浏览器可访问的 host」生效；loopback 一律不跳转、不加 HSTS，
 // 否则本地开发（wrangler dev 走明文）会被强行升级到不存在的 https。判定与限速豁免共用同一套 loopback 判定。
@@ -168,6 +169,9 @@ app.use('*', async (c, next) => {
   }
   await next();
 });
+
+// 未捕获的错误：D1 免费额度用完 ⇒ 带说明与 Retry-After 的 503（见 src/errors.ts）；其它保持 500
+app.onError((err, c) => handleAppError(err, c));
 
 app.route('/', createWebdavRoutes());
 app.route('/', createHistoryRoutes());
