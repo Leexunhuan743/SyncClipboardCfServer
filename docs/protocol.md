@@ -555,6 +555,7 @@ hash = SHA256hex(UTF8($"{fileName}|{contentHash.toUpperCase()}"))
 | 浏览器导航 `GET /` 的 **302** | 无此分支（`/` 只按 WebDAV 探活） | `Accept: text/html` 且界面开启时 302 `/ui/`（**登记在 §4 的端点表，此处仅为「§10 是差异唯一登记处」补一条指引**；客户端 `Test()`/`GetFolderSubList()` 都是 PROPFIND，不可达） | 见左栏 |
 | `POST /api/history` **无 data 的 inline Text** 判据 | `TextProfile.IsLocalDataValid(false)` 是**两条**：① `HasTransferData`（`TransferDataFile` 非空 \|\| `Size > Text.Length`）为真 ⇒ 拒绝；② 否则内联哈希 == 声明 Hash（`TextProfile.cs:87-138`） | 同左（2026-10-03 补齐 ①；此前只有 ② ⇒ 「哈希吻合但 size 更大、无 data」的请求：上游 400、本实现 200 并落库一条正文被截断、size 更大的记录） | **本轮对齐**。官方客户端对 inline Text 恒发 `size == text.Length` ⇒ 不可达。该分支的用例此前**无判别力**（`test/fixes.test.ts` 那条的 hash 同时不匹配 ⇒ 实际由 ② 拒绝，① 在代码里缺失也照样绿），现已改成只可能由 ① 拒绝，另在 `test/dto-validation.test.ts` 加了 HTTP 级判别用例 |
 | `PUT /SyncClipboard.json` 的 `hasData=false` + `transferDataHash` 矛盾检查**位置** | 在既有记录查询**之前**（`SyncClipboardController.cs:178-181` 先于 `:183-193` 的 `GetExistingProfileAsync`） | 同左（2026-10-03 把检查移到复用分支之前；此前「命中既有记录 + hasData=false + 带 transferDataHash」：上游 400、本实现 200（静默复用）） | **本轮对齐**。官方客户端的 `TransferDataHash` 仅在 `hasData` 时非 null（`ProfileDto.ToProfileDto`）⇒ 不可达 |
+| 收藏夹（`HistoryRecords.FolderId` + `Folders` 表） | 无此概念 | **本站独有的界面功能**：用户自定义名字的分组，一条记录至多放进一个。`FolderId != 0` 的记录**不参与自动清理**（保留期与条数上限都跳过，豁免条件与收藏/置顶写在同一处 SQL）；它**不进协议 DTO**、不在 `UPDATE_ALL_SQL` 里，所以官方客户端的任何写入（`starred=false`、重传同一条记录）都改不了它；放进 / 移出收藏夹不改 `Version` / `LastModified` | 对官方客户端无影响（它看不到收藏夹）；清理比上游多一类豁免，个人场景接受（见 `docs/design.md` D50） |
 
 ## 11. 参考实现对照表
 

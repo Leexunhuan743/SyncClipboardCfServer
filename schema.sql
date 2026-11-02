@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS HistoryRecords (
   Tags TEXT NOT NULL DEFAULT '[]',
   ExtraData TEXT,
   Version INTEGER NOT NULL DEFAULT 0,
-  IsDeleted INTEGER NOT NULL DEFAULT 0
+  IsDeleted INTEGER NOT NULL DEFAULT 0,
+  FolderId INTEGER NOT NULL DEFAULT 0   -- 收藏夹（本站独有，不进协议 DTO）：0 = 不在任何收藏夹；非 0 的记录不会被自动清理
 );
 
 -- 先清理历史遗留的重复行（同一 UserId+Type+Hash 只保留 ID 最小的一行），
@@ -53,3 +54,17 @@ CREATE TABLE IF NOT EXISTS Meta (
   Key TEXT PRIMARY KEY,
   Value TEXT NOT NULL
 );
+
+-- 收藏夹（本站独有的界面功能，官方协议不感知）：用户自定义名字的分组，一条记录至多放进一个。
+-- 放进收藏夹的记录**不会被自动清理**（保留期 / 条数上限都跳过它们，见 src/db.ts 的 softDeleteOldest），
+-- 且独立于星标：官方客户端写 `starred` / 重传同一条记录都改不了它（FolderId 不在协议写入的列里）。
+-- 注意：这里**不**给 HistoryRecords.FolderId 建索引 —— 部署时先跑本文件、再跑 tools/migrate-d1.mjs 给老库加列，
+-- 老库在跑到这里时还没有这一列，建索引会让整个 schema 步骤失败。
+CREATE TABLE IF NOT EXISTS Folders (
+  Id INTEGER PRIMARY KEY AUTOINCREMENT,
+  UserId TEXT NOT NULL DEFAULT 'default_user',
+  Name TEXT NOT NULL,
+  SortOrder INTEGER NOT NULL DEFAULT 0,
+  CreateTime INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_folders_user_name ON Folders(UserId, Name);

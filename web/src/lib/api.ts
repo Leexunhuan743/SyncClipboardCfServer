@@ -3,7 +3,7 @@
 // 归一化在这里做（不在组件里）：服务端按上游惯例把 type 序列化成数字，
 // 前端只认类型名 —— 把这一次转换收在 API 边界上，组件就不必各自记得。
 import { API_BASE, buildQuery, itemPath, normalizeItem, rateLimitMessage, type ItemRef } from './query';
-import type { ActivityDay, DeploymentInfo, IntegrityReport, Item, Overview, Retention } from './types';
+import type { ActivityDay, DeploymentInfo, Folder, IntegrityReport, Item, Overview, Retention } from './types';
 
 export { API_BASE, buildQuery, itemPath, normalizeItem, rateLimitMessage };
 
@@ -273,6 +273,29 @@ export const api = {
     );
     if (!created) throw new ApiError(502, '服务器返回了无法读取的数据，请刷新后重试。');
     return created;
+  },
+
+  // ---- 收藏夹（本站独有）：每个写操作都返回最新的收藏夹列表，前端直接替换 ----
+  createFolder: (name: string) => request<{ id: number; folders: Folder[] }>(`${API_BASE}/folders`, { method: 'POST', body: { name } }),
+  renameFolder: (id: number, name: string) =>
+    request<{ id: number; folders: Folder[] }>(`${API_BASE}/folders/${id}`, { method: 'PATCH', body: { name } }),
+  /** 删除收藏夹：里面的记录移出（不删记录）；`moved` 是被移出的条数 */
+  deleteFolder: (id: number) => request<{ moved: number; folders: Folder[] }>(`${API_BASE}/folders/${id}`, { method: 'DELETE' }),
+  /** 把一批记录放进收藏夹（`folderId = null` = 移出）。按 100 分片，返回合计与最新的收藏夹列表。 */
+  async setFolder(items: ItemRef[], folderId: number | null) {
+    let updated = 0;
+    let failed = 0;
+    let folders: Folder[] = [];
+    for (let i = 0; i < items.length; i += CHUNK) {
+      const result = await request<{ updated?: number; failed?: number; folders?: Folder[] }>(`${API_BASE}/history/batch-folder`, {
+        method: 'POST',
+        body: { items: items.slice(i, i + CHUNK).map(idOf), folderId },
+      });
+      updated += result?.updated ?? 0;
+      failed += result?.failed ?? 0;
+      folders = result?.folders ?? folders;
+    }
+    return { updated, failed, folders };
   },
 
   /** 清空：scope='trash' 只清回收站，'all' 清全部。 */

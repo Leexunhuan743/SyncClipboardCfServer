@@ -120,6 +120,9 @@
 .flag--pin { color: var(--accent); }
 .flag--star { color: var(--star); }
 .flag--warn { color: var(--danger); }
+/* 收藏夹标记：图标 + 名字（名字过长截断）；紧凑模式的固定列里只留图标，名字在 title 里 */
+.flag--folder { color: var(--ink-2); min-width: 0; }
+.flag--folder .flag__name { max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
 
 .kbd {
   display: inline-grid;

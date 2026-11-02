@@ -38,6 +38,10 @@
 .nav { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .nav__title { margin: 14px 10px 6px; font-size: 12px; font-weight: 650; letter-spacing: 0.06em; color: var(--ink-3); }
 .nav__title:first-child { margin-top: 0; }
+.nav__group { display: flex; flex-direction: column; gap: 2px; }
+/* 「新建收藏夹」是个入口而不是一个视图：比导航项淡一档，悬停才亮 */
+.nav__item--add { color: var(--ink-3); }
+.nav__item--add:hover { color: var(--ink); }
 .nav__item {
   display: flex;
   align-items: center;
@@ -117,12 +121,17 @@
    于是两行的左右边缘对齐、按钮宽度一致，不会一行靠左、一行飘在中间 */
 .pane__foot-main, .pane__foot-side { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 8px; }
 .pane__foot-main .btn, .pane__foot-side .btn { justify-content: center; min-width: 0; white-space: nowrap; }
+.pane__foot-side .btn > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pane__foot-side .btn { --btn-bd: var(--line); }
 .pane__foot-side .btn--danger-ghost { --btn-bd: var(--danger-soft); }
 /* 底部「关闭」：单独一行、在所有动作的最上面，只在详情是浮层 / 全屏时出现（宽屏并排面板的关闭键就在旁边） */
 .pane__foot-close { display: none; }
 @media (max-width: 1180px) {
   .pane__foot-close { display: flex; justify-content: center; width: 100%; }
+  /* 窄屏上四个次要动作等宽会把「已收藏」「回收站」和收藏夹名字都截成一个字：
+     收藏夹按钮（名字长度不定）吃掉剩余宽度，其余按内容宽度，并收紧内边距 */
+  .pane__foot-side:has(.pane__foot-folder) { grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 6px; }
+  .pane__foot-side .btn { padding-inline: 8px; gap: 4px; }
 }
 .pane__empty { display: none; margin: auto; flex-direction: column; align-items: center; gap: 10px; color: var(--ink-3); }
 .pane__loading { display: flex; align-items: center; gap: 10px; padding: 18px 4px; color: var(--ink-3); }
@@ -150,7 +159,8 @@
 /* ---- 批量条 ---- */
 .batch { position: absolute; left: 50%; bottom: 22px; z-index: 30; display: flex; align-items: center; gap: 6px; max-width: calc(100% - 32px); padding: 8px 10px 8px 8px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-3); transform: translateX(-50%); animation: batch-in 220ms var(--ease); }
 .batch__count { padding: 0 8px 0 2px; font-weight: 650; white-space: nowrap; }
-.batch__actions { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+/* 窄屏要能横向滚动（overflow），而 overflow 会把按钮的偏移阴影切掉：用内边距给阴影留位置，再用等量负外边距抵消，布局尺寸不变 */
+.batch__actions { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; padding: 2px 8px 8px 2px; margin: -2px -8px -8px -2px; }
 .batch__progress { display: flex; align-items: center; gap: 10px; padding: 0 6px; color: var(--ink-2); white-space: nowrap; }
 @keyframes batch-in { from { opacity: 0; transform: translate(-50%, 12px); } }
 

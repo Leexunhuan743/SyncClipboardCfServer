@@ -17,11 +17,21 @@ export interface Item {
   dataName: string | null;
   starred: boolean;
   pinned: boolean;
+  /** 所在收藏夹的 id；0 = 不在任何收藏夹（放进收藏夹的记录不会被自动清理） */
+  folderId: number;
   isDeleted: boolean;
   version: number;
   createTime: string;
   lastModified: string;
   lastAccessed: string;
+}
+
+/** 收藏夹（本站独有）：用户自定义名字；`count` 是活跃（不在回收站）成员条数 */
+export interface Folder {
+  id: number;
+  name: string;
+  sortOrder: number;
+  count: number;
 }
 
 export type SortField = 'createTime' | 'lastModified' | 'lastAccessed' | 'size' | 'type';
@@ -33,6 +43,8 @@ export interface Filters {
   pageSize: number;
   types: TypeFilter;
   starred: boolean;
+  /** 只看某个收藏夹（id）；null = 不按收藏夹筛 */
+  folder: number | null;
   deleted: boolean;
   search: string;
   range: RangeKey;
@@ -81,6 +93,7 @@ export interface Overview {
   starredCountActive: number;
   starredCountDeleted: number;
   marker: { count: number; lastModified: number };
+  folders: Folder[];
   info: DeploymentInfo;
   serverTime: string;
 }

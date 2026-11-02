@@ -55,11 +55,12 @@ export function createState(filters: Filters, density: Density): AppState {
   };
 }
 
-/** 侧栏的"当前视图"：类型库 / 收藏 / 回收站三选一。 */
-export type NavView = { kind: 'type'; type: Filters['types'] } | { kind: 'starred' } | { kind: 'trash' };
+/** 侧栏的"当前视图"：类型库 / 收藏 / 收藏夹 / 回收站四选一。 */
+export type NavView = { kind: 'type'; type: Filters['types'] } | { kind: 'starred' } | { kind: 'folder'; id: number } | { kind: 'trash' };
 
 export function currentNav(filters: Filters): NavView {
   if (filters.deleted) return { kind: 'trash' };
+  if (filters.folder !== null) return { kind: 'folder', id: filters.folder };
   if (filters.starred) return { kind: 'starred' };
   return { kind: 'type', type: filters.types };
 }

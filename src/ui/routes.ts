@@ -1,5 +1,5 @@
 // UI 的 HTTP 面：`/ui/api/*` 的装配点 —— 公开端点、守卫中间件与兜底路由在这里注册，
-// 各端点组各自成模块（shared / history-data / history-mutations / info）。
+// 各端点组各自成模块（shared / history-data / history-mutations / folders / info）。
 //
 // 命名空间选 `/ui/api/*` 而不是 `/api/*`：后者已被协议（官方客户端依赖）占用，
 // 混在一起会让「哪些是客户端依赖的」变得无法机械判定。
@@ -12,6 +12,7 @@ import { maxRequestBodyBytes, readBodyCapped } from '../requestLimits';
 import { notFoundPage } from './notFound';
 import { createUiMaintenanceRoutes } from './maintenance';
 import { createHistoryDataRoutes } from './routes/history-data';
+import { createFolderRoutes } from './routes/folders';
 import { createHistoryMutationRoutes } from './routes/history-mutations';
 import { createInfoRoutes } from './routes/info';
 
@@ -121,6 +122,7 @@ export function createUiRoutes(): Hono<{ Bindings: Bindings }> {
 
   guarded.route('/', createHistoryDataRoutes());
   guarded.route('/', createHistoryMutationRoutes());
+guarded.route('/', createFolderRoutes());
   guarded.route('/', createInfoRoutes());
 
   app.route('/', guarded);

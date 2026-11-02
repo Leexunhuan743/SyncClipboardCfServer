@@ -51,6 +51,44 @@ export interface DbRow {
   Pinned: number;
   Version: number;
   IsDeleted: number;
+  /** 旧库 / 手写行可能没有这一列的值（迁移前的 SELECT 列表不含它）：缺省按 0 */
+  FolderId?: number;
+}
+
+// ===== 收藏夹的类型与名字规则 =====
+export interface FolderInfo {
+  id: number;
+  name: string;
+  sortOrder: number;
+  /** 活跃（未进回收站）的成员条数 */
+  count: number;
+}
+export type FolderWrite = { kind: 'ok'; id: number } | { kind: 'exists' } | { kind: 'too_many' } | { kind: 'not_found' };
+
+export const FOLDER_NAME_MAX_CHARS = 30;
+export const FOLDERS_MAX = 50;
+const FOLDER_SET_CHUNK = 40;
+
+/** 归一并校验收藏夹名：去首尾空白、折叠内部连续空白，拒绝空名 / 控制字符 / 超长（按码点计）。`null` = 不合法。 */
+export function normalizeFolderName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const name = raw.trim().replace(/\s+/g, ' ');
+  if (name === '' || [...name].length > FOLDER_NAME_MAX_CHARS) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(name)) return null;
+  return name;
+}
+
+function isFolderNameConflict(err: unknown): boolean {
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; depth < 4 && cur; depth++) {
+    const m = (cur as { message?: unknown }).message;
+    if (typeof m === 'string') parts.push(m);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  const text = parts.join(' | ');
+  return /unique constraint failed/i.test(text) && /(folders|ux_folders_user_name)/i.test(text);
 }
 
 export function rowToEntity(r: DbRow): HistoryRecordEntity {
@@ -84,6 +122,7 @@ export function rowToEntity(r: DbRow): HistoryRecordEntity {
     pinned: r.Pinned !== 0,
     version: r.Version,
     isDeleted: r.IsDeleted !== 0,
+    folderId: r.FolderId ?? 0,
   };
 }
 
@@ -519,7 +558,7 @@ export class HistoryDb {
   // ===== 保留与清理（对齐上游 HistoryService 的 RemoveOutOfRetentionRecords /
   //       SetRecordsMaxCount / RemoveOutOfDateDeletedRecords / CleanOrphanedFolders）=====
 
-  // 软删最旧的一批非收藏/非置顶记录（上游 RemoveOutOfRetentionRecords / SetRecordsMaxCount 共用
+  // 软删最旧的一批非收藏/非置顶/不在收藏夹里的记录（上游 RemoveOutOfRetentionRecords / SetRecordsMaxCount 共用
   // 同一个 `QueryDeleteOrderBy` = MAX(LastModified, LastAccessed)）。**单份 SQL 两种形态**：
   // `?2 IS NULL` 时不做保留期过滤（trim），否则按过期时间过滤（retention）—— 占位符编号因此
   // 不随形态漂移，软删判据（豁免列 + 排序键）只此一份，将来加豁免列不会漏改一条路径。
@@ -539,7 +578,7 @@ export class HistoryDb {
         `UPDATE HistoryRecords SET IsDeleted = 1, Version = Version + 1, LastModified = ?3
          WHERE ID IN (
            SELECT ID FROM HistoryRecords
-           WHERE UserId = ?1 AND IsDeleted = 0 AND Stared = 0 AND Pinned = 0
+           WHERE UserId = ?1 AND IsDeleted = 0 AND Stared = 0 AND Pinned = 0 AND FolderId = 0
              AND (?2 IS NULL OR (LastModified < ?2 AND LastAccessed < ?2))
            ORDER BY MAX(LastModified, LastAccessed) ASC, ID ASC
            LIMIT ?4
@@ -557,6 +596,107 @@ export class HistoryDb {
   //   只广播；目录由 30 天硬删阶段批量清扫。
   async softDeleteExpiredRecords(cutoffMs: number, nowMs: number, limit: number): Promise<HistoryRecordEntity[]> {
     return this.softDeleteOldest(HARD_CODED_USER_ID, cutoffMs, nowMs, limit);
+  }
+
+  // ===== 收藏夹（本站独有，官方协议不感知）=====
+  // 一条记录至多在一个收藏夹里（HistoryRecords.FolderId，0 = 不在任何收藏夹）；放进收藏夹的记录不会被自动清理
+  // （见 softDeleteOldest 的豁免条件）。FolderId 只由本节的方法写 —— 它不在 UPDATE_ALL_SQL / INSERT_SQL 里，
+  // 所以官方客户端的任何写入（重传同一条记录、PATCH starred=false…）都改不了它。
+  // 移动记录**不**改 Version / LastModified：这是界面自己的整理动作，不该被别的设备当成一次内容变更去同步。
+
+  async listFolders(): Promise<FolderInfo[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT f.Id AS id, f.Name AS name, f.SortOrder AS sortOrder,
+                (SELECT COUNT(*) FROM HistoryRecords h
+                  WHERE h.UserId = f.UserId AND h.FolderId = f.Id AND h.IsDeleted = 0) AS count
+         FROM Folders f WHERE f.UserId = ?1 ORDER BY f.SortOrder ASC, f.Id ASC`,
+      )
+      .bind(HARD_CODED_USER_ID)
+      .all<FolderInfo>();
+    return res.results ?? [];
+  }
+
+  async folderExists(id: number): Promise<boolean> {
+    const row = await this.db
+      .prepare(`SELECT 1 AS ok FROM Folders WHERE UserId = ?1 AND Id = ?2`)
+      .bind(HARD_CODED_USER_ID, id)
+      .first<{ ok: number }>();
+    return row !== null;
+  }
+
+  async createFolder(name: string, nowMs: number): Promise<FolderWrite> {
+    const count = await this.db
+      .prepare(`SELECT COUNT(*) AS c FROM Folders WHERE UserId = ?1`)
+      .bind(HARD_CODED_USER_ID)
+      .first<{ c: number }>();
+    if ((count?.c ?? 0) >= FOLDERS_MAX) return { kind: 'too_many' };
+    try {
+      const row = await this.db
+        .prepare(
+          `INSERT INTO Folders (UserId, Name, SortOrder, CreateTime)
+           VALUES (?1, ?2, COALESCE((SELECT MAX(SortOrder) FROM Folders WHERE UserId = ?1), 0) + 1, ?3)
+           RETURNING Id AS id`,
+        )
+        .bind(HARD_CODED_USER_ID, name, nowMs)
+        .first<{ id: number }>();
+      return row ? { kind: 'ok', id: row.id } : { kind: 'not_found' };
+    } catch (err) {
+      if (isFolderNameConflict(err)) return { kind: 'exists' };
+      throw err;
+    }
+  }
+
+  async renameFolder(id: number, name: string): Promise<FolderWrite> {
+    try {
+      const row = await this.db
+        .prepare(`UPDATE Folders SET Name = ?3 WHERE UserId = ?1 AND Id = ?2 RETURNING Id AS id`)
+        .bind(HARD_CODED_USER_ID, id, name)
+        .first<{ id: number }>();
+      return row ? { kind: 'ok', id: row.id } : { kind: 'not_found' };
+    } catch (err) {
+      if (isFolderNameConflict(err)) return { kind: 'exists' };
+      throw err;
+    }
+  }
+
+  /**
+   * 删除收藏夹：里面的记录**先移出**（变回普通记录，之后会被自动清理照常处理），再删收藏夹本身。
+   * 顺序不能反：先删收藏夹、移出失败，记录会带着一个不存在的 FolderId 永远豁免清理又谁也看不见。
+   * 回收站里的成员一并移出。返回被移出的记录条数（含回收站里的）。
+   */
+  async deleteFolder(id: number): Promise<{ kind: 'ok'; moved: number } | { kind: 'not_found' }> {
+    if (!(await this.folderExists(id))) return { kind: 'not_found' };
+    const moved = await this.db
+      .prepare(`UPDATE HistoryRecords SET FolderId = 0 WHERE UserId = ?1 AND FolderId = ?2 RETURNING ID`)
+      .bind(HARD_CODED_USER_ID, id)
+      .all<{ ID: number }>();
+    await this.db.prepare(`DELETE FROM Folders WHERE UserId = ?1 AND Id = ?2`).bind(HARD_CODED_USER_ID, id).run();
+    return { kind: 'ok', moved: moved.results?.length ?? 0 };
+  }
+
+  /**
+   * 把一批记录放进收藏夹（`folderId = 0` = 移出）。返回实际命中的条数。
+   * D1 单条语句最多 100 个绑定参数：每条记录占 2 个（Type + Hash），故每 40 条一片（2×40 + 2 = 82）。
+   * 哈希按 `LOWER(Hash)` 比较，与 `getByTypeAndHash` 同口径。
+   */
+  async setFolder(items: { type: ProfileType; hash: string }[], folderId: number): Promise<number> {
+    let hit = 0;
+    for (let i = 0; i < items.length; i += FOLDER_SET_CHUNK) {
+      const chunk = items.slice(i, i + FOLDER_SET_CHUNK);
+      const params: (string | number)[] = [HARD_CODED_USER_ID, folderId];
+      const terms = chunk.map((item, index) => {
+        const t = 3 + index * 2;
+        params.push(item.type, item.hash);
+        return `(Type = ?${t} AND LOWER(Hash) = LOWER(?${t + 1}))`;
+      });
+      const res = await this.db
+        .prepare(`UPDATE HistoryRecords SET FolderId = ?2 WHERE UserId = ?1 AND (${terms.join(' OR ')}) RETURNING ID`)
+        .bind(...params)
+        .all<{ ID: number }>();
+      hit += res.results?.length ?? 0;
+    }
+    return hit;
   }
 
   // 活跃记录数（未删除）
@@ -582,7 +722,7 @@ export class HistoryDb {
       .prepare(
         `SELECT length(Text) + length(FilePaths) + length(Hash) + length(TransferDataFile) + ?3 AS bytes
          FROM HistoryRecords
-         WHERE UserId = ?1 AND IsDeleted = 0 AND Stared = 0 AND Pinned = 0
+         WHERE UserId = ?1 AND IsDeleted = 0 AND Stared = 0 AND Pinned = 0 AND FolderId = 0
            AND (?2 IS NULL OR (LastModified < ?2 AND LastAccessed < ?2))
          ORDER BY MAX(LastModified, LastAccessed) ASC, ID ASC
          LIMIT ?4`,

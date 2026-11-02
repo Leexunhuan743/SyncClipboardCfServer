@@ -29,6 +29,8 @@ export interface FeedActions {
   onFocusKey(key: string): void;
   onClearFilters(): void;
   onEmptyTrash(): void;
+  onRenameFolder(): void;
+  onDeleteFolder(): void;
   onType(type: TypeFilter): void;
   onNew(): void;
   onRetry(): void;
@@ -52,9 +54,9 @@ interface CardRef {
   time: HTMLElement;
 }
 
-function signature(item: Item, state: AppState): string {
+function signature(item: Item, state: AppState, folderName: string): string {
   return [
-    item.type, item.starred, item.pinned, item.isDeleted, item.size, item.hasData, item.textTruncated,
+    item.type, item.starred, item.pinned, item.folderId, folderName, state.filters.folder, item.isDeleted, item.size, item.hasData, item.textTruncated,
     item.dataName ?? '', item.text, item.lastModified, item.lastAccessed, state.density, state.filters.sort, state.filters.search,
   ].join('\u0001');
 }
@@ -100,8 +102,12 @@ function actions(item: Item): HTMLElement {
   );
 }
 
-function flags(item: Item): HTMLElement[] {
+function flags(item: Item, folderName: string, inFolderView: boolean): HTMLElement[] {
   const out: HTMLElement[] = [];
+  // 收藏夹标记：在收藏夹视图里不画（整页都是它，重复）；紧凑模式只留图标（名字在 title 里）
+  if (item.folderId !== 0 && folderName !== '' && !inFolderView) {
+    out.push(h('span', { class: 'flag flag--folder', title: `收藏夹「${folderName}」· 不会被自动清理` }, icon('folder', { size: 13 }), h('span', { class: 'flag__name', text: folderName })));
+  }
   if (item.pinned) out.push(h('span', { class: 'flag flag--pin', title: '已置顶' }, icon('pin', { size: 13, filled: true }), '置顶'));
   if (item.starred) out.push(h('span', { class: 'flag flag--star', title: '已收藏' }, icon('star', { size: 13, filled: true })));
   if (item.type !== 'Text' && !item.hasData) out.push(h('span', { class: 'flag flag--warn', title: '服务器上没有这条记录的数据文件' }, '数据不可用'));
@@ -116,7 +122,7 @@ function textNodes(item: Item, search: string): (Node | string)[] {
   return highlightSegments(excerptAround(text, search), search).map((seg) => (seg.hit ? h('mark', { class: 'hit', text: seg.text }) : seg.text));
 }
 
-function buildCard(item: Item, search: string): CardRef {
+function buildCard(item: Item, search: string, folderName: string, inFolderView: boolean): CardRef {
   const empty = previewIsEmpty(item);
   const time = h('time', { class: 'card__time' });
   const check = h('button', { class: 'card__check', type: 'button', role: 'checkbox', 'aria-checked': 'false', 'aria-label': '选择这条记录' }, icon('check', { size: 14 }));
@@ -129,7 +135,7 @@ function buildCard(item: Item, search: string): CardRef {
       'div',
       { class: 'card__main' },
       h('p', { class: `card__text${empty ? ' card__text--empty' : ''}${item.type === 'Text' ? '' : ' card__text--name'}` }, textNodes(item, search)),
-      h('div', { class: 'card__meta' }, h('span', { class: 'tag', dataset: { type: item.type }, text: typeLabel(item.type) }), h('span', { class: 'card__size', text: formatSize(item.size) }), time, h('span', { class: 'card__flags' }, flags(item))),
+      h('div', { class: 'card__meta' }, h('span', { class: 'tag', dataset: { type: item.type }, text: typeLabel(item.type) }), h('span', { class: 'card__size', text: formatSize(item.size) }), time, h('span', { class: 'card__flags' }, flags(item, folderName, inFolderView))),
     ),
     actions(item),
   );
@@ -155,12 +161,15 @@ export function createFeed(actionsCtx: FeedActions) {
   const clearBtn = h('button', { class: 'chip-btn chip-btn--accent', type: 'button', hidden: true, onclick: () => actionsCtx.onClearFilters() }, icon('close', { size: 14 }), '清除筛选');
   const doneBtn = h('button', { class: 'chip-btn', type: 'button', hidden: true, onclick: () => actionsCtx.onClearSelection() }, '取消选择');
   const trashBtn = h('button', { class: 'btn btn--danger-ghost', type: 'button', hidden: true, onclick: () => actionsCtx.onEmptyTrash() }, icon('trash', { size: 16 }), '清空回收站');
-  const head = h('div', { class: 'feedhead' }, selectAll, count, typeChips, h('span', { class: 'spacer' }), doneBtn, clearBtn, trashBtn);
+  const renameBtn = h('button', { class: 'chip-btn', type: 'button', hidden: true, onclick: () => actionsCtx.onRenameFolder() }, icon('edit', { size: 14 }), '重命名');
+  const deleteFolderBtn = h('button', { class: 'chip-btn', type: 'button', hidden: true, title: '里面的记录会移出收藏夹，记录本身不会被删除', onclick: () => actionsCtx.onDeleteFolder() }, icon('trash', { size: 14 }), '删除收藏夹');
+  const head = h('div', { class: 'feedhead' }, selectAll, count, typeChips, h('span', { class: 'spacer' }), doneBtn, clearBtn, renameBtn, deleteFolderBtn, trashBtn);
   const trashNote = h('p', { class: 'note', hidden: true, text: '回收站里的记录会在 30 天后彻底清除；图片和文件的数据在此之前仍然保留，可以恢复。' });
+  const folderNote = h('p', { class: 'note', hidden: true, text: '放进收藏夹的记录不会被自动清理（保留时长和最多条数都跳过它们），除非你把它们移出或移到回收站。' });
 
   const list = h('div', { class: 'feed__list', role: 'list', 'aria-label': '剪贴板记录' });
   const stateBox = h('div', { class: 'feed__state', hidden: true });
-  const el = h('section', { class: 'feed', 'aria-label': '剪贴板历史' }, head, trashNote, list, stateBox);
+  const el = h('section', { class: 'feed', 'aria-label': '剪贴板历史' }, head, trashNote, folderNote, list, stateBox);
 
   // ---- 事件委托 ----
   const itemOf = (node: Element | null): Item | undefined => {
@@ -268,14 +277,19 @@ export function createFeed(actionsCtx: FeedActions) {
     const selected = selection.size;
     selectAll.setAttribute('aria-checked', selected === 0 ? 'false' : selected >= items.length ? 'true' : 'mixed');
     selectAll.hidden = items.length === 0;
-    count.textContent = selected > 0 ? `已选 ${selected} 项` : filters.deleted ? `回收站 · ${total} 条` : filters.starred ? `收藏 · ${total} 条` : `共 ${total} 条`;
-    clearBtn.hidden = !isFiltered(filters) || (filters.starred && !filters.search && filters.range === 'all' && filters.types === 'All');
+    const folder = filters.folder === null ? undefined : state.overview?.folders.find((f) => f.id === filters.folder);
+    count.textContent = selected > 0 ? `已选 ${selected} 项` : filters.deleted ? `回收站 · ${total} 条` : folder ? `收藏夹「${folder.name}」· ${total} 条` : filters.starred ? `收藏 · ${total} 条` : `共 ${total} 条`;
+    const onlyView = !filters.search && filters.range === 'all' && filters.types === 'All'; // 除了「视图」本身没有叠加别的条件
+    clearBtn.hidden = !isFiltered(filters) || ((filters.starred || filters.folder !== null) && onlyView);
+    renameBtn.hidden = !folder || selected > 0;
+    deleteFolderBtn.hidden = !folder || selected > 0;
+    folderNote.hidden = !folder;
     trashBtn.hidden = !filters.deleted || total === 0 || selected > 0;
     doneBtn.hidden = selected === 0;
     if (selected > 0) clearBtn.hidden = true;
     trashNote.hidden = !filters.deleted;
-    // 收藏 / 回收站视图里，类型可以叠加筛选（类型库视图里类型就是导航本身）
-    const showChips = filters.deleted || filters.starred;
+    // 收藏 / 收藏夹 / 回收站视图里，类型可以叠加筛选（类型库视图里类型就是导航本身）
+    const showChips = filters.deleted || filters.starred || filters.folder !== null;
     typeChips.hidden = !showChips;
     if (showChips) {
       clear(typeChips);
@@ -322,6 +336,10 @@ export function createFeed(actionsCtx: FeedActions) {
       title = '没有找到匹配的记录';
       text = `没有记录包含「${filters.search}」。检查一下拼写，或者放宽时间范围和类型。`;
       art = 'search';
+    } else if (filters.folder !== null && !filters.search && filters.range === 'all' && filters.types === 'All') {
+      title = '这个收藏夹是空的';
+      text = '打开一条记录点底部的「收藏夹」，或者多选后用底部的「放入收藏夹」。放进来的记录不会被自动清理。';
+      art = 'folder';
     } else if (filters.starred && !filtered) {
       title = '还没有收藏';
       text = '把常用的记录点亮星标，它们会固定出现在这里。';
@@ -339,7 +357,7 @@ export function createFeed(actionsCtx: FeedActions) {
         h('h2', { class: 'empty__title', text: title }),
         h('p', { class: 'empty__text', text }),
         !filtered && !filters.deleted && !filters.starred ? onboarding() : null,
-        h('div', { class: 'row' }, isFiltered(filters) || filters.starred ? h('button', { class: 'btn', type: 'button', onclick: () => actionsCtx.onClearFilters() }, '清除筛选') : null, !filters.deleted ? h('button', { class: 'btn btn--primary', type: 'button', onclick: () => actionsCtx.onNew() }, icon('plus', { size: 16 }), '新建文本') : null),
+        h('div', { class: 'row' }, (isFiltered(filters) && !(filters.folder !== null && !filters.search && filters.range === 'all' && filters.types === 'All')) || filters.starred ? h('button', { class: 'btn', type: 'button', onclick: () => actionsCtx.onClearFilters() }, '清除筛选') : null, !filters.deleted && filters.folder === null ? h('button', { class: 'btn btn--primary', type: 'button', onclick: () => actionsCtx.onNew() }, icon('plus', { size: 16 }), '新建文本') : null),
       ),
     );
   }
@@ -391,6 +409,8 @@ export function createFeed(actionsCtx: FeedActions) {
       const hadFocus = list.contains(document.activeElement);
       const focusedKey = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>('.card')?.dataset.key;
       const keep = new Set<string>();
+      const folderNames = new Map((state.overview?.folders ?? []).map((f) => [f.id, f.name]));
+      const inFolderView = state.filters.folder !== null;
       const grouped = isTimeSort(state.filters.sort);
       const groups: { label: string; cards: HTMLElement[] }[] = [];
       const now = Date.now();
@@ -399,10 +419,11 @@ export function createFeed(actionsCtx: FeedActions) {
 
       for (const item of state.items) {
         keep.add(item.key);
-        const sig = signature(item, state);
+        const folderName = folderNames.get(item.folderId) ?? '';
+        const sig = signature(item, state, folderName);
         let ref = cards.get(item.key);
         if (!ref || ref.sig !== sig) {
-          ref = buildCard(item, state.filters.search);
+          ref = buildCard(item, state.filters.search, folderName, inFolderView);
           ref.sig = sig;
           cards.set(item.key, ref);
         }

@@ -10,7 +10,7 @@ import { clear, h, setIcon } from './lib/dom';
 import { charCount, downloadNameForText, formatSize, safeFileName, typeLabel } from './lib/format';
 import { deepLinkFor, DEFAULT_FILTERS, membershipChanged, parseDeepLink, parseFilters, serializeFilters, toApiParams } from './lib/filters';
 import { createPushChannel } from './lib/push';
-import type { Filters, Item } from './lib/types';
+import type { Filters, Folder, Item } from './lib/types';
 import { createState, currentNav, findItem, type AppState, type Density, type NavView } from './state';
 import { confirmDialog } from './ui/dialog';
 import { clearShortcuts, installShortcutDispatcher, registerShortcuts, showShortcutHelp } from './ui/shortcuts';
@@ -22,6 +22,7 @@ import { createFeed, type CardAct } from './views/feed';
 import { createPager } from './views/pager';
 import { openSettings } from './views/settings';
 import { openAppearance } from './views/appearance';
+import { openFolderNameDialog } from './views/folders';
 import { createSidebar } from './views/sidebar';
 import { createSummary } from './views/summary';
 import { createTopbar } from './views/topbar';
@@ -67,6 +68,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   // ---------- 视图装配 ----------
   const sidebar = createSidebar({
     onNav: (view) => navigate(view),
+    onNewFolder: () => newFolder(),
     onSettings: () => openSettings({
       push: state.push,
       skewMs: state.skewMs,
@@ -117,6 +119,8 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     },
     onClearFilters: () => applyFilters({ ...clearedFilters(), page: 1 }),
     onEmptyTrash: () => void emptyTrash(),
+    onRenameFolder: () => renameCurrentFolder(),
+    onDeleteFolder: () => void deleteCurrentFolder(),
     onType: (types) => applyFilters({ types }),
     onNew: () => newText(),
     onRetry: () => void refreshAll(false),
@@ -132,6 +136,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     onCopy: () => void batchCopy(),
     onStar: (on) => void batchUpdate({ starred: on }, on ? '已收藏' : '已取消收藏'),
     onPin: (on) => void batchUpdate({ pinned: on }, on ? '已置顶' : '已取消置顶'),
+    onFolder: (anchor) => folderMenu(anchor, selectedItems(), true),
     onTrash: () => void trashItems(selectedItems()),
     onRestore: () => void restoreItems(selectedItems()),
     onPurge: () => void purgeItems(selectedItems()),
@@ -194,6 +199,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       fresh.hidden = state.fresh === 0;
       if (state.fresh > 0) fresh.lastElementChild!.textContent = `${state.fresh} 条新记录`;
       document.title = pageTitle();
+      detail.setFolders(state.overview?.folders ?? []);
       const open = findItem(state, state.openKey);
       if (open) detail.update(open);
       const at = state.items.findIndex((i) => i.key === state.openKey);
@@ -285,10 +291,16 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
         overview.info.storage = previous.info.storage;
         overview.stats.totalFileSizeMB = previous.stats.totalFileSizeMB;
       } else if (full) lastFullOverview = Date.now();
+      overview.folders ??= [];
       state.overview = overview;
       state.skewMs = Date.parse(overview.serverTime) - Date.now();
       lastMarker = { ...overview.marker };
       state.stale = false;
+      // 正在看的收藏夹已经不存在了（在别处被删了）：回到全部，而不是对着一个空列表发呆
+      if (state.filters.folder !== null && !overview.folders.some((f) => f.id === state.filters.folder)) {
+        toast('这个收藏夹已经不存在了（可能在别处被删除）', { tone: 'warn' });
+        applyFilters({ folder: null });
+      }
     } catch (error) {
       guard(error, '');
       state.stale = true;
@@ -314,7 +326,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   function clearedFilters(): Partial<Filters> {
     const f = state.filters;
     // 在收藏 / 回收站视图里，"清除筛选"清的是叠加的条件，视图本身保留
-    return { types: 'All', search: '', range: 'all', after: null, before: null, starred: f.starred, deleted: f.deleted };
+    return { types: 'All', search: '', range: 'all', after: null, before: null, starred: f.starred, folder: f.folder, deleted: f.deleted };
   }
 
   function syncUrl(push: boolean): void {
@@ -347,9 +359,10 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   }
 
   function navigate(view: NavView): void {
-    const base = { types: 'All' as const, starred: false, deleted: false };
+    const base = { types: 'All' as const, starred: false, folder: null, deleted: false };
     if (view.kind === 'type') applyFilters({ ...base, types: view.type });
     else if (view.kind === 'starred') applyFilters({ ...base, starred: true });
+    else if (view.kind === 'folder') applyFilters({ ...base, folder: view.id });
     else applyFilters({ ...base, deleted: true });
     scroller.scrollTo({ top: 0 });
   }
@@ -477,7 +490,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   function merge(updated: Item): void {
     const view = state.filters;
     // 在收藏 / 回收站视图里，改完不再属于当前视图的记录要立刻离开列表
-    const leaves = (view.starred && !updated.starred) || view.deleted !== updated.isDeleted;
+    const leaves = (view.starred && !updated.starred) || view.deleted !== updated.isDeleted || (view.folder !== null && updated.folderId !== view.folder);
     const index = state.items.findIndex((i) => i.key === updated.key);
     if (index >= 0) {
       if (leaves) {
@@ -606,6 +619,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       case 'download': return downloadItem(item, button);
       case 'star': return toggleFlag(item, 'starred', button);
       case 'pin': return toggleFlag(item, 'pinned', button);
+      case 'folder': return folderMenu(button, [item], false);
       case 'trash': return trashItems([item]);
       case 'restore': return restoreItems([item]);
       case 'purge': return purgeItems([item]);
@@ -720,7 +734,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   }
 
   async function clearAll(): Promise<void> {
-    const ok = await confirmDialog({ title: '清空全部记录？', message: '所有记录（包括收藏和置顶的）以及全部数据文件都会被永久删除，无法恢复。其它设备上的客户端会随后同步为空。', confirmLabel: '清空全部', tone: 'danger', requireText: '清空' });
+    const ok = await confirmDialog({ title: '清空全部记录？', message: '所有记录（包括收藏、置顶和收藏夹里的）以及全部数据文件都会被永久删除；收藏夹本身（空的）会保留，无法恢复。其它设备上的客户端会随后同步为空。', confirmLabel: '清空全部', tone: 'danger', requireText: '清空' });
     if (!ok) return;
     try {
       const { deleted } = await api.clear('all');
@@ -731,6 +745,125 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     } catch (error) {
       toast(`清空失败：${guard(error, '未知错误')}`, { tone: 'error' });
     }
+  }
+
+  // ---------- 收藏夹（本站独有；放进去的记录不会被自动清理）----------
+  /** 服务端每次写完都回最新的收藏夹列表：直接换掉，侧栏、详情按钮、计数一起更新。 */
+  function setFolders(folders: Folder[]): void {
+    if (state.overview) state.overview = { ...state.overview, folders };
+    render();
+  }
+
+  const currentFolder = (): Folder | undefined => (state.filters.folder === null ? undefined : state.overview?.folders.find((f) => f.id === state.filters.folder));
+
+  /** 把服务端的失败翻成对话框里能直接改的话 */
+  function folderError(error: unknown): string {
+    if (error instanceof ApiError && error.status === 409) return '已经有一个叫这个名字的收藏夹了，换一个吧。';
+    if (error instanceof ApiError && error.status === 400) return error.message;
+    return `保存失败：${guard(error, '未知错误')}`;
+  }
+
+  /** 新建收藏夹；`thenPut` 非空时，创建成功后把这些记录直接放进去（从「放入收藏夹」菜单里新建时用）；`clearAfter`：放完清掉选择（批量条里来的）。 */
+  function newFolder(thenPut: Item[] = [], clearAfter = false): void {
+    openFolderNameDialog({
+      title: '新建收藏夹',
+      confirmLabel: '创建',
+      hint: '放进收藏夹的记录不会被自动清理。一条记录只能放进一个收藏夹，和「收藏」星标互不影响。',
+      submit: async (name) => {
+        try {
+          const created = await api.createFolder(name);
+          setFolders(created.folders);
+          if (thenPut.length > 0) {
+            await moveToFolder(thenPut, created.id);
+            if (clearAfter) clearSelection();
+          }
+          else toast(`已创建收藏夹「${name}」`, { tone: 'success' });
+          return null;
+        } catch (error) {
+          return folderError(error);
+        }
+      },
+    });
+  }
+
+  function renameCurrentFolder(): void {
+    const folder = currentFolder();
+    if (!folder) return;
+    openFolderNameDialog({
+      title: '重命名收藏夹',
+      confirmLabel: '保存',
+      initial: folder.name,
+      submit: async (name) => {
+        if (name === folder.name) return null;
+        try {
+          setFolders((await api.renameFolder(folder.id, name)).folders);
+          toast(`已重命名为「${name}」`, { tone: 'success' });
+          return null;
+        } catch (error) {
+          return folderError(error);
+        }
+      },
+    });
+  }
+
+  async function deleteCurrentFolder(): Promise<void> {
+    const folder = currentFolder();
+    if (!folder) return;
+    const ok = await confirmDialog({
+      title: `删除收藏夹「${folder.name}」？`,
+      message: `里面的 ${folder.count} 条记录会移出收藏夹，变回普通记录（之后可能被自动清理）；记录本身不会被删除。`,
+      confirmLabel: '删除收藏夹',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    try {
+      const result = await api.deleteFolder(folder.id);
+      setFolders(result.folders);
+      toast(`已删除收藏夹「${folder.name}」，${result.moved} 条记录已移出`, { tone: 'success' });
+      applyFilters({ folder: null }); // 成员资格变了：回到全部（同时清掉选择、关闭详情、重取列表）
+      void loadOverview();
+    } catch (error) {
+      toast(`删除失败：${guard(error, '未知错误')}`, { tone: 'error' });
+    }
+  }
+
+  /** 把记录放进收藏夹（`folderId = null` = 移出）。已在目标里的记录不会被重复计数。 */
+  async function moveToFolder(items: Item[], folderId: number | null): Promise<void> {
+    if (items.length === 0) return;
+    try {
+      const result = await api.setFolder(items, folderId);
+      setFolders(result.folders);
+      for (const item of items) merge({ ...(state.items.find((i) => i.key === item.key) ?? item), folderId: folderId ?? 0 });
+      const name = folderId === null ? null : result.folders.find((f) => f.id === folderId)?.name;
+      if (result.failed > 0) toast(`${result.updated} 条已${folderId === null ? '移出' : '放入'}，${result.failed} 条失败（可能已被清理）`, { tone: 'warn' });
+      else if (folderId === null) toast(`已移出收藏夹（${result.updated} 条）`, { tone: 'success' });
+      else toast(`已放入「${name ?? '收藏夹'}」（${result.updated} 条）· 不会被自动清理`, { tone: 'success' });
+      void refreshAll(true);
+    } catch (error) {
+      toast(`操作失败：${guard(error, '未知错误')}`, { tone: 'error' });
+    }
+  }
+
+  /** 「放入收藏夹」菜单：所有收藏夹（当前所在的打勾）+ 移出 + 新建。批量条里点完会清掉选择。 */
+  function folderMenu(anchor: HTMLElement, items: Item[], fromBatch: boolean): void {
+    if (items.length === 0) return;
+    const folders = state.overview?.folders ?? [];
+    const finish = (run: () => Promise<void> | void): (() => void) => () => {
+      void Promise.resolve(run()).then(() => {
+        if (fromBatch) clearSelection();
+      });
+    };
+    openMenu(anchor, [
+      ...folders.map((folder) => ({
+        label: folder.name,
+        icon: 'folder' as const,
+        checked: items.every((i) => i.folderId === folder.id),
+        hint: String(folder.count),
+        run: finish(() => moveToFolder(items, folder.id)),
+      })),
+      ...(items.some((i) => i.folderId !== 0) ? [{ label: '移出收藏夹', icon: 'close' as const, separatorBefore: folders.length > 0, run: finish(() => moveToFolder(items, null)) }] : []),
+      { label: '新建收藏夹…', icon: 'plus' as const, separatorBefore: folders.length > 0 || items.some((i) => i.folderId !== 0), run: () => newFolder(items, fromBatch) },
+    ], { align: 'end', minWidth: 220 });
   }
 
   // ---------- 批量 ----------
@@ -774,7 +907,7 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   /** 新记录排在默认排序的最前面：回到第 1 页、清掉可能把它筛掉的条件（保留排序与页大小）。 */
   function showNewest(): void {
     const f = state.filters;
-    if (f.deleted || f.starred || f.search || f.types !== 'All' || f.range !== 'all' || f.page !== 1 || f.sort !== 'createTime' || f.order !== 'desc') {
+    if (f.deleted || f.starred || f.folder !== null || f.search || f.types !== 'All' || f.range !== 'all' || f.page !== 1 || f.sort !== 'createTime' || f.order !== 'desc') {
       state.filters = { ...DEFAULT_FILTERS, pageSize: f.pageSize };
       state.selection = new Set();
       syncUrl(false);
@@ -916,7 +1049,18 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   function pageTitle(): string {
     const f = state.filters;
     const view = currentNav(f);
-    const name = f.search ? `搜索「${f.search}」` : view.kind === 'trash' ? '回收站' : view.kind === 'starred' ? '收藏' : view.type !== 'All' ? typeLabel(view.type) : '';
+    const folderName = view.kind === 'folder' ? state.overview?.folders.find((x) => x.id === view.id)?.name : undefined;
+    const name = f.search
+      ? `搜索「${f.search}」`
+      : view.kind === 'trash'
+        ? '回收站'
+        : view.kind === 'starred'
+          ? '收藏'
+          : view.kind === 'folder'
+            ? (folderName ?? '收藏夹')
+            : view.type !== 'All'
+              ? typeLabel(view.type)
+              : '';
     return name ? `${name} · 剪贴板` : '剪贴板 · SyncClipboard';
   }
 

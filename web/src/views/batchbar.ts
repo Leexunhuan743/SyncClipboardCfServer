@@ -7,6 +7,7 @@ export interface BatchActions {
   onCopy(): void;
   onStar(on: boolean): void;
   onPin(on: boolean): void;
+  onFolder(anchor: HTMLElement): void;
   onTrash(): void;
   onRestore(): void;
   onPurge(): void;
@@ -31,8 +32,8 @@ export function createBatchBar(ctx: BatchActions) {
   );
   let running = false;
 
-  const act = (name: Parameters<typeof icon>[0], text: string, run: () => void, className = 'btn btn--ghost'): HTMLButtonElement =>
-    h('button', { class: className, type: 'button', 'aria-label': text, title: text, onclick: run }, icon(name, { size: 16 }), h('span', { text }));
+  const act = (name: Parameters<typeof icon>[0], text: string, run: (button: HTMLElement) => void, className = 'btn btn--ghost'): HTMLButtonElement =>
+    h('button', { class: className, type: 'button', 'aria-label': text, title: text, onclick: (event: Event) => run(event.currentTarget as HTMLElement) }, icon(name, { size: 16 }), h('span', { text }));
 
   return {
     el,
@@ -60,6 +61,7 @@ export function createBatchBar(ctx: BatchActions) {
       actions.append(
         act('star', allStarred ? '取消收藏' : '收藏', () => ctx.onStar(!allStarred)),
         act('pin', allPinned ? '取消置顶' : '置顶', () => ctx.onPin(!allPinned)),
+        act('folder', '放入收藏夹', (button) => ctx.onFolder(button)),
         act('trash', '移到回收站', ctx.onTrash, 'btn btn--danger-ghost'),
       );
     },

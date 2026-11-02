@@ -11,6 +11,7 @@ export const DEFAULT_FILTERS: Readonly<Filters> = Object.freeze({
   pageSize: 30,
   types: 'All' as TypeFilter, // All | Text | Image | File | Group
   starred: false,
+  folder: null, // 收藏夹 id；仅收藏夹视图
   deleted: false, // 回收站视图
   search: '',
   range: 'all' as RangeKey, // all | today | 7d | 30d | custom
@@ -57,6 +58,13 @@ function nearestPageSize(raw: string | null): number {
   return PAGE_SIZES.reduce((best, size) => (Math.abs(size - n) < Math.abs(best - n) ? size : best), PAGE_SIZES[0]);
 }
 
+/** `?folder=<id>`：正整数；其余一律当没有（不抛）。 */
+function parseFolderId(raw: string | null): number | null {
+  if (raw === null || !/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
+
 function parseTime(raw: string | null): number | null {
   if (raw === null || raw === '') return null;
   const n = Number(raw);
@@ -75,6 +83,7 @@ export function parseFilters(search: string): Filters {
     pageSize: nearestPageSize(q.get('size')),
     types: TYPES.includes(type as TypeFilter) ? (type as TypeFilter) : 'All',
     starred: q.get('starred') === '1',
+    folder: parseFolderId(q.get('folder')),
     deleted: q.get('trash') === '1',
     search: (q.get('q') ?? '').slice(0, 200),
     range: RANGE_KEYS.has(range) ? (range as RangeKey) : 'all',
@@ -96,6 +105,7 @@ export function serializeFilters(filters: Filters): string {
   if (filters.types !== d.types) q.set('type', filters.types);
   if (filters.search) q.set('q', filters.search);
   if (filters.starred) q.set('starred', '1');
+  if (filters.folder !== null) q.set('folder', String(filters.folder));
   if (filters.deleted) q.set('trash', '1');
   if (filters.range !== d.range) q.set('range', filters.range);
   if (filters.range === 'custom') {
@@ -150,6 +160,7 @@ export function toApiParams(filters: Filters, now = Date.now()): Record<string, 
     pageSize: filters.pageSize,
     types: filters.types === 'All' ? '' : filters.types,
     starred: filters.starred ? 'true' : '',
+    folder: filters.folder ?? '',
     deleted: filters.deleted ? 'true' : '',
     search: filters.search,
     after: after ?? '',
@@ -164,6 +175,7 @@ export function isFiltered(filters: Filters): boolean {
   return (
     filters.types !== 'All' ||
     filters.starred ||
+    filters.folder !== null ||
     filters.search !== '' ||
     filters.range !== 'all'
   );
@@ -177,6 +189,7 @@ export function membershipChanged(a: Filters, b: Filters): boolean {
   return (
     a.types !== b.types ||
     a.starred !== b.starred ||
+    a.folder !== b.folder ||
     a.deleted !== b.deleted ||
     a.search !== b.search ||
     a.range !== b.range ||

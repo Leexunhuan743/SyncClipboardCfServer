@@ -19,7 +19,7 @@ const ROOT = resolve(import.meta.dirname, '..');
 const DB = 'DB'; // wrangler.toml 的 [[d1_databases]] binding（与 Worker 同一个库）
 const WRANGLER = 'node_modules/wrangler/bin/wrangler.js';
 
-// 目前唯一的迁移：HistoryRecords.TransferDataHash（上游 3.3.0 的 #413）。
+// 迁移清单：HistoryRecords.TransferDataHash（上游 3.3.0 的 #413）、HistoryRecords.FolderId（收藏夹）。
 // 注意 DDL 必须与 schema.sql 里该列的写法逐字一致（`NOT NULL DEFAULT ''` 是 SQLite
 // 对 `ADD COLUMN` 的要求 —— 非空列必须带默认值，且与全表其余列的风格一致）。
 const MIGRATIONS = [
@@ -28,6 +28,13 @@ const MIGRATIONS = [
     column: 'TransferDataHash',
     ddl:
       "ALTER TABLE HistoryRecords ADD COLUMN TransferDataHash TEXT NOT NULL DEFAULT ''",
+  },
+  {
+    // 收藏夹：本站独有（不进协议 DTO），0 = 不在任何收藏夹
+    table: 'HistoryRecords',
+    column: 'FolderId',
+    ddl:
+      "ALTER TABLE HistoryRecords ADD COLUMN FolderId INTEGER NOT NULL DEFAULT 0",
   },
 ];
 

@@ -77,6 +77,7 @@
 .feed[data-density="compact"] .card__meta { flex: none; display: grid; grid-template-columns: auto 60px 92px 76px; align-items: center; justify-content: end; column-gap: 10px; }
 .feed[data-density="compact"] .card__size, .feed[data-density="compact"] .card__time { text-align: right; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .feed[data-density="compact"] .card__flags { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+.feed[data-density="compact"] .flag--folder .flag__name { display: none; }
 .feed[data-density="compact"] .card__actions { position: absolute; right: 8px; top: 50%; margin: 0; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-2); transform: translateY(-50%); }
 
 /* ---- 骨架 / 空状态 ---- */

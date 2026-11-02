@@ -8,10 +8,10 @@ import { api, ApiError } from '../lib/api';
 import { itemIsImage } from '../lib/clipboard';
 import { charCount, formatAbsolute, formatSize, isTextLikeName, singleUrl, TEXT_MAX_BYTES, titleOf, typeLabel, utf8Bytes } from '../lib/format';
 import { iconForKind } from '../lib/icons';
-import type { Item } from '../lib/types';
+import type { Folder, Item } from '../lib/types';
 import { isCopyable } from './feed';
 
-export type DetailAct = 'copy' | 'download' | 'star' | 'pin' | 'trash' | 'restore' | 'purge';
+export type DetailAct = 'copy' | 'download' | 'star' | 'pin' | 'folder' | 'trash' | 'restore' | 'purge';
 
 export interface DetailActions {
   onClose(): void;
@@ -32,6 +32,7 @@ export function createDetail(ctx: DetailActions) {
   let editing = false;
   let fullText: string | null = null;
   let wrap = true;
+  let folders: Folder[] = [];
 
   const title = h('h2', { class: 'pane__title' });
   const tag = h('span', { class: 'tag' });
@@ -66,6 +67,10 @@ export function createDetail(ctx: DetailActions) {
     row('修改', formatAbsolute(item.lastModified));
     row('最近访问', formatAbsolute(item.lastAccessed));
     row('版本', String(item.version));
+    if (item.folderId !== 0) {
+      const name = folders.find((f) => f.id === item.folderId)?.name;
+      if (name) row('收藏夹', `${name} · 不会被自动清理`, true);
+    }
     row('哈希', h('button', { class: 'linkish mono', type: 'button', title: '点击复制完整哈希', text: `${item.hash.slice(0, 16)}…`, onclick: () => ctx.onCopyHash(item.hash) }), true);
 
     clear(foot);
@@ -86,8 +91,14 @@ export function createDetail(ctx: DetailActions) {
         linkButton(item),
         item.type === 'Text' ? h('button', { class: 'btn', type: 'button', disabled: editing, onclick: () => startEdit() }, icon('edit', { size: 16 }), h('span', { text: '编辑' })) : null,
       ),
-      h('div', { class: 'pane__foot-side' }, button('star', item.starred ? '已收藏' : '收藏', 'star', 'btn btn--ghost', item.starred), button('pin', item.pinned ? '已置顶' : '置顶', 'pin', 'btn btn--ghost', item.pinned), button('trash', '回收站', 'trash', 'btn btn--danger-ghost')),
+      h('div', { class: 'pane__foot-side' }, button('star', item.starred ? '已收藏' : '收藏', 'star', 'btn btn--ghost', item.starred), button('pin', item.pinned ? '已置顶' : '置顶', 'pin', 'btn btn--ghost', item.pinned), button('folder', folderLabel(item), 'folder', 'btn btn--ghost pane__foot-folder', item.folderId !== 0), button('trash', '回收站', 'trash', 'btn btn--danger-ghost')),
     );
+  }
+
+  /** 收藏夹按钮的文字：在某个收藏夹里就写它的名字（一眼看出放哪了），否则是「收藏夹」 */
+  function folderLabel(item: Item): string {
+    if (item.folderId === 0) return '收藏夹';
+    return folders.find((f) => f.id === item.folderId)?.name ?? '收藏夹';
   }
 
   /** 整段文本就是一个 http(s) 链接时给「打开链接」：新标签页、不带 opener 与 referrer。 */
@@ -287,6 +298,12 @@ export function createDetail(ctx: DetailActions) {
       current = null;
       editing = false;
       reveal(false);
+    },
+    /** 收藏夹列表（按钮上要写名字）；变了才重画页脚 */
+    setFolders(next: Folder[]): void {
+      const changed = JSON.stringify(next.map((f) => [f.id, f.name])) !== JSON.stringify(folders.map((f) => [f.id, f.name]));
+      folders = next;
+      if (changed && current) renderChrome(current);
     },
     /** 列表里有没有上一条 / 下一条（决定两个箭头按钮是否可用） */
     setSteps(prev: boolean, next: boolean): void {

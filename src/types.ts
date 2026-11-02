@@ -103,6 +103,8 @@ export interface HistoryRecordEntity {
   pinned: boolean;
   version: number;
   isDeleted: boolean;
+  /** 收藏夹 id（本站独有，不进协议 DTO、不进 UPDATE_ALL_SQL）；0 / 缺省 = 不在任何收藏夹，非 0 = 不会被自动清理 */
+  folderId?: number;
 }
 
 export const HARD_CODED_USER_ID = 'default_user';

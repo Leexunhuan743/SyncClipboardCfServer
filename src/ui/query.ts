@@ -24,6 +24,8 @@ export type UiSortOrder = 'asc' | 'desc';
 export interface UiHistoryItem extends HistoryRecordDto {
   id: number; // D1 行 ID，仅用于前端 key/展示（记录的身份始终是 type + hash）
   dataName: string | null; // 数据文件名（无数据为 null），用于"下载/预览"的展示名
+  /** 所在收藏夹的 id（0 = 不在任何收藏夹）。本站独有，协议 DTO 里没有这个字段 */
+  folderId: number;
 }
 
 export interface UiHistoryQuery {
@@ -32,6 +34,8 @@ export interface UiHistoryQuery {
   types: ProfileTypeFilter;
   search: string | null;
   starred: boolean | null;
+  /** 只看某个收藏夹里的记录（收藏夹 id）；null = 不按收藏夹筛 */
+  folderId: number | null;
   includeDeleted: boolean;
   /** 只看回收站（已删除的记录）。为真时 includeDeleted 无意义——范围已限定在已删除行 */
   deleted: boolean;
@@ -109,6 +113,16 @@ function parseIntParam(raw: string | null, fallback: number, min: number, max: n
   return Math.min(Math.max(n, min), max);
 }
 
+// `folder=<id>`：正整数；空 = 不筛。0 / 负数 / 非数字都是非法（400），不悄悄当成"不筛"。
+function parseFolderParam(raw: string | null): number | null {
+  if (raw === null || raw.trim() === '') return null;
+  const t = raw.trim();
+  if (!/^\d+$/.test(t)) throw new UiQueryError(`Invalid folder value: ${raw}`);
+  const n = Number(t);
+  if (!Number.isSafeInteger(n) || n < 1) throw new UiQueryError(`Invalid folder value: ${raw}`);
+  return n;
+}
+
 function parseBoolParam(raw: string | null, field: string): boolean | null {
   if (raw === null || raw.trim() === '') return null;
   const t = raw.trim().toLowerCase();
@@ -179,6 +193,7 @@ export function parseUiHistoryQuery(params: URLSearchParams): UiHistoryQuery {
     types,
     search,
     starred: parseBoolParam(params.get('starred'), 'starred'),
+    folderId: parseFolderParam(params.get('folder')),
     includeDeleted: parseBoolParam(params.get('includeDeleted'), 'includeDeleted') === true,
     deleted: parseDeletedFlag(params),
     after: parseTimeParam(params.get('after'), 'after'),
@@ -235,6 +250,10 @@ function buildWhere(q: UiHistoryQuery): { clause: string; params: (string | numb
   if (q.starred !== null) {
     where.push(`Stared = ?${idx++}`);
     params.push(q.starred ? 1 : 0);
+  }
+  if (q.folderId !== null) {
+    where.push(`FolderId = ?${idx++}`);
+    params.push(q.folderId);
   }
   return { clause: where.join(' AND '), params };
 }
@@ -304,6 +323,7 @@ export function toUiItem(entity: HistoryRecordEntity): UiHistoryItem {
     ...dto,
     id: entity.id ?? 0,
     dataName: entity.transferDataFile === '' ? null : basename(entity.transferDataFile),
+    folderId: entity.folderId ?? 0,
   };
 }
 
@@ -359,7 +379,7 @@ export async function listUiHistory(db: D1Database, q: UiHistoryQuery): Promise<
   const rows = await db
     .prepare(
       `SELECT Id, UserId, Type, substr(Text, 1, ?${limitIdx}) AS Text, Size, TransferDataFile, FilePaths, Hash,
-              CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted,
+              CreateTime, LastAccessed, LastModified, Stared, Pinned, Version, IsDeleted, FolderId,
               length(Text) AS TextFullLength
        FROM HistoryRecords WHERE ${clause} ` +
         `ORDER BY ${orderBy} LIMIT ?${limitIdx + 1} OFFSET ?${limitIdx + 2}`,

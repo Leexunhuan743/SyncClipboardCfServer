@@ -24,6 +24,8 @@ export function normalizeItem(raw: unknown): Item | null {
     key: `${type}-${String(source.hash)}`,
     // 列表里正文被服务端截断到 500 字符：要完整内容必须先取单条，复制走截断值就是把内容砍一半
     textTruncated: source.textTruncated === true,
+    // 服务端总会带 folderId；缺省按「不在任何收藏夹」处理，别让一个 undefined 流进视图
+    folderId: typeof source.folderId === 'number' ? source.folderId : 0,
   };
 }
 

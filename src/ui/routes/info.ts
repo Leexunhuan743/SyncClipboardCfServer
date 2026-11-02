@@ -268,9 +268,11 @@ export function createInfoRoutes(): Hono<{ Bindings: Bindings }> {
     // ——单列、走 idx_h_user_modify，不再为同一个数多扫一遍全表。
     // `?storage=0` = 轻量模式：不列举 R2，`info.storage` 与 `stats.totalFileSizeMB` 为 null（调用方沿用上一次的值）
     const withStorage = new URL(c.req.url).searchParams.get('storage') !== '0';
-    const [ds, lastModified] = await Promise.all([
+    const [ds, lastModified, folders] = await Promise.all([
       deploymentStats(c.env, withStorage),
       readLastModified(c.env.DB),
+      // 收藏夹列表（含各自的活跃条数）：侧栏每次刷新都要，所以随概览一起返回，不另开端点
+      stores(c).db.listFolders(),
     ]);
     const marker = { count: ds.views.total, lastModified };
     const info = await deploymentMeta(c.env, new URL(c.req.url).origin, ds);
@@ -283,6 +285,7 @@ export function createInfoRoutes(): Hono<{ Bindings: Bindings }> {
       starredCountActive: ds.views.starredActive,
       starredCountDeleted: ds.views.starredDeleted,
       marker,
+      folders,
       info,
       serverTime: new Date().toISOString(),
     });

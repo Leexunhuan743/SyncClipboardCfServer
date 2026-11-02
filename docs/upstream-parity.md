@@ -151,7 +151,7 @@ Docker 数据卷、`ServerPara`（进程内嵌服务器的启动参数）、Swag
 ### 3.4 清理与保留
 
 保留期四条件（`!IsDeleted && !Stared && !Pinned && LastModified < cutoff && LastAccessed < cutoff`）、
-`MAX(LastModified, LastAccessed)` 排序、条数上限排除收藏 / 置顶、30 天硬删、孤儿目录差集 —— 全部等价。
+`MAX(LastModified, LastAccessed)` 排序、条数上限排除收藏 / 置顶、30 天硬删、孤儿目录差集 —— 全部等价（本站另加一类豁免：收藏夹里的记录，见 `docs/protocol.md` §10）。
 软删单批 **500**（与上游一致）；周期 **20 分钟 vs 上游的 10 分钟**，差异只在"积压收敛速度"
 （本实现另有平台单次调用的子请求预算与游标续跑）。
 [实测]（本地 miniflare，真实 Cron 触发）：300 条过期记录与 500 条超量都在**一轮内**处理完，单轮子请求 508 / 800。

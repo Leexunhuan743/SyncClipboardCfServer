@@ -45,6 +45,12 @@ const scan = `(() => {
       const box = { left: pr.left + bw('Left'), right: pr.right - bw('Right'), top: pr.top + bw('Top'), bottom: pr.bottom - bw('Bottom') };
       const clipX = pc.overflowX !== 'visible', clipY = pc.overflowY !== 'visible';
       const cut = [];
+      // 裁剪框的边正好贴着视口边缘时，阴影超出去的部分本来就在屏幕外，看不见，不算缺陷
+      const vw = window.innerWidth, vh = window.innerHeight;
+      if (box.right >= vw - 0.5) sh.right = Math.min(sh.right, box.right);
+      if (box.left <= 0.5) sh.left = Math.max(sh.left, box.left);
+      if (box.bottom >= vh - 0.5) sh.bottom = Math.min(sh.bottom, box.bottom);
+      if (box.top <= 0.5) sh.top = Math.max(sh.top, box.top);
       if (clipX && sh.right > box.right + 0.5 && r > 0) cut.push('右 ' + (sh.right - box.right).toFixed(1));
       if (clipX && sh.left < box.left - 0.5 && l > 0) cut.push('左 ' + (box.left - sh.left).toFixed(1));
       if (clipY && sh.bottom > box.bottom + 0.5 && b > 0) cut.push('下 ' + (sh.bottom - box.bottom).toFixed(1));
@@ -75,6 +81,10 @@ try {
     await read(`document.querySelector('.pane__close')?.click(); document.querySelector('.sidebar .icon-btn[aria-label="外观与主题"]').click(); 1`);
     await wait(700);
     views['外观'] = await read(scan);
+    // 选中一条之后才会出现的批量条（它带硬阴影，且贴着滚动区底部）
+    await read(`document.querySelector('dialog[open] .modal__head .icon-btn').click(); document.querySelectorAll('.card .tile')[1]?.click(); 1`);
+    await wait(700);
+    views['批量条'] = await read(scan);
     for (const [view, list] of Object.entries(views)) for (const item of list) problems.push(`[${style}] ${view}：${item}`);
   }
   await read(`localStorage.removeItem('clip-style'); 1`);
@@ -85,4 +95,4 @@ if (problems.length > 0) {
   console.error(`阴影被裁 ${problems.length} 处：\n  ${problems.join('\n  ')}`);
   process.exit(1);
 }
-console.log('✓ 四套风格 × 四个视图：没有被裁掉的阴影');
+console.log('✓ 四套风格 × 五个视图：没有被裁掉的阴影');

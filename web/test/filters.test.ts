@@ -114,3 +114,37 @@ describe('searchProblem（服务端搜索词上限 48 字节）', () => {
     expect(searchProblem('_'.repeat(25))).toMatch(/太长/);
   });
 });
+
+describe('收藏夹筛选（?folder=）', () => {
+  it('解析：正整数才算；非法 / 0 / 负数 / 小数一律当没有，不抛', () => {
+    expect(parseFilters('?folder=3').folder).toBe(3);
+    for (const bad of ['', '?folder=', '?folder=0', '?folder=-1', '?folder=abc', '?folder=1.5', '?folder=99999999999999999999']) {
+      expect(parseFilters(bad).folder, bad).toBeNull();
+    }
+  });
+
+  it('序列化：只在有收藏夹时写，且往返一致', () => {
+    expect(serializeFilters({ ...DEFAULT_FILTERS })).toBe('');
+    const f = { ...DEFAULT_FILTERS, folder: 7 };
+    expect(serializeFilters(f)).toBe('?folder=7');
+    expect(parseFilters(serializeFilters(f))).toEqual(f);
+  });
+
+  it('请求参数：folder 只在有值时带上', () => {
+    expect(toApiParams({ ...DEFAULT_FILTERS, folder: 4 }).folder).toBe(4);
+    expect(toApiParams({ ...DEFAULT_FILTERS }).folder).toBe('');
+  });
+
+  it('换收藏夹 / 进出收藏夹都改变结果集成员资格（必须清选择集）；翻页不算', () => {
+    const base = { ...DEFAULT_FILTERS };
+    expect(membershipChanged(base, { ...base, folder: 1 })).toBe(true);
+    expect(membershipChanged({ ...base, folder: 1 }, { ...base, folder: 2 })).toBe(true);
+    expect(membershipChanged({ ...base, folder: 1 }, { ...base, folder: 1, page: 2 })).toBe(false);
+  });
+
+  it('收藏夹算筛选（isFiltered）', () => {
+    expect(isFiltered({ ...DEFAULT_FILTERS })).toBe(false);
+    expect(isFiltered({ ...DEFAULT_FILTERS, folder: 1 })).toBe(true);
+  });
+});
+

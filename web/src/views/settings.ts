@@ -152,7 +152,7 @@ export function openSettings(ctx: SettingsContext): void {
         ),
       };
     };
-    const countField = field('最多保留条数', '超出时从最旧的开始清理（已收藏与置顶的不受影响）。', info.retention.maxSavedHistoryCount, COUNT_PRESETS, (n) => (n === 0 ? '不限制' : `${n} 条`), SOURCE[info.retention.maxCountSource], COUNT_MAX, 'maxSavedHistoryCount');
+    const countField = field('最多保留条数', '超出时从最旧的开始清理（已收藏、置顶以及放进收藏夹的不受影响）。', info.retention.maxSavedHistoryCount, COUNT_PRESETS, (n) => (n === 0 ? '不限制' : `${n} 条`), SOURCE[info.retention.maxCountSource], COUNT_MAX, 'maxSavedHistoryCount');
     const minutesField = field('保留时长（分钟）', '超过这个时长的记录会被清理；0 = 不按时间清理。', info.retention.retentionMinutes, MINUTES_PRESETS, describeMinutes, SOURCE[info.retention.retentionSource], MINUTES_MAX, 'retentionMinutes');
     const retentionNote = h('p', { class: 'field__hint' });
     const saveRetention = h('button', { class: 'btn btn--primary', type: 'button', text: '保存' });
@@ -218,7 +218,7 @@ export function openSettings(ctx: SettingsContext): void {
       '危险操作',
       'card-section--danger',
       h('div', { class: 'danger-row' }, h('div', null, h('strong', { text: '清空回收站' }), h('p', { class: 'note', text: '永久删除回收站里的全部记录及其数据文件。' })), h('button', { class: 'btn btn--danger-ghost', type: 'button', onclick: async () => { await ctx.onEmptyTrash(); void reload(); } }, '清空回收站')),
-      h('div', { class: 'danger-row' }, h('div', null, h('strong', { text: '清空全部记录' }), h('p', { class: 'note', text: '删除所有记录（含收藏与置顶）和全部数据文件，无法恢复。' })), h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => { await ctx.onClearAll(); void reload(); } }, '清空全部')),
+      h('div', { class: 'danger-row' }, h('div', null, h('strong', { text: '清空全部记录' }), h('p', { class: 'note', text: '删除所有记录（含收藏、置顶和收藏夹里的）和全部数据文件，无法恢复；收藏夹本身（空的）会保留。' })), h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => { await ctx.onClearAll(); void reload(); } }, '清空全部')),
     );
 
     body.append(
