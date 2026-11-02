@@ -46,6 +46,12 @@ describe('formatRelative', () => {
     expect(formatRelative(new Date(NOW + 10 * 60_000).toISOString(), NOW)).toBe('10 分钟后');
     expect(formatRelative(new Date(NOW + 2 * 3_600_000).toISOString(), NOW)).toBe('2 小时后');
   });
+  it('「昨天」按日历算：47 小时前可能是前天', () => {
+    const now = new Date(2026, 10, 4, 23, 0, 0).getTime(); // 周三 23:00
+    expect(formatRelative(new Date(2026, 10, 3, 22, 0, 0).getTime(), now)).toBe('昨天 22:00');
+    expect(formatRelative(new Date(2026, 10, 2, 23, 30, 0).getTime(), now)).toBe('2 天前');
+    expect(formatRelative(new Date(2026, 10, 3, 0, 5, 0).getTime(), new Date(2026, 10, 4, 0, 20, 0).getTime())).toBe('昨天 00:05');
+  });
   it('非法输入回落破折号', () => {
     expect(formatRelative('not a date', NOW)).toBe('—');
   });

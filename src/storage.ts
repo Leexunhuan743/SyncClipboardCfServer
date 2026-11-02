@@ -11,6 +11,18 @@ const HISTORY_PREFIX = 'history/';
 // 而 storage 层只做断言 —— 分块与子请求记账属于调用方的职责（它才知道预算还剩多少）。
 export const R2_DELETE_BATCH = 1000;
 
+// 文件名进 R2 键后的长度护栏。R2 的对象键上限是 1024 **字节**；键是 `file/<名>` 或 `history/<类型>_<64 位哈希>/<名>`
+// （前缀最多约 80 字节），名字再长一点 `put/get/delete` 就直接抛错，路由上表现为一个没有说明的 500。
+// 名字是客户端给的（`PUT /file/{名}`、`dataName`、界面上传）。取 512 **字节**（UTF-8）为上限：
+// 远大于任何真实文件名（文件系统单段上限 255），又给键里的前缀留足余量。
+export const MAX_FILE_NAME_BYTES = 512;
+
+export function isFileNameTooLong(name: string): boolean {
+  // 快路径：UTF-8 一个字符最多 4 字节，字符数 ≤ 128 时不可能超限
+  if (name.length <= MAX_FILE_NAME_BYTES / 4) return false;
+  return new TextEncoder().encode(name).length > MAX_FILE_NAME_BYTES;
+}
+
 export function tempKey(name: string): string {
   return `${TEMP_PREFIX}${name}`;
 }

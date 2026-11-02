@@ -2,7 +2,8 @@
 // 钉住的是「别白读 D1」这条线：推送在线时不多余轮询、页面隐藏时一次都不轮询、切回立即补查一次、
 // 变更信号只剩 lastModified 后「别处新增」仍能被发现、手机不取看不见的趋势图。
 //
-// 用法（需要本地 dev server）：node test/manual/probe-polling.mjs --pass <密码>
+// 用法（需要本地 dev server）：node test/manual/probe-polling.mjs --pass <密码> [--slow]
+// --slow 多跑一个约 85 秒的时序用例（总览单独补取不能推进变更标记）。
 import { launchBrowser, loginAndSetCookie } from './cdp.mjs';
 
 const arg = (name, fallback = null) => {
@@ -63,6 +64,25 @@ try {
   check('连续 4 条新记录：列表跟上了', lists >= 2, `list=${lists}`);
   check('连续 4 条新记录：总览没有跟着每条都重取（≤1 次）', overviews <= 1, `overview=${overviews}`);
   await read(`(async () => { const items = [...document.querySelectorAll('.card')].filter(c => c.querySelector('.card__text')?.textContent.startsWith(${JSON.stringify(burst)})).map(c => ({ type: c.dataset.type, hash: c.dataset.key.split('-').slice(1).join('-') })); if (items.length) await fetch('/ui/api/history/batch-update', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ items, update:{ isDelete:true } }) }); return 1; })()`);
+
+  // 4c)（慢，约 85 秒，加 --slow 才跑）变更标记只能由轮询推进：
+  //   总览被限频、单独补取时若服务端已有更新的写入，标记不该被它推进；否则之后轮询看到「标记没变」，列表永远不刷新。
+  if (process.argv.includes('--slow')) {
+    const r0 = `stale-r0-${Date.now()}`;
+    await read(`fetch('/ui/api/history', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ text: ${JSON.stringify(r0)} }) }).then(r => r.status)`);
+    for (let i = 0; i < 20 && !(await read(`[...document.querySelectorAll('.card .card__text')].some(e => e.textContent === ${JSON.stringify(r0)})`)); i++) await wait(500);
+    // 冻结轮询：页面看到的 /ui/api/poll 永远是此刻的值（模拟「写入已发生、轮询还没观察到」的窗口）
+    await read(`(async () => { const real = window.fetch.bind(window); window.__frozen = await real('/ui/api/poll').then(r => r.json()); window.fetch = (u, ...a) => (typeof u === 'string' && u.startsWith('/ui/api/poll') && window.__frozen) ? Promise.resolve(Response.json(window.__frozen)) : real(u, ...a); return 1; })()`);
+    const r1 = `stale-r1-${Date.now()}`;
+    await read(`fetch('/ui/api/history', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ text: ${JSON.stringify(r1)} }) }).then(r => r.status)`);
+    await wait(65000); // 等「窗口结束时补取总览」的定时器触发
+    await read(`window.__frozen = null; Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); 1`);
+    await wait(300);
+    await read(`Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); 1`);
+    await wait(4000);
+    check('总览单独补取后，下一次真实轮询仍会刷新列表（标记只由轮询推进）', await read(`[...document.querySelectorAll('.card .card__text')].some(e => e.textContent === ${JSON.stringify(r1)})`));
+    await read(`(async () => { const items = [...document.querySelectorAll('.card')].filter(c => /^stale-r[01]-/.test(c.querySelector('.card__text')?.textContent ?? '')).map(c => ({ type: c.dataset.type, hash: c.dataset.key.split('-').slice(1).join('-') })); if (items.length) await fetch('/ui/api/history/batch-update', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ items, update:{ isDelete:true } }) }); return 1; })()`);
+  }
 
   // 5) 手机：不取趋势图；变宽后补取
   hits.length = 0;

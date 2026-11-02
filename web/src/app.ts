@@ -59,6 +59,9 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   state.user = user;
   let listTicket = 0;
   let listAbort: AbortController | null = null;
+  // 「我已经看到服务端的哪一刻」：**只由轮询更新**（见 checkChanges / seedMarker），总览与列表的加载都不碰它。
+  // 以前总览里的 marker 也会写进来：总览被限频、单独补取时，若服务端恰好已有更新的写入，标记被推进了而列表没重取，
+  // 之后轮询看到「标记没变」就再也不刷新列表 —— 列表会一直停在旧数据上，直到下一次变化。
   let lastMarker = { lastModified: -1 };
   let pollTimer = 0;
   let pollFailures = 0;
@@ -190,6 +193,10 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
     app.dataset.topbar = hide ? 'hidden' : 'shown';
   }
   topbar.el.addEventListener('focusin', () => setTopbarHidden(false));
+  // 收起时窗口变宽（旋转屏幕 / 拖大窗口）：宽屏永不收起，不等下一次滚动事件就要恢复
+  narrow.addEventListener('change', () => {
+    if (!narrow.matches) setTopbarHidden(false);
+  });
   scroller.addEventListener('scroll', () => {
     if (state.fresh > 0 && scroller.scrollTop < 80) {
       state.fresh = 0;
@@ -343,7 +350,6 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
       overview.folders ??= [];
       state.overview = overview;
       state.skewMs = Date.parse(overview.serverTime) - Date.now();
-      lastMarker = { ...overview.marker };
       state.stale = false;
       state.lastSyncAt = Date.now();
       // 正在看的收藏夹已经不存在了（在别处被删了）：回到全部，而不是对着一个空列表发呆
@@ -1315,6 +1321,8 @@ export function startApp(root: HTMLElement, user: string, onSessionEnd: (reason:
   // ---------- 启动 ----------
   syncUrl(false);
   render();
+  // 先定下标记再取数据：取数据期间发生的写入，下一次轮询必然看得到差异（顶多多刷一次，不会漏）
+  void api.poll().then((m) => { if (lastMarker.lastModified < 0) lastMarker = { lastModified: m.lastModified }; }, () => {});
   void refreshAll(false).then(() => void loadActivity());
   push.start();
   schedulePoll();

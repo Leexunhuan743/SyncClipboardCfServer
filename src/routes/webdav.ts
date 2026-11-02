@@ -14,10 +14,12 @@ import { isUiEnabled } from '../uiEnabled';
 import { maxRequestBodyBytes, readBodyTextCapped } from '../requestLimits';
 import { contentTypeOf, fileHeaders } from '../contentTypes';
 import { stores } from '../stores';
+import { isFileNameTooLong } from '../storage';
 
 // 上游的 `InvalidFileName` 口径：只拒 `\` 与 `/`，其余交给文件系统（`SyncClipboardController.cs:24-27`）。
 function invalidFileName(name: string): boolean {
-  return name.includes('\\') || name.includes('/');
+  // 超过 R2 键长（见 storage.ts 的 MAX_FILE_NAME_BYTES）的名字也算非法：否则 put/delete 在 R2 那一步抛错 ⇒ 无说明的 500
+  return name.includes('\\') || name.includes('/') || isFileNameTooLong(name);
 }
 
 

@@ -1,6 +1,6 @@
 // PUT /SyncClipboard.json 的写编排（行为对照上游 SyncClipboardController.CreateAndSaveNewProfile）
 import { HistoryDb, basename, BadRequestError } from './db';
-import { R2Storage } from './storage';
+import { R2Storage, isFileNameTooLong } from './storage';
 import { MAX_REQUEST_BODY_BYTES } from './requestLimits';
 import { sha256Hex, textProfileHash } from './hash';
 import { ProfileType, HistoryRecordEntity, ProfileDto, HARD_CODED_USER_ID } from './types';
@@ -156,6 +156,8 @@ export async function putSyncProfile(
       throw new BadRequestError('DataName cannot be null or empty when HasData is true');
     }
     const fileName = basename(dto.dataName);
+    // 名字会拼进 R2 键（`file/<名>`）：超过键长上限时 get 会直接抛错 ⇒ 无说明的 500，这里给明确的 400
+    if (isFileNameTooLong(fileName)) throw new BadRequestError('DataName is too long');
     const temp = await storage.getTemp(fileName);
     if (!temp) {
       throw new NotFoundError('Transfer data file not found');

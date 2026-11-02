@@ -42,5 +42,9 @@ export function excerptAround(text: string, term: string, lead = 48): string {
   if (needle === '') return text;
   const index = text.search(new RegExp(escapeRegExp(needle), 'iu'));
   if (index <= lead * 2) return text;
-  return `…${text.slice(index - lead)}`;
+  let start = index - lead;
+  // 别把代理对从中间劈开（会留下一个孤立的低位代理，显示成 �）
+  const code = text.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff) start += 1;
+  return `…${text.slice(start)}`;
 }

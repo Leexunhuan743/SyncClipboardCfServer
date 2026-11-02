@@ -16,6 +16,7 @@ import { fileProfileHashFromContentHash, sha256Hex, textProfileHash } from '../.
 import { BadRequestError, basename } from '../../db';
 import { ProfileDataInvalidError } from '../../profile';
 import { IMAGE_EXTENSIONS } from '../../profileWrite';
+import { isFileNameTooLong } from '../../storage';
 import { isValidProfileHash, ProfileType } from '../../types';
 import type { HistoryRecordUpdateDto } from '../../types';
 import { BATCH_META_MAX_ITEMS, readBatchMeta, toUiItem } from '../query';
@@ -41,6 +42,8 @@ export function sanitizeUploadName(raw: string | null): string | null {
   const name = basename(raw.trim());
   if (name === '' || name === '.' || name === '..') return null;
   if ([...name].length > UI_UPLOAD_NAME_MAX_CHARS) return null;
+  // 255 个字符不等于 255 个字节：255 个 emoji 是 1020 字节，拼进 R2 键（history/<类型>_<哈希>/<名>）会超过 1024 字节的键长上限 ⇒ 500
+  if (isFileNameTooLong(name)) return null;
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(name)) return null;
   return name;

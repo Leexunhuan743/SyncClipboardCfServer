@@ -58,9 +58,17 @@ export function formatRelative(value: string | number, now = Date.now()): string
   if (diff < 45 * MINUTE) return `${Math.max(1, Math.round(diff / MINUTE))} 分钟前`;
   if (diff < DAY) return `${Math.round(diff / HOUR)} 小时前`;
   const d = new Date(ms);
-  if (diff < 2 * DAY) return `昨天 ${clock(d)}`;
-  if (diff < 7 * DAY) return `${Math.round(diff / DAY)} 天前`;
-  return dateText(d);
+  if (diff >= 7 * DAY) return dateText(d);
+  // 「昨天」是日历概念：47 小时前也可能是前天（现在周三 23:00，对方周一 23:30），不能按小时数判
+  const days = calendarDaysBetween(d, new Date(now));
+  return days <= 1 ? `昨天 ${clock(d)}` : `${days} 天前`;
+}
+
+/** 两个时刻相隔的自然日数（按本地日历，夏令时当天不会差一天） */
+function calendarDaysBetween(earlier: Date, later: Date): number {
+  const a = Date.UTC(earlier.getFullYear(), earlier.getMonth(), earlier.getDate());
+  const b = Date.UTC(later.getFullYear(), later.getMonth(), later.getDate());
+  return Math.round((b - a) / DAY);
 }
 
 export function formatAbsolute(value: string | number): string {

@@ -54,6 +54,11 @@ describe('excerptAround', () => {
     expect(cut.startsWith('…')).toBe(true);
     expect(cut.indexOf('NEEDLE')).toBe(1 + 40);
   });
+  it('截取起点落在代理对中间时后移一位，不留孤立代理', () => {
+    // 起点 = index - lead = 61，正好是 😀（位置 60、61）的低位代理
+    const cut = excerptAround(`${'x'.repeat(60)}😀${'y'.repeat(47)}NEEDLE`, 'needle', 48);
+    expect(cut.startsWith(`…${'y'.repeat(47)}`)).toBe(true);
+  });
   it('没有命中：原样返回', () => {
     expect(excerptAround('abc', 'zzz')).toBe('abc');
   });
